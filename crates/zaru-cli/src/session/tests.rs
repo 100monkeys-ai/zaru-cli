@@ -1384,3 +1384,140 @@ fn pruning_refuses_rather_than_deleting_what_it_cannot_identify() {
         "pruning removed a directory the harness did not write",
     );
 }
+
+// ---------------------------------------------------------------------------
+// D5 / trigger clause 6 — nothing leaves the machine
+// ---------------------------------------------------------------------------
+
+/// ADR-0010 trigger clause 6: "A test asserts no network call originates from
+/// session storage at bare or contained tier."
+///
+/// **This module takes no tier at all**, so what is held is wider than the
+/// clause: no network at any tier, as absence rather than as a branch.
+///
+/// # Why this is a check inside the crate and not the boundary gate
+///
+/// The obvious move is to add `zaru-cli` to `check-crate-boundaries.py`'s
+/// `NO_NETWORK` set. It would pass today and break within hours: `zaru-cli`
+/// depends on `zaru-notes`, and ADR-0006's client is landing `rmcp` there.
+/// The gate would then fail on a true statement about `zaru-cli`, and the
+/// only ways out are weakening the gate or exempting the crate — either of
+/// which costs the `zaru-tui` arm its meaning. **The gate is not touched.**
+///
+/// # The matching is part of the rule, and so are its limits
+///
+/// Two arms, because a `use` is not the only way to name a type: a
+/// fully-qualified `::std::net::TcpStream::connect` needs no import at all.
+/// So the imports are enumerated *and* the source is searched for the names
+/// themselves. [Agent lessons] §45: when a rule is enforced by matching
+/// source text, the matching is part of the rule, and its limits belong
+/// beside it. This check cannot see a socket reached through a re-export from
+/// a sibling crate, which is what the import arm is for; `zaru_core` is
+/// permitted because its own normal dependency closure is inside
+/// `zaru-tui`'s, which `scripts/check-crate-boundaries.py` reports carries
+/// none of the network-capable crates it names.
+///
+/// `tests.rs` and `fixtures.rs` are excluded and the exclusion is checked:
+/// they are `#[cfg(test)]`, they are not session storage, and this check
+/// names the forbidden strings, so scanning them would match itself.
+///
+/// The mutant: `use std::net::TcpStream;` in any product file of the module.
+///
+/// [Agent lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/agent-lessons
+#[test]
+fn no_network_call_can_originate_from_session_storage() {
+    const PERMITTED_ROOTS: [&str; 7] = [
+        "std",
+        "core",
+        "crate",
+        "super",
+        "serde",
+        "serde_json",
+        "zaru_core",
+    ];
+    const FORBIDDEN: [&str; 8] = [
+        "std::net",
+        "TcpStream",
+        "TcpListener",
+        "UdpSocket",
+        "ToSocketAddrs",
+        "reqwest",
+        "rmcp",
+        "hyper",
+    ];
+    // `#[cfg(test)]` and therefore not session storage. The exclusion is
+    // asserted below rather than trusted.
+    const NOT_THE_PRODUCT: [&str; 2] = ["tests.rs", "fixtures.rs"];
+
+    let module = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session");
+    let declaration = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session.rs"),
+    )
+    .expect("the module declaration is there");
+    for excluded in NOT_THE_PRODUCT {
+        let stem = excluded.trim_end_matches(".rs");
+        assert!(
+            declaration.contains(&format!("#[cfg(test)]\nmod {stem};")),
+            "{excluded} is excluded from this scan on the grounds that it is #[cfg(test)], and \
+             the module declaration does not say so",
+        );
+    }
+
+    let mut scanned = Vec::new();
+    let mut imports = 0usize;
+    let mut offences = Vec::new();
+
+    for entry in std::fs::read_dir(&module).expect("the session module is there") {
+        let path = entry.expect("an entry").path();
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+            || NOT_THE_PRODUCT.contains(&name.as_str())
+        {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a source file reads");
+        scanned.push(name.clone());
+
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("use ") {
+                imports += 1;
+                let root = rest
+                    .trim_start_matches("::")
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default();
+                if !PERMITTED_ROOTS.contains(&root) {
+                    offences.push(format!("{name}: imports `{root}`"));
+                }
+            }
+            // A doc comment naming a type is prose, not a reach.
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            for needle in FORBIDDEN {
+                if line.contains(needle) {
+                    offences.push(format!("{name}: names `{needle}`"));
+                }
+            }
+        }
+    }
+
+    // The instrument has to be able to find something before an absence is
+    // evidence ([Verification lessons] §8).
+    assert!(
+        scanned.len() >= 6 && imports >= 10,
+        "this scan read {} product file(s) and {imports} import(s), which is too few to have \
+         asserted anything about the session module: {scanned:?}",
+        scanned.len(),
+    );
+    assert!(
+        offences.is_empty(),
+        "session storage can reach something outside std, serde and this workspace's own \
+         headless crate — ADR-0010 D5 says sessions are local files and nothing leaves the \
+         machine: {offences:?}",
+    );
+}
