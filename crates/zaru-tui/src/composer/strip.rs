@@ -8,7 +8,7 @@
 //! back into it. Two modes and never two strips: the prompt is either empty or
 //! it is not, and the states never contend.
 
-use crate::composer::entries::Entry;
+use crate::composer::entries::{Entry, EntryKind};
 use crate::composer::search::SearchState;
 
 /// Which of D1's two modes the strip is in.
@@ -91,6 +91,17 @@ pub enum StripContent {
         /// The trie's matches for that filter, of the kinds this picker offers.
         matches: Vec<Entry>,
     },
+}
+
+impl PickerKind {
+    /// Whether this picker offers entries of that kind.
+    #[must_use]
+    pub const fn admits(self, kind: EntryKind) -> bool {
+        match self {
+            Self::PagesAndAtoms => matches!(kind, EntryKind::Page | EntryKind::Atom),
+            Self::Atoms => matches!(kind, EntryKind::Atom),
+        }
+    }
 }
 
 impl StripContent {
