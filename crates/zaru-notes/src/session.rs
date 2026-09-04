@@ -38,9 +38,11 @@
 //! [Ubiquitous Language]: https://100monkeys-ai.cortex.page/zaru/p/architecture/ubiquitous-language
 
 pub mod address;
+pub mod attachment;
 pub mod bearer;
 
 pub use address::{Instance, WorkspaceId, WorkspaceSlug};
+pub use attachment::{Attachment, AttachmentRefused};
 pub use bearer::{Bearer, REDACTED};
 
 #[cfg(test)]
