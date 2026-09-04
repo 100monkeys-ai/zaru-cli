@@ -16,7 +16,7 @@ for a smoother surface, the legible option wins. That trade is the product.
 Six crates compile, a binary prints what it is composed of, and CI enforces the
 rules the repository is meant to hold itself to.
 
-Five pieces exist behind that binary and none of them is reachable from it.
+Six pieces exist behind that binary and it reaches exactly one of them.
 The iteration loop is in `zaru-core`, headless, driven through five ports that
 nothing in any product tree implements. The composer is in `zaru-tui`, rendered
 under a test backend, reaching its two search tiers through a port and a
@@ -31,9 +31,18 @@ call is prompted for. **Nothing executes.** No tool runs a command, opens a
 socket or touches a file, because the acting half sits behind ports with no
 implementation, and the permission prompt itself is one of them.
 
+The sixth is the error taxonomy, also in `zaru-cli`, and it is the one the
+binary reaches. Five classes of failure, each carrying by construction what its
+class owes the reader; a mapping from every error the workspace already raises
+to the class a decision record states for it; and a boundary around everything
+the binary does, so that a bug in the harness is reported as a bug in the
+harness — with the version and where to report it — rather than as a Rust
+panic. The process exits with a documented code for what happened. Today the
+binary does nothing that can fail, so the only code it can reach is `0`.
+
 No provider, no SEAL, no Nuclear Notes client, no session, no terminal
-interface, and no command surface exists. Each of the five pieces above is
-reachable only from its own tests.
+interface, and no command surface exists. Five of the six pieces above are
+reachable only from their own tests.
 
 The harness is pre-alpha in the load-bearing sense too: it carries no
 backward-compatibility shims and no legacy code paths, and anything that looks
