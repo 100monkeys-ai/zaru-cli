@@ -40,7 +40,7 @@ harness — with the version and where to report it — rather than as a Rust
 panic. The process exits with a documented code for what happened. Today the
 binary does nothing that can fail, so the only code it can reach is `0`.
 
-No provider, no SEAL, no Nuclear Notes client, no session, no terminal
+No provider, no SEAL, no session, no terminal
 interface, and no command surface exists. Five of the six pieces above are
 reachable only from their own tests.
 
@@ -76,11 +76,11 @@ cargo test --workspace
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
-build needs a registry: `Cargo.lock` resolves 53 packages, six of which are this
-workspace's own. The third-party set is `ratatui` and `tui-textarea` for the
-composer, `serde` and `serde_json` for the credential store, `tokio` as a
-dev-dependency for polling the loop's futures under `#[tokio::test]`, and what
-those five pull in. Which dependencies the harness may carry is ADR-0003 D2's
+build needs a registry: `Cargo.lock` resolves 109 packages, six of which are
+this workspace's own. The third-party set is `rmcp` for the Nuclear Notes
+client, `ratatui` and `tui-textarea` for the composer, `serde` and `serde_json`
+for the credential store, `tokio` for the client's channels and for polling the
+loop's futures under `#[tokio::test]`, and what those six pull in. Which dependencies the harness may carry is ADR-0003 D2's
 to decide, and `[workspace.dependencies]` is where each arrives once it has a
 caller.
 

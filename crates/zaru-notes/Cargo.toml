@@ -12,3 +12,18 @@ publish = false
 [lints]
 workspace = true
 
+[dependencies]
+rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
+# `rmcp` re-exports `serde_json`, but only behind its `macros` feature, which
+# also pulls a proc-macro crate and a paste crate this client never uses. The
+# format crate is already in `[workspace.dependencies]` and already resolved in
+# the lock, so naming it directly costs nothing and buys a smaller closure.
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+# The `server` half of the in-process fixture. It is a dev-dependency because
+# nothing this crate ships serves MCP; a check stands one up so that both ends
+# of a real session exist in one process.
+rmcp = { workspace = true, features = ["server"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }

@@ -76,6 +76,29 @@ serde_json = { version = "1.0.151", default-features = false, features = [
     "std",
 ] }
 
+# `rmcp` is D2's first row: the official MCP SDK, and the whole reason
+# `zaru-notes` exists. Default features are off because they are
+# `[base64, macros, server]` and `server` is the wrong half for a client --
+# it pulls `schemars` and a JSON-Schema derive chain into a product build
+# that never serves anything. What `zaru-notes` takes instead is `client`
+# plus `transport-async-rw`, and each crate names its own features on top.
+#
+# `transport-async-rw` is the transport over any `AsyncRead + AsyncWrite`,
+# which over `tokio::io::duplex` is a real MCP session with no socket: the
+# JSON-RPC frames are serialised, framed and parsed exactly as they would be
+# over a network, and nothing listens on a port. That is what lets every
+# check in this crate exchange real protocol bytes offline.
+#
+# **The streamable HTTP transport ADR-0103 names is deliberately not taken.**
+# It arrives through this crate's own `transport-streamable-http-client-reqwest`
+# feature -- so it needs no new row in D2's table, `reqwest` being already
+# named there -- and it costs 113 further packages including a `cmake`-driven
+# C build of `aws-lc-sys`. No check in this crate may open a socket and no
+# credential exists here, so all 113 would arrive unexercised. A dependency
+# arrives in the arc that has a caller; that arc holds a token and can prove
+# it works.
+rmcp = { version = "3.2.0", default-features = false }
+
 ratatui = { version = "0.29.0", default-features = false }
 tui-textarea = { version = "0.7.0", default-features = false, features = [
     "no-backend",
