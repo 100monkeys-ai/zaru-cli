@@ -12,11 +12,21 @@ for a smoother surface, the legible option wins. That trade is the product.
 
 ## Status
 
-**Pre-alpha. This repository currently contains the workspace skeleton and
-nothing else.** Six crates compile, a binary prints what it is composed of, and
-CI enforces the rules the repository is meant to hold itself to. No agent loop,
-no composer, no provider, no SEAL, and no terminal interface exists yet. Nothing
-here is installable and nothing here does any work.
+**Pre-alpha. Nothing here is installable, and no binary does any work yet.**
+Six crates compile, a binary prints what it is composed of, and CI enforces the
+rules the repository is meant to hold itself to.
+
+Three pieces exist behind that binary and none of them is reachable from it.
+The iteration loop is in `zaru-core`, headless, driven through five ports that
+nothing in any product tree implements. The composer is in `zaru-tui`, rendered
+under a test backend, reaching its two search tiers through a port and a
+request/response pair that nothing implements either. The credential store is
+in `zaru-cli`, holding named tokens on disk with no bearer value among them —
+sealing is a port with no implementation, so no secret is written anywhere.
+
+No provider, no SEAL, no Nuclear Notes client, no session, no terminal
+interface, and no command surface exists. Each of the three pieces above is
+reachable only from its own tests.
 
 The harness is pre-alpha in the load-bearing sense too: it carries no
 backward-compatibility shims and no legacy code paths, and anything that looks
@@ -49,9 +59,14 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. The
-workspace currently has no third-party dependencies at all, so a build needs no
-registry.
+The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
+build needs a registry: `Cargo.lock` resolves 53 packages, six of which are this
+workspace's own. The third-party set is `ratatui` and `tui-textarea` for the
+composer, `serde` and `serde_json` for the credential store, `tokio` as a
+dev-dependency for polling the loop's futures under `#[tokio::test]`, and what
+those five pull in. Which dependencies the harness may carry is ADR-0003 D2's
+to decide, and `[workspace.dependencies]` is where each arrives once it has a
+caller.
 
 ## Where the knowledge is
 
