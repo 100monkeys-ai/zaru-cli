@@ -1,0 +1,24 @@
+[package]
+name = "zaru-cli"
+description = "The zaru binary: configuration, session lifecycle, and the error taxonomy."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "zaru"
+path = "src/main.rs"
+
+[dependencies]
+zaru-aegis = { path = "../zaru-aegis" }
+zaru-core = { path = "../zaru-core" }
+zaru-notes = { path = "../zaru-notes" }
+zaru-seal = { path = "../zaru-seal" }
+zaru-tui = { path = "../zaru-tui" }

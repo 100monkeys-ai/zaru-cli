@@ -1,0 +1,39 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+version = "0.0.0"
+license = "Apache-2.0"
+authors = ["100monkeys AI, Inc."]
+repository = "https://github.com/100monkeys-ai/zaru-cli"
+
+# `rust-version` is a statement of fact -- it is the version pinned in
+# `rust-toolchain.toml` -- and not a minimum-supported-Rust-version support
+# policy. Nothing is published and nobody depends on this, so there is no
+# compatibility promise here to keep. Whoever first ships decides whether one
+# is owed.
+
+[workspace.dependencies]
+# Deliberately empty.
+#
+# ADR-0003 D2 names the dependencies the harness will carry -- `rmcp`,
+# `ratatui`, `tui-textarea`, `fastembed`, `tokio`, `serde`, `reqwest` -- and
+# not one of them has a caller yet. A version pinned now and left unused for
+# weeks is a version nobody chose. The arc that needs a dependency adds it
+# here with its version, and each crate takes it with `workspace = true`, so
+# two crates can never pin two versions of one dependency.
+
+[workspace.lints.rust]
+# Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
+# turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-
+# responsibility discipline legible instead of aspirational.
+missing_docs = "warn"
+
+# `deny` rather than `forbid`: a crate that genuinely needs `unsafe` can carry
+# a recorded `#[allow]` with its reason, which is reviewable. `forbid` cannot
+# be lifted without editing this file, which turns a local judgement into a
+# workspace-wide change.
+unsafe_code = "deny"

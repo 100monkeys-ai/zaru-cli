@@ -1,0 +1,16 @@
+[package]
+name = "zaru-tui"
+description = "Zaru's terminal user interface and composer."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+zaru-core = { path = "../zaru-core" }

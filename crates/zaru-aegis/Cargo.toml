@@ -1,0 +1,16 @@
+[package]
+name = "zaru-aegis"
+description = "Zaru's AEGIS orchestrator client, over MCP and SEAL."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+zaru-seal = { path = "../zaru-seal" }

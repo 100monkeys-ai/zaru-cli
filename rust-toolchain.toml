@@ -1,0 +1,10 @@
+# The toolchain is pinned to an exact version rather than to `stable`.
+#
+# A floating channel means a lint added upstream can turn CI red with no diff
+# behind it, and a gate whose reds are noise is a gate people learn to re-run.
+# Bumping this is a deliberate act with its own commit, and CI reads this file
+# so that the local toolchain and the CI toolchain are the same bytes.
+[toolchain]
+channel = "1.98.1"
+profile = "default"
+components = ["rustfmt", "clippy"]
