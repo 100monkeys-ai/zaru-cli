@@ -1,0 +1,12 @@
+# Cargo build output.
+/target
+
+# Agent worktrees. Each arc gets worktrees/<arc> on its own branch; the main
+# checkout stays on the default branch and is shared.
+/worktrees
+
+# rustfmt backups.
+**/*.rs.bk
+
+# Editor and OS noise.
+.DS_Store
