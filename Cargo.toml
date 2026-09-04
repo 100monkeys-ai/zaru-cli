@@ -17,14 +17,24 @@ repository = "https://github.com/100monkeys-ai/zaru-cli"
 # is owed.
 
 [workspace.dependencies]
-# Deliberately empty.
-#
 # ADR-0003 D2 names the dependencies the harness will carry -- `rmcp`,
-# `ratatui`, `tui-textarea`, `fastembed`, `tokio`, `serde`, `reqwest` -- and
-# not one of them has a caller yet. A version pinned now and left unused for
-# weeks is a version nobody chose. The arc that needs a dependency adds it
-# here with its version, and each crate takes it with `workspace = true`, so
-# two crates can never pin two versions of one dependency.
+# `ratatui`, `tui-textarea`, `fastembed`, `tokio`, `serde`, `reqwest`. A
+# version pinned before anything calls it is a version nobody chose, so a
+# dependency arrives here in the arc that has a caller, and each crate takes
+# it with `workspace = true` so two crates can never pin two versions of one.
+#
+# `tokio` is here for its runtime and its test macro, and for nothing else.
+# The loop's ports are asynchronous because ADR-0012 D3 has providers stream
+# and call tools, and a stub that only ever answers synchronously leaves every
+# question about ordering untested. `zaru-core` itself needs no runtime -- its
+# port methods return `impl Future` rather than being `async fn`, so the crate
+# stays runtime-agnostic -- and takes this as a dev-dependency only, to poll
+# those futures under `#[tokio::test]`. Hence `rt` and `macros` and nothing
+# else: nothing in this workspace yet spawns, sleeps, or opens a socket.
+tokio = { version = "1.53.1", default-features = false, features = [
+    "rt",
+    "macros",
+] }
 
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI

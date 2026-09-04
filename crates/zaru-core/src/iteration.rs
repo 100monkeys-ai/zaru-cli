@@ -45,14 +45,21 @@
 pub mod error;
 pub mod event;
 pub mod limits;
+pub mod machine;
 pub mod port;
 pub mod refinement;
 
 pub use error::{IterationError, PortKind};
 pub use event::{Event, EventSink, ExhaustionReason, ValidatorOutcome};
 pub use limits::{Ceiling, ConfigurationError, Limits, TruncationBudget};
+pub use machine::{Outcome, State, run};
 pub use port::{
     Clock, ContextPolicy, ExecutionOutcome, Executor, Generated, Generator, PortFailure, Ports,
     Prompt, SystemClock, Turn, ValidatorReport, Validators,
 };
 pub use refinement::{RefinementInput, RefinementPrompt};
+
+#[cfg(test)]
+mod fixtures;
+#[cfg(test)]
+mod tests;

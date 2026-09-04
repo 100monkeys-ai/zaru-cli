@@ -12,3 +12,5 @@ publish = false
 [lints]
 workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true }
