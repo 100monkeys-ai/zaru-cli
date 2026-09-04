@@ -94,6 +94,15 @@ impl std::error::Error for StatementRefused {}
 pub struct Statement(String);
 
 impl Statement {
+    /// What [`Statement::sanitised`] answers for a rendering that was empty.
+    ///
+    /// A named constant rather than a literal, because a check needs to be
+    /// able to see it: an action whose lead is this sentence is an action that
+    /// says nothing, and without a name for it that assertion cannot be
+    /// written at all — the fallback would make every empty action look like a
+    /// full one.
+    pub const RENDERED_AS_NOTHING: &'static str = "a failure that rendered as nothing at all";
+
     /// Take a statement, refusing one that cannot be rendered.
     ///
     /// # Errors
@@ -111,6 +120,36 @@ impl Statement {
             });
         }
         Ok(Self(text))
+    }
+
+    /// Take a rendering that is already a message, escaping rather than
+    /// refusing what a terminal would act on.
+    ///
+    /// [`Statement::new`] is the boundary for text a caller wrote, and
+    /// refusing is the right answer there. This is for text that is already
+    /// another error's `Display` — the classification in
+    /// [`classify`](crate::failure::classify) has to produce a statement for
+    /// every failure it is handed and has nothing to refuse *to*, so the
+    /// control character is escaped into something visible instead. An empty
+    /// rendering becomes a sentence saying so, because a blank headline is a
+    /// failure the reader cannot name.
+    #[must_use]
+    pub fn sanitised(text: impl Into<String>) -> Self {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return Self(Self::RENDERED_AS_NOTHING.to_owned());
+        }
+        Self(
+            text.chars()
+                .flat_map(|character| {
+                    if character.is_control() {
+                        character.escape_debug().collect::<Vec<_>>()
+                    } else {
+                        vec![character]
+                    }
+                })
+                .collect(),
+        )
     }
 
     /// The sentence.

@@ -9,8 +9,12 @@
 //!
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use super::fixtures::{a_session, defect_report, of_class, one_of_each_class, policy, statement};
-use crate::credentials::fixtures::{ascii_core, nonce};
+use super::fixtures::{
+    a_session, defect_report, every_mapped_refusal, of_class, one_of_each_class, policy, statement,
+};
+use crate::config::fixtures::{at, document, schema as config_schema, text};
+use crate::config::{Layer, Resolution};
+use crate::credentials::fixtures::{ascii_core, nonce, personal_secret_nonce};
 use crate::failure::class::{Class, Exit, SUCCESS};
 use crate::failure::classified::{Classified, Expected};
 use crate::failure::defect::{SessionEvidence, SessionId, SessionIdRefused};
@@ -884,5 +888,211 @@ fn two_guarded_panics_each_report_their_own_defect() {
         second_said,
         "the second guarded panic reported the first one's words, so the hook was not restored \
          between them"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0016 D1 — which class each error this workspace already raises belongs to
+// ---------------------------------------------------------------------------
+
+/// Every variant of every mapped enum lands in the class a record states.
+///
+/// The exhaustiveness in the other direction is the compiler's: each mapping
+/// is a wildcard-free `match`, so a new variant anywhere in the workspace
+/// fails to compile in `classify` and cannot arrive here unclassified. What
+/// this check adds is that the class each one takes is the class a record
+/// states, and it reports **every** disagreement rather than the first,
+/// because one row silently taking a neighbour's class is exactly the
+/// misclassification D1's Negative consequence calls worse than none.
+///
+/// The mutant: any arm returning a neighbouring class.
+#[test]
+fn every_mapped_refusal_lands_in_the_class_a_record_states() {
+    let rows = every_mapped_refusal();
+    assert!(
+        rows.len() >= 26,
+        "the mapped set has shrunk to {} rows; a variant was removed from the fixture rather \
+         than from the mapping",
+        rows.len()
+    );
+
+    let mut wrong = Vec::new();
+    for (name, classified, expected) in &rows {
+        if classified.class() != *expected {
+            wrong.push(format!(
+                "{name} is {} and a record says it is {expected}",
+                classified.class()
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} mapped refusals take a class no record gives them: {wrong:?}",
+        wrong.len(),
+        rows.len()
+    );
+
+    // The arm that discriminates: a mapping that answered one class for
+    // everything would satisfy neither of the two counts below.
+    let defects = rows
+        .iter()
+        .filter(|(_, classified, _)| classified.class() == Class::Defect)
+        .count();
+    assert_eq!(
+        defects, 3,
+        "exactly three mapped refusals are ours rather than the user's -- a layer offered twice, \
+         a schema whose keys collide on one environment variable, and a tool offered the wrong \
+         kind of subject -- and this crate believes there are {defects}"
+    );
+}
+
+/// Trigger clause 3, enumerated exhaustively over the class.
+///
+/// "Every user-correctable error carries a remedy, asserted by enumerating the
+/// class exhaustively in test." The enumeration is every mapped variant; the
+/// carrying is guaranteed by the type, so what is asserted here is the half a
+/// type cannot hold — that the remedy **reaches the reader**, with an action
+/// for every action the raising site gave.
+///
+/// The mutant: a projection dropping the remedy, or a mapping returning a
+/// remedy whose action says nothing the reader can act on.
+#[test]
+fn every_user_correctable_mapping_carries_a_remedy_that_reaches_the_reader() {
+    let mut silent = Vec::new();
+    let rows = every_mapped_refusal();
+
+    for (name, classified, _) in &rows {
+        if classified.class() != Class::UserCorrectable {
+            continue;
+        }
+        let Some(remedy) = classified.remedy() else {
+            silent.push(format!("{name} is user-correctable and carries no remedy"));
+            continue;
+        };
+        let shown = Presentation::of(classified);
+        if shown.lines.len() != remedy.len() {
+            silent.push(format!(
+                "{name}'s remedy has {} action(s) and its presentation shows {}",
+                remedy.len(),
+                shown.lines.len()
+            ));
+        }
+        for action in remedy.actions() {
+            // `Statement::sanitised` cannot produce an empty sentence, so
+            // asserting the lead is non-empty would be a check whose trigger
+            // can never fire. What can happen is an arm producing nothing and
+            // getting the fallback, and that is what this sees.
+            if action.lead().as_str() == Statement::RENDERED_AS_NOTHING {
+                silent.push(format!(
+                    "{name} offers an action that says nothing: its lead is the sentence \
+                     `Statement::sanitised` falls back to"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        silent.is_empty(),
+        "ADR-0016 trigger clause 3: every user-correctable error carries a remedy. {} of the {} \
+         mapped refusals fail it: {silent:?}",
+        silent.len(),
+        rows.len()
+    );
+}
+
+/// **No mapping invents a command.**
+///
+/// ADR-0015 owns the command surface and it does not exist, and ADR-0016 D2's
+/// own worked example — `zaru config set provider.anthropic.key <key>` — is
+/// the subject of an open question against ADR-0014 D4, which says
+/// configuration holds a reference and never a credential. A remedy here that
+/// told a user to run that command would settle it.
+///
+/// The mutant: any arm using `Action::runnable`.
+#[test]
+fn no_mapping_tells_the_reader_to_run_a_command_that_does_not_exist() {
+    let mut invented = Vec::new();
+    for (name, classified, _) in every_mapped_refusal() {
+        let Some(remedy) = classified.remedy() else {
+            continue;
+        };
+        for action in remedy.actions() {
+            if let Some(command) = action.command() {
+                invented.push(format!("{name} says to run {command:?}"));
+            }
+        }
+    }
+    assert!(
+        invented.is_empty(),
+        "no classification may name a command: the command surface is ADR-0015's and does not \
+         exist, and ADR-0016 D2's own example is open against ADR-0014 D4. {} do: {invented:?}",
+        invented.len()
+    );
+}
+
+/// A bearer value reaching a configuration file is classified without being
+/// published, over the real load rather than over a refusal built by hand.
+///
+/// This is the arming ADR-0008's open clause 6 makes worth having, on the one
+/// path in this crate where a planted bearer value genuinely arrives at the
+/// input: it is what *causes* ADR-0014 D4's refusal. The absence is asserted
+/// over the value **and its ASCII core**, because `{:?}` escapes a combining
+/// mark and an absence assertion over the raw value alone reads a published
+/// leak as absence — the mutation that survived in the credential store on
+/// 2026-09-04.
+///
+/// The mutant: putting the value into the statement or the remedy, in any
+/// form.
+#[test]
+fn a_credential_shaped_value_is_classified_without_publishing_it() {
+    let planted = personal_secret_nonce();
+
+    let refusal = Resolution::resolve(
+        &config_schema(),
+        vec![at(
+            Layer::User,
+            "~/.zaru/config.toml",
+            document([("project.name", text(planted.clone()))]),
+        )],
+    )
+    .expect_err("a config file carried a bearer value and the load accepted it");
+
+    let classified = Classified::from(refusal);
+    assert_eq!(
+        classified.class(),
+        Class::UserCorrectable,
+        "ADR-0014 D4's refusal is the user's to correct: the token goes in the credential store"
+    );
+
+    let shown = Presentation::of(&classified);
+    let core = ascii_core(&planted);
+    let mut published = Vec::new();
+    for (where_it_was, text) in [
+        ("the statement", shown.headline.clone()),
+        ("the remedy", format!("{shown}")),
+        (
+            "the classification's own debug rendering",
+            format!("{classified:?}"),
+        ),
+    ] {
+        if text.contains(&planted) {
+            published.push(format!("{where_it_was} carries the value verbatim"));
+        }
+        if text.contains(core) {
+            published.push(format!("{where_it_was} carries the value's ASCII core"));
+        }
+    }
+    assert!(
+        published.is_empty(),
+        "a classification published the bearer value it was refusing. {} place(s): {published:?}",
+        published.len()
+    );
+
+    // The arm that discriminates: the remedy is not empty prose, it names
+    // where the value belongs.
+    assert!(
+        shown.to_string().contains("credential store"),
+        "ADR-0014 D4 sends the value to the credential store and the remedy does not say so: \
+         {shown}"
     );
 }

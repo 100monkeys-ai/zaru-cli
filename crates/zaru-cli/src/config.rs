@@ -78,7 +78,13 @@ pub use resolve::Resolution;
 pub use schema::{CoercionFailure, Field, FieldKind, ProjectPolicy, Schema};
 pub use value::{Table, Value};
 
+// `pub(crate)` rather than private, for the reason `credentials::fixtures`
+// already is: `crate::failure`'s checks drive the real load to produce
+// ADR-0014 D4's refusal and then assert that classifying it publishes
+// neither the planted bearer value nor its ASCII core. Staging that load a
+// second time beside those checks would be one fixture in two places, which
+// is a fixture that diverges.
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;

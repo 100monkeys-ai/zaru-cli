@@ -110,3 +110,236 @@ pub(super) fn a_session() -> SessionEvidence {
         transcript: PathBuf::from(format!("/nowhere/{}/transcript.jsonl", nonce("dir"))),
     }
 }
+
+/// Every variant of every enum [`classify`](crate::failure::classify) maps,
+/// with the class a record states for it.
+///
+/// **This list is the denominator for trigger clause 3's enumeration**, and
+/// the compiler is what keeps it honest in the other direction: each mapping
+/// is a wildcard-free match, so a new variant fails to compile there and the
+/// row for it has to be written here before it can be classified at all.
+pub(super) fn every_mapped_refusal() -> Vec<(&'static str, Classified, Class)> {
+    use crate::config::{CoercionFailure, ConfigRefused, KeyRefused, Layer};
+    use crate::credentials::{AliasRefused, DescriptionRefused, SecretRefused};
+    use crate::tools::{InvocationRefused, ModeRefused, ToolName, TreeError};
+
+    let key = |name: &str| crate::config::Key::new(name).expect("a declared key is a usable key");
+    let offered = || nonce("offered");
+
+    let mut rows: Vec<(&'static str, Classified, Class)> = Vec::new();
+    let mut user = |name: &'static str, classified: Classified| {
+        rows.push((name, classified, Class::UserCorrectable));
+    };
+
+    // ADR-0014 D5's key rules -- four variants.
+    user("KeyRefused::Empty", KeyRefused::Empty.into());
+    user(
+        "KeyRefused::EmptySegment",
+        KeyRefused::EmptySegment { offered: offered() }.into(),
+    );
+    user(
+        "KeyRefused::Control",
+        KeyRefused::Control { offered: offered() }.into(),
+    );
+    user(
+        "KeyRefused::SurroundingWhitespace",
+        KeyRefused::SurroundingWhitespace { offered: offered() }.into(),
+    );
+
+    // ADR-0014 D2's coercions -- three variants.
+    user(
+        "CoercionFailure::WrongShape",
+        CoercionFailure::WrongShape { found: "a list" }.into(),
+    );
+    user(
+        "CoercionFailure::Unparsable",
+        CoercionFailure::Unparsable.into(),
+    );
+    user(
+        "CoercionFailure::Alias",
+        CoercionFailure::Alias(AliasRefused::Empty).into(),
+    );
+
+    // ADR-0007 D2's alias rules -- six variants.
+    user("AliasRefused::Empty", AliasRefused::Empty.into());
+    user(
+        "AliasRefused::DotOrDotDot",
+        AliasRefused::DotOrDotDot.into(),
+    );
+    user(
+        "AliasRefused::Separator",
+        AliasRefused::Separator {
+            offered: offered(),
+            found: '/',
+        }
+        .into(),
+    );
+    user(
+        "AliasRefused::NamespaceSeparator",
+        AliasRefused::NamespaceSeparator { offered: offered() }.into(),
+    );
+    user(
+        "AliasRefused::Control",
+        AliasRefused::Control { offered: offered() }.into(),
+    );
+    user(
+        "AliasRefused::SurroundingWhitespace",
+        AliasRefused::SurroundingWhitespace { offered: offered() }.into(),
+    );
+
+    // ADR-0007 D2's two token kinds, and its one-line description.
+    user("SecretRefused", SecretRefused.into());
+    user(
+        "DescriptionRefused",
+        DescriptionRefused { offered: offered() }.into(),
+    );
+
+    // ADR-0011 D4's working directory, and D3's permission mode.
+    user(
+        "TreeError::NoSuchWorkingDirectory",
+        TreeError::NoSuchWorkingDirectory {
+            path: PathBuf::from(format!("/nowhere/{}", nonce("wd"))),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        }
+        .into(),
+    );
+    user(
+        "ModeRefused::FromAClonedRepository",
+        ModeRefused::FromAClonedRepository {
+            key: nonce("mode-key"),
+            offered: offered(),
+            layer: Layer::Project,
+        }
+        .into(),
+    );
+    user(
+        "ModeRefused::NoSuchMode",
+        ModeRefused::NoSuchMode {
+            key: nonce("mode-key"),
+            offered: offered(),
+        }
+        .into(),
+    );
+
+    // ADR-0014's load-time refusals -- eight of the user's.
+    user(
+        "ConfigRefused::UnknownKey (with a suggestion)",
+        ConfigRefused::UnknownKey {
+            layer: Layer::User,
+            offered: offered(),
+            suggestion: Some(nonce("nearest")),
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::UnknownKey (with none)",
+        ConfigRefused::UnknownKey {
+            layer: Layer::Project,
+            offered: offered(),
+            suggestion: None,
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::UnusableKey",
+        ConfigRefused::UnusableKey {
+            layer: Layer::User,
+            offered: offered(),
+            refusal: KeyRefused::Empty,
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::CredentialShaped (declared as a reference)",
+        ConfigRefused::CredentialShaped {
+            layer: Layer::User,
+            key: key("notes.token"),
+            declared_as_a_reference: true,
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::CredentialShaped (in an ordinary key)",
+        ConfigRefused::CredentialShaped {
+            layer: Layer::Project,
+            key: key("project.name"),
+            declared_as_a_reference: false,
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::WrongShape",
+        ConfigRefused::WrongShape {
+            layer: Layer::User,
+            key: key("runtime.max_iterations"),
+            expected: "a whole number",
+            found: "text",
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::UnparsableText",
+        ConfigRefused::UnparsableText {
+            layer: Layer::Environment,
+            key: key("runtime.max_iterations"),
+            expected: "a whole number",
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::UnusableAlias",
+        ConfigRefused::UnusableAlias {
+            layer: Layer::User,
+            key: key("notes.token"),
+            refusal: AliasRefused::DotOrDotDot,
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::ProjectMayNotSet",
+        ConfigRefused::ProjectMayNotSet {
+            key: key("runtime.tier"),
+            reason: nonce("reason"),
+        }
+        .into(),
+    );
+    user(
+        "ConfigRefused::ProjectMayNotRaise",
+        ConfigRefused::ProjectMayNotRaise {
+            key: key("runtime.max_iterations"),
+            granted: 5,
+            asked: 8,
+        }
+        .into(),
+    );
+
+    // Ours, all three.
+    rows.push((
+        "ConfigRefused::DuplicateLayer",
+        ConfigRefused::DuplicateLayer {
+            layer: Layer::Project,
+        }
+        .into(),
+        Class::Defect,
+    ));
+    rows.push((
+        "ConfigRefused::AmbiguousEnvironmentName",
+        ConfigRefused::AmbiguousEnvironmentName {
+            variable: nonce("ZARU_VAR"),
+            first: key("runtime.max_iterations"),
+            second: key("runtime.max.iterations"),
+        }
+        .into(),
+        Class::Defect,
+    ));
+    rows.push((
+        "InvocationRefused",
+        InvocationRefused {
+            tool: ToolName::WebFetch,
+        }
+        .into(),
+        Class::Defect,
+    ));
+
+    rows
+}

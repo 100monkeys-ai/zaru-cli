@@ -86,6 +86,7 @@
 
 pub mod class;
 pub mod classified;
+pub mod classify;
 pub mod defect;
 pub mod guard;
 pub mod partial;
