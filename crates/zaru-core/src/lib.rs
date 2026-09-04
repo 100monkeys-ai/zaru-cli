@@ -23,6 +23,7 @@
 //! shared-types crate for the workspace. Where a shared error type should
 //! live is an open question the skeleton left open on purpose.
 
+pub mod context;
 pub mod iteration;
 
 /// The name of this crate, read from its `Cargo.toml` at compile time.
