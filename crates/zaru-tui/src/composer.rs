@@ -35,10 +35,12 @@
 //! [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 
 pub mod entries;
+pub mod render;
 pub mod search;
 pub mod strip;
 
 pub use entries::{Entries, Entry, EntryKind};
+pub use render::KEYWORD_ONLY;
 pub use search::{
     DEBOUNCE, MIN_QUERY_CHARS, RequestRefused, Scope, SearchRequest, SearchResponse, SearchState,
 };

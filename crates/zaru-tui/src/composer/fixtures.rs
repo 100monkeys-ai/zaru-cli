@@ -25,6 +25,9 @@
 use crate::composer::Composer;
 use crate::composer::entries::{Entries, Entry, EntryKind};
 use core::time::Duration;
+use ratatui::Terminal;
+use ratatui::backend::{Backend, TestBackend};
+use ratatui::layout::Position;
 use std::cell::Cell;
 use tui_textarea::{Input, Key};
 
@@ -113,4 +116,60 @@ pub(crate) fn typing(composer: &mut Composer, text: &str, now: Duration, entries
             entries,
         );
     }
+}
+
+/// A trie that returns exactly `count` entries, so a check can stage a strip
+/// of a chosen height without changing the text in the input.
+#[derive(Debug)]
+pub(crate) struct TrieOf {
+    entries: Vec<Entry>,
+}
+
+impl TrieOf {
+    pub(crate) fn new(count: usize) -> Self {
+        Self {
+            entries: (0..count)
+                .map(|i| {
+                    Entry::new(
+                        "zaru",
+                        format!("architecture/páge-{i}"),
+                        format!("títle-{i}·{TRIE_NONCE} ✦"),
+                        EntryKind::Page,
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+impl Entries for TrieOf {
+    fn matches(&self, _prefix: &str, limit: usize) -> Vec<Entry> {
+        self.entries.iter().take(limit).cloned().collect()
+    }
+}
+
+/// Paint a composer and read the cells back out of the buffer.
+///
+/// The reader on this side is ratatui's own `TestBackend` buffer and not
+/// anything the composer wrote — which is what stops a frame check comparing
+/// the composer's formatter with itself. Every expected value in a check that
+/// uses this is a literal written in the check.
+pub(crate) fn painted(composer: &Composer, width: u16, height: u16) -> (Vec<String>, Position) {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal
+        .draw(|frame| composer.render(frame, frame.area()))
+        .expect("draw");
+    let cursor = terminal
+        .backend_mut()
+        .get_cursor_position()
+        .expect("the test backend records the cursor");
+    let buffer = terminal.backend().buffer();
+    let rows = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect();
+    (rows, cursor)
 }
