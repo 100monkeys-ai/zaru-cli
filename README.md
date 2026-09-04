@@ -16,16 +16,23 @@ for a smoother surface, the legible option wins. That trade is the product.
 Six crates compile, a binary prints what it is composed of, and CI enforces the
 rules the repository is meant to hold itself to.
 
-Three pieces exist behind that binary and none of them is reachable from it.
+Five pieces exist behind that binary and none of them is reachable from it.
 The iteration loop is in `zaru-core`, headless, driven through five ports that
 nothing in any product tree implements. The composer is in `zaru-tui`, rendered
 under a test backend, reaching its two search tiers through a port and a
 request/response pair that nothing implements either. The credential store is
 in `zaru-cli`, holding named tokens on disk with no bearer value among them —
-sealing is a port with no implementation, so no secret is written anywhere.
+sealing is a port with no implementation, so no secret is written anywhere. The
+configuration hierarchy is in `zaru-cli`, resolving five layers over a schema
+that names no key, reading each layer through a port nothing implements. The
+local tool surface is in `zaru-cli` too: the seven built-in tool names, the
+working-directory boundary, and the permission model that decides whether a
+call is prompted for. **Nothing executes.** No tool runs a command, opens a
+socket or touches a file, because the acting half sits behind ports with no
+implementation, and the permission prompt itself is one of them.
 
 No provider, no SEAL, no Nuclear Notes client, no session, no terminal
-interface, and no command surface exists. Each of the three pieces above is
+interface, and no command surface exists. Each of the five pieces above is
 reachable only from its own tests.
 
 The harness is pre-alpha in the load-bearing sense too: it carries no
