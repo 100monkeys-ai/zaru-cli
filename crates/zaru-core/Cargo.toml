@@ -12,5 +12,16 @@ publish = false
 [lints]
 workspace = true
 
+# ADR-0010 D2 makes the transcript the loop's own event stream, written to
+# `transcript.jsonl` as it occurs. A transcript writer therefore needs the
+# events to be serialisable, and the alternative -- a mirror of the event enum
+# in `zaru-cli` -- would be a second declaration of ADR-0008 D3's stream, which
+# is the rule-in-two-places the `Layer` ruling of 2026-09-04 removed from this
+# workspace. The derives change no behaviour: they add no field, no method and
+# no sibling edge, and `serde` is not a crate this workspace's boundary gate
+# names as network-capable.
+[dependencies]
+serde = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true }

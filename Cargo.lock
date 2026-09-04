@@ -968,6 +968,7 @@ dependencies = [
 name = "zaru-core"
 version = "0.0.0"
 dependencies = [
+ "serde",
  "tokio",
 ]
 

@@ -11,8 +11,33 @@
 //! Events are a superset of state transitions rather than a bijection with
 //! them. [`Event::ValidatorEvaluated`] fires inside `Evaluate`, once for each
 //! validator the validators port reported, and is not a transition.
+//!
+//! # Why these three types are serialisable, and why nothing else here is
+//!
+//! [ADR-0010] D2 makes the transcript this stream, written to
+//! `transcript.jsonl` one event per line as it occurs. The writer lives in
+//! `zaru-cli`, which is where [Bounded Contexts] puts the session lifecycle,
+//! and it cannot write an event it cannot serialise. The alternative -- a
+//! mirror of this enum in that crate -- would be a **second declaration of
+//! D3's event stream**, and a rule that exists in two places diverges; the
+//! `Layer` duplication removed from `zaru-cli` on 2026-09-04 is the same
+//! shape, measured after the fact to have already drifted. So the derives are
+//! here, on the declaration, under a **delegated coordinator ruling of
+//! 2026-09-04** open to Jeshua's veto.
+//!
+//! They add no field, no method, no variant and no sibling edge, so nothing
+//! about the loop's behaviour changes. Serialisation is not a *use* of this
+//! crate by itself: nothing here writes a byte anywhere, and `serde` on its
+//! own emits no format at all -- the format crate is the consumer's, which is
+//! [ADR-0003] D2's serialisation row read as its first proposed amendment
+//! reads it.
+//!
+//! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+//! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+//! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 
 use core::time::Duration;
+use serde::{Deserialize, Serialize};
 
 /// What one declared validator reported about an execution.
 ///
@@ -22,7 +47,8 @@ use core::time::Duration;
 /// the silent green that decision exists to prevent. There is no score —
 /// ADR-0009 D3 specifies binary pass and fail, and gradient scoring is an
 /// open question that record sends to the backlog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ValidatorOutcome {
     /// The validator ran and its expectation held.
     Passed,
@@ -39,7 +65,8 @@ pub enum ValidatorOutcome {
 /// iteration that would exceed the context window — which is out of this
 /// crate's scope until that record is built; this enum is where it attaches,
 /// so that adding it is a visible act rather than a new boolean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExhaustionReason {
     /// The iteration ceiling the caller passed was reached.
     CeilingReached,
@@ -54,7 +81,8 @@ pub enum ExhaustionReason {
 /// elapsed time has a carrier, and `reason` appears on
 /// [`Event::LoopExhausted`] so that a second exhaustion route would be
 /// distinguishable to a consumer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Event {
     /// An iteration began. `of` is the ceiling the caller passed.
     IterationStarted {
