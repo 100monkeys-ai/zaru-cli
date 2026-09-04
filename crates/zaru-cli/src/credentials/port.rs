@@ -59,7 +59,7 @@ impl std::error::Error for SealFailure {}
 /// a declared seam with no implementation.
 ///
 /// What that buys is not merely deferral. Because the sealed half does not
-/// exist, [`StoredEntry`](super::store::StoredEntry) has no field a secret
+/// exist, [`Record`](super::store::Record) has no field a secret
 /// could occupy, so "the file on disk carries no secret" is a property of the
 /// type rather than a claim about a code path.
 ///

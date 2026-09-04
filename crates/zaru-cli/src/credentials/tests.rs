@@ -15,6 +15,7 @@
 use crate::credentials::alias::{Alias, AliasRefused};
 use crate::credentials::entry::{Description, Ttl};
 use crate::credentials::fixtures::{app_secret_nonce, ascii_core, nonce, personal_secret_nonce};
+use crate::credentials::notes::bearer_for_dispatch;
 use crate::credentials::secret::{Kind, REDACTED, Secret};
 use core::time::Duration;
 
@@ -196,6 +197,47 @@ fn the_refusal_for_an_unknown_prefix_does_not_quote_the_value() {
         displayed.contains("nn_mcp_") && displayed.contains("nn_app_"),
         "the refusal does not say what a bearer value must begin with: {displayed}"
     );
+}
+
+// The conversion ADR-0007 D3 makes the composition root's job: a stored
+// secret becomes the value a `zaru-notes` session authenticates with, and
+// neither type will show it.
+//
+// The first assertion is the discriminating one and it comes first on
+// purpose. Without it, a `bearer_for_dispatch` that returned
+// `Bearer::new("")` would satisfy every absence assertion below perfectly --
+// the check would be green about a conversion that dropped the credential.
+//
+// The mutants: replacing `Bearer`'s hand-written `Debug` with a derive, and
+// replacing `Secret`'s.
+#[test]
+fn a_stored_secret_crosses_into_a_bearer_intact_and_neither_type_will_show_it() {
+    let value = personal_secret_nonce();
+    let secret = Secret::new(value.clone()).expect("an nn_mcp_ value names a kind");
+
+    let bearer = bearer_for_dispatch(&secret);
+    assert_eq!(
+        bearer.expose_for_dispatch(),
+        value,
+        "the bearer value did not cross intact, so every redaction assertion below is about a \
+         value that is not there"
+    );
+
+    // Each side asserted against its own crate's constant rather than one
+    // shared literal, because the two are separate declarations that could
+    // diverge and a check reading only one would not notice.
+    let secret_rendered = format!("{secret:?}");
+    let bearer_rendered = format!("{bearer:?}");
+    assert!(
+        secret_rendered.contains(REDACTED),
+        "a secret's Debug printed {secret_rendered:?}, which carries no redaction marker at all"
+    );
+    assert!(
+        bearer_rendered.contains(zaru_notes::session::REDACTED),
+        "a bearer's Debug printed {bearer_rendered:?}, which carries no redaction marker at all"
+    );
+    assert_absent(&secret_rendered, &value, "a secret's Debug");
+    assert_absent(&bearer_rendered, &value, "a bearer's Debug");
 }
 
 #[test]
