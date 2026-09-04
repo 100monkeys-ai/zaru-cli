@@ -24,3 +24,14 @@ zaru-seal = { path = "../zaru-seal" }
 zaru-tui = { path = "../zaru-tui" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# The two halves of the outside-caller check in `tests/notes_scope_from_outside.rs`,
+# which drives a stored credential through a real MCP session with no socket.
+# Both are rows in ADR-0003 D2's table and both are already resolved in
+# `Cargo.lock` for `zaru-notes`, so neither adds a package: the lock stays at
+# 109 and gains two lines naming them here. `server` is the half `zaru-notes`
+# deliberately does not ship, so the fixture on the other end of the session is
+# a real MCP server standing up in this process.
+rmcp = { workspace = true, features = ["client", "server", "transport-async-rw"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }

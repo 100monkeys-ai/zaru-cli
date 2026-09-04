@@ -955,8 +955,10 @@ dependencies = [
 name = "zaru-cli"
 version = "0.0.0"
 dependencies = [
+ "rmcp",
  "serde",
  "serde_json",
+ "tokio",
  "zaru-aegis",
  "zaru-core",
  "zaru-notes",
