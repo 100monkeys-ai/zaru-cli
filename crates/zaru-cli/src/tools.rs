@@ -65,14 +65,21 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 //! [`credentials::Confirm`]: crate::credentials::Confirm
 
+pub mod decision;
 pub mod mode;
 pub mod name;
 pub mod notice;
+pub mod port;
 pub mod tree;
 
+pub use decision::{
+    Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, InvocationRefused, Permission,
+    RefusedBecause, Requirement, Subject, TranscriptEntry,
+};
 pub use mode::{Layer, Mode, ModeRefused, Tier};
 pub use name::{Effect, ToolName};
 pub use notice::SessionNotice;
+pub use port::{Allowlist, Confirm, DestructiveMatch, Question};
 pub use tree::{Placement, Target, TreeError, WorkingDirectory};
 
 #[cfg(test)]

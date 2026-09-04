@@ -18,7 +18,12 @@
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use crate::tools::fixtures::{ScratchTree, nonce};
+use crate::tools::decision::{
+    Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
+};
+use crate::tools::fixtures::{
+    RecordedConfirmer, ScratchTree, StagedAllowlist, StagedDestructive, nonce,
+};
 use crate::tools::mode::{Layer, Mode, ModeRefused, Tier};
 use crate::tools::name::{Effect, ToolName};
 use crate::tools::notice::SessionNotice;
@@ -604,4 +609,597 @@ fn a_working_directory_that_does_not_exist_is_refused() {
     );
     // And the arm that discriminates: a directory that does exist is taken.
     assert!(WorkingDirectory::at(tree.project()).is_ok());
+}
+
+/// **ADR-0011 D3's and D4's prompting rule, at every mode, for every reason a
+/// prompt is raised.**
+///
+/// The expected column is written here as literals. [Verification lessons]
+/// §11: at least one arm of a comparison must not travel through the thing
+/// being checked, and §10: assert the consequence, never a proxy the code
+/// already computes.
+///
+/// Every disagreement is reported, so no single mutation can hide the rows
+/// after the one it breaks.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn the_prompting_rule_is_the_records_at_every_mode() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let inside = working.classify("inside/file");
+    let outside = working.classify("../elsewhere/secret");
+
+    let allowed = Assessment {
+        allowlisted: true,
+        destructive: false,
+    };
+    let not_allowed = Assessment::default();
+
+    // (mode, tool, target is out of tree, allowlisted, expected, why)
+    let cases: Vec<(Mode, ToolName, bool, bool, Requirement, &str)> = vec![
+        // `ask`: writes and commands prompt; reads do not.
+        (
+            Mode::Ask,
+            ToolName::FsWrite,
+            false,
+            false,
+            Requirement::Ask,
+            "D3: `ask` prompts before any write",
+        ),
+        (
+            Mode::Ask,
+            ToolName::FsEdit,
+            false,
+            false,
+            Requirement::Ask,
+            "D3: an edit is a write",
+        ),
+        (
+            Mode::Ask,
+            ToolName::CmdRun,
+            false,
+            false,
+            Requirement::Ask,
+            "D3: `ask` prompts before any command",
+        ),
+        (
+            Mode::Ask,
+            ToolName::FsRead,
+            false,
+            false,
+            Requirement::Proceed,
+            "D3 names writes and commands, and a read in the tree is neither",
+        ),
+        (
+            Mode::Ask,
+            ToolName::FsList,
+            false,
+            false,
+            Requirement::Proceed,
+            "a listing in the tree is not a write or a command",
+        ),
+        // D4: out of tree prompts in `ask` whatever the effect is.
+        (
+            Mode::Ask,
+            ToolName::FsRead,
+            true,
+            false,
+            Requirement::Ask,
+            "D4: out-of-tree access prompts in `ask`, and a read is out-of-tree access",
+        ),
+        // `allow`: the allowlist decides, read literally.
+        (
+            Mode::Allow,
+            ToolName::FsWrite,
+            false,
+            true,
+            Requirement::Proceed,
+            "D3: `allow` runs the allowlist without prompting",
+        ),
+        (
+            Mode::Allow,
+            ToolName::CmdRun,
+            false,
+            true,
+            Requirement::Proceed,
+            "an allowlisted command is what the mode exists for",
+        ),
+        (
+            Mode::Allow,
+            ToolName::FsWrite,
+            false,
+            false,
+            Requirement::Ask,
+            "D3: `allow` prompts for anything outside the allowlist",
+        ),
+        (
+            Mode::Allow,
+            ToolName::FsRead,
+            false,
+            false,
+            Requirement::Ask,
+            "D3's `allow` row says \"anything outside it\", read literally; the alternative reading \
+          is an open question on the record",
+        ),
+        (
+            Mode::Allow,
+            ToolName::FsRead,
+            true,
+            false,
+            Requirement::Ask,
+            "D4: out-of-tree access prompts in `allow` too",
+        ),
+        (
+            Mode::Allow,
+            ToolName::FsRead,
+            true,
+            true,
+            Requirement::Proceed,
+            "an allowlisted call is allowlisted wherever it points; D3's allowlist sentence carries \
+          no exception and inventing one would be authoring a permission rule",
+        ),
+        // `yolo`: nothing prompts, including out of tree.
+        (
+            Mode::Yolo,
+            ToolName::FsWrite,
+            false,
+            false,
+            Requirement::Proceed,
+            "D3: `yolo` has no prompts",
+        ),
+        (
+            Mode::Yolo,
+            ToolName::CmdRun,
+            true,
+            false,
+            Requirement::Proceed,
+            "D4 removes the prompt at `yolo` and keeps the record; this row is the first half",
+        ),
+        (
+            Mode::Yolo,
+            ToolName::FsRead,
+            true,
+            false,
+            Requirement::Proceed,
+            "`yolo` prompts for nothing at all",
+        ),
+    ];
+
+    let mut wrong = Vec::new();
+    for (mode, tool, out_of_tree, allowlisted, expected, why) in &cases {
+        let target = if *out_of_tree { &outside } else { &inside };
+        let invocation = Invocation::on_path(*tool, target).expect("these tools address paths");
+        let assessment = if *allowlisted { allowed } else { not_allowed };
+        let got = Decision::reach(*mode, &invocation, assessment).requirement();
+        if got != *expected {
+            wrong.push(format!(
+                "{mode} + {tool} + {} + {} gave {got:?}, expected {expected:?} ({why})",
+                if *out_of_tree {
+                    "out of tree"
+                } else {
+                    "in tree"
+                },
+                if *allowlisted {
+                    "allowlisted"
+                } else {
+                    "not allowlisted"
+                },
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "ADR-0011's prompting rule disagreed on {} of {} cases:\n  {}",
+        wrong.len(),
+        cases.len(),
+        wrong.join("\n  ")
+    );
+    assert_eq!(
+        cases.len(),
+        15,
+        "the prompting table shrank; each row is a clause of D3 or D4"
+    );
+}
+
+/// **Corpus case 3 — a denial is a code path, and the path is the user's
+/// answer.**
+///
+/// ADR-0011 D6 gives the harness no veto, so the only refusals in the system
+/// are a user saying no and there being nobody to ask. The second is the one
+/// that matters: **a call needing a prompt with no confirmer is refused, not
+/// performed.** That is the shape ADR-0007 D8's apex gate already uses in
+/// this crate.
+///
+/// Three arms, because two of them would each pass a one-sided assertion: no
+/// confirmer refuses, a declining confirmer refuses for a *different* stated
+/// reason, and an accepting confirmer grants. Without the third, "refuse
+/// always" passes.
+#[test]
+fn a_call_that_needs_the_user_is_refused_when_there_is_nobody_to_ask() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let invocation =
+        Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+    let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
+
+    assert_eq!(
+        decision.requirement(),
+        Requirement::Ask,
+        "staging: a write at `ask` must need a prompt, or this check asserts nothing"
+    );
+
+    assert_eq!(
+        decision.permit(None),
+        Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
+        "a call needing the user's confirmation, with no confirmer, must be refused rather than \
+         performed"
+    );
+
+    let declining = RecordedConfirmer::declining();
+    assert_eq!(
+        decision.permit(Some(&declining)),
+        Permission::Refused(RefusedBecause::TheUserDeclined),
+        "a user who was asked and said no must refuse for that reason and not for the other one"
+    );
+    assert_eq!(
+        declining.asked().len(),
+        1,
+        "the user was not actually asked; a refusal that skipped the question is the silent \
+         default D3 forbids, wearing the right answer"
+    );
+
+    let accepting = RecordedConfirmer::accepting();
+    assert_eq!(
+        decision.permit(Some(&accepting)),
+        Permission::Granted,
+        "a user who was asked and said yes must be able to permit the call, or the refusals \
+         above are \"refuse everything\" rather than a decision"
+    );
+
+    // The refusals say different things, so a reader can tell them apart.
+    let nobody = RefusedBecause::ThereWasNobodyToAsk.to_string();
+    let declined = RefusedBecause::TheUserDeclined.to_string();
+    assert_ne!(nobody, declined);
+    assert!(
+        nobody.contains("silent default"),
+        "the no-confirmer refusal does not say why it is a refusal: {nobody:?}"
+    );
+}
+
+/// A call that needs no prompt is granted with no confirmer at all.
+///
+/// The arm that stops the check above from being satisfied by "refuse
+/// whenever the confirmer is absent".
+#[test]
+fn a_call_that_needs_no_prompt_needs_no_confirmer() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let invocation =
+        Invocation::on_path(ToolName::FsRead, &target).expect("fs.read addresses a path");
+    let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
+
+    assert_eq!(decision.requirement(), Requirement::Proceed);
+    assert_eq!(
+        decision.question(),
+        None,
+        "a call that proceeds asks nothing"
+    );
+    assert_eq!(decision.permit(None), Permission::Granted);
+}
+
+/// **Corpus case 4 — mode may remove the prompt; it never removes the
+/// record.**
+///
+/// ADR-0011 D4, in two clauses that are asserted **together and reported
+/// together**. A check that returned on the first clause would leave the
+/// second — the one the record is actually about — unwatchable by any
+/// mutation that broke the first.
+///
+/// Clause one: at `yolo`, an out-of-tree call raises no prompt.
+/// Clause two: its transcript entry is byte-identical at all three modes, and
+/// still renders the out-of-tree marking at every one of them.
+#[test]
+fn a_mode_may_remove_the_prompt_and_never_the_record() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let outside = working.classify("../elsewhere/secret");
+    let invocation =
+        Invocation::on_path(ToolName::FsRead, &outside).expect("fs.read addresses a path");
+
+    let mut complaints = Vec::new();
+    let mut rendered = Vec::new();
+
+    for mode in Mode::ALL {
+        let decision = Decision::reach(mode, &invocation, Assessment::default());
+        let line = decision.entry().render();
+
+        // Clause one, for the mode the record singles out.
+        if mode == Mode::Yolo && decision.requirement() != Requirement::Proceed {
+            complaints.push(format!(
+                "`yolo` raised {:?} for an out-of-tree read; D3 says it has no prompts",
+                decision.requirement()
+            ));
+        }
+        // Clause two, at every mode.
+        if !decision.entry().is_out_of_tree() {
+            complaints.push(format!(
+                "at {mode} the entry does not record that the call left the tree"
+            ));
+        }
+        if !line.contains("OUTSIDE the working directory") {
+            complaints.push(format!(
+                "at {mode} the rendered entry carries no out-of-tree marking: {line:?}"
+            ));
+        }
+        rendered.push(line);
+    }
+
+    if rendered.iter().any(|line| *line != rendered[0]) {
+        complaints.push(format!(
+            "the record differs by mode, so a mode removed part of it: {rendered:?}"
+        ));
+    }
+
+    assert!(
+        complaints.is_empty(),
+        "ADR-0011 D4: \"Mode may remove the prompt; it never removes the record.\" {} clause(s) \
+         failed:\n  {}",
+        complaints.len(),
+        complaints.join("\n  ")
+    );
+
+    // And the prompt really was removed at `yolo` while kept at `ask`, so the
+    // check is about a difference rather than about nothing changing.
+    assert_eq!(
+        Decision::reach(Mode::Ask, &invocation, Assessment::default()).requirement(),
+        Requirement::Ask,
+        "`ask` must prompt for this call, or \"mode may remove the prompt\" is untested"
+    );
+}
+
+/// An out-of-tree call renders differently from an in-tree one — ADR-0011 D4.
+///
+/// Both arms: the marking is present on one and absent on the other. An
+/// assertion that only looked for the marking would be satisfied by a
+/// renderer that marked everything.
+#[test]
+fn an_out_of_tree_call_renders_differently_from_an_ordinary_one() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let inside = working.classify("inside/file");
+    let outside = working.classify("../elsewhere/secret");
+
+    let ordinary = Decision::reach(
+        Mode::Yolo,
+        &Invocation::on_path(ToolName::FsRead, &inside).expect("addresses a path"),
+        Assessment::default(),
+    );
+    let escaping = Decision::reach(
+        Mode::Yolo,
+        &Invocation::on_path(ToolName::FsRead, &outside).expect("addresses a path"),
+        Assessment::default(),
+    );
+
+    let ordinary_line = ordinary.entry().render();
+    let escaping_line = escaping.entry().render();
+
+    assert!(
+        !ordinary_line.contains("OUTSIDE the working directory"),
+        "an ordinary in-tree call was marked as having left the tree: {ordinary_line:?}"
+    );
+    assert!(
+        escaping_line.contains("OUTSIDE the working directory"),
+        "a call outside the working directory was not marked: {escaping_line:?}"
+    );
+    assert_ne!(
+        ordinary_line, escaping_line,
+        "ADR-0011 D4 requires out-of-tree access to render differently in the transcript"
+    );
+    assert!(
+        ordinary_line.starts_with("fs.read "),
+        "the entry does not name the tool that was called: {ordinary_line:?}"
+    );
+}
+
+/// ADR-0011 D6 annotates and raises prominence, and never vetoes.
+///
+/// D6: "It does not veto." The mutant is a `Requirement` that changes when
+/// the matcher fires — which is what an implementer reaches for when a
+/// pattern list feels like it should stop something.
+#[test]
+fn a_destructive_match_annotates_and_raises_prominence_and_never_vetoes() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let invocation =
+        Invocation::on_path(ToolName::CmdRun, &target).expect("cmd.run addresses a path");
+
+    let quiet = Decision::assess(
+        Mode::Yolo,
+        &invocation,
+        &StagedAllowlist::empty(),
+        &StagedDestructive::quiet(),
+    );
+    let matched = Decision::assess(
+        Mode::Yolo,
+        &invocation,
+        &StagedAllowlist::empty(),
+        &StagedDestructive::matching(),
+    );
+
+    assert_eq!(
+        matched.requirement(),
+        quiet.requirement(),
+        "a destructive match changed what the harness requires; ADR-0011 D6: \"It does not veto.\""
+    );
+    assert!(
+        matched.entry().is_destructive() && !quiet.entry().is_destructive(),
+        "the annotation does not distinguish a match from a non-match"
+    );
+    assert!(
+        matched.entry().render().contains(DESTRUCTIVE_MARKING),
+        "D6 requires the transcript entry be annotated: {:?}",
+        matched.entry().render()
+    );
+    assert!(
+        !quiet.entry().render().contains(DESTRUCTIVE_MARKING),
+        "an unmatched call was annotated anyway: {:?}",
+        quiet.entry().render()
+    );
+
+    // Prominence reaches the prompt, at a mode where there is one.
+    let asked = Decision::assess(
+        Mode::Ask,
+        &invocation,
+        &StagedAllowlist::empty(),
+        &StagedDestructive::matching(),
+    );
+    let question = asked
+        .question()
+        .expect("a command at `ask` is prompted for");
+    assert!(
+        question.prominent,
+        "D6 raises the prompt's prominence and the question does not carry it"
+    );
+    assert!(
+        !Decision::assess(
+            Mode::Ask,
+            &invocation,
+            &StagedAllowlist::empty(),
+            &StagedDestructive::quiet(),
+        )
+        .question()
+        .expect("a command at `ask` is prompted for")
+        .prominent,
+        "an unmatched call raised the prompt's prominence anyway"
+    );
+}
+
+/// The prompt and the transcript describe one call one way.
+///
+/// Both are rendered through `TranscriptEntry::render`, so a user who is told
+/// one thing and a transcript that records another is not a state this code
+/// can reach. The mutant: composing the question's sentence separately.
+#[test]
+fn the_prompt_states_what_the_transcript_will_record() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let outside = working.classify("../elsewhere/secret");
+    let invocation =
+        Invocation::on_path(ToolName::FsWrite, &outside).expect("fs.write addresses a path");
+
+    let decision = Decision::assess(
+        Mode::Ask,
+        &invocation,
+        &StagedAllowlist::empty(),
+        &StagedDestructive::matching(),
+    );
+    let question = decision.question().expect("this call is prompted for");
+    let line = decision.entry().render();
+
+    assert!(
+        question.statement.contains(&line),
+        "the prompt does not state what the transcript will record.\n  prompt: {:?}\n  entry:  \
+         {line:?}",
+        question.statement
+    );
+    assert!(
+        question.statement.contains("OUTSIDE the working directory")
+            && question.statement.contains(DESTRUCTIVE_MARKING),
+        "the prompt drops a marking the entry carries: {:?}",
+        question.statement
+    );
+
+    // The confirmer is handed exactly that sentence, rather than composing one.
+    let confirmer = RecordedConfirmer::accepting();
+    let _ = decision.permit(Some(&confirmer));
+    assert_eq!(
+        confirmer.asked(),
+        vec![question],
+        "the confirmer was asked something other than the decision's own question"
+    );
+}
+
+/// Both ports are asked about the whole call, not about a name.
+///
+/// "Pre-approved" is a property of the tool and its target together: a user
+/// who approved reading one path has said nothing about running a command.
+#[test]
+fn the_allowlist_is_asked_about_the_tool_and_its_target_together() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let invocation =
+        Invocation::on_path(ToolName::CmdRun, &target).expect("cmd.run addresses a path");
+    let allowlist = StagedAllowlist::approving();
+
+    let _ = Decision::assess(
+        Mode::Allow,
+        &invocation,
+        &allowlist,
+        &StagedDestructive::quiet(),
+    );
+
+    let asked = allowlist.asked();
+    assert_eq!(
+        asked.len(),
+        1,
+        "the allowlist was asked {} times",
+        asked.len()
+    );
+    assert!(
+        asked[0].contains("cmd.run"),
+        "the allowlist was not told which tool: {:?}",
+        asked[0]
+    );
+    assert!(
+        asked[0].contains("inside/file"),
+        "the allowlist was not told the target: {:?}",
+        asked[0]
+    );
+}
+
+/// `web.fetch` cannot be described as a call on a path, and a path tool
+/// cannot be described as a fetch.
+///
+/// ADR-0011 D4's boundary is about paths. Modelling a URL as one would make
+/// the classifier answer a question it has no rule for; no record defines a
+/// boundary for outbound destinations, and inventing one would be authoring a
+/// security vocabulary.
+#[test]
+fn a_url_is_not_a_path_and_carries_no_placement() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+
+    let refusal = Invocation::on_path(ToolName::WebFetch, &target)
+        .expect_err("web.fetch does not address a filesystem path");
+    assert!(
+        refusal.to_string().contains("`web.fetch` addresses a URL"),
+        "the refusal does not say why: {refusal}"
+    );
+
+    let fetch = Invocation::fetching("https://example.invalid/thing");
+    assert_eq!(fetch.tool(), ToolName::WebFetch);
+    assert_eq!(
+        fetch.placement(),
+        None,
+        "a URL has no placement against the working directory, and reporting one would be a rule \
+         no record states"
+    );
+
+    // The arm that discriminates: every other built-in does take a path.
+    for tool in ToolName::ALL {
+        if tool == ToolName::WebFetch {
+            continue;
+        }
+        assert!(
+            Invocation::on_path(tool, &target).is_ok(),
+            "{tool} addresses a path and was refused one"
+        );
+    }
 }

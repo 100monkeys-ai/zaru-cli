@@ -116,3 +116,115 @@ impl Drop for ScratchTree {
         let _ = std::fs::remove_dir_all(&self.base);
     }
 }
+
+/// An allowlist that answers as it was built to, and records what it was
+/// asked.
+///
+/// **A test double, and not evidence about ADR-0011 D3's allowlist**, which
+/// has no format and no implementation — [Verification lessons] §24: "A test
+/// double answering more simply than the real thing is where a defect becomes
+/// invisible." What a check may conclude from this is what the *rule* does
+/// with an answer, and nothing about how an answer would be arrived at.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+pub(crate) struct StagedAllowlist {
+    answer: bool,
+    asked: std::cell::RefCell<Vec<String>>,
+}
+
+impl StagedAllowlist {
+    /// An allowlist that approves everything it is asked about.
+    pub(crate) fn approving() -> Self {
+        Self {
+            answer: true,
+            asked: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// An allowlist that approves nothing.
+    pub(crate) fn empty() -> Self {
+        Self {
+            answer: false,
+            asked: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Every call this allowlist was asked about, as the rule described it.
+    pub(crate) fn asked(&self) -> Vec<String> {
+        self.asked.borrow().clone()
+    }
+}
+
+impl crate::tools::port::Allowlist for StagedAllowlist {
+    fn approves(&self, invocation: &crate::tools::decision::Invocation<'_>) -> bool {
+        self.asked.borrow_mut().push(format!(
+            "{} {}",
+            invocation.tool(),
+            invocation.subject_text()
+        ));
+        self.answer
+    }
+}
+
+/// A destructive-pattern matcher that answers as it was built to.
+///
+/// **Not evidence about ADR-0011 D6's pattern list**, which is deliberately
+/// unwritten: naming the patterns is authoring a security vocabulary. What a
+/// check may conclude is what the rule does with a match.
+pub(crate) struct StagedDestructive {
+    answer: bool,
+}
+
+impl StagedDestructive {
+    /// Matches everything.
+    pub(crate) const fn matching() -> Self {
+        Self { answer: true }
+    }
+
+    /// Matches nothing.
+    pub(crate) const fn quiet() -> Self {
+        Self { answer: false }
+    }
+}
+
+impl crate::tools::port::DestructiveMatch for StagedDestructive {
+    fn is_destructive(&self, _invocation: &crate::tools::decision::Invocation<'_>) -> bool {
+        self.answer
+    }
+}
+
+/// A confirmer that answers as it was built to, and records every question.
+pub(crate) struct RecordedConfirmer {
+    answer: bool,
+    asked: std::cell::RefCell<Vec<crate::tools::port::Question>>,
+}
+
+impl RecordedConfirmer {
+    /// A user who says yes.
+    pub(crate) fn accepting() -> Self {
+        Self {
+            answer: true,
+            asked: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// A user who says no.
+    pub(crate) fn declining() -> Self {
+        Self {
+            answer: false,
+            asked: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Every question this confirmer was asked.
+    pub(crate) fn asked(&self) -> Vec<crate::tools::port::Question> {
+        self.asked.borrow().clone()
+    }
+}
+
+impl crate::tools::port::Confirm for RecordedConfirmer {
+    fn confirm(&self, question: &crate::tools::port::Question) -> bool {
+        self.asked.borrow_mut().push(question.clone());
+        self.answer
+    }
+}
