@@ -20,13 +20,24 @@
 //! ADR-0010's session lifecycle, ADR-0016's error taxonomy and the credential
 //! store all belong here, because each is a property of the whole program
 //! rather than of any one part — see [Bounded Contexts], which gives this
-//! crate "Binary, configuration, session lifecycle, the credential store".
+//! crate "Binary, configuration, session lifecycle, the credential store, the
+//! local tool surface and its permission model".
 //!
-//! The credential store and ADR-0014's configuration hierarchy are built.
-//! Nothing else named above exists yet.
+//! The credential store, ADR-0014's configuration hierarchy and ADR-0011's
+//! local tool surface are built. Nothing else named above exists yet, and none
+//! of the three is reachable from the `zaru` binary.
+//!
+//! [Bounded Contexts] names no crate for the tool surface. It is here under a
+//! delegated coordinator ruling of 2026-09-04, recorded on that page and on
+//! ADR-0011, because every input the permission decision needs — the resolved
+//! runtime tier, the permission mode's configuration layer, the allowlist, the
+//! working directory, the session directory — is a property of the whole
+//! program rather than of any one part, which is this crate's whole
+//! responsibility.
 //!
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 pub mod config;
 pub mod credentials;
+pub mod tools;
