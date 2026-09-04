@@ -60,6 +60,7 @@
 pub mod credential;
 pub mod environment;
 pub mod explain;
+pub mod home;
 pub mod key;
 pub mod layer;
 pub mod port;
@@ -70,6 +71,7 @@ pub mod value;
 
 pub use credential::CredentialRef;
 pub use explain::{Explanation, ExplanationRow};
+pub use home::{HomeFailure, ensure};
 pub use key::{Key, KeyRefused};
 pub use layer::{Contribution, Layer, Source};
 pub use port::{LayerSource, SourceFailure, gather};

@@ -1230,3 +1230,127 @@ fn no_kind_parses_text_into_a_list() {
             .is_ok()
     );
 }
+
+// ---------------------------------------------------------------------------
+// `~/.zaru/` has one creator — the delegated coordinator ruling of 2026-09-04
+// ---------------------------------------------------------------------------
+
+/// [`crate::config::home::ensure`] creates the directory and puts `0700` on
+/// it, **read back off the filesystem** rather than taken from what the code
+/// asked for.
+///
+/// The mutant: dropping the `set_permissions` call, which leaves the mode at
+/// whatever the umask produced.
+#[test]
+fn the_one_creator_makes_the_directory_and_the_mode_is_read_off_the_filesystem() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let root = scratch.store_root();
+    assert!(!root.exists(), "the fixture must not have made it already");
+
+    crate::config::home::ensure(&root).expect("the one creator could not create ~/.zaru");
+
+    assert!(root.is_dir(), "~/.zaru was not created");
+    assert_eq!(
+        std::fs::metadata(&root)
+            .expect("the directory was just created")
+            .permissions()
+            .mode()
+            & 0o777,
+        crate::credentials::store::DIRECTORY_MODE,
+        "ADR-0004 D3's 0700 is not on the directory the harness keeps its own files in",
+    );
+}
+
+/// The mode is re-asserted on **every** call, not only on creation.
+///
+/// A directory that is group- or world-readable is a defect whoever created
+/// it, and a call that noticed and did nothing would be a comment rather than
+/// a mechanism ([Verification lessons] §30). The staging is asserted first:
+/// without the `0755` actually landing, this check would pass against an
+/// implementation that does nothing at all ([Verification lessons] §4).
+///
+/// The mutant: making `ensure` return early when the directory exists.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn the_one_creator_re_asserts_the_mode_on_a_directory_that_already_exists() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let root = scratch.store_root();
+    std::fs::create_dir_all(&root).expect("could not stage the directory");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))
+        .expect("could not stage the wrong mode");
+    assert_eq!(
+        std::fs::metadata(&root)
+            .expect("staged")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "the staging did not take, so this check would assert nothing",
+    );
+
+    crate::config::home::ensure(&root).expect("the one creator refused an existing directory");
+
+    assert_eq!(
+        std::fs::metadata(&root)
+            .expect("staged")
+            .permissions()
+            .mode()
+            & 0o777,
+        crate::credentials::store::DIRECTORY_MODE,
+        "a directory that already existed with the wrong mode kept it, so the mode holds by \
+         whichever caller ran first rather than by construction",
+    );
+}
+
+/// The credential store no longer creates `~/.zaru/` itself, and its own mode
+/// checks still pass — which is the whole of "behaviour preserved".
+///
+/// The discriminating arm is the second one: a substitution that dropped the
+/// mode entirely would still open the store successfully.
+#[test]
+fn the_credential_store_reaches_the_one_creator_and_its_mode_still_holds() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let root = scratch.store_root();
+    let store = crate::credentials::CredentialStore::open(&root).expect("the store did not open");
+
+    assert_eq!(store.root(), root.as_path());
+    assert_eq!(
+        std::fs::metadata(&root)
+            .expect("opened")
+            .permissions()
+            .mode()
+            & 0o777,
+        crate::credentials::store::DIRECTORY_MODE,
+        "ADR-0007's store opened without 0700 on its directory",
+    );
+}
+
+/// A failure names which of the two things went wrong, as a discriminant
+/// rather than as a sentence a caller would have to match on.
+///
+/// Staged by making the parent a *file*, so the directory cannot be created.
+#[test]
+fn a_home_failure_says_whether_it_was_the_creation_or_the_mode() {
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let blocker = scratch.base().join("not-a-directory");
+    std::fs::write(&blocker, b"this is a file").expect("could not stage the blocker");
+
+    let failure = crate::config::home::ensure(&blocker.join("zaru"))
+        .expect_err("creating a directory under a file should fail");
+
+    assert!(
+        failure.is_creation(),
+        "a creation failure reported itself as a mode failure: {failure}",
+    );
+    assert!(
+        failure.to_string().contains("create the directory"),
+        "the failure does not say what was being attempted: {failure}",
+    );
+}

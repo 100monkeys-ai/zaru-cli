@@ -90,11 +90,20 @@ pub trait LayerSource {
     /// An absent file is `Ok` with an empty table rather than an error: D3
     /// renders a layer that set nothing as `(not set)`, and a user with no
     /// `~/.zaru/config.toml` has not made a mistake. **The configuration
-    /// loader never creates that directory** — `~/.zaru/` has exactly one
-    /// owner of its `0700` mode, the credential store, which re-asserts it on
-    /// every open. Two creators would mean the mode held by whichever ran
-    /// first, which is a rule holding by circumstance
-    /// ([Verification lessons] §26).
+    /// loader never creates that directory**, and a loader that created a
+    /// directory in order to find nothing in it would be creating state to
+    /// read state.
+    ///
+    /// `~/.zaru/` has exactly one creator and it is
+    /// [`crate::config::home::ensure`] — one function, called by the
+    /// credential store and by ADR-0010's session store alike. Until
+    /// 2026-09-04 the rule was that the credential store was the sole creator
+    /// and every other module refused; that solved the two-creators problem
+    /// and left the session lifecycle with an ordering obligation on its
+    /// caller, which is a "for now" rather than a mechanism. Two creators
+    /// would still mean the mode held by whichever ran first, which is a rule
+    /// holding by circumstance ([Verification lessons] §26) — one function is
+    /// what makes it hold by construction instead.
     ///
     /// # Errors
     ///

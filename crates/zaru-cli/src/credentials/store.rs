@@ -273,18 +273,24 @@ impl CredentialStore {
     /// key nothing reads.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
-        fs::create_dir_all(&root).map_err(|source| StoreError::Io {
-            action: "create the credential store directory",
-            path: root.clone(),
-            source,
-        })?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(DIRECTORY_MODE)).map_err(
-            |source| StoreError::Io {
-                action: "set 0700 on the credential store directory",
-                path: root.clone(),
+        // `~/.zaru/` has exactly one creator and it is not this module -- see
+        // `crate::config::home`. Before 2026-09-04 the creation and the mode
+        // were written out here and every other module refused to create the
+        // directory; the substitution keeps this store's own two sentences and
+        // moves the mechanism to the one function four records' files share.
+        crate::config::home::ensure(&root).map_err(|failure| {
+            let action = if failure.is_creation() {
+                "create the credential store directory"
+            } else {
+                "set 0700 on the credential store directory"
+            };
+            let (path, source) = failure.into_parts();
+            StoreError::Io {
+                action,
+                path,
                 source,
-            },
-        )?;
+            }
+        })?;
 
         let path = root.join(STORE_FILE);
         let entries = match fs::read_to_string(&path) {
