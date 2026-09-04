@@ -18,8 +18,13 @@
 name: CI
 
 on:
+  # Every branch, not only main. The ruleset on main requires these seven checks,
+  # and a ruleset evaluates the commits being pushed -- so a branch whose commits
+  # never ran CI cannot be fast-forwarded onto main at all. Running on every push
+  # is also what lets an arc read its gates before asking for a merge token,
+  # rather than discovering them after landing.
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
   workflow_dispatch:
