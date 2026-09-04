@@ -150,3 +150,20 @@ pub(crate) const KILL_CHILD_TRANSCRIPT: &str = "ZARU_SESSION_KILL_CHILD_TRANSCRI
 /// buffer: with a buffer that flushes on its own boundary, the boundary then
 /// falls inside a line and the tear is visible rather than lucky.
 pub(crate) const KILL_LINE_PAYLOAD: usize = 200;
+
+/// What a directory holds, sorted, so "nothing acted" is a comparison rather
+/// than an assumption.
+pub(crate) fn listing(directory: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(directory)
+        .expect("the directory is there")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}

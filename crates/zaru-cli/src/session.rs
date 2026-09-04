@@ -65,18 +65,22 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 
+pub mod checkpoint;
 pub mod id;
 pub mod meta;
 pub mod record;
+pub mod resume;
 pub mod store;
 pub mod transcript;
 
+pub use checkpoint::{Checkpoint, CheckpointError, TEMPORARY_SUFFIX};
 pub use id::{
     ALPHABET, ID_LENGTH, Millis, MintFailure, SessionId, SessionIdRefused, SystemWallClock,
     WallClock,
 };
 pub use meta::{Meta, MetaFailure, MetaStore};
 pub use record::{FailureLine, Phase, Record, ToolCall};
+pub use resume::{Interrupted, ResumeFailure, Resumed, resume};
 pub use store::{
     CHECKPOINT_FILE, META_FILE, SESSIONS_DIRECTORY, Session, SessionError, SessionStore,
     TRANSCRIPT_FILE,

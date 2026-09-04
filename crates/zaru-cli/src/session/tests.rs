@@ -8,6 +8,7 @@
 //! sentence is quoted in the commit that carries the check.
 
 use super::fixtures::{InMemoryMeta, ScratchRoot, StagedClock, entropy, id_at};
+use crate::session::checkpoint::Checkpoint;
 use crate::session::id::{
     ALPHABET, ID_LENGTH, Millis, SessionId, SessionIdRefused, SystemWallClock,
 };
@@ -855,5 +856,321 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
          find the line on disk",
         rounds_missing_a_durable_record.len(),
         rounds_missing_a_durable_record,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D3 — the checkpoint is rewritten, and the rewrite is atomic
+// ---------------------------------------------------------------------------
+
+/// D3's checkpoint is overwritten each turn and read back whole.
+///
+/// The mutant: appending instead of truncating, which leaves two documents
+/// in one file.
+#[test]
+fn the_checkpoint_is_overwritten_each_turn_and_reads_back_whole() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 20))
+        .expect("could not start a session");
+    let checkpoint = Checkpoint::at(session.checkpoint_path());
+
+    assert_eq!(
+        checkpoint
+            .read()
+            .expect("an absent checkpoint is not an error"),
+        None,
+        "a session with no turns has no checkpoint, which is not a failure",
+    );
+
+    for turn in 1..=3u64 {
+        let state = serde_json::json!({ "turn": turn, "messages": ["a", "b"] });
+        checkpoint.write(&state).expect("could not rewrite");
+        assert_eq!(
+            checkpoint.read().expect("could not read back"),
+            Some(state),
+            "turn {turn} did not read back as what was written",
+        );
+    }
+
+    assert!(
+        !checkpoint.temporary_path().exists(),
+        "the rewrite left its sibling behind, so a session directory accumulates a file the \
+         user did not ask for and D5's \"read every byte with cat\" gets harder each turn",
+    );
+    assert_eq!(
+        std::fs::metadata(session.checkpoint_path())
+            .expect("the checkpoint is there")
+            .permissions()
+            .mode()
+            & 0o777,
+        crate::session::store::FILE_MODE,
+        "the checkpoint carries the conversation and does not carry 0600",
+    );
+}
+
+/// D3's rewrite is atomic: **no reader ever sees a partial document.**
+///
+/// A writer thread rewrites the checkpoint many times while a reader thread
+/// reads it as fast as it can. Every read must be a whole document carrying
+/// one of the versions the writer wrote. This is a stronger statement than a
+/// kill test, because the window an in-place write opens is exactly the
+/// window a kill would land in, and a thread can hit it thousands of times.
+///
+/// The mutant: `fs::write` in place, which truncates and then fills.
+#[test]
+fn no_reader_ever_sees_a_partly_rewritten_checkpoint() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 21))
+        .expect("could not start a session");
+    let path = session.checkpoint_path();
+    let checkpoint = Checkpoint::at(&path);
+
+    const REWRITES: u64 = 400;
+    // Long enough that a truncate-then-fill has a window a reader can land in.
+    let payload = "y".repeat(60_000);
+    checkpoint
+        .write(&serde_json::json!({ "turn": 0u64, "payload": payload }))
+        .expect("could not stage the first checkpoint");
+
+    let reading_path = path.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let readers_flag = std::sync::Arc::clone(&done);
+    let reader = std::thread::spawn(move || {
+        let mut reads = 0u64;
+        let mut torn = Vec::new();
+        while !readers_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            match std::fs::read(&reading_path) {
+                Ok(bytes) => {
+                    reads += 1;
+                    if serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
+                        torn.push(bytes.len());
+                        if torn.len() > 8 {
+                            break;
+                        }
+                    }
+                }
+                Err(error) => torn.push(usize::MAX - error.raw_os_error().unwrap_or(0) as usize),
+            }
+        }
+        (reads, torn)
+    });
+
+    for turn in 1..=REWRITES {
+        checkpoint
+            .write(&serde_json::json!({ "turn": turn, "payload": payload }))
+            .expect("could not rewrite");
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (reads, torn) = reader.join().expect("the reader thread panicked");
+
+    // The staging: without reads, every assertion below is vacuous
+    // (Verification lessons §4).
+    assert!(
+        reads > 10,
+        "the reader only completed {reads} reads, so this check asserted nothing about the \
+         {REWRITES} rewrites beside it",
+    );
+    assert!(
+        torn.is_empty(),
+        "{} of {reads} reads saw a checkpoint that was not a whole document (byte lengths, or \
+         a raw OS error subtracted from usize::MAX): {torn:?}. ADR-0010 D3 overwrites the \
+         checkpoint every turn, and a reader that can see between the truncate and the write is \
+         a resume that can restore half a conversation",
+        torn.len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D4 — resume restores, and never re-executes
+// ---------------------------------------------------------------------------
+
+/// D4: resume restores `context.json` and hands back the tail of the
+/// transcript.
+///
+/// The mutant: returning the head of the transcript instead of the tail.
+#[test]
+fn resume_restores_the_checkpoint_and_hands_back_the_tail() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 22))
+        .expect("could not start a session");
+
+    let state = serde_json::json!({ "messages": ["the user said something", "and Zaru replied"] });
+    Checkpoint::at(session.checkpoint_path())
+        .write(&state)
+        .expect("could not write the checkpoint");
+
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    for seq in 0..6u64 {
+        transcript
+            .record(&Record::Loop(super::fixtures::sequenced_event(seq, 4)))
+            .expect("could not append");
+    }
+
+    let resumed =
+        crate::session::resume(session.directory(), 2).expect("the session did not resume");
+
+    assert_eq!(
+        resumed.checkpoint,
+        Some(state),
+        "D3's checkpoint is what resume restores, and it did not come back",
+    );
+    assert_eq!(
+        resumed
+            .tail
+            .iter()
+            .filter_map(super::fixtures::sequence_of)
+            .collect::<Vec<_>>(),
+        vec![4, 5],
+        "D4 re-renders the last stretch of the transcript, and this is not the last stretch",
+    );
+    assert_eq!(resumed.interrupted, None, "nothing was in flight");
+    assert_eq!(resumed.fragment, None, "a clean transcript has no fragment");
+}
+
+/// D4: "An interrupted tool call is recorded as `Interrupted`."
+///
+/// A killed process writes nothing, so the marker is derived from a `Started`
+/// with no `Completed`. The staging deliberately puts a *finished* call
+/// before the unfinished one, so a derivation that returned the first started
+/// call, or any started call, would be wrong.
+///
+/// The mutant: treating any `Started` as interrupted rather than only an
+/// unmatched one.
+#[test]
+fn a_tool_call_with_no_result_is_the_interruption_and_nothing_is_re_executed() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 23))
+        .expect("could not start a session");
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working =
+        crate::tools::WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+
+    let finished = super::fixtures::entry_for(&working, "src/finished.rs", false);
+    let in_flight = super::fixtures::entry_for(&working, "src/in-flight.rs", true);
+
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    for record in [
+        Record::ToolCall(crate::session::ToolCall::started(&finished)),
+        Record::ToolCall(crate::session::ToolCall::completed(&finished)),
+        Record::ToolCall(crate::session::ToolCall::started(&in_flight)),
+    ] {
+        transcript.record(&record).expect("could not append");
+    }
+
+    // What the directory holds before the resume, so "nothing was executed"
+    // is a comparison rather than an assumption.
+    let before = std::fs::read(session.transcript_path()).expect("the transcript is there");
+    let listing_before = super::fixtures::listing(session.directory());
+
+    let resumed =
+        crate::session::resume(session.directory(), 8).expect("the session did not resume");
+
+    let interrupted = resumed
+        .interrupted
+        .as_ref()
+        .expect("a call that started and never completed is the interruption");
+    assert_eq!(
+        interrupted.call.line,
+        in_flight.render(),
+        "the interruption named the wrong call, so a resume would report a completed action as \
+         unfinished",
+    );
+    assert_eq!(interrupted.call.phase, crate::session::Phase::Started);
+
+    // D4: "Resume never re-runs a tool call." `resume` takes a path and a
+    // number and holds no port, so there is nothing it could invoke; what is
+    // observable is that it changed nothing.
+    assert_eq!(
+        std::fs::read(session.transcript_path()).expect("the transcript is there"),
+        before,
+        "resuming appended to the transcript, so something acted",
+    );
+    assert_eq!(
+        super::fixtures::listing(session.directory()),
+        listing_before,
+        "resuming changed what is in the session directory, so something acted",
+    );
+
+    // The arm that discriminates. Without it, a derivation that treated
+    // **any** `Started` as the interruption gives the same answer above,
+    // because the last started call happens to be the unfinished one --
+    // measured, not predicted: that mutation stayed green until this arm
+    // existed ([Verification lessons] §9 and §15). A session whose last call
+    // completed has nothing in flight, and only the matching rule says so.
+    transcript
+        .record(&Record::ToolCall(crate::session::ToolCall::completed(
+            &in_flight,
+        )))
+        .expect("could not append");
+    let finished_run =
+        crate::session::resume(session.directory(), 8).expect("the session did not resume");
+    assert_eq!(
+        finished_run.interrupted, None,
+        "a session whose every call completed was reported as having one in flight, so a resume          would tell the model an action it finished did not complete",
+    );
+}
+
+/// D2's "at most the event in flight" is surfaced by a resume rather than
+/// silently dropped, and a **complete** line that does not parse is a
+/// different thing that is reported as one.
+///
+/// The mutant: treating the trailing fragment as a record, which turns a
+/// crash into a parse error the user cannot act on.
+#[test]
+fn a_resume_reports_a_trailing_fragment_and_refuses_a_malformed_complete_line() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+
+    let torn = store
+        .start(id_at(1_700_000_000_000, 24))
+        .expect("could not start a session");
+    let mut transcript =
+        Transcript::append_to(torn.transcript_path()).expect("could not open the transcript");
+    transcript
+        .record(&Record::Loop(super::fixtures::sequenced_event(0, 4)))
+        .expect("could not append");
+    // The event that was in flight: a line with no newline after it.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(torn.transcript_path())
+        .and_then(|mut file| std::io::Write::write_all(&mut file, b"{\"loop\":{\"iter"))
+        .expect("could not stage the fragment");
+
+    let resumed = crate::session::resume(torn.directory(), 8).expect("the session did not resume");
+    assert_eq!(
+        resumed.fragment,
+        Some(14),
+        "the event that was in flight was not reported, so a crash looks like a clean stop",
+    );
+    assert_eq!(
+        resumed
+            .tail
+            .iter()
+            .filter_map(super::fixtures::sequence_of)
+            .collect::<Vec<_>>(),
+        vec![0],
+        "the complete record before the fragment did not survive",
+    );
+
+    let broken = store
+        .start(id_at(1_700_000_000_001, 25))
+        .expect("could not start a session");
+    std::fs::write(broken.transcript_path(), b"{\"loop\":{\"iter\n")
+        .expect("could not stage the malformed line");
+    let failure = crate::session::resume(broken.directory(), 8)
+        .expect_err("a complete line that does not parse is not a fragment");
+    assert!(
+        failure.to_string().contains("line 1"),
+        "the refusal does not say which line: {failure}",
     );
 }
