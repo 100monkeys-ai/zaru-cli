@@ -40,10 +40,16 @@
 pub mod address;
 pub mod attachment;
 pub mod bearer;
+pub mod endpoint;
+pub mod error;
+pub mod invalidation;
 
 pub use address::{Instance, WorkspaceId, WorkspaceSlug};
 pub use attachment::{Attachment, AttachmentRefused};
 pub use bearer::{Bearer, REDACTED};
+pub use endpoint::{Endpoint, EndpointFailure};
+pub use error::{CallRefused, NotesError};
+pub use invalidation::Invalidation;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

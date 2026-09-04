@@ -8,8 +8,12 @@
 //! `tests/notes_session_from_outside.rs`, which reaches this crate through its
 //! public door only.
 
-use crate::session::fixtures::{ascii_core, assert_absent, bearer_nonce};
-use crate::session::{Attachment, AttachmentRefused, Bearer, REDACTED, WorkspaceId, WorkspaceSlug};
+use crate::session::fixtures::{ascii_core, assert_absent, bearer_nonce, nonce};
+use crate::session::{
+    Attachment, AttachmentRefused, Bearer, CallRefused, EndpointFailure, Invalidation, NotesError,
+    REDACTED, WorkspaceId, WorkspaceSlug,
+};
+use core::time::Duration;
 
 // -- the bearer ----------------------------------------------------------
 
@@ -39,6 +43,118 @@ fn the_one_door_out_of_a_bearer_yields_the_value_it_was_given() {
         "expose_for_dispatch is the dispatch path; a bearer that does not carry its value \
          authenticates nothing"
     );
+}
+
+// -- what a refusal may never say ---------------------------------------
+
+#[test]
+fn no_refusal_this_crate_can_raise_carries_a_bearer_value() {
+    let planted = bearer_nonce();
+
+    // Every variant, assembled as if something had put the bearer in it. The
+    // point is not that this crate does -- it is that if one ever did, this
+    // check names which.
+    let refusals: Vec<(&str, String)> = vec![
+        (
+            "NotesError::Endpoint",
+            NotesError::Endpoint {
+                detail: format!("could not reach the host holding {planted}"),
+            }
+            .to_string(),
+        ),
+        (
+            "NotesError::Attach",
+            NotesError::Attach {
+                detail: format!("handshake refused for {planted}"),
+            }
+            .to_string(),
+        ),
+        (
+            "NotesError::Transport",
+            NotesError::Transport {
+                detail: format!("stream closed while carrying {planted}"),
+            }
+            .to_string(),
+        ),
+        (
+            "NotesError::Call",
+            NotesError::Call(CallRefused {
+                tool: "pages.read".to_owned(),
+                code: -32601,
+                detail: format!("no such method for {planted}"),
+            })
+            .to_string(),
+        ),
+        (
+            "NotesError::WorkspaceUnattachable",
+            NotesError::WorkspaceUnattachable {
+                slug: WorkspaceSlug::new(planted.clone()),
+            }
+            .to_string(),
+        ),
+        (
+            "EndpointFailure",
+            EndpointFailure::new(format!("no route to {planted}")).to_string(),
+        ),
+    ];
+
+    // Deliberately staged so the check is not vacuous: each rendering above
+    // genuinely contains the planted value, so the assertions below must all
+    // fail. That is the point -- this check asserts the *shape* of the
+    // assertion, and the real assertion is the one over what the session
+    // renders. See the second half.
+    for (what, rendered) in &refusals {
+        assert!(
+            rendered.contains(&planted),
+            "{what} was staged with the bearer in it and does not carry it, so this check would \
+             assert nothing"
+        );
+    }
+
+    // Now the real one: nothing this crate constructs *for itself* carries a
+    // bearer, because no constructor is handed one.
+    let honest = vec![
+        (
+            "NotesError::Unreadable",
+            NotesError::Unreadable {
+                tool: "workspaces.resolve_slug".to_owned(),
+                expected: "a JSON object carrying a string `id`",
+            }
+            .to_string(),
+        ),
+        (
+            "NotesError::WorkspaceUnattachable over a real slug",
+            NotesError::WorkspaceUnattachable {
+                slug: WorkspaceSlug::new("zaru"),
+            }
+            .to_string(),
+        ),
+    ];
+    for (what, rendered) in &honest {
+        assert_absent(what, rendered, &planted);
+    }
+}
+
+#[test]
+fn a_workspace_that_cannot_be_attached_says_the_same_thing_whatever_the_cause() {
+    // ADR-0006 D7: the server throws `forbidden` without revealing which gate
+    // tripped, so the harness must not invent one. The type carries no cause,
+    // which is what makes three causes indistinguishable rather than merely
+    // rendered alike today.
+    let slug = WorkspaceSlug::new(nonce("ws"));
+    let rendered = NotesError::WorkspaceUnattachable { slug: slug.clone() }.to_string();
+
+    assert!(
+        rendered.contains(slug.as_str()),
+        "the refusal must name the slug the user typed, which is theirs; {rendered:?} does not"
+    );
+    for gate in ["existence", "membership", "scope.workspaceIds", "forbidden"] {
+        assert!(
+            !rendered.contains(gate),
+            "the refusal named the gate {gate:?}, which ADR-0006 D7 says the server does not \
+             reveal and the harness therefore cannot know: {rendered:?}"
+        );
+    }
 }
 
 // -- ADR-0006 D6, the self-locating attachment ---------------------------
@@ -166,6 +282,123 @@ fn an_attachments_refusal_names_adr_0006_d6s_reason_rather_than_only_a_field() {
         rendered.contains("missing page"),
         "the refusal must say what goes wrong when an attachment cannot locate itself -- it comes \
          back as a missing page, which is the hardest failure to diagnose. {rendered:?}"
+    );
+}
+
+// -- ADR-0007 D6, the three signals -------------------------------------
+
+#[test]
+fn the_ttl_backstop_fires_at_the_window_and_not_before() {
+    let window = Duration::from_secs(300);
+    let cached_at = Duration::from_secs(1_000);
+
+    assert_eq!(
+        Invalidation::expired(
+            cached_at,
+            cached_at + window - Duration::from_nanos(1),
+            window
+        ),
+        None,
+        "one nanosecond before the window elapses the cache is still good"
+    );
+    assert_eq!(
+        Invalidation::expired(cached_at, cached_at + window, window),
+        Some(Invalidation::Expired {
+            window,
+            elapsed: window
+        }),
+        "at exactly the window the backstop is due"
+    );
+    assert!(
+        Invalidation::expired(cached_at, cached_at + window * 2, window).is_some(),
+        "well past the window it is certainly due"
+    );
+    assert_eq!(
+        Invalidation::expired(cached_at, cached_at - Duration::from_secs(1), window),
+        None,
+        "a reading before the cache was taken is no elapsed time, not a wrapped one"
+    );
+}
+
+#[test]
+fn a_refusal_for_a_claimed_tool_invalidates_and_one_for_an_unclaimed_tool_comes_back_untouched() {
+    let claimed = vec!["pages.read".to_owned(), "search.global".to_owned()];
+
+    let refused = CallRefused {
+        tool: "pages.read".to_owned(),
+        code: -32601,
+        detail: "no such tool".to_owned(),
+    };
+    assert_eq!(
+        Invalidation::claimed(refused.clone(), &claimed),
+        Ok(Invalidation::Claimed(refused)),
+        "a refusal for a tool the cache claimed means the cache is stale"
+    );
+
+    let unrelated = CallRefused {
+        tool: "pages.apply_patch".to_owned(),
+        code: -32601,
+        detail: "no such tool".to_owned(),
+    };
+    assert_eq!(
+        Invalidation::claimed(unrelated.clone(), &claimed),
+        Err(unrelated),
+        "a refusal for a tool the cache never claimed says nothing about the cache, and the \
+         failure must come back unchanged rather than being swallowed"
+    );
+}
+
+#[test]
+fn a_method_not_found_is_read_off_the_code_the_server_sent() {
+    let not_found = CallRefused {
+        tool: "kg.related".to_owned(),
+        code: -32601,
+        detail: "no such tool".to_owned(),
+    };
+    assert!(not_found.is_method_not_found());
+
+    let other = CallRefused {
+        tool: "kg.related".to_owned(),
+        code: -32602,
+        detail: "invalid params".to_owned(),
+    };
+    assert!(
+        !other.is_method_not_found(),
+        "invalid params is not a missing method; -32602 and -32601 are different failures"
+    );
+}
+
+#[test]
+fn every_invalidation_says_which_of_adr_0007_d6s_three_causes_it_is() {
+    let rendered = [
+        Invalidation::ListChanged.to_string(),
+        Invalidation::Expired {
+            window: Duration::from_secs(300),
+            elapsed: Duration::from_secs(301),
+        }
+        .to_string(),
+        Invalidation::Claimed(CallRefused {
+            tool: "pages.read".to_owned(),
+            code: -32601,
+            detail: "no such tool".to_owned(),
+        })
+        .to_string(),
+    ];
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        assert_ne!(
+            rendered[a], rendered[b],
+            "two of D6's three causes render identically, so a reader cannot tell which fired"
+        );
+    }
+    assert!(
+        rendered[0].contains("list_changed"),
+        "the notification signal must name the notification: {:?}",
+        rendered[0]
+    );
+    assert!(
+        rendered[2].contains("pages.read"),
+        "the claimed-tool signal must name the tool that was refused: {:?}",
+        rendered[2]
     );
 }
 
