@@ -48,6 +48,7 @@ pub mod limits;
 pub mod machine;
 pub mod port;
 pub mod refinement;
+pub mod validator;
 
 pub use error::{IterationError, PortKind};
 pub use event::{Event, EventSink, ExhaustionReason, ValidatorOutcome};
@@ -58,6 +59,12 @@ pub use port::{
     PortFailure, Ports, Prompt, SystemClock, Turn, ValidatorReport, Validators,
 };
 pub use refinement::{RefinementInput, RefinementPrompt};
+
+// [`validator`] is deliberately **not** re-exported here. Its `Name`,
+// `Pattern` and `Expect` are ADR-0009's vocabulary rather than the loop's, and
+// flattening them into this module would put six more names into a namespace
+// whose whole content is currently ADR-0008's. A caller reaches them as
+// `iteration::validator::Plan`, which says which record it is holding.
 
 #[cfg(test)]
 mod fixtures;
