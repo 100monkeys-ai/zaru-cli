@@ -435,3 +435,65 @@ fn the_scratch_root_is_removed_and_its_absence_reads_four_ways() {
     let error = std::fs::read(&inside).expect_err("the file inside is gone");
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
 }
+
+#[test]
+fn adr_0009_d1s_worked_manifest_is_refused_by_adr_0014_d6() {
+    // ADR-0009 D1's example manifest carries, in full:
+    //
+    //     [runtime]
+    //     tier = "contained"
+    //     max_iterations = 5
+    //
+    // in `./zaru.toml`, which is ADR-0014 D1's layer 3. ADR-0014 D6 says a
+    // project "may not ... move the runtime tier upward", and that record's
+    // implementation makes a tier a key a project may not set at all. ADR-0001
+    // D2 is a third voice: "Config key `runtime` in `zaru.toml`".
+    //
+    // Three records, one contradiction, and it is the same shape the
+    // `configuration-hierarchy` arc pinned on 2026-09-04 when it found
+    // ADR-0014 D3's own explain block raising a ceiling D6 forbids.
+    //
+    // This check exists so that CORRECTING THE RECORD REDDENS IT rather than
+    // letting the disagreement be smoothed over in an implementation. If D1
+    // drops the tier, or D6 gains an exception for it, this stops passing and
+    // whoever made that change is told which other record they moved.
+    //
+    // Recorded on ADR-0009's and ADR-0014's Status tracking and batched for
+    // the records' author. Nothing here settles which clause gives.
+    let scratch = ScratchRoot::new();
+    let working_directory =
+        WorkingDirectory::at(scratch.project()).expect("the project directory exists");
+
+    let mut runtime = Table::new();
+    runtime.insert("tier", Value::Text("contained".to_owned()));
+    runtime.insert("max_iterations", Value::Integer(5));
+    let mut project = Table::new();
+    project.insert("workspace", Value::Text("acme-engineering".to_owned()));
+
+    let manifest = Manifest::build(project, runtime, declared_validators(), &working_directory)
+        .expect("D1's example is a well-formed manifest; the disagreement is about D6, not shape");
+
+    let mut built_in = Table::new();
+    let mut defaults = Table::new();
+    defaults.insert("max_iterations", Value::Integer(8));
+    built_in.insert("runtime", Value::Table(defaults));
+
+    let refusal = Resolution::resolve(
+        &schema(),
+        vec![
+            Contribution::new(Layer::BuiltIn, Source::named("built-in"), built_in),
+            manifest.contribution(Source::named("./zaru.toml")),
+        ],
+    )
+    .expect_err("ADR-0014 D6 refuses a project setting the runtime tier");
+
+    let ConfigRefused::ProjectMayNotSet { key, .. } = &refusal else {
+        panic!("expected D6's escalation refusal, got {refusal:?}");
+    };
+    assert_eq!(
+        key.as_str(),
+        "runtime.tier",
+        "the key ADR-0009 D1's own example sets is the one ADR-0014 D6 refuses"
+    );
+    println!("ADR-0009 D1's example, resolved as ADR-0014's layer 3: {refusal}");
+}
