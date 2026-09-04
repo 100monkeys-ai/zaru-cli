@@ -59,7 +59,8 @@ for sha in "${commits[@]}"; do
         if [ -z "$trailers" ]; then
             unsigned+=("${sha:0:12}  $subject  -- no Signed-off-by trailer at all")
         else
-            unsigned+=("${sha:0:12}  $subject  -- signed off by $(printf '%s' "$trailers" | tr '\n' ' ')but authored by <$author>")
+            signers=$(printf '%s' "$trailers" | tr '\n' ' ' | sed 's/ *$//')
+            unsigned+=("${sha:0:12}  $subject  -- signed off by $signers, but authored by <$author>")
         fi
     fi
 done
