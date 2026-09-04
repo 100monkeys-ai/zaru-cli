@@ -182,6 +182,24 @@ pub struct Location {
     pub column: u32,
 }
 
+impl Location {
+    /// Where the runtime gave no location.
+    ///
+    /// `PanicHookInfo::location` is documented as returning `None` in cases the
+    /// standard library does not enumerate, so the boundary has to have an
+    /// answer. Saying the location is unknown is D2's "admits there is not
+    /// one" applied one level down: a report naming a made-up file is worse
+    /// than one naming none.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            file: "an unknown location".to_owned(),
+            line: 0,
+            column: 0,
+        }
+    }
+}
+
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}:{}", self.file, self.line, self.column)

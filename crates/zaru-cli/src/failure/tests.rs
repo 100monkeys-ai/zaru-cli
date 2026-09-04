@@ -10,15 +10,18 @@
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use super::fixtures::{a_session, defect_report, of_class, one_of_each_class, policy, statement};
-use crate::credentials::fixtures::nonce;
+use crate::credentials::fixtures::{ascii_core, nonce};
 use crate::failure::class::{Class, Exit, SUCCESS};
 use crate::failure::classified::{Classified, Expected};
 use crate::failure::defect::{SessionEvidence, SessionId, SessionIdRefused};
+use crate::failure::guard::{Guarded, guard};
 use crate::failure::partial::{Partial, PartialRefused, StepName};
 use crate::failure::present::Presentation;
 use crate::failure::remedy::{Action, Remedy, Statement, StatementRefused};
 use crate::failure::wait::{Backoff, RETRY_LABEL, RetryCeiling, RetryRecord, Wait, WaitRefused};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
+use std::sync::{Mutex, PoisonError};
 
 /// ADR-0016 D1 names five classes. There is no sixth and there are not four.
 ///
@@ -647,5 +650,239 @@ fn a_failures_class_is_the_variant_it_was_built_as() {
         Presentation::of(&Classified::Expected(expected))
             .lines
             .is_empty()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0016 D3 — the defect boundary
+// ---------------------------------------------------------------------------
+
+/// Held for the duration of every guarded call below.
+///
+/// `panic::set_hook` is process-wide and `take_hook`/`set_hook` is not atomic,
+/// so two guards running at once could interleave. The product calls
+/// [`guard`] exactly once, from `main`; these checks are the only place two
+/// calls could overlap, and this is what stops them. Poisoning is recovered
+/// from rather than propagated: a check that panicked while holding it has
+/// already reported, and turning that into a second failure in a neighbouring
+/// check would report the wrong subject.
+static ONE_GUARD_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+fn serialised<T>(body: impl FnOnce() -> T) -> T {
+    let _held = ONE_GUARD_AT_A_TIME
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    body()
+}
+
+/// ADR-0016 D3 and trigger clause 4: a panic is caught, reported as a defect,
+/// and exits 70.
+///
+/// The mutant: the boundary re-raising instead of catching, which kills the
+/// test process; and, as a compile error, the boundary building a
+/// user-correctable failure instead — D3's "never present a defect as a user
+/// error" is unwritable, because a `UserCorrectable` cannot be constructed
+/// without a remedy and a defect has none.
+#[test]
+fn a_panic_under_the_boundary_becomes_a_defect_that_exits_70() {
+    let version = nonce("version");
+    let where_to_report = nonce("report-at");
+    let said = nonce("what-the-panic-said");
+
+    let caught = serialised(|| {
+        match guard(
+            &version,
+            &where_to_report,
+            SessionEvidence::NoSessionExists,
+            || panic!("{said}"),
+        ) {
+            Guarded::Defected(caught) => caught,
+            Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
+        }
+    });
+
+    let classified = Classified::Defect(caught.report().clone());
+    assert_eq!(
+        classified.class(),
+        Class::Defect,
+        "D3: a panic is presented as what it is"
+    );
+    assert_eq!(
+        Exit::Failed(classified).code(),
+        70,
+        "ADR-0016 D5: an internal defect exits 70"
+    );
+
+    let rendered = caught.to_string();
+    for needle in [version.as_str(), where_to_report.as_str()] {
+        assert!(
+            rendered.contains(needle),
+            "D3 requires the report carry the version and where to report it; {needle:?} is not \
+             in {rendered:?}"
+        );
+    }
+    assert!(
+        rendered.contains("tests.rs"),
+        "D3's report is only actionable if it says where the defect surfaced: {rendered:?}"
+    );
+}
+
+/// The boundary is narrow: nothing under it runs after the panic.
+///
+/// ADR-0016's Negative consequence is the reason — "catching panics at the
+/// session boundary risks masking a corrupted state that should have
+/// terminated the process. The boundary must be narrow." The widening this
+/// exists to catch is guarding each statement rather than the body, after
+/// which the flag below would be set and the process would carry on with half
+/// its work done.
+///
+/// The structural half is that [`Guarded`] has no arm carrying both a defect
+/// and a value, so there is nothing for a caller to continue with.
+#[test]
+fn nothing_after_a_caught_panic_runs() {
+    static REACHED: AtomicBool = AtomicBool::new(false);
+
+    let caught = serialised(|| {
+        let guarded = guard(
+            &nonce("version"),
+            &nonce("report-at"),
+            SessionEvidence::NoSessionExists,
+            || {
+                panic!("{}", nonce("stop here"));
+                #[allow(unreachable_code)]
+                REACHED.store(true, Ordering::SeqCst);
+            },
+        );
+        matches!(guarded, Guarded::Defected(_))
+    });
+
+    assert!(
+        caught,
+        "the boundary must catch the panic for this to mean anything"
+    );
+    assert!(
+        !REACHED.load(Ordering::SeqCst),
+        "a statement after the panic ran, so the boundary is wrapping statements rather than the \
+         body and a corrupted state can be carried past"
+    );
+}
+
+/// The panic's own words are captured and are **not** in the report.
+///
+/// Under the coordinator's ruling of 2026-09-04: the message belongs to
+/// ADR-0010's transcript, and it is the one field on this path that can carry
+/// arbitrary captured text — the surface ADR-0008's open clause 6 blocks on.
+/// It travels beside the report rather than inside it, so no presentation can
+/// reach it.
+///
+/// The absence is asserted over the message **and its ASCII core**, because
+/// `{:?}` escapes a combining mark and an absence assertion over the raw value
+/// alone reads a published leak as absence — the mutation that survived in the
+/// credential store on 2026-09-04.
+///
+/// The mutant: putting `own_words` into the report, or into the presentation.
+#[test]
+fn the_panics_own_words_are_captured_and_never_presented() {
+    let said = nonce("what-the-panic-said");
+    let caught = serialised(|| {
+        match guard(
+            &nonce("version"),
+            &nonce("report-at"),
+            SessionEvidence::NoSessionExists,
+            || panic!("{said}"),
+        ) {
+            Guarded::Defected(caught) => caught,
+            Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
+        }
+    });
+
+    assert_eq!(
+        caught.own_words().as_str(),
+        said,
+        "the boundary must capture what the panic said, or ADR-0010's transcript has nothing to \
+         be handed and the default hook was never replaced"
+    );
+
+    let rendered = caught.to_string();
+    let core = ascii_core(&said);
+    for (arm, needle) in [("the message", said.as_str()), ("its ASCII core", core)] {
+        assert!(
+            !rendered.contains(needle),
+            "the defect presentation published {arm} of what the panic said: {needle:?} is in \
+             {rendered:?}"
+        );
+    }
+    assert!(
+        !format!("{:?}", caught.report()).contains(core),
+        "the panic's words reached the report itself, where a future renderer could show them"
+    );
+}
+
+/// The arm that discriminates: a body that does not panic is handed back
+/// untouched.
+///
+/// Without it, a boundary that reported a defect for every call would satisfy
+/// every check above. [Verification lessons] §13.
+///
+/// The mutant: reporting a defect unconditionally.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_body_that_does_not_panic_is_handed_back_untouched() {
+    let carried = nonce("what-the-body-returned");
+    let guarded = serialised(|| {
+        guard(
+            &nonce("version"),
+            &nonce("report-at"),
+            SessionEvidence::NoSessionExists,
+            || carried.clone(),
+        )
+    });
+
+    match guarded {
+        Guarded::Ran(value) => assert_eq!(
+            value, carried,
+            "the boundary changed what the body returned"
+        ),
+        Guarded::Defected(caught) => {
+            panic!("a body that did not panic was reported as a defect: {caught}")
+        }
+    }
+
+    // And an ordinary failing run still exits with its own class's code rather
+    // than with the defect's, so the boundary is not swallowing classification.
+    let exit = Exit::Failed(of_class(Class::UserCorrectable));
+    assert_eq!(exit.code(), 2, "ADR-0016 D5: user-correctable exits 2");
+}
+
+/// Two guarded panics in a row each report their own defect.
+///
+/// The boundary restores the hook it replaced, so a second call is not
+/// reporting into the first one's sink. The mutant: a shared sink, after which
+/// the second report carries the first panic's words.
+#[test]
+fn two_guarded_panics_each_report_their_own_defect() {
+    let first_said = nonce("first-panic");
+    let second_said = nonce("second-panic");
+
+    let (first, second) = serialised(|| {
+        let take = |said: &str| match guard(
+            &nonce("version"),
+            &nonce("report-at"),
+            SessionEvidence::NoSessionExists,
+            || panic!("{said}"),
+        ) {
+            Guarded::Defected(caught) => caught,
+            Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
+        };
+        (take(&first_said), take(&second_said))
+    });
+
+    assert_eq!(first.own_words().as_str(), first_said);
+    assert_eq!(
+        second.own_words().as_str(),
+        second_said,
+        "the second guarded panic reported the first one's words, so the hook was not restored \
+         between them"
     );
 }

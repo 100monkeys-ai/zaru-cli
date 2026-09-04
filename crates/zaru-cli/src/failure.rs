@@ -87,6 +87,7 @@
 pub mod class;
 pub mod classified;
 pub mod defect;
+pub mod guard;
 pub mod partial;
 pub mod present;
 pub mod remedy;
@@ -95,6 +96,7 @@ pub mod wait;
 pub use class::{Class, Exit, SUCCESS};
 pub use classified::{Classified, Expected};
 pub use defect::{DefectReport, Location, SessionEvidence, SessionId, SessionIdRefused};
+pub use guard::{Caught, Guarded, OwnWords, guard};
 pub use partial::{Partial, PartialRefused, StepName};
 pub use present::{Line, Presentation};
 pub use remedy::{Action, Remedy, Statement, StatementRefused};
