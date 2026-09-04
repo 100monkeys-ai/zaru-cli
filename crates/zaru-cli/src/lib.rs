@@ -22,9 +22,11 @@
 //! rather than of any one part — see [Bounded Contexts], which gives this
 //! crate "Binary, configuration, session lifecycle, the credential store".
 //!
-//! Only the credential store is built. Nothing else named above exists yet.
+//! The credential store and ADR-0014's configuration hierarchy are built.
+//! Nothing else named above exists yet.
 //!
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
+pub mod config;
 pub mod credentials;

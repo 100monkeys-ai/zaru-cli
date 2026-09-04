@@ -68,7 +68,12 @@ pub use projection::{NAMESPACE_PREFIX, Namespace};
 pub use secret::{Kind, REDACTED, Secret, SecretRefused};
 pub use store::{CredentialStore, Record, StoreError, StoredReach};
 
+// `pub(crate)` rather than private: `crate::config`'s checks plant the same
+// awkward nonces and assert the same ASCII core, and the reason that core
+// exists is a mutation that survived here on 2026-09-04. A second copy of
+// that reasoning beside the configuration checks would be a rule living in
+// two places, which is a rule that diverges.
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;
