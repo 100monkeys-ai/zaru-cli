@@ -42,4 +42,5 @@
 pub mod config;
 pub mod credentials;
 pub mod failure;
+pub mod session;
 pub mod tools;
