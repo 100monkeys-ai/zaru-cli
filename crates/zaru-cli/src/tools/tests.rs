@@ -22,11 +22,15 @@ use crate::tools::decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
 };
 use crate::tools::fixtures::{
-    RecordedConfirmer, ScratchTree, StagedAllowlist, StagedDestructive, nonce,
+    RecordedConfirmer, RefusingOverflow, ScratchOverflow, ScratchTree, StagedAllowlist,
+    StagedDestructive, nonce,
 };
 use crate::tools::mode::{Layer, Mode, ModeRefused, Tier};
 use crate::tools::name::{Effect, ToolName};
 use crate::tools::notice::SessionNotice;
+use crate::tools::output::{
+    BudgetIsZero, Captured, ELISION_PREFIX, OutputBudget, PresentationRefused,
+};
 use crate::tools::tree::{Placement, WorkingDirectory};
 use std::path::PathBuf;
 
@@ -1202,4 +1206,277 @@ fn a_url_is_not_a_path_and_carries_no_placement() {
             "{tool} addresses a path and was refused one"
         );
     }
+}
+
+/// An output budget of zero is refused, and a budget of one is not.
+///
+/// The second arm is what stops "refuse everything" from passing.
+#[test]
+fn an_output_budget_of_zero_is_refused() {
+    assert_eq!(OutputBudget::new(0), Err(BudgetIsZero));
+    let rendered = BudgetIsZero.to_string();
+    assert!(
+        rendered.contains("head and the tail") && rendered.contains("mark the elision"),
+        "the refusal does not say what a zero budget cannot do: {rendered:?}"
+    );
+    assert_eq!(
+        OutputBudget::new(1).map(OutputBudget::get),
+        Ok(1),
+        "a budget of one byte is a budget somebody chose and must be taken"
+    );
+}
+
+/// **Corpus case 5 — output is truncated head and tail, and the elision is
+/// marked.**
+///
+/// ADR-0011 D5: "truncated head-and-tail with the elision marked... A
+/// truncation the user cannot notice is how a diagnosis gets built on a
+/// fragment."
+///
+/// The mutant this catches is the naive `String::truncate`, which keeps the
+/// head and drops the tail — so the tail sentinel is what discriminates. The
+/// boundary is staged at one under, exactly at, and one over the budget, so
+/// an off-by-one that marks an elision that did not happen reddens too.
+#[test]
+fn output_is_truncated_head_and_tail_with_the_elision_marked() {
+    let budget = OutputBudget::new(32).expect("a non-zero budget");
+    let head = "HEADSENTINEL";
+    let tail = "TAILSENTINEL";
+    let long = format!("{head}{}{tail}", "MIDDLE".repeat(200));
+    let captured = Captured {
+        exit_code: 0,
+        stdout: long.clone(),
+        stderr: String::new(),
+    };
+    let base = std::env::temp_dir().join(nonce("ts-overflow"));
+    let mut sink = ScratchOverflow::in_directory(base.clone());
+    let shown = captured
+        .present(budget, Some(&mut sink))
+        .expect("a sink was supplied");
+    let text = shown.stdout.as_str();
+
+    let mut complaints = Vec::new();
+    if !text.starts_with(head) {
+        complaints.push(format!("the head of the output was dropped: {text:?}"));
+    }
+    if !text.ends_with(tail) {
+        complaints.push(format!(
+            "the tail was dropped, which is what a plain truncation does: {text:?}"
+        ));
+    }
+    if !text.contains(ELISION_PREFIX) {
+        complaints.push(format!("the elision was not marked: {text:?}"));
+    }
+    if text.contains("MIDDLEMIDDLE") {
+        complaints.push(format!("nothing was actually elided: {text:?}"));
+    }
+    if shown.stdout.elided_bytes().is_none() {
+        complaints.push("the excerpt does not report how much went".to_owned());
+    }
+    assert!(
+        complaints.is_empty(),
+        "ADR-0011 D5's truncation failed {} clause(s):\n  {}",
+        complaints.len(),
+        complaints.join("\n  ")
+    );
+
+    // Text at and under the budget is carried byte-for-byte with no marker;
+    // one byte over is marked. An off-by-one shows up here and nowhere else.
+    for length in [31_usize, 32, 33] {
+        let body = "x".repeat(length);
+        let mut sink = ScratchOverflow::in_directory(base.clone());
+        let shown = Captured {
+            exit_code: 0,
+            stdout: body.clone(),
+            stderr: String::new(),
+        }
+        .present(budget, Some(&mut sink))
+        .expect("a sink was supplied");
+        if length <= 32 {
+            assert_eq!(
+                shown.stdout.as_str(),
+                body,
+                "{length} bytes fits a 32-byte budget and must be carried unchanged"
+            );
+            assert!(
+                !shown.stdout.was_truncated(),
+                "{length} bytes fits and must not be marked as elided"
+            );
+            assert_eq!(
+                shown.full_text_at, None,
+                "{length} bytes fits, so nothing was elided and no overflow file is owed"
+            );
+        } else {
+            assert!(
+                shown.stdout.was_truncated(),
+                "{length} bytes exceeds a 32-byte budget and must be marked"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The two streams are carried separately and neither leaks into the other.
+///
+/// ADR-0011 D5: "Stdout and stderr are captured separately, both surfaced".
+/// Each carries its own nonce, so a merged capture is visible rather than
+/// plausible.
+#[test]
+fn both_streams_are_carried_separately_and_neither_leaks_into_the_other() {
+    let out = nonce("stdout");
+    let err = nonce("stderr");
+    let captured = Captured {
+        exit_code: 3,
+        stdout: out.clone(),
+        stderr: err.clone(),
+    };
+    let shown = captured
+        .present(OutputBudget::new(4096).expect("a non-zero budget"), None)
+        .expect("nothing is elided within this budget");
+
+    assert_eq!(
+        shown.stdout.as_str(),
+        out,
+        "standard output did not reach the caller as it was captured"
+    );
+    assert_eq!(
+        shown.stderr.as_str(),
+        err,
+        "standard error did not reach the caller as it was captured"
+    );
+    assert!(
+        !shown.stdout.as_str().contains(&err),
+        "standard error leaked into standard output"
+    );
+    assert!(
+        !shown.stderr.as_str().contains(&out),
+        "standard output leaked into standard error"
+    );
+    assert_eq!(
+        shown.exit_code, 3,
+        "the exit code the call reported was not carried"
+    );
+}
+
+/// **Corpus case 5, second arm — output nobody can preserve is refused, not
+/// clipped.**
+///
+/// D5 promises the whole output survives where the user can read it. The
+/// session directory that would hold it is ADR-0010's and does not exist, so
+/// a capture that overflows with no sink is refused — the same refusal, for
+/// the same reason, this crate already makes for ADR-0007 D8's apex
+/// confirmation.
+///
+/// Three arms: no sink refuses, a refusing sink refuses differently, and a
+/// working sink succeeds and reports the path. Without the third, "refuse
+/// always" passes.
+#[test]
+fn output_that_overflows_with_nowhere_to_keep_it_is_refused_rather_than_clipped() {
+    let budget = OutputBudget::new(16).expect("a non-zero budget");
+    let captured = Captured {
+        exit_code: 0,
+        stdout: "x".repeat(4096),
+        stderr: String::new(),
+    };
+
+    let refusal = captured
+        .present(budget, None)
+        .expect_err("nothing can hold the rest of this output");
+    assert!(
+        matches!(
+            refusal,
+            PresentationRefused::ThereWasNowhereToKeepTheRest { .. }
+        ),
+        "refused for the wrong reason: {refusal:?}"
+    );
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains("a truncation the user cannot notice"),
+        "the refusal does not give D5's reason: {rendered:?}"
+    );
+
+    let mut refusing = RefusingOverflow;
+    let not_preserved = captured
+        .present(budget, Some(&mut refusing))
+        .expect_err("the sink refused");
+    assert!(
+        matches!(not_preserved, PresentationRefused::NotPreserved(_)),
+        "a sink that refused was reported as no sink at all: {not_preserved:?}"
+    );
+
+    let base = std::env::temp_dir().join(nonce("ts-overflow"));
+    let mut sink = ScratchOverflow::in_directory(base.clone());
+    let shown = captured
+        .present(budget, Some(&mut sink))
+        .expect("a working sink preserves it");
+    let path = shown
+        .full_text_at
+        .clone()
+        .expect("D5 requires the path be shown when anything was elided");
+    assert_eq!(
+        sink.written(),
+        vec![path.clone()],
+        "the path shown to the caller is not the path the sink wrote"
+    );
+    let preserved = std::fs::read_to_string(&path).expect("the sink wrote the file it named");
+    assert!(
+        preserved.contains(&captured.stdout),
+        "the preserved file does not carry the whole output it exists to keep"
+    );
+    assert!(
+        shown.stdout.as_str().len() < captured.stdout.len(),
+        "nothing was actually truncated, so this check says nothing about overflow"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+
+    // And the arm that discriminates: within budget, no sink is needed at all.
+    assert!(
+        Captured {
+            exit_code: 0,
+            stdout: "short".to_owned(),
+            stderr: String::new(),
+        }
+        .present(budget, None)
+        .is_ok(),
+        "output within the budget needs no overflow sink"
+    );
+}
+
+/// Tool output reaches the caller byte for byte.
+///
+/// This is the check that keeps the identity seam on the live path. ADR-0008's
+/// trigger clause 6 — secret redaction in failure text — is open, and this
+/// arc adds no redaction; the seam is one named function and nothing passes
+/// behaviour through it. The nonce carries a newline, a combining mark and an
+/// astral-plane character, so an implementation that normalised, escaped or
+/// cut on a byte boundary could not produce it.
+#[test]
+fn tool_output_reaches_the_caller_byte_for_byte() {
+    // Deliberately awkward in every direction a transformation could tidy:
+    // leading and trailing whitespace for a `trim`, an embedded newline for a
+    // line-wise reader, a combining mark for a normaliser, and an
+    // astral-plane character for anything cutting on a byte boundary. A
+    // fixture with no trailing whitespace let a `trim_end` through this check
+    // once — Verification lessons §9, met from the direction that a fixture is
+    // awkward but not awkward enough.
+    let awkward = format!("  {}\nline two\u{301}\u{1f701}  \n", nonce("tool-output"));
+    let captured = Captured {
+        exit_code: 0,
+        stdout: awkward.clone(),
+        stderr: awkward.clone(),
+    };
+    let shown = captured
+        .present(OutputBudget::new(4096).expect("a non-zero budget"), None)
+        .expect("nothing is elided within this budget");
+
+    assert_eq!(
+        shown.stdout.as_str().as_bytes(),
+        awkward.as_bytes(),
+        "standard output did not reach the caller byte for byte"
+    );
+    assert_eq!(
+        shown.stderr.as_str().as_bytes(),
+        awkward.as_bytes(),
+        "standard error did not reach the caller byte for byte"
+    );
 }

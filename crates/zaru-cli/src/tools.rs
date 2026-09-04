@@ -69,6 +69,7 @@ pub mod decision;
 pub mod mode;
 pub mod name;
 pub mod notice;
+pub mod output;
 pub mod port;
 pub mod tree;
 
@@ -79,6 +80,10 @@ pub use decision::{
 pub use mode::{Layer, Mode, ModeRefused, Tier};
 pub use name::{Effect, ToolName};
 pub use notice::SessionNotice;
+pub use output::{
+    BudgetIsZero, Captured, ELISION_PREFIX, Excerpt, OutputBudget, Overflow, OverflowFailure,
+    PresentationRefused, Presented,
+};
 pub use port::{Allowlist, Confirm, DestructiveMatch, Question};
 pub use tree::{Placement, Target, TreeError, WorkingDirectory};
 

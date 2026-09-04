@@ -228,3 +228,65 @@ impl crate::tools::port::Confirm for RecordedConfirmer {
         self.answer
     }
 }
+
+/// Where an oversized capture goes when there is no session directory.
+///
+/// **A test double, and not evidence about ADR-0011 D5's session directory**,
+/// which is ADR-0010 D1's and is unbuilt. It writes into a scratch tree the
+/// check owns, using the paths the product would use, so a check here is an
+/// ordinary caller of the port rather than a fake of the mechanism.
+pub(crate) struct ScratchOverflow {
+    directory: std::path::PathBuf,
+    written: std::cell::RefCell<Vec<std::path::PathBuf>>,
+}
+
+impl ScratchOverflow {
+    /// A sink writing into a directory the check owns.
+    pub(crate) fn in_directory(directory: std::path::PathBuf) -> Self {
+        std::fs::create_dir_all(&directory).expect("staging: the overflow directory");
+        Self {
+            directory,
+            written: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Every path this sink reported.
+    pub(crate) fn written(&self) -> Vec<std::path::PathBuf> {
+        self.written.borrow().clone()
+    }
+}
+
+impl crate::tools::output::Overflow for ScratchOverflow {
+    fn preserve(
+        &mut self,
+        captured: &crate::tools::output::Captured,
+    ) -> Result<std::path::PathBuf, crate::tools::output::OverflowFailure> {
+        let path = self.directory.join(nonce("overflow"));
+        let body = format!(
+            "exit {}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
+            captured.exit_code, captured.stdout, captured.stderr
+        );
+        std::fs::write(&path, body).map_err(|source| {
+            crate::tools::output::OverflowFailure::new(format!(
+                "could not write {}: {source}",
+                path.display()
+            ))
+        })?;
+        self.written.borrow_mut().push(path.clone());
+        Ok(path)
+    }
+}
+
+/// A sink that always refuses, so the failing arm has something to fail on.
+pub(crate) struct RefusingOverflow;
+
+impl crate::tools::output::Overflow for RefusingOverflow {
+    fn preserve(
+        &mut self,
+        _captured: &crate::tools::output::Captured,
+    ) -> Result<std::path::PathBuf, crate::tools::output::OverflowFailure> {
+        Err(crate::tools::output::OverflowFailure::new(
+            "this sink preserves nothing",
+        ))
+    }
+}
