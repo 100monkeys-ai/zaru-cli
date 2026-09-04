@@ -33,7 +33,7 @@ compile_error!(
 );
 
 use crate::credentials::alias::Alias;
-use crate::credentials::entry::{Entry, Reach, ToolScope};
+use crate::credentials::entry::{Entry, Reach, Role, ToolScope};
 use crate::credentials::port::{Confirm, SealFailure, SecretStore};
 use crate::credentials::secret::Secret;
 use core::fmt;
@@ -102,6 +102,21 @@ pub enum StoreError {
         /// The alias offered.
         alias: Alias,
     },
+    /// A second token was offered the composer role.
+    SecondComposerRole {
+        /// The alias that already holds it.
+        existing: Alias,
+        /// The alias that was offered it.
+        offered: Alias,
+    },
+    /// A token was offered the composer role and its scope reaches further
+    /// than ADR-0006 D4 allows the composer's credential to reach.
+    ComposerScopeExceeded {
+        /// The alias that was offered the role.
+        alias: Alias,
+        /// The first tool in its cached scope that D4 does not name.
+        tool: String,
+    },
     /// Sealing or unsealing failed.
     Seal(SealFailure),
 }
@@ -124,23 +139,41 @@ impl fmt::Display for StoreError {
             ),
             Self::DuplicateAlias { alias } => write!(
                 f,
-                "the alias {alias:?} is already in the store; ADR-0007 D2 makes an alias a local \
+                "the alias \"{alias}\" is already in the store; ADR-0007 D2 makes an alias a local \
                  unique name, and two tokens answering to one name is a namespace whose \
                  destination cannot be read off the transcript"
             ),
             Self::UnknownAlias { alias } => {
-                write!(f, "nothing in the store answers to the alias {alias:?}")
+                write!(f, "nothing in the store answers to the alias \"{alias}\"")
             }
             Self::ApexNeedsConfirmation { alias, grants } => write!(
                 f,
-                "the token {alias:?} is apex and no confirmer was supplied, so it was refused \
+                "the token \"{alias}\" is apex and no confirmer was supplied, so it was refused \
                  rather than stored silently. ADR-0007 D8 requires an explicit confirmation \
                  stating what it grants -- \"never silent, never a default\" -- and it grants: \
                  {grants}"
             ),
             Self::ApexDeclined { alias } => write!(
                 f,
-                "the apex token {alias:?} was not confirmed, so it was not stored"
+                "the apex token \"{alias}\" was not confirmed, so it was not stored"
+            ),
+            Self::SecondComposerRole { existing, offered } => write!(
+                f,
+                "the alias \"{existing}\" already carries the composer role and \"{offered}\" was \
+                 offered it too. ADR-0007 D4: \"Exactly one token is flagged composer\" and \"A \
+                 token cannot be both. The store refuses the configuration.\" Move the role \
+                 rather than granting a second"
+            ),
+            Self::ComposerScopeExceeded { alias, tool } => write!(
+                f,
+                "the alias \"{alias}\" was offered the composer role and its cached scope carries \
+                 {tool:?}, which ADR-0006 D4 does not put in the composer's credential. D4 scopes \
+                 it to the read_only_memory set plus me.set_current_workspace \"and nothing \
+                 else\", so that the composer token \"cannot write, enforced at all three gates, \
+                 regardless of what any code in the harness attempts\". This is the local half of \
+                 that: the harness refuses to use as the composer a credential whose own scope \
+                 says it could do more. What the server actually granted is ADR-0135's three \
+                 gates to enforce and not the harness's to verify"
             ),
             Self::Seal(failure) => write!(f, "the secret could not be sealed: {failure}"),
         }
@@ -385,6 +418,58 @@ impl CredentialStore {
             });
         }
         sealer.unseal(alias).map_err(StoreError::Seal)
+    }
+
+    /// Give one token ADR-0007 D4's composer role, taking it from no other.
+    ///
+    /// Refuses rather than moves: D4 says "The store refuses the
+    /// configuration", and a grant that silently demoted whichever token held
+    /// the role would be exactly the invisible reassignment ADR-0006 D2
+    /// exists to prevent. D7's `/notes use <alias>` is the surface that moves
+    /// it deliberately, and that surface is not built.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownAlias`], [`StoreError::SecondComposerRole`],
+    /// [`StoreError::ComposerScopeExceeded`] and [`StoreError::Io`].
+    pub fn grant_composer_role(&mut self, alias: &Alias) -> Result<(), StoreError> {
+        let record = self
+            .entries
+            .get(alias)
+            .ok_or_else(|| StoreError::UnknownAlias {
+                alias: alias.clone(),
+            })?;
+
+        if let Some((existing, _)) = self.composer()
+            && existing != alias
+        {
+            return Err(StoreError::SecondComposerRole {
+                existing: existing.clone(),
+                offered: alias.clone(),
+            });
+        }
+
+        let scope = ToolScope::new(record.tools.clone());
+        if let Some(tool) = scope.outside_composer_scope() {
+            return Err(StoreError::ComposerScopeExceeded {
+                alias: alias.clone(),
+                tool: tool.to_owned(),
+            });
+        }
+
+        self.entries
+            .get_mut(alias)
+            .expect("the record was found above")
+            .role = Some(Role::Composer.as_str().to_owned());
+        self.save()
+    }
+
+    /// The token carrying the composer role, if one does.
+    #[must_use]
+    pub fn composer(&self) -> Option<(&Alias, &Record)> {
+        self.entries
+            .iter()
+            .find(|(_, record)| record.role.as_deref() == Some(Role::Composer.as_str()))
     }
 
     /// Write the store to disk at [`FILE_MODE`].

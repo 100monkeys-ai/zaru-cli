@@ -54,6 +54,7 @@
 pub mod alias;
 pub mod entry;
 pub mod port;
+pub mod projection;
 pub mod secret;
 pub mod store;
 
@@ -63,6 +64,7 @@ pub use entry::{
     TtlRefused,
 };
 pub use port::{Confirm, SealFailure, SecretStore};
+pub use projection::{NAMESPACE_PREFIX, Namespace};
 pub use secret::{Kind, REDACTED, Secret, SecretRefused};
 pub use store::{CredentialStore, Record, StoreError, StoredReach};
 

@@ -126,6 +126,13 @@ pub enum Reach {
 }
 
 impl Reach {
+    /// How an apex token is marked, everywhere it is marked.
+    ///
+    /// One constant, read by all three of D8's surfaces, so that a token
+    /// marked in a listing and unmarked in the description the agent reads
+    /// is not a state this code can reach.
+    pub const APEX_MARKING: &'static str = "apex (no instance boundary)";
+
     /// Whether this reach is the apex case D8 requires marking.
     #[must_use]
     pub const fn is_apex(&self) -> bool {
@@ -142,7 +149,7 @@ impl Reach {
     pub fn marking(&self) -> String {
         match self {
             Self::InstanceLocked(instance) => instance.to_string(),
-            Self::Apex => "apex (no instance boundary)".to_owned(),
+            Self::Apex => Self::APEX_MARKING.to_owned(),
         }
     }
 }

@@ -1,0 +1,188 @@
+// Copyright 2026 100monkeys AI, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! A caller outside this crate drives the credential store through its own
+//! public door.
+//!
+//! # What this establishes, and what it does not
+//!
+//! [Verification lessons] §25: "For any capability a user interacts with, one
+//! check drives the interaction end to end and reads the outcome... Mutation
+//! testing cannot find this — it operates on the assertions that exist, and
+//! there is no mutant for a call that was never written." The unit checks
+//! reach the store's internals; this one reaches only what `zaru-cli` exports,
+//! so a type or method that was never made public fails here and nowhere else.
+//!
+//! **It is not evidence about the `zaru` binary.** No binary reaches the
+//! credential store, because ADR-0007 D7's surfaces are `/notes tokens ...` —
+//! slash commands inside an interactive session that needs a terminal backend
+//! outside ADR-0003 D2's table, ADR-0010's session lifecycle and ADR-0001 D2's
+//! tier resolution, none of which exists. The frame this check prints is
+//! evidence about the mechanism, and it must not be quoted as evidence about
+//! the binary.
+//!
+//! Everything here is a generated nonce. No real credential is held.
+//!
+//! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use zaru_cli::credentials::{
+    Alias, Confirm, CredentialStore, Description, Entry, Instance, Reach, SealFailure, Secret,
+    SecretStore, ToolScope,
+};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A value no other call produces. Written here rather than imported: the
+/// crate's own fixtures are private, and a check about the public door that
+/// borrowed the crate's internals would be reaching around the door.
+fn nonce(label: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_nanos();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{label}-{}-{nanos}-{seq}", std::process::id())
+}
+
+/// The sealing port, implemented outside the crate that declares it.
+///
+/// That it can be implemented from out here is itself part of what this check
+/// establishes: `SecretStore` is the seam the sealing arc will fill, and a
+/// trait that could only be implemented from inside would not be one.
+#[derive(Default)]
+struct HeldInMemory {
+    held: BTreeMap<String, String>,
+}
+
+impl SecretStore for HeldInMemory {
+    fn seal(&mut self, alias: &Alias, secret: &Secret) -> Result<(), SealFailure> {
+        self.held.insert(
+            alias.as_str().to_owned(),
+            secret.expose_for_dispatch().to_owned(),
+        );
+        Ok(())
+    }
+
+    fn unseal(&self, alias: &Alias) -> Result<Secret, SealFailure> {
+        let held = self
+            .held
+            .get(alias.as_str())
+            .ok_or_else(|| SealFailure::new(format!("nothing sealed under \"{alias}\"")))?;
+        Secret::new(held.clone()).map_err(|refusal| SealFailure::new(refusal.to_string()))
+    }
+}
+
+struct AlwaysConfirms;
+
+impl Confirm for AlwaysConfirms {
+    fn confirm_apex(&self, _alias: &Alias, _grants: &str) -> bool {
+        true
+    }
+}
+
+fn scratch_root() -> PathBuf {
+    std::env::temp_dir().join(nonce("cs-outside"))
+}
+
+#[test]
+fn a_caller_outside_this_crate_can_store_grant_and_project() {
+    let base = scratch_root();
+    let root = base.join("zaru");
+    let mut sealer = HeldInMemory::default();
+
+    let mut store = CredentialStore::open(&root).expect("a fresh root opens");
+
+    // The composer's token: ADR-0006 D4's scope exactly.
+    let composer_alias = Alias::new(&nonce("composer")).expect("a nonce is a legal alias");
+    let composer_secret = format!("nn_mcp_{}", nonce("secret"));
+    store
+        .add(
+            Entry::new(
+                composer_alias.clone(),
+                Description::new("the composer's search").expect("one line"),
+                Secret::new(composer_secret).expect("nn_mcp_ names a kind"),
+                Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
+            )
+            .with_tools(ToolScope::new(["pages.read", "search.global"]))
+            .with_workspace("zaru"),
+            &mut sealer,
+            None,
+        )
+        .expect("the composer's token is stored");
+
+    // An agent token, apex, confirmed.
+    let agent_alias = Alias::new(&nonce("agent")).expect("a nonce is a legal alias");
+    let agent_secret = format!("nn_app_{}", nonce("secret"));
+    store
+        .add(
+            Entry::new(
+                agent_alias.clone(),
+                Description::new("the agent's research").expect("one line"),
+                Secret::new(agent_secret.clone()).expect("nn_app_ names a kind"),
+                Reach::Apex,
+            )
+            .with_tools(ToolScope::new(["pages.read", "pages.apply_patch"])),
+            &mut sealer,
+            Some(&AlwaysConfirms),
+        )
+        .expect("a confirmed apex token is stored");
+
+    store
+        .grant_composer_role(&composer_alias)
+        .expect("a read-only scope may hold the role");
+
+    // What the agent is shown, read through the public door.
+    let namespaces = store.agent_namespaces();
+    println!("--- the agent's namespaces, read from outside the crate ---");
+    for namespace in &namespaces {
+        println!(
+            "{}\n  {}\n  {} tool(s): {:?}",
+            namespace.name,
+            namespace.description,
+            namespace.tools.len(),
+            namespace.tools
+        );
+    }
+    println!("--- the file on disk ---");
+    let raw = std::fs::read_to_string(store.path()).expect("the store wrote a file");
+    println!("{raw}");
+
+    assert_eq!(
+        namespaces.len(),
+        1,
+        "the composer's token reached the agent"
+    );
+    assert!(
+        namespaces[0].name.ends_with(agent_alias.as_str()),
+        "the projected namespace is not the agent's: {}",
+        namespaces[0].name
+    );
+    assert!(
+        namespaces[0].description.contains(Reach::APEX_MARKING),
+        "the apex token is unmarked in the description the agent reads"
+    );
+    assert!(
+        !raw.contains(&agent_secret),
+        "the file on disk carries a bearer value"
+    );
+
+    // The secret comes back only through the port.
+    let recovered = store
+        .secret(&agent_alias, &sealer)
+        .expect("the port holds it");
+    assert_eq!(recovered.expose_for_dispatch(), agent_secret);
+
+    // The scratch root goes, and a control beside it stays.
+    let control = base.join("control");
+    std::fs::create_dir_all(&control).expect("the control is creatable");
+    std::fs::remove_dir_all(&root).expect("the root is removable");
+    assert!(!root.exists(), "the store's root survived removal");
+    assert!(control.exists(), "the control was removed too");
+    std::fs::remove_dir_all(&base).expect("the scratch tree is removable");
+    assert!(!base.exists(), "the scratch tree survived removal");
+}

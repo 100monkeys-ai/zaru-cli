@@ -510,3 +510,252 @@ fn what_the_store_wrote_is_what_it_reads_back() {
     let recovered = store.secret(&alias, &sealer).expect("the port holds it");
     assert_eq!(recovered.expose_for_dispatch(), secret_value);
 }
+
+// ---------------------------------------------------------------------------
+// The composer role, and what the agent may see.
+// ---------------------------------------------------------------------------
+
+use crate::credentials::entry::Reach as EntryReach;
+use crate::credentials::projection::{NAMESPACE_PREFIX, Namespace};
+use crate::credentials::store::StoreError;
+
+/// Stages a store holding one composer-scoped token and one agent token.
+fn staged_pair() -> (ScratchRoot, InMemorySecrets, CredentialStore, Alias, Alias) {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let (composer, _) = staged_entry("composer");
+    let composer_alias = composer.alias().clone();
+    let composer = Entry::new(
+        composer_alias.clone(),
+        composer.description().clone(),
+        composer.secret().clone(),
+        composer.reach().clone(),
+    )
+    .with_tools(ToolScope::new(["pages.read", "search.global"]));
+
+    let (agent, _) = staged_entry("agent");
+    let agent_alias = agent.alias().clone();
+
+    store
+        .add(composer, &mut sealer, None)
+        .expect("composer added");
+    store.add(agent, &mut sealer, None).expect("agent added");
+    store
+        .grant_composer_role(&composer_alias)
+        .expect("a read-only scope may hold the role");
+
+    (scratch, sealer, store, composer_alias, agent_alias)
+}
+
+// The corpus case: a token that escapes its context.
+//
+// ADR-0007 D4: "The agent may use any token not flagged composer, and never
+// the composer's." The composer's entry never enters the projection, so this
+// asserts an absence from a list the check reads rather than a filter the
+// store reports about itself.
+//
+// The mutant: drop the `filter` in `agent_namespaces`.
+#[test]
+fn a_composer_role_token_never_appears_in_the_agents_namespace_list() {
+    let (_scratch, _sealer, store, composer_alias, agent_alias) = staged_pair();
+
+    let namespaces = store.agent_namespaces();
+    let names: Vec<&str> = namespaces.iter().map(|ns| ns.name.as_str()).collect();
+
+    assert_eq!(
+        names,
+        vec![format!("{NAMESPACE_PREFIX}:{agent_alias}")],
+        "the agent's namespace list is not exactly the non-composer tokens"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.contains(composer_alias.as_str())),
+        "the composer's alias {composer_alias:?} reached the agent: {names:?}"
+    );
+    // The staging: a projection of nothing would satisfy the absence above.
+    assert_eq!(
+        store.len(),
+        2,
+        "the store does not hold both tokens, so this check asserted nothing"
+    );
+}
+
+// ADR-0007 D3: "The agent sees aliases, descriptions, and tool lists. It never
+// sees a secret value."
+//
+// The destructure is the mechanism. A fourth field on `Namespace` -- a secret
+// among them -- stops this check compiling rather than travelling unnoticed,
+// which is the same signal the composer's exhaustive `Scope` match uses.
+#[test]
+fn what_the_agent_sees_is_three_fields_and_a_fourth_would_not_compile() {
+    let (_scratch, _sealer, store, _composer_alias, _agent_alias) = staged_pair();
+    let namespaces = store.agent_namespaces();
+    let projected = namespaces.first().expect("one agent token is projected");
+
+    let Namespace {
+        name,
+        description,
+        tools,
+    } = projected;
+
+    assert!(name.starts_with(&format!("{NAMESPACE_PREFIX}:")));
+    assert!(!description.is_empty());
+    assert_eq!(
+        tools,
+        &vec!["pages.read".to_owned(), "search.global".to_owned()]
+    );
+}
+
+// ADR-0007 D4: "Exactly one token is flagged composer... A token cannot be
+// both. The store refuses the configuration."
+//
+// The mutant: drop the `composer()` lookup from `grant_composer_role`.
+#[test]
+fn a_second_composer_role_is_refused_naming_both_aliases() {
+    let (_scratch, _sealer, mut store, composer_alias, agent_alias) = staged_pair();
+
+    let refusal = store
+        .grant_composer_role(&agent_alias)
+        .expect_err("a second composer role is refused");
+
+    match &refusal {
+        StoreError::SecondComposerRole { existing, offered } => {
+            assert_eq!(existing, &composer_alias);
+            assert_eq!(offered, &agent_alias);
+        }
+        other => panic!("a second composer role was refused for the wrong reason: {other}"),
+    }
+    let message = refusal.to_string();
+    assert!(
+        message.contains(composer_alias.as_str()) && message.contains(agent_alias.as_str()),
+        "the refusal names only one of the two aliases: {message}"
+    );
+    // And the first token still holds it -- a refusal that also demoted the
+    // incumbent would leave the store with none.
+    assert_eq!(
+        store.composer().expect("the role is still held").0,
+        &composer_alias
+    );
+}
+
+// ADR-0005's trigger clause 9, in the local form this arc can hold: "The
+// composer's own credential cannot write, asserted against the credential
+// store rather than against the code that uses it."
+//
+// The permitted set is ADR-0006 D4's, transcribed. Deciding for oneself which
+// tool names are writes would be authoring a security vocabulary, which is on
+// the human side of the boundary; copying a record's list is not.
+//
+// The mutant: drop the `outside_composer_scope` check from
+// `grant_composer_role`.
+#[test]
+fn the_composer_role_is_refused_when_the_cached_scope_leaves_adr_0006_d4s_set() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let (base, _) = staged_entry("writer");
+    let alias = base.alias().clone();
+    let entry = Entry::new(
+        alias.clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        base.reach().clone(),
+    )
+    .with_tools(ToolScope::new([
+        "pages.read",
+        "search.global",
+        "pages.apply_patch",
+    ]));
+    store.add(entry, &mut sealer, None).expect("it is stored");
+
+    let refusal = store
+        .grant_composer_role(&alias)
+        .expect_err("a scope reaching outside D4's set cannot hold the role");
+    match &refusal {
+        StoreError::ComposerScopeExceeded { alias: named, tool } => {
+            assert_eq!(named, &alias);
+            assert_eq!(
+                tool, "pages.apply_patch",
+                "the refusal names the wrong tool"
+            );
+        }
+        other => panic!("the role was refused for the wrong reason: {other}"),
+    }
+    assert!(
+        store.composer().is_none(),
+        "the role was granted despite the refusal"
+    );
+    assert!(
+        refusal.to_string().contains("pages.apply_patch"),
+        "the refusal does not name the tool that caused it: {refusal}"
+    );
+}
+
+// The counterpart, so that the refusal above is not simply "refuse always".
+#[test]
+fn every_tool_adr_0006_d4_names_may_hold_the_composer_role() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let (base, _) = staged_entry("readonly");
+    let alias = base.alias().clone();
+    let entry = Entry::new(
+        alias.clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        base.reach().clone(),
+    )
+    .with_tools(ToolScope::new(
+        crate::credentials::entry::COMPOSER_SCOPE.iter().copied(),
+    ));
+    store.add(entry, &mut sealer, None).expect("it is stored");
+    store
+        .grant_composer_role(&alias)
+        .expect("D4's own set may hold the role");
+    assert_eq!(store.composer().expect("granted").0, &alias);
+}
+
+// ADR-0007 D8: an apex token is "marked wherever the token appears", and one
+// of the three places is "the description the agent reads".
+#[test]
+fn an_apex_token_is_marked_in_the_description_the_agent_reads() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let (base, _) = staged_entry("apexmark");
+    let entry = Entry::new(
+        base.alias().clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        EntryReach::Apex,
+    );
+    let confirmer = StagedConfirmer::accepting();
+    store
+        .add(entry, &mut sealer, Some(&confirmer))
+        .expect("a confirmed apex token is stored");
+
+    let namespaces = store.agent_namespaces();
+    let projected = namespaces.first().expect("it is projected");
+    assert!(
+        projected.description.contains(EntryReach::APEX_MARKING),
+        "the agent's description does not mark an apex token: {}",
+        projected.description
+    );
+    // And an instance-locked one is not marked, so the marking means something.
+    let (locked, _) = staged_entry("lockedmark");
+    store.add(locked, &mut sealer, None).expect("it is stored");
+    let unmarked = store
+        .agent_namespaces()
+        .into_iter()
+        .find(|ns| !ns.description.contains(EntryReach::APEX_MARKING));
+    assert!(
+        unmarked.is_some(),
+        "every token is marked apex, so the marking distinguishes nothing"
+    );
+}
