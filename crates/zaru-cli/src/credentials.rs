@@ -53,14 +53,18 @@
 
 pub mod alias;
 pub mod entry;
+pub mod port;
 pub mod secret;
+pub mod store;
 
 pub use alias::{Alias, AliasRefused};
 pub use entry::{
     COMPOSER_SCOPE, Description, DescriptionRefused, Entry, Instance, Reach, Role, ToolScope, Ttl,
     TtlRefused,
 };
+pub use port::{Confirm, SealFailure, SecretStore};
 pub use secret::{Kind, REDACTED, Secret, SecretRefused};
+pub use store::{CredentialStore, Record, StoreError, StoredReach};
 
 #[cfg(test)]
 mod fixtures;

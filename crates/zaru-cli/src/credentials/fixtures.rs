@@ -88,3 +88,133 @@ pub(crate) fn personal_secret_nonce() -> String {
 pub(crate) fn app_secret_nonce() -> String {
     format!("nn_app_{}", nonce("appsecret"))
 }
+
+/// A directory tree a check owns, removed when the check ends.
+///
+/// [Testing]'s rule: "Each test owns its own state... its own configuration
+/// directory, its own session store, and its own working directory, writing
+/// to the paths the product actually writes to inside that root — which is
+/// the only honest way to exercise a path with no seam to inject a fake
+/// into." The store takes its root as a parameter because the product needs
+/// it to, so a check here is an ordinary caller rather than a fake.
+///
+/// The `control` directory beside the store's root is not decoration. It is
+/// the reading that discriminates when a check claims a root is gone: a
+/// checker that reports absence for everything passes on the root and fails
+/// on the control. The library's [Credentials] page requires exactly this —
+/// "verify with more than one check, and know which of them discriminates".
+///
+/// [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
+/// [Credentials]: https://100monkeys-ai.cortex.page/project-management/p/process/credentials
+pub(crate) struct ScratchRoot {
+    base: std::path::PathBuf,
+}
+
+impl ScratchRoot {
+    /// Make a tree no other check is using.
+    pub(crate) fn new() -> Self {
+        let base = std::env::temp_dir().join(nonce("cs-scratch"));
+        std::fs::create_dir_all(base.join("control")).expect("could not stage the scratch tree");
+        Self { base }
+    }
+
+    /// Where the store goes. It does not exist until the store makes it.
+    pub(crate) fn store_root(&self) -> std::path::PathBuf {
+        self.base.join("zaru")
+    }
+
+    /// A sibling that must survive whatever happens to the store's root.
+    pub(crate) fn control(&self) -> std::path::PathBuf {
+        self.base.join("control")
+    }
+
+    /// The directory both of the above sit in.
+    pub(crate) fn base(&self) -> &std::path::Path {
+        &self.base
+    }
+}
+
+impl Drop for ScratchRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
+/// Where a bearer value goes when there is nothing to seal it with.
+///
+/// **This is a test double and it is not evidence about ADR-0007 D3.** D3
+/// requires AES-256-GCM under a key from the OS keyring; this holds strings
+/// in a map. [Verification lessons] §24 is the warning it answers: "A test
+/// double answering more simply than the real thing is where a defect becomes
+/// invisible." What a check may conclude from this double is that the store
+/// hands the secret to the port and keeps none of it — nothing whatever about
+/// encryption, which is not built.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[derive(Debug, Default)]
+pub(crate) struct InMemorySecrets {
+    held: std::collections::BTreeMap<String, String>,
+}
+
+impl crate::credentials::port::SecretStore for InMemorySecrets {
+    fn seal(
+        &mut self,
+        alias: &crate::credentials::alias::Alias,
+        secret: &crate::credentials::secret::Secret,
+    ) -> Result<(), crate::credentials::port::SealFailure> {
+        self.held.insert(
+            alias.as_str().to_owned(),
+            secret.expose_for_dispatch().to_owned(),
+        );
+        Ok(())
+    }
+
+    fn unseal(
+        &self,
+        alias: &crate::credentials::alias::Alias,
+    ) -> Result<crate::credentials::secret::Secret, crate::credentials::port::SealFailure> {
+        let held = self.held.get(alias.as_str()).ok_or_else(|| {
+            crate::credentials::port::SealFailure::new(format!(
+                "nothing sealed under the alias {alias:?}"
+            ))
+        })?;
+        crate::credentials::secret::Secret::new(held.clone())
+            .map_err(|refusal| crate::credentials::port::SealFailure::new(refusal.to_string()))
+    }
+}
+
+/// A confirmer that answers as it was built to, and records what it was told.
+pub(crate) struct StagedConfirmer {
+    answer: bool,
+    told: std::cell::RefCell<Vec<String>>,
+}
+
+impl StagedConfirmer {
+    /// A confirmer that says yes.
+    pub(crate) fn accepting() -> Self {
+        Self {
+            answer: true,
+            told: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// A confirmer that says no.
+    pub(crate) fn declining() -> Self {
+        Self {
+            answer: false,
+            told: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Every sentence the store asked this confirmer to state.
+    pub(crate) fn told(&self) -> Vec<String> {
+        self.told.borrow().clone()
+    }
+}
+
+impl crate::credentials::port::Confirm for StagedConfirmer {
+    fn confirm_apex(&self, _alias: &crate::credentials::alias::Alias, grants: &str) -> bool {
+        self.told.borrow_mut().push(grants.to_owned());
+        self.answer
+    }
+}

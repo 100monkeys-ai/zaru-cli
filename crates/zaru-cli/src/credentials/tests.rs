@@ -214,3 +214,299 @@ fn a_description_that_is_not_one_renderable_line_is_refused() {
     let description = Description::new(&text).expect("one line of ordinary text");
     assert_eq!(description.as_str(), text);
 }
+
+// ---------------------------------------------------------------------------
+// The store on disk.
+// ---------------------------------------------------------------------------
+
+use crate::credentials::entry::{Entry, Instance, Reach, ToolScope};
+use crate::credentials::fixtures::{InMemorySecrets, ScratchRoot, StagedConfirmer};
+use crate::credentials::store::{CredentialStore, DIRECTORY_MODE, FILE_MODE, STORE_FILE};
+use std::os::unix::fs::PermissionsExt;
+
+/// An ordinary instance-locked entry carrying a fresh nonce for a secret.
+fn staged_entry(label: &str) -> (Entry, String) {
+    let secret_value = personal_secret_nonce();
+    let entry = Entry::new(
+        Alias::new(&nonce(label)).expect("a nonce is a legal alias"),
+        Description::new(format!("{label}, {}", nonce("purpose"))).expect("one line"),
+        Secret::new(secret_value.clone()).expect("nn_mcp_ names a kind"),
+        Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
+    )
+    .with_tools(ToolScope::new(["pages.read", "search.global"]))
+    .with_workspace("zaru");
+    (entry, secret_value)
+}
+
+// The corpus case, stated as a mode rather than as an intention. Both readings
+// come off the filesystem after the fact, never from what the code asked for.
+//
+// The mutant: drop `.mode(FILE_MODE)` and the `set_permissions` call from
+// `save`, and the file arrives at whatever the umask says -- 0644 here.
+#[test]
+fn the_file_on_disk_carries_0600_and_its_directory_0700() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (entry, _) = staged_entry("modes");
+    store
+        .add(entry, &mut sealer, None)
+        .expect("an entry is added");
+
+    let directory = std::fs::metadata(store.root())
+        .expect("the root exists")
+        .permissions()
+        .mode()
+        & 0o777;
+    let file = std::fs::metadata(store.path())
+        .expect("the file exists")
+        .permissions()
+        .mode()
+        & 0o777;
+
+    assert_eq!(
+        directory, DIRECTORY_MODE,
+        "the credential store's directory is mode {directory:o}, not {DIRECTORY_MODE:o}"
+    );
+    assert_eq!(
+        file, FILE_MODE,
+        "the credential store's file is mode {file:o}, not {FILE_MODE:o}"
+    );
+}
+
+// The corpus case: a value that reaches a place it must not.
+//
+// One arm is the nonce this check generated; the other is the raw bytes on
+// disk, read with `std::fs::read` and never through the store. Neither travels
+// through the other.
+//
+// The staging is asserted too. A store that wrote nothing at all would satisfy
+// "the secret is absent" perfectly, and that is a different defect wearing the
+// same green -- Verification lessons §4.
+#[test]
+fn a_stored_secret_is_absent_from_the_bytes_the_store_wrote() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (entry, secret_value) = staged_entry("ondisk");
+    let alias = entry.alias().clone();
+    store
+        .add(entry, &mut sealer, None)
+        .expect("an entry is added");
+
+    let raw = std::fs::read(store.path()).expect("the store wrote a file");
+    let text = String::from_utf8(raw).expect("the store wrote UTF-8");
+
+    assert!(
+        text.contains(alias.as_str()),
+        "the file does not carry the alias that was just added, so this check asserted nothing \
+         about a store that had written anything: {text}"
+    );
+    assert_absent(&text, &secret_value, "the file on disk");
+}
+
+// The scratch root, and the control that makes its absence mean something.
+//
+// Three readers, and a sibling that must survive all three. A checker that
+// answers "gone" for everything passes the first three and fails the fourth,
+// which is the reading the library's Credentials page calls discriminating.
+#[test]
+fn a_scratch_root_is_gone_after_removal_and_a_control_beside_it_survives() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (entry, _) = staged_entry("removal");
+    store
+        .add(entry, &mut sealer, None)
+        .expect("an entry is added");
+
+    let root = store.root().to_path_buf();
+    let file = store.path();
+    let control = scratch.control();
+    assert!(file.exists(), "the store never wrote a file to remove");
+
+    std::fs::remove_dir_all(&root).expect("the root is removable");
+
+    // Reader one: the path predicate.
+    assert!(!root.exists(), "the store's root is still there");
+    // Reader two: enumerate the parent, which is a different question.
+    let siblings: Vec<String> = std::fs::read_dir(scratch.base())
+        .expect("the parent is readable")
+        .map(|entry| {
+            entry
+                .expect("a readable directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        !siblings.iter().any(|name| name == "zaru"),
+        "the parent still lists the store's root: {siblings:?}"
+    );
+    // Reader three: the error kind separates "gone" from "refused".
+    let refused = std::fs::read(&file).expect_err("the file is gone");
+    assert_eq!(
+        refused.kind(),
+        std::io::ErrorKind::NotFound,
+        "reading the removed file failed for a reason other than its absence: {refused}"
+    );
+    // The control: a checker that says "gone" about everything fails here.
+    assert!(
+        control.exists(),
+        "the control directory was removed too, so the three readings above are not about the \
+         store's root in particular"
+    );
+    assert!(
+        siblings.iter().any(|name| name == "control"),
+        "the parent listing found nothing at all, so it could not have found the root either: \
+         {siblings:?}"
+    );
+}
+
+#[test]
+fn an_apex_token_offered_with_no_confirmer_is_refused() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (entry, _) = staged_entry("apex");
+    let entry = Entry::new(
+        entry.alias().clone(),
+        entry.description().clone(),
+        entry.secret().clone(),
+        Reach::Apex,
+    );
+
+    let refusal = store
+        .add(entry, &mut sealer, None)
+        .expect_err("an apex token with no confirmer is refused");
+    let message = refusal.to_string();
+    assert!(
+        message.contains("no instance boundary"),
+        "the refusal does not state what the token grants: {message}"
+    );
+    assert!(store.is_empty(), "the apex token was stored anyway");
+}
+
+#[test]
+fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let (base, _) = staged_entry("declined");
+    let declining = StagedConfirmer::declining();
+    let entry = Entry::new(
+        base.alias().clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        Reach::Apex,
+    );
+    store
+        .add(entry, &mut sealer, Some(&declining))
+        .expect_err("a declined apex token is not stored");
+    assert!(store.is_empty(), "a declined apex token was stored");
+    assert_eq!(
+        declining.told().len(),
+        1,
+        "the confirmer was never asked, so the decline was not the user's"
+    );
+
+    let (base, _) = staged_entry("accepted");
+    let accepting = StagedConfirmer::accepting();
+    let alias = base.alias().clone();
+    let entry = Entry::new(
+        alias.clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        Reach::Apex,
+    );
+    store
+        .add(entry, &mut sealer, Some(&accepting))
+        .expect("a confirmed apex token is stored");
+    assert_eq!(store.len(), 1);
+    assert_eq!(
+        store.record(&alias).expect("it is there").reach,
+        crate::credentials::store::StoredReach::Apex
+    );
+    // D8: the sentence the user was told is the sentence the store composed.
+    assert_eq!(accepting.told().len(), 1);
+    assert!(
+        accepting.told()[0].contains("no instance boundary"),
+        "the user was not told what an apex token grants: {:?}",
+        accepting.told()
+    );
+}
+
+#[test]
+fn a_duplicate_alias_is_refused() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (first, _) = staged_entry("duplicate");
+    let alias = first.alias().clone();
+    let second = Entry::new(
+        alias.clone(),
+        first.description().clone(),
+        first.secret().clone(),
+        first.reach().clone(),
+    );
+    store
+        .add(first, &mut sealer, None)
+        .expect("the first is added");
+    store
+        .add(second, &mut sealer, None)
+        .expect_err("the second is refused");
+    assert_eq!(store.len(), 1);
+}
+
+// ADR-0014 D5's argument, one layer down: a key nothing reads might have been
+// a restriction.
+#[test]
+fn a_key_nothing_reads_is_refused_at_load_rather_than_ignored() {
+    let scratch = ScratchRoot::new();
+    let root = scratch.store_root();
+    std::fs::create_dir_all(&root).expect("the root is creatable");
+    std::fs::write(
+        root.join(STORE_FILE),
+        r#"{"entries":{"work":{"description":"d","kind":"personal","reach":"apex","role":null,"tools":[],"workspace":null,"secret":"nn_mcp_smuggled"}}}"#,
+    )
+    .expect("the file is writable");
+
+    let refusal = CredentialStore::open(&root).expect_err("an unknown key is refused");
+    let message = refusal.to_string();
+    assert!(
+        message.contains("secret"),
+        "the refusal does not name the key nothing reads: {message}"
+    );
+}
+
+#[test]
+fn what_the_store_wrote_is_what_it_reads_back() {
+    let scratch = ScratchRoot::new();
+    let mut sealer = InMemorySecrets::default();
+    let (entry, secret_value) = staged_entry("roundtrip");
+    let alias = entry.alias().clone();
+    let description = entry.description().as_str().to_owned();
+
+    {
+        let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+        store
+            .add(entry, &mut sealer, None)
+            .expect("an entry is added");
+    }
+
+    let store = CredentialStore::open(scratch.store_root()).expect("the written root reopens");
+    let record = store
+        .record(&alias)
+        .expect("the entry survived the round trip");
+    assert_eq!(record.description, description);
+    assert_eq!(record.kind, "personal");
+    assert_eq!(record.tools, vec!["pages.read", "search.global"]);
+    assert_eq!(record.workspace.as_deref(), Some("zaru"));
+    assert_eq!(record.role, None);
+
+    // The secret came back through the port, which is the only path it has.
+    let recovered = store.secret(&alias, &sealer).expect("the port holds it");
+    assert_eq!(recovered.expose_for_dispatch(), secret_value);
+}

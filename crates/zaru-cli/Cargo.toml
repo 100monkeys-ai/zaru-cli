@@ -22,3 +22,5 @@ zaru-core = { path = "../zaru-core" }
 zaru-notes = { path = "../zaru-notes" }
 zaru-seal = { path = "../zaru-seal" }
 zaru-tui = { path = "../zaru-tui" }
+serde = { workspace = true }
+serde_json = { workspace = true }

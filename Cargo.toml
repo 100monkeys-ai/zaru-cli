@@ -53,6 +53,29 @@ tokio = { version = "1.53.1", default-features = false, features = [
 # `scripts/check-crate-boundaries.py`. `no-backend` is also what exposes
 # `tui_textarea::{Input, Key}`, the backend-agnostic input type, so keys need
 # no crossterm either. `TestBackend` is not feature-gated in 0.29.
+# `serde` and `serde_json` are D2's "serialisation" row. The table names
+# `serde` alone, and `serde` alone writes no bytes: it is a framework of
+# traits and derives, and every actual format lives in a separate crate. So
+# the format crate is read as part of the role the table already carries
+# rather than as a new dependency, and that reading is recorded as a proposed
+# amendment on ADR-0003 rather than made silently here.
+#
+# `derive` is on because the alternative is hand-written `Serialize` and
+# `Deserialize` impls for the stored shape, which are the two places a field
+# gets forgotten. `serde_json` is the format ADR-0007 D3 implies by mirroring
+# ADR-093's `~/.aegis/auth.json`; `preserve_order` is off, because the stored
+# map is a `BTreeMap` and is therefore already ordered by key, which makes a
+# saved file's bytes a function of its contents rather than of insertion
+# order -- and a file that changes bytes without changing meaning is a file
+# nobody can diff.
+serde = { version = "1.0.229", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1.0.151", default-features = false, features = [
+    "std",
+] }
+
 ratatui = { version = "0.29.0", default-features = false }
 tui-textarea = { version = "0.7.0", default-features = false, features = [
     "no-backend",

@@ -9,13 +9,20 @@
 //! [`Secret`](super::Secret); `instance` and `secret` come from the server;
 //! `tools` and `workspace` are cached.
 //!
-//! # `role` is not settable here
+//! # An entry is what the user supplies; a record is what the store keeps
 //!
-//! ADR-0007 D4 is an invariant over the whole store — "Exactly one token is
-//! flagged `composer`" — and an invariant over a collection cannot be held by
-//! a member of it. So [`Entry::role`] reads, and only
-//! [`CredentialStore::grant_composer_role`](super::store::CredentialStore::grant_composer_role)
-//! writes.
+//! [`Entry`] carries a [`Secret`] and is *consumed* by
+//! [`CredentialStore::add`](super::store::CredentialStore::add). What the
+//! store then holds and lists is
+//! [`Record`](super::store::Record), which has **no field a secret could go
+//! in** — the value goes to the [`SecretStore`](super::port::SecretStore)
+//! port instead. D2's eight fields are all present across the pair: `secret`
+//! is the one that lives behind the port, and `kind` is derived rather than
+//! stored.
+//!
+//! `role` is on the record and not here, because ADR-0007 D4 is an invariant
+//! over the whole store — "Exactly one token is flagged `composer`" — and an
+//! invariant over a collection cannot be held by a member of it.
 
 use crate::credentials::alias::Alias;
 use crate::credentials::secret::Secret;
@@ -304,18 +311,17 @@ impl fmt::Display for Description {
     }
 }
 
-/// One stored token.
+/// One token as the user supplies it, secret and all.
 ///
-/// The fields are private and the accessors are read-only, so the store's
-/// invariants — D4's single composer role above all — cannot be stepped
-/// around by a caller holding an entry.
+/// The fields are private and the accessors are read-only, so a caller
+/// holding an entry cannot step around the store's invariants. An entry
+/// carries no role: only the store grants one.
 #[derive(Debug, Clone)]
 pub struct Entry {
     alias: Alias,
     description: Description,
     secret: Secret,
     reach: Reach,
-    role: Option<Role>,
     tools: ToolScope,
     workspace: Option<String>,
 }
@@ -329,7 +335,6 @@ impl Entry {
             description,
             secret,
             reach,
-            role: None,
             tools: ToolScope::default(),
             workspace: None,
         }
@@ -371,12 +376,6 @@ impl Entry {
     #[must_use]
     pub const fn reach(&self) -> &Reach {
         &self.reach
-    }
-
-    /// The role this token carries, if the store granted it one.
-    #[must_use]
-    pub const fn role(&self) -> Option<Role> {
-        self.role
     }
 
     /// The cached tool scope.
