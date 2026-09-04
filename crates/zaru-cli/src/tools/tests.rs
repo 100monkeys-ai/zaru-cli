@@ -198,10 +198,12 @@ fn a_cloned_repository_cannot_set_the_permission_mode_and_the_user_can() {
     }
 
     // Exactly one layer is a cloned repository's, and the other four are not.
+    // Enumerated over `config`'s `Layer`, which is now the crate's only
+    // declaration of ADR-0014 D1's five, through D6's own predicate.
     let cloned: Vec<&str> = Layer::ALL
         .into_iter()
-        .filter(|layer| layer.is_written_by_a_cloned_repository())
-        .map(Layer::as_str)
+        .filter(|layer| layer.bound_by_the_escalation_ceiling())
+        .map(Layer::label)
         .collect();
     assert_eq!(
         cloned,

@@ -93,54 +93,22 @@ impl fmt::Display for Tier {
 
 /// Which of ADR-0014 D1's five configuration layers a value came from.
 ///
-/// Transcribed from D1's list, lowest to highest. Higher wins, and there is
-/// no layer above flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Layer {
-    /// 1 — compiled in.
-    BuiltIn,
-    /// 2 — `~/.zaru/config.toml`.
-    User,
-    /// 3 — `./zaru.toml`. The layer a cloned repository writes.
-    Project,
-    /// 4 — `ZARU_*`.
-    Environment,
-    /// 5 — command-line flags.
-    Flag,
-}
-
-impl Layer {
-    /// Every layer ADR-0014 D1 names, lowest to highest.
-    pub const ALL: [Self; 5] = [
-        Self::BuiltIn,
-        Self::User,
-        Self::Project,
-        Self::Environment,
-        Self::Flag,
-    ];
-
-    /// How ADR-0014 D1's table names this layer.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::BuiltIn => "built-in defaults",
-            Self::User => "user config",
-            Self::Project => "project config",
-            Self::Environment => "environment",
-            Self::Flag => "command-line flags",
-        }
-    }
-
-    /// Whether a repository the user cloned writes this layer.
-    ///
-    /// One layer, today. It is a method rather than an equality test at every
-    /// call site so that a second such layer — a served extension, an
-    /// admitted skill — is added in one place.
-    #[must_use]
-    pub const fn is_written_by_a_cloned_repository(self) -> bool {
-        matches!(self, Self::Project)
-    }
-}
+/// **Declared once, in [`crate::config::layer`], and re-exported here.** This
+/// module transcribed D1's five layers a second time until 2026-09-04, and a
+/// rule that exists in two places diverges — these two already had, on the
+/// spellings of layers 1 and 5. The declaration that stays is
+/// configuration's, because [Bounded Contexts] gives `zaru-cli`
+/// configuration and D1's layers are configuration's own vocabulary. This is
+/// a **delegated coordinator ruling of 2026-09-04**, recorded on ADR-0011's
+/// Status tracking and open to Jeshua's veto.
+///
+/// The predicate this module used to spell `is_written_by_a_cloned_repository`
+/// is [`Layer::bound_by_the_escalation_ceiling`], which is ADR-0014 D6's own
+/// framing of the same rule over the same single layer. One predicate for one
+/// clause has one name.
+///
+/// [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
+pub use crate::config::layer::Layer;
 
 /// Why a permission mode was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,7 +150,7 @@ impl fmt::Display for ModeRefused {
                  This refusal is wider than D6's, which forbids only *raising* the mode: no \
                  record states an ordering over \"ask\", \"allow\" and \"yolo\", so there is no \
                  way to tell a raise from a lower, and that question is open on the record",
-                layer.as_str()
+                layer.label()
             ),
             Self::NoSuchMode { key, offered } => write!(
                 f,
@@ -242,14 +210,15 @@ impl Mode {
     ///
     /// # Errors
     ///
-    /// [`ModeRefused::FromAClonedRepository`] when `layer` is one a cloned
-    /// repository writes — ADR-0014 D6 — checked **before** the value is
+    /// [`ModeRefused::FromAClonedRepository`] when `layer` is one ADR-0014
+    /// D6's escalation ceiling binds — the project layer, which is the one a
+    /// cloned repository writes — checked **before** the value is
     /// parsed, so that a project layer offering a misspelled mode is refused
     /// for the reason that matters rather than for the typo.
     ///
     /// [`ModeRefused::NoSuchMode`] when `value` names none of the three.
     pub fn from_layer(layer: Layer, key: &str, value: &str) -> Result<Self, ModeRefused> {
-        if layer.is_written_by_a_cloned_repository() {
+        if layer.bound_by_the_escalation_ceiling() {
             return Err(ModeRefused::FromAClonedRepository {
                 key: key.to_owned(),
                 offered: value.escape_debug().to_string(),
