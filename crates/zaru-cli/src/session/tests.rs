@@ -14,9 +14,11 @@ use crate::session::id::{
 };
 use crate::session::meta::{Meta, MetaStore};
 use crate::session::record::Record;
+use crate::session::retention::RetentionWindow;
 use crate::session::store::{DIRECTORY_MODE, SessionStore};
 use crate::session::transcript::Transcript;
 use crate::tools::Tier;
+use core::time::Duration;
 use std::os::unix::fs::PermissionsExt;
 
 // ---------------------------------------------------------------------------
@@ -1172,5 +1174,213 @@ fn a_resume_reports_a_trailing_fragment_and_refuses_a_malformed_complete_line() 
     assert!(
         failure.to_string().contains("line 1"),
         "the refusal does not say which line: {failure}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D6 — retention is bounded, deletion is real
+// ---------------------------------------------------------------------------
+
+/// D6's window is the caller's and zero is refused, in the shape ADR-0007's
+/// `Ttl` and ADR-0016's `RetryCeiling` already use.
+///
+/// The mutant: accepting zero, which deletes the session that is starting.
+#[test]
+fn a_retention_window_of_zero_is_refused_and_the_module_carries_no_default() {
+    assert_eq!(
+        RetentionWindow::new(Duration::ZERO),
+        Err(crate::session::WindowRefused),
+    );
+    assert!(
+        RetentionWindow::new(Duration::from_millis(1)).is_ok(),
+        "one millisecond is a usable window, or this refusal is satisfied by refusing everything",
+    );
+    assert!(
+        crate::session::WindowRefused
+            .to_string()
+            .contains("thirty days"),
+        "the refusal does not say where D6's number is, so a reader cannot find out why the \
+         module has no default",
+    );
+}
+
+/// D6: "Sessions older than a configurable window are pruned on startup."
+///
+/// The age comes from the id rather than the filesystem, which is what makes
+/// this staging possible at all: three sessions are created within the same
+/// millisecond of real time and are minted at three days apart.
+///
+/// The boundary is staged three ways — one under the window, one exactly on
+/// it, and one past it — because a comparison that is off by one is
+/// indistinguishable from a correct one anywhere else in the range.
+///
+/// The mutant: reading the age off the filesystem's modification time, which
+/// makes every session in this check the same age.
+#[test]
+fn pruning_removes_the_sessions_past_the_window_and_keeps_the_rest() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let day = 24 * 60 * 60 * 1000u64;
+    let now = Millis::new(1_700_000_000_000 + 30 * day);
+    let window =
+        RetentionWindow::new(Duration::from_millis(10 * day)).expect("ten days is not zero");
+
+    // Ages: 20 days, exactly 10 days, 9 days.
+    let ancient = id_at(now.get() - 20 * day, 1);
+    let exactly_on_the_window = id_at(now.get() - 10 * day, 2);
+    let recent = id_at(now.get() - 9 * day, 3);
+    for id in [&ancient, &exactly_on_the_window, &recent] {
+        store.start(id.clone()).expect("could not start a session");
+    }
+
+    let pruned = crate::session::prune(&store, window, now, None).expect("pruning failed");
+
+    assert_eq!(
+        pruned.removed,
+        vec![ancient.clone()],
+        "the sessions removed are not the ones past a ten-day window",
+    );
+    assert_eq!(
+        pruned.kept,
+        vec![exactly_on_the_window.clone(), recent.clone()],
+        "a session exactly on the window is not past it, and one inside it is not either",
+    );
+    assert_eq!(pruned.spared_as_current, None);
+
+    assert_eq!(
+        store.ids().expect("could not list sessions"),
+        vec![exactly_on_the_window, recent],
+        "the directory listing disagrees with what pruning said it did",
+    );
+}
+
+/// D6: "**Deletion removes the directory rather than marking it deleted.**"
+///
+/// Asserted four ways, and the fourth is the one that discriminates: a
+/// sibling control directory must **survive**, because a checker that reports
+/// absence for everything passes on the target and fails on the control. That
+/// is the credential store's own reading of what makes a deletion check mean
+/// something.
+///
+/// The mutant: writing a `.deleted` marker beside the directory instead of
+/// removing it, or emptying the directory rather than removing it.
+#[test]
+fn a_pruned_session_leaves_no_tombstone_and_a_sibling_survives() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let day = 24 * 60 * 60 * 1000u64;
+    let now = Millis::new(1_700_000_000_000 + 30 * day);
+    let window = RetentionWindow::new(Duration::from_millis(day)).expect("a day is not zero");
+
+    let doomed = id_at(now.get() - 20 * day, 4);
+    let survivor = id_at(now.get(), 5);
+    let doomed_session = store.start(doomed.clone()).expect("could not start");
+    store.start(survivor.clone()).expect("could not start");
+
+    // A session with contents, so an implementation that removed an empty
+    // directory and stopped would be visible.
+    let mut transcript = Transcript::append_to(doomed_session.transcript_path())
+        .expect("could not open the transcript");
+    transcript
+        .record(&Record::Loop(super::fixtures::sequenced_event(0, 32)))
+        .expect("could not append");
+    Checkpoint::at(doomed_session.checkpoint_path())
+        .write(&serde_json::json!({ "turn": 1 }))
+        .expect("could not write the checkpoint");
+
+    let pruned = crate::session::prune(&store, window, now, None).expect("pruning failed");
+    assert_eq!(pruned.removed, vec![doomed.clone()]);
+
+    // Four readings, and the sibling is the one that discriminates.
+    assert!(
+        !doomed_session.directory().exists(),
+        "the pruned session's directory is still there",
+    );
+    assert!(
+        !doomed_session.transcript_path().exists(),
+        "the pruned session's transcript is still there",
+    );
+    assert_eq!(
+        super::fixtures::listing(store.sessions_directory().as_path()),
+        vec![survivor.to_string()],
+        "the sessions directory carries something other than the surviving session — a \
+         tombstone is exactly what D6 forbids",
+    );
+    assert!(
+        store.sessions_directory().join(survivor.as_str()).is_dir(),
+        "the sibling that must survive did not, so a checker reporting absence for everything \
+         would have passed the three assertions above",
+    );
+}
+
+/// D6's pruning runs at startup, and the session that is starting is never
+/// what it removes.
+///
+/// The staging makes the current session **older than the window**, so the
+/// skip is the only thing keeping it: a check that staged it as young would
+/// pass against an implementation with no skip at all.
+///
+/// The mutant: dropping the `current` guard.
+#[test]
+fn the_current_session_is_never_pruned_even_when_it_is_past_the_window() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let day = 24 * 60 * 60 * 1000u64;
+    let now = Millis::new(1_700_000_000_000 + 30 * day);
+    let window = RetentionWindow::new(Duration::from_millis(day)).expect("a day is not zero");
+
+    let current = id_at(now.get() - 20 * day, 6);
+    let other = id_at(now.get() - 20 * day, 7);
+    for id in [&current, &other] {
+        store.start(id.clone()).expect("could not start a session");
+    }
+
+    let pruned =
+        crate::session::prune(&store, window, now, Some(&current)).expect("pruning failed");
+
+    assert_eq!(
+        pruned.removed,
+        vec![other],
+        "the current session was removed, so a startup prune can delete the transcript it is \
+         about to append to",
+    );
+    assert_eq!(
+        pruned.spared_as_current,
+        Some(current.clone()),
+        "the session was kept and nothing said why, so the skip is unobservable",
+    );
+    assert!(
+        store.sessions_directory().join(current.as_str()).is_dir(),
+        "the current session's directory is gone",
+    );
+}
+
+/// A directory the harness did not write stops pruning rather than being
+/// deleted or silently passed over.
+///
+/// The mutant: pruning whatever it cannot identify, which deletes a user's
+/// own directory under `~/.zaru/sessions/`.
+#[test]
+fn pruning_refuses_rather_than_deleting_what_it_cannot_identify() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let day = 24 * 60 * 60 * 1000u64;
+    let now = Millis::new(1_700_000_000_000 + 30 * day);
+    let window = RetentionWindow::new(Duration::from_millis(day)).expect("a day is not zero");
+    store
+        .start(id_at(now.get() - 20 * day, 8))
+        .expect("could not start a session");
+    let intruder = store.sessions_directory().join("someones-own-notes");
+    std::fs::create_dir(&intruder).expect("could not stage the intruder");
+
+    let failure = crate::session::prune(&store, window, now, None)
+        .expect_err("a directory that is not a session must stop pruning");
+    assert!(
+        failure.to_string().contains("not named by a ULID"),
+        "the refusal does not say what stopped it: {failure}",
+    );
+    assert!(
+        intruder.is_dir(),
+        "pruning removed a directory the harness did not write",
     );
 }

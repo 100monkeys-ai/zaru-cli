@@ -70,6 +70,7 @@ pub mod id;
 pub mod meta;
 pub mod record;
 pub mod resume;
+pub mod retention;
 pub mod store;
 pub mod transcript;
 
@@ -81,6 +82,7 @@ pub use id::{
 pub use meta::{Meta, MetaFailure, MetaStore};
 pub use record::{FailureLine, Phase, Record, ToolCall};
 pub use resume::{Interrupted, ResumeFailure, Resumed, resume};
+pub use retention::{PruneFailure, Pruned, RetentionWindow, WindowRefused, prune};
 pub use store::{
     CHECKPOINT_FILE, META_FILE, SESSIONS_DIRECTORY, Session, SessionError, SessionStore,
     TRANSCRIPT_FILE,
