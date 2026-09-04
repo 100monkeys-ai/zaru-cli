@@ -21,9 +21,16 @@ use super::fixtures::{
     ManualClock, PassThroughContext, Plan, ProjectingSink, RecordingSink, StagedExecutor,
     StagedGenerator, StagedValidators, Trace, TraceEntry, TracingSink, tag,
 };
+// `run` is reached here through its own module rather than through the
+// crate's re-export, so the re-export's only consumer is the integration test
+// that drives the loop from outside. That is what leaves
+// `tests/headless_loop.rs` guarding reachability on its own: were these
+// imports to go through the re-export, removing it would redden nineteen
+// checks and the one that is actually about it would be lost in them.
+use crate::iteration::machine::run;
 use crate::iteration::{
     Ceiling, Event, EventSink, ExhaustionReason, IterationError, Limits, Outcome, PortKind, Ports,
-    State, TruncationBudget, run,
+    State, TruncationBudget,
 };
 use core::time::Duration;
 use std::sync::Arc;
