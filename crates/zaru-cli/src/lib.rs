@@ -23,9 +23,10 @@
 //! crate "Binary, configuration, session lifecycle, the credential store, the
 //! local tool surface and its permission model".
 //!
-//! The credential store, ADR-0014's configuration hierarchy and ADR-0011's
-//! local tool surface are built. Nothing else named above exists yet, and none
-//! of the three is reachable from the `zaru` binary.
+//! The credential store, ADR-0014's configuration hierarchy, ADR-0011's local
+//! tool surface and ADR-0016's error taxonomy are built. ADR-0010's session
+//! lifecycle is not, and the taxonomy takes it as an input rather than
+//! building any of it. None of the four is reachable from the `zaru` binary.
 //!
 //! [Bounded Contexts] names no crate for the tool surface. It is here under a
 //! delegated coordinator ruling of 2026-09-04, recorded on that page and on
@@ -40,4 +41,5 @@
 
 pub mod config;
 pub mod credentials;
+pub mod failure;
 pub mod tools;
