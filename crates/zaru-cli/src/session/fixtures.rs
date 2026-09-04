@@ -86,3 +86,67 @@ impl MetaStore for InMemoryMeta {
             .ok_or_else(|| MetaFailure::new("nothing has been recorded for this session"))
     }
 }
+
+/// A transcript entry, built through ADR-0011's own permission decision
+/// rather than constructed here.
+///
+/// [`TranscriptEntry`](crate::tools::TranscriptEntry) has private fields and
+/// no public constructor, deliberately — the record is what a `Decision`
+/// produced. So this fixture drives the real decision, which is also what
+/// makes the stored line the one ADR-0011 D4 renders rather than a second
+/// spelling of it.
+pub(crate) fn entry_for(
+    working: &crate::tools::WorkingDirectory,
+    candidate: &str,
+    destructive: bool,
+) -> crate::tools::TranscriptEntry {
+    let target = working.classify(candidate);
+    let invocation = crate::tools::Invocation::on_path(crate::tools::ToolName::FsWrite, &target)
+        .expect("fs.write addresses a path");
+    crate::tools::Decision::reach(
+        crate::tools::Mode::Yolo,
+        &invocation,
+        crate::tools::Assessment {
+            allowlisted: false,
+            destructive,
+        },
+    )
+    .entry()
+    .clone()
+}
+
+/// An ADR-0008 D3 event carrying a sequence number and a payload of a chosen
+/// size.
+///
+/// `ValidatorEvaluated` is used because it is the one event with both a field
+/// a check can count on and a field a check can make long — and a long line
+/// is what makes a torn write visible at all. Nothing is invented for the
+/// test: this is the product's own event shape.
+pub(crate) fn sequenced_event(seq: u64, payload_bytes: usize) -> zaru_core::iteration::Event {
+    zaru_core::iteration::Event::ValidatorEvaluated {
+        name: seq.to_string(),
+        outcome: zaru_core::iteration::ValidatorOutcome::Failed,
+        detail: "x".repeat(payload_bytes),
+    }
+}
+
+/// The sequence number a [`sequenced_event`] record carries, if it is one.
+pub(crate) fn sequence_of(record: &crate::session::Record) -> Option<u64> {
+    match record {
+        crate::session::Record::Loop(zaru_core::iteration::Event::ValidatorEvaluated {
+            name,
+            ..
+        }) => name.parse().ok(),
+        _ => None,
+    }
+}
+
+/// The environment variable the kill check's child half reads.
+pub(crate) const KILL_CHILD_TRANSCRIPT: &str = "ZARU_SESSION_KILL_CHILD_TRANSCRIPT";
+
+/// How many bytes of payload each line the child appends carries.
+///
+/// Chosen so that a line does not divide a `BufWriter`'s default 8 KiB
+/// buffer: with a buffer that flushes on its own boundary, the boundary then
+/// falls inside a line and the tear is visible rather than lucky.
+pub(crate) const KILL_LINE_PAYLOAD: usize = 200;

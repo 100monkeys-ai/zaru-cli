@@ -67,17 +67,21 @@
 
 pub mod id;
 pub mod meta;
+pub mod record;
 pub mod store;
+pub mod transcript;
 
 pub use id::{
     ALPHABET, ID_LENGTH, Millis, MintFailure, SessionId, SessionIdRefused, SystemWallClock,
     WallClock,
 };
 pub use meta::{Meta, MetaFailure, MetaStore};
+pub use record::{FailureLine, Phase, Record, ToolCall};
 pub use store::{
     CHECKPOINT_FILE, META_FILE, SESSIONS_DIRECTORY, Session, SessionError, SessionStore,
     TRANSCRIPT_FILE,
 };
+pub use transcript::{Reading, Transcript, TranscriptError};
 
 #[cfg(test)]
 mod fixtures;

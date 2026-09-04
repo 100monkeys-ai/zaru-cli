@@ -12,7 +12,9 @@ use crate::session::id::{
     ALPHABET, ID_LENGTH, Millis, SessionId, SessionIdRefused, SystemWallClock,
 };
 use crate::session::meta::{Meta, MetaStore};
+use crate::session::record::Record;
 use crate::session::store::{DIRECTORY_MODE, SessionStore};
+use crate::session::transcript::Transcript;
 use crate::tools::Tier;
 use std::os::unix::fs::PermissionsExt;
 
@@ -385,5 +387,473 @@ fn the_staged_clock_moves_when_a_check_moves_it() {
     assert_eq!(
         crate::session::id::WallClock::now(&clock),
         Millis::new(1_500)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D2 — the transcript is append-only, one event per line, and it is the
+// loop's own event stream
+// ---------------------------------------------------------------------------
+
+/// D2: "Every event from ADR-0008 D3 is written as it occurs."
+///
+/// The round trip goes through the file rather than through the serialiser
+/// alone, so what is asserted is what a reader of the transcript gets
+/// ([Verification lessons] §10). The event carries a nonce with a newline and
+/// a non-ASCII character in it, because a line-oriented format that did not
+/// escape a newline would silently become two records.
+///
+/// The mutant: writing a record without its trailing newline, which merges it
+/// with the next.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn the_transcript_is_the_loops_own_event_stream_one_event_per_line() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 1))
+        .expect("could not start a session");
+
+    let awkward = format!("{}\nwith a newline in it", super::fixtures::nonce("detail"));
+    let events = vec![
+        zaru_core::iteration::Event::IterationStarted { n: 1, of: 5 },
+        zaru_core::iteration::Event::ValidatorEvaluated {
+            name: "cargo test".to_owned(),
+            outcome: zaru_core::iteration::ValidatorOutcome::Failed,
+            detail: awkward.clone(),
+        },
+        zaru_core::iteration::Event::LoopExhausted {
+            iterations: 5,
+            reason: zaru_core::iteration::ExhaustionReason::CeilingReached,
+            last_failure: awkward.clone(),
+        },
+    ];
+
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    for event in &events {
+        transcript
+            .record(&Record::Loop(event.clone()))
+            .expect("could not append an event");
+    }
+
+    let bytes = std::fs::read(session.transcript_path()).expect("the transcript is not there");
+    assert_eq!(
+        bytes.iter().filter(|byte| **byte == b'\n').count(),
+        events.len(),
+        "D2 is one event per line, and the file does not carry one newline per event",
+    );
+
+    let reading =
+        Transcript::read(&session.transcript_path()).expect("the transcript did not read");
+    assert_eq!(reading.fragment, None, "a clean write left a partial line");
+    assert_eq!(
+        reading.records,
+        events.into_iter().map(Record::Loop).collect::<Vec<_>>(),
+        "the transcript did not read back as the events that were written",
+    );
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(&awkward.replace('\n', "\\n")),
+        "the detail's embedded newline was not escaped, so one event became two lines",
+    );
+}
+
+/// D2's transcript is append-only: a second opening adds to the file rather
+/// than replacing it.
+///
+/// The mutant: opening with `truncate(true)` instead of `append(true)`.
+#[test]
+fn a_second_opening_appends_rather_than_replacing() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 2))
+        .expect("could not start a session");
+
+    for seq in 0..3u64 {
+        let mut transcript = Transcript::append_to(session.transcript_path())
+            .expect("could not open the transcript");
+        transcript
+            .record(&Record::Loop(super::fixtures::sequenced_event(seq, 4)))
+            .expect("could not append");
+    }
+
+    let reading =
+        Transcript::read(&session.transcript_path()).expect("the transcript did not read");
+    assert_eq!(
+        reading
+            .records
+            .iter()
+            .filter_map(super::fixtures::sequence_of)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "three separate openings did not leave three records, so the transcript is not \
+         append-only",
+    );
+}
+
+/// The transcript carries `0600`, read back off the filesystem.
+///
+/// ADR-0010's own Negative section: "Filesystem permissions are the only
+/// protection, and that is worth saying out loud rather than implying
+/// encryption that does not exist." So this is the whole of that protection,
+/// and it is asserted against a file that already existed with the wrong mode
+/// as well as one this call created — `OpenOptions::mode` applies only on
+/// creation.
+///
+/// The mutant: dropping the `set_permissions` after the open.
+#[test]
+fn the_transcript_carries_0600_even_when_it_already_existed_with_another_mode() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 3))
+        .expect("could not start a session");
+
+    std::fs::write(session.transcript_path(), b"").expect("could not stage the file");
+    std::fs::set_permissions(
+        session.transcript_path(),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .expect("could not stage the wrong mode");
+    assert_eq!(
+        std::fs::metadata(session.transcript_path())
+            .expect("staged")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644,
+        "the staging did not take, so this check would assert nothing",
+    );
+
+    let _transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+
+    assert_eq!(
+        std::fs::metadata(session.transcript_path())
+            .expect("opened")
+            .permissions()
+            .mode()
+            & 0o777,
+        crate::session::store::FILE_MODE,
+        "a transcript that already existed kept a mode every process on the machine can read, \
+         and ADR-0010 D5 says that mode is the only protection there is",
+    );
+}
+
+/// D2's three producers, each a variant, and the five that do not exist
+/// getting none.
+///
+/// The mutant: a `kind: String` field instead of an enum, which lets a fourth
+/// producer arrive as a typo rather than as a compile error.
+#[test]
+fn every_producer_that_exists_is_a_variant_and_the_five_that_do_not_are_absent() {
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working =
+        crate::tools::WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let entry = super::fixtures::entry_for(&working, "src/main.rs", true);
+
+    let records = vec![
+        Record::Loop(zaru_core::iteration::Event::IterationStarted { n: 1, of: 3 }),
+        Record::ToolCall(crate::session::ToolCall::started(&entry)),
+        Record::Failure(crate::session::FailureLine::of(
+            &crate::failure::Classified::Expected(crate::failure::Expected::new(
+                crate::failure::Statement::new("the loop was exhausted")
+                    .expect("a statement is not empty"),
+            )),
+        )),
+    ];
+
+    assert_eq!(
+        records
+            .iter()
+            .map(crate::session::Record::producer)
+            .collect::<Vec<_>>(),
+        vec!["loop", "tool_call", "failure"],
+        "the three producers that exist do not each have their own variant",
+    );
+
+    // Every line is one JSON object whose single key names its producer, so a
+    // reader tells them apart without a convention.
+    for record in &records {
+        let rendered = serde_json::to_string(record).expect("a record must serialise");
+        assert!(
+            rendered.starts_with(&format!("{{\"{}\"", record.producer())),
+            "the line does not name its producer: {rendered}",
+        );
+        assert_eq!(
+            serde_json::from_str::<Record>(&rendered).expect("a record must parse"),
+            *record,
+        );
+    }
+
+    // The five producers D2 names that no record in this workspace builds are
+    // absent rather than stubbed: a variant nothing can construct would be a
+    // permanent exemption dressed as a promise.
+    let names = serde_json::to_string(&records).expect("must serialise");
+    for absent in [
+        "user_message",
+        "seal_verdict",
+        "attachment",
+        "learning_announcement",
+    ] {
+        assert!(
+            !names.contains(absent),
+            "the transcript has a variant for a producer nothing in this workspace builds: \
+             {absent}",
+        );
+    }
+}
+
+/// ADR-0011 D4's record reaches the transcript through that type's own public
+/// door, and **nothing in `tools/` changed**.
+///
+/// D4 requires an out-of-tree call to render differently and D6 requires a
+/// destructive one to be annotated; both come from `TranscriptEntry::render`,
+/// so the stored line is the line the prompt showed rather than a second
+/// spelling of it.
+///
+/// The mutant: composing the stored line here instead of calling `render`.
+#[test]
+fn a_tool_call_reaches_the_transcript_as_the_line_adr_0011_d4_renders() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 4))
+        .expect("could not start a session");
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working =
+        crate::tools::WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+
+    let in_tree = super::fixtures::entry_for(&working, "src/main.rs", false);
+    let out_of_tree = super::fixtures::entry_for(&working, "../elsewhere.rs", true);
+
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    transcript
+        .record(&Record::ToolCall(crate::session::ToolCall::started(
+            &out_of_tree,
+        )))
+        .expect("could not append");
+    transcript
+        .record(&Record::ToolCall(crate::session::ToolCall::completed(
+            &out_of_tree,
+        )))
+        .expect("could not append");
+    transcript
+        .record(&Record::ToolCall(crate::session::ToolCall::started(
+            &in_tree,
+        )))
+        .expect("could not append");
+
+    let reading =
+        Transcript::read(&session.transcript_path()).expect("the transcript did not read");
+    let calls: Vec<&crate::session::ToolCall> = reading
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            Record::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(calls.len(), 3);
+    assert_eq!(
+        calls[0].line,
+        out_of_tree.render(),
+        "the stored line is not the line ADR-0011 D4 renders",
+    );
+    assert!(
+        calls[0].out_of_tree && calls[0].destructive,
+        "D4's out-of-tree class and D6's annotation did not reach the transcript",
+    );
+    assert!(
+        !calls[2].out_of_tree && !calls[2].destructive,
+        "an ordinary in-tree call was marked, so the markings distinguish nothing",
+    );
+    assert_eq!(
+        (calls[0].phase, calls[1].phase, calls[2].phase),
+        (
+            crate::session::Phase::Started,
+            crate::session::Phase::Completed,
+            crate::session::Phase::Started
+        ),
+        "a call is recorded as a started/completed pair, which is what makes an interruption \
+         derivable at all",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D2 / trigger clause 2 — a killed process loses at most the event in flight
+// ---------------------------------------------------------------------------
+
+/// The child half of the kill check. **The parent below spawns it.**
+///
+/// It is this crate's own test binary re-invoked under an environment
+/// variable and nothing else — no shell, no helper binary, no script. It
+/// appends records for ever, reporting on standard output the sequence of
+/// every record whose `record()` call **returned**, so the parent can compare
+/// what the writer promised was durable against what is actually on disk.
+///
+/// Ignored, so the ordinary suite lists it rather than running it, and the
+/// parent names it with `--exact ... --ignored`.
+#[test]
+#[ignore = "the child half of the kill check; a_killed_process_loses_at_most_the_event_in_flight spawns it"]
+fn the_kill_checks_child_appends_until_it_is_killed() {
+    let Ok(path) = std::env::var(super::fixtures::KILL_CHILD_TRANSCRIPT) else {
+        panic!(
+            "this check is the child half of the kill check and is spawned with {} set; running \
+             it by hand asserts nothing",
+            super::fixtures::KILL_CHILD_TRANSCRIPT
+        );
+    };
+
+    let mut transcript =
+        Transcript::append_to(path).expect("the child could not open a transcript");
+    let mut out = std::io::stdout();
+    // Bounded rather than unbounded: the parent kills this long before the
+    // ceiling, and a loop with an end is one clippy will let past. Reaching it
+    // is a failure the child says out loud rather than a silent stop.
+    for seq in 0u64..u64::MAX {
+        transcript
+            .record(&Record::Loop(super::fixtures::sequenced_event(
+                seq,
+                super::fixtures::KILL_LINE_PAYLOAD,
+            )))
+            .expect("the child could not append");
+        // Only after `record` returned, which is after the write, the flush
+        // and the sync. This line is the writer's promise that the record is
+        // on disk, and the parent holds it to that promise.
+        use std::io::Write as _;
+        writeln!(out, "DURABLE {seq}").expect("the child could not report");
+    }
+}
+
+/// ADR-0010 trigger clause 2: "A killed process loses at most one event,
+/// asserted by killing mid-session and reading the transcript."
+///
+/// Two properties, and they catch different mutations.
+///
+/// **No torn line.** Every byte before the last newline parses as a record,
+/// and there is nothing after the last newline. This is what a `BufWriter`
+/// breaks: it flushes on its own 8 KiB boundary, which falls inside whichever
+/// line crosses it.
+///
+/// **Nothing the writer promised is missing.** The child reports the sequence
+/// of every record whose `record()` call returned — after the write, the
+/// flush and the sync — and every one of those must be on disk. This is what
+/// buffering breaks far more violently than tearing does: a buffered child
+/// reports thousands of durable records with a few dozen on the file.
+///
+/// The kill is `SIGKILL`, which is what `Child::kill` sends on Unix, so the
+/// child gets no chance to flush anything.
+///
+/// **What this cannot see.** A `SIGKILL` cannot split a single unbuffered
+/// `write_all` to a regular file, so this stays green with `sync_data`
+/// removed. The sync is what survives the *machine* losing power, and no
+/// check on this machine exercises it. Recorded rather than glossed.
+#[test]
+fn a_killed_process_loses_at_most_the_event_in_flight() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+
+    let mut rounds_with_a_fragment = Vec::new();
+    let mut rounds_missing_a_durable_record = Vec::new();
+    let mut most_records_seen = 0usize;
+    let mut most_durable_seen = 0u64;
+    const ROUNDS: u64 = 12;
+
+    for round in 0..ROUNDS {
+        let session = store
+            .start(id_at(1_700_000_000_000 + round, 11))
+            .expect("could not start a session");
+        let path = session.transcript_path();
+
+        let mut child = std::process::Command::new(
+            std::env::current_exe().expect("the test binary knows where it is"),
+        )
+        .args([
+            "--exact",
+            "session::tests::the_kill_checks_child_appends_until_it_is_killed",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(super::fixtures::KILL_CHILD_TRANSCRIPT, path.as_os_str())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("could not spawn this crate's own test binary");
+
+        std::thread::sleep(std::time::Duration::from_millis(20 + round * 5));
+        child.kill().expect("could not kill the child");
+        let mut reported = String::new();
+        if let Some(mut out) = child.stdout.take() {
+            use std::io::Read as _;
+            let _ = out.read_to_string(&mut reported);
+        }
+        let _ = child.wait();
+
+        let promised: Vec<u64> = reported
+            .lines()
+            .filter_map(|line| line.strip_prefix("DURABLE "))
+            .filter_map(|seq| seq.parse().ok())
+            .collect();
+
+        let reading = Transcript::read(&path).unwrap_or_else(|failure| {
+            panic!("round {round}: a killed writer left a transcript that will not read: {failure}")
+        });
+        let on_disk: Vec<u64> = reading
+            .records
+            .iter()
+            .filter_map(super::fixtures::sequence_of)
+            .collect();
+
+        most_records_seen = most_records_seen.max(on_disk.len());
+        most_durable_seen = most_durable_seen.max(u64::try_from(promised.len()).unwrap_or(0));
+
+        if let Some(bytes) = reading.fragment {
+            rounds_with_a_fragment.push((round, bytes));
+        }
+        for seq in &promised {
+            if !on_disk.contains(seq) {
+                rounds_missing_a_durable_record.push((round, *seq, on_disk.len(), promised.len()));
+                break;
+            }
+        }
+        assert_eq!(
+            on_disk,
+            (0..u64::try_from(on_disk.len()).expect("a small count")).collect::<Vec<_>>(),
+            "round {round}: the transcript has a gap in it, so more than the event in flight was \
+             lost",
+        );
+    }
+
+    // The staging: without this, every assertion above is vacuously true over
+    // a child that never wrote anything (Verification lessons §4).
+    assert!(
+        most_records_seen >= 2 && most_durable_seen >= 2,
+        "no round got the child far enough to assert anything: the most records on disk in any \
+         round was {most_records_seen} and the most the child reported durable was \
+         {most_durable_seen}",
+    );
+
+    assert!(
+        rounds_with_a_fragment.is_empty(),
+        "{} of {ROUNDS} kills left a torn line — (round, trailing bytes): {:?}. ADR-0010 D2 says \
+         a crash loses at most the event in flight, and a partial line is an event nobody can \
+         read at all",
+        rounds_with_a_fragment.len(),
+        rounds_with_a_fragment,
+    );
+    assert!(
+        rounds_missing_a_durable_record.is_empty(),
+        "{} of {ROUNDS} kills lost a record the writer had already reported durable — (round, \
+         sequence, records on disk, records the writer promised): {:?}. `record` returns only \
+         after the write, the flush and the sync, so a caller that got past it is entitled to \
+         find the line on disk",
+        rounds_missing_a_durable_record.len(),
+        rounds_missing_a_durable_record,
     );
 }

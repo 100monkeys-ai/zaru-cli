@@ -87,7 +87,15 @@ pub use output::{
 pub use port::{Allowlist, Confirm, DestructiveMatch, Question};
 pub use tree::{Placement, Target, TreeError, WorkingDirectory};
 
+// `pub(crate)` rather than private, for the reason `credentials::fixtures`
+// and `config::fixtures` already are: `crate::session`'s checks need a
+// working directory with a real symlinked route and a real out-of-tree
+// sibling, so that the line ADR-0011 D4 renders into ADR-0010 D2's transcript
+// is the line the real classification produced. A second scratch tree beside
+// the session checks would be one fixture in two places, which is a fixture
+// that diverges -- and the divergence would be in exactly the seventeen-path
+// hostile corpus this record's security corpus is made of.
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;
