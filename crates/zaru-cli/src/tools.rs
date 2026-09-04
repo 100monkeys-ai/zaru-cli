@@ -95,6 +95,11 @@ pub use tree::{Placement, Target, TreeError, WorkingDirectory};
 // the session checks would be one fixture in two places, which is a fixture
 // that diverges -- and the divergence would be in exactly the seventeen-path
 // hostile corpus this record's security corpus is made of.
+//
+// `crate::manifest`'s checks are the second consumer, and they want the same
+// tree for the same reason: ADR-0009 D3's `json_schema` path is measured
+// against ADR-0011 D4's boundary, so the hostile corpus the two records share
+// has to be one corpus.
 #[cfg(test)]
 pub(crate) mod fixtures;
 #[cfg(test)]
