@@ -14,3 +14,5 @@ workspace = true
 
 [dependencies]
 zaru-core = { path = "../zaru-core" }
+ratatui = { workspace = true }
+tui-textarea = { workspace = true }
