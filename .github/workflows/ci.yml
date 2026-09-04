@@ -1,0 +1,124 @@
+# Copyright 2026 100monkeys AI, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# One job per gate, so each gate has its own verdict. A single job running
+# several gates reports one status, and a reader then cannot tell which of them
+# was actually green.
+#
+# Only actions/checkout is used, pinned by commit SHA. The toolchain is
+# materialised with the rustup that GitHub runners already carry, reading
+# rust-toolchain.toml, so no third-party action installs it: CI keeps working if
+# the organisation ever restricts allowed_actions, and there is one fewer thing
+# in the supply chain that can change underneath a green run.
+#
+# Every job prints the identity of what it tested before testing it. A gate that
+# prints a verdict without printing what produced it cannot distinguish a pass
+# from a stale pass.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Materialise the pinned toolchain
+        run: rustup show && rustc --version && cargo fmt --version
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Materialise the pinned toolchain
+        run: rustup show && rustc --version && cargo clippy --version
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Materialise the pinned toolchain
+        run: rustup show && rustc --version && cargo --version
+      - name: cargo build
+        run: cargo build --workspace --locked --all-targets
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Materialise the pinned toolchain
+        run: rustup show && rustc --version && cargo --version
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  license-header:
+    name: license-header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check licence headers
+        run: scripts/check-license-headers.sh
+
+  dco:
+    name: dco
+    runs-on: ubuntu-latest
+    steps:
+      # The whole history is needed: the range this gate walks can reach back
+      # past whatever depth a shallow clone would have taken.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The range a pull request covers is a fact the event carries. Deriving
+      # it instead would be answering a narrower question than the one asked.
+      - name: Check sign-off on every commit in the pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          scripts/check-dco.sh \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --require-nonempty
+
+      # On a push, github.event.before is all-zeros for a newly created branch,
+      # which is not a range git can walk. Fall back to the merge base with the
+      # default branch, which is the set of commits this push actually adds.
+      - name: Check sign-off on every commit in the push
+        if: github.event_name == 'push'
+        run: |
+          before='${{ github.event.before }}'
+          if [ "$before" = '0000000000000000000000000000000000000000' ] \
+             || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            before=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+            echo "dco: github.event.before is unusable; walking from the root commit $before instead."
+          fi
+          scripts/check-dco.sh "$before..${{ github.event.after }}"
+
+      - name: Check sign-off on this branch when run by hand
+        if: github.event_name == 'workflow_dispatch'
+        run: scripts/check-dco.sh
+
+  crate-boundaries:
+    name: crate-boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Materialise the pinned toolchain
+        run: rustup show && rustc --version && cargo --version
+      - name: Check crate boundaries
+        run: python3 scripts/check-crate-boundaries.py
