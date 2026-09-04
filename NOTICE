@@ -1,0 +1,15 @@
+Zaru
+Copyright 2026 100monkeys AI, Inc.
+
+This product includes software developed at 100monkeys AI, Inc.
+
+Third-party material incorporated into this repository is recorded in
+THIRD_PARTY.md, with the upstream project, the file, the commit SHA it came
+from, and the date, as required by ADR-0003 D6. Any such material also appears
+here, named, above this line.
+
+As of this writing there is none: no file or function in this repository was
+lifted from another project. That is a statement about what has been recorded,
+and the record is maintained in the same change that does the lifting -- not in
+a later documentation pass, because six months on nobody remembers what was
+lifted and it cannot be reconstructed from git log.
