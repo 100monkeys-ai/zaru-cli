@@ -68,10 +68,12 @@
 pub mod mode;
 pub mod name;
 pub mod notice;
+pub mod tree;
 
 pub use mode::{Layer, Mode, ModeRefused, Tier};
 pub use name::{Effect, ToolName};
 pub use notice::SessionNotice;
+pub use tree::{Placement, Target, TreeError, WorkingDirectory};
 
 #[cfg(test)]
 mod fixtures;

@@ -18,10 +18,12 @@
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use crate::tools::fixtures::nonce;
+use crate::tools::fixtures::{ScratchTree, nonce};
 use crate::tools::mode::{Layer, Mode, ModeRefused, Tier};
 use crate::tools::name::{Effect, ToolName};
 use crate::tools::notice::SessionNotice;
+use crate::tools::tree::{Placement, WorkingDirectory};
+use std::path::PathBuf;
 
 /// **Corpus case 1, the representational arm — a tool reaching outside its
 /// declared scope has nothing to call.**
@@ -337,4 +339,269 @@ fn the_tiers_are_the_three_adr_0001_d1_names() {
         "ADR-0011 D2's table gives `bare` no enforcement at all"
     );
     assert!(Tier::Contained.has_membrane() && Tier::Linked.has_membrane());
+}
+
+/// **Corpus case 1, the behavioural arm — a tool reaching outside the working
+/// directory is classified as having left it.**
+///
+/// ADR-0011 D4's one invariant over its three phrasings. Every hostile case
+/// below has an in-tree sibling the same rule must **accept**, because a
+/// classifier that refuses everything satisfies a one-sided table perfectly
+/// and is not a boundary ([Verification lessons] §9).
+///
+/// Every mismatch is reported, not the first — [Testing]: "A check with
+/// several clauses reports them all." A table that returned on the first
+/// disagreement would leave every case after it unwatchable by that mutation,
+/// which is the defect the loop arc fixed on sight.
+///
+/// [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn every_way_out_of_the_working_directory_is_classified_as_out_of_it() {
+    let tree = ScratchTree::new();
+    let root = tree.project();
+    let working = WorkingDirectory::at(&root).expect("the project directory resolves");
+
+    let outside_absolute = tree.base().join("elsewhere").join("secret");
+    let evil_absolute = tree.base().join("projectevil").join("loot");
+    let inside_absolute = root.join("inside").join("file");
+
+    let cases: Vec<(PathBuf, Placement, &str)> = vec![
+        // In-tree. These are what stop "refuse everything" from passing.
+        (PathBuf::from("."), Placement::InTree, "the root itself"),
+        (
+            PathBuf::from("inside/file"),
+            Placement::InTree,
+            "an ordinary relative path",
+        ),
+        (
+            PathBuf::from("./inside/./file"),
+            Placement::InTree,
+            "a relative path carrying redundant current-directory components",
+        ),
+        (
+            PathBuf::from("inside/../inside/file"),
+            Placement::InTree,
+            "a `..` that stays inside the tree",
+        ),
+        (
+            PathBuf::from("does/not/exist/yet.txt"),
+            Placement::InTree,
+            "a path fs.write would create; a classifier that needed the path to exist would \
+             refuse every file creation in the project",
+        ),
+        (
+            inside_absolute.clone(),
+            Placement::InTree,
+            "an absolute path that is nonetheless below the working directory. D4's \"anywhere \
+             absolute\" cannot mean every absolute path, or nothing in the project could be \
+             written by its own full path",
+        ),
+        (
+            PathBuf::from("inside/od\u{d}d\u{a}name"),
+            Placement::InTree,
+            "a name carrying control characters, which is still inside the tree",
+        ),
+        // Out of tree.
+        (
+            PathBuf::from("../elsewhere/secret"),
+            Placement::OutOfTree,
+            "a relative `..` above the working directory",
+        ),
+        (
+            PathBuf::from("/etc/passwd"),
+            Placement::OutOfTree,
+            "the absolute path ADR-0004 D6's own worked example refuses",
+        ),
+        (
+            outside_absolute.clone(),
+            Placement::OutOfTree,
+            "an absolute path to a sibling directory",
+        ),
+        (
+            PathBuf::from("does-not-exist/../../elsewhere/secret"),
+            Placement::OutOfTree,
+            "`..` walking out through a segment that does not exist. A classifier that \
+             canonicalised only what exists and appended the rest verbatim would call this \
+             in-tree",
+        ),
+        (
+            PathBuf::from("escape/secret"),
+            Placement::OutOfTree,
+            "a symlink out of the tree wearing an ordinary name. A purely lexical normalisation \
+             would call this in-tree",
+        ),
+        (
+            PathBuf::from("escape"),
+            Placement::OutOfTree,
+            "the escaping symlink itself",
+        ),
+        (
+            evil_absolute.clone(),
+            Placement::OutOfTree,
+            "a sibling directory whose name extends the root's. A byte-wise prefix test calls \
+             this in-tree",
+        ),
+        (
+            PathBuf::from("../projectevil/loot"),
+            Placement::OutOfTree,
+            "the same sibling reached relatively",
+        ),
+        (
+            PathBuf::from("../.."),
+            Placement::OutOfTree,
+            "two levels above the working directory",
+        ),
+        (
+            PathBuf::from("/"),
+            Placement::OutOfTree,
+            "the filesystem root, which contains the tree rather than sitting in it",
+        ),
+    ];
+
+    let mut wrong = Vec::new();
+    for (candidate, expected, why) in &cases {
+        let target = working.classify(candidate);
+        if target.placement() != *expected {
+            wrong.push(format!(
+                "{candidate:?} was classified {:?} and should be {expected:?} ({why}); it \
+                 resolved to {:?}",
+                target.placement(),
+                target.resolved()
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "ADR-0011 D4's boundary misclassified {} of {} paths against the working directory \
+         {root:?}:\n  {}",
+        wrong.len(),
+        cases.len(),
+        wrong.join("\n  ")
+    );
+
+    // The denominator comes from the table this check wrote, not from anything
+    // the classifier produced (Verification lessons §17).
+    assert_eq!(
+        cases.len(),
+        17,
+        "the hostile corpus for ADR-0011 D4 shrank; Testing: the security corpus only grows"
+    );
+}
+
+/// **The prefix case, on its own, because it is the sharpest mutant.**
+///
+/// A sibling directory whose name extends the root's is outside it. The
+/// mutant is one line: comparing the two paths as strings rather than as
+/// components. `Path::starts_with` is component-wise and a `str::starts_with`
+/// over the same two values is not, and nothing about the two spellings looks
+/// different in review.
+#[test]
+fn a_sibling_whose_name_merely_extends_the_roots_is_outside_it() {
+    let tree = ScratchTree::new();
+    let root = tree.project();
+    let working = WorkingDirectory::at(&root).expect("the project directory resolves");
+    let sibling = tree.base().join("projectevil").join("loot");
+
+    // The staging is asserted, so this cannot pass because the sibling was
+    // never created (Verification lessons §4).
+    assert!(
+        sibling.exists(),
+        "staging failed: the sibling {sibling:?} that extends the root's name was not created"
+    );
+    assert!(
+        sibling
+            .to_string_lossy()
+            .starts_with(&*root.to_string_lossy()),
+        "this check asserts nothing unless the sibling's path really is a byte-wise prefix \
+         match for the root: {sibling:?} against {root:?}"
+    );
+
+    assert_eq!(
+        working.classify(&sibling).placement(),
+        Placement::OutOfTree,
+        "{sibling:?} is a sibling of the working directory {root:?}, not a child of it. Its path \
+         starts with the root's bytes and not with the root's components, which is exactly the \
+         difference between a string prefix test and a path prefix test"
+    );
+}
+
+/// **The symlink case, on its own, for the same reason.**
+///
+/// The mutant is dropping the canonicalisation of the longest existing
+/// ancestor and normalising lexically instead, which is what a reader reaches
+/// for when a path does not exist yet.
+#[test]
+fn a_symlink_out_of_the_tree_does_not_carry_a_tool_with_it() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+
+    let through = working.classify("escape/secret");
+    assert!(
+        tree.project().join("escape").exists(),
+        "staging failed: the escaping symlink was not created"
+    );
+    assert_eq!(
+        through.placement(),
+        Placement::OutOfTree,
+        "`escape/secret` is a symlink out of the working directory and was classified {:?}; it \
+         resolved to {:?}",
+        through.placement(),
+        through.resolved()
+    );
+    assert!(
+        through.resolved().ends_with("elsewhere/secret"),
+        "the resolved target should be what the symlink actually reaches, so that a transcript \
+         shows the path rather than the disguise; it was {:?}",
+        through.resolved()
+    );
+}
+
+/// The working directory is canonicalised once, at construction.
+///
+/// The mutant: keeping the caller's spelling. A root reached through a
+/// symlink would then never be a component prefix of anything resolved
+/// through the real path, and every in-tree path in the project would be
+/// reported as having left it — a boundary that is wrong in the safe
+/// direction is still wrong, and it is the direction nobody reports.
+#[test]
+fn a_working_directory_reached_through_a_symlink_is_the_same_directory() {
+    let tree = ScratchTree::new();
+    let direct = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let linked =
+        WorkingDirectory::at(tree.project_by_link()).expect("the symlinked route resolves");
+
+    assert_eq!(
+        direct.root(),
+        linked.root(),
+        "two spellings of one working directory produced two roots: {:?} and {:?}",
+        direct.root(),
+        linked.root()
+    );
+    assert_eq!(
+        linked.classify("inside/file").placement(),
+        Placement::InTree,
+        "a path inside the project was classified as outside it when the root was reached \
+         through a symlink"
+    );
+}
+
+/// A working directory that cannot be resolved is refused, not guessed at.
+#[test]
+fn a_working_directory_that_does_not_exist_is_refused() {
+    let tree = ScratchTree::new();
+    let missing = tree.base().join(nonce("no-such-directory"));
+    let refusal = WorkingDirectory::at(&missing).expect_err("the directory does not exist");
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains(&missing.display().to_string()),
+        "the refusal does not name the path it refused: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("a boundary whose root is a guess is not one"),
+        "the refusal does not give its reason: {rendered:?}"
+    );
+    // And the arm that discriminates: a directory that does exist is taken.
+    assert!(WorkingDirectory::at(tree.project()).is_ok());
 }
