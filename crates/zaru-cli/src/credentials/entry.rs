@@ -1,0 +1,393 @@
+// Copyright 2026 100monkeys AI, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! One stored token: ADR-0007 D2's entry, and the values its fields take.
+//!
+//! D2's table has eight fields and this module carries all eight. `alias`,
+//! `description` and `role` are the user's; `kind` is derived from the secret
+//! and is therefore not a field at all but a method on
+//! [`Secret`](super::Secret); `instance` and `secret` come from the server;
+//! `tools` and `workspace` are cached.
+//!
+//! # `role` is not settable here
+//!
+//! ADR-0007 D4 is an invariant over the whole store — "Exactly one token is
+//! flagged `composer`" — and an invariant over a collection cannot be held by
+//! a member of it. So [`Entry::role`] reads, and only
+//! [`CredentialStore::grant_composer_role`](super::store::CredentialStore::grant_composer_role)
+//! writes.
+
+use crate::credentials::alias::Alias;
+use crate::credentials::secret::Secret;
+use core::fmt;
+use core::time::Duration;
+
+/// The tools ADR-0006 D4 scopes the composer's credential to.
+///
+/// Transcribed from that record verbatim rather than assembled from a notion
+/// of which tools are reads: D4 names "the `read_only_memory` set —
+/// `pages.{list,read}`, `atoms.{list,read}`, `search.global`,
+/// `kg.{related,list_cross_links}`, `discovery.entities` — plus
+/// `me.set_current_workspace`, and nothing else."
+///
+/// **Deciding for oneself which tool names are writes would be authoring a
+/// security vocabulary**, which [Autonomous Development] puts on the human
+/// side of the boundary. Copying a record's list is not.
+///
+/// One thing this list is not: the live MCP surface spells two of these
+/// differently — `kg.get_related` and `discovery.list_entities` as read from
+/// the tool schemas on 2026-09-04. The record's spellings are kept here
+/// because the record is what this check holds, and the divergence is
+/// recorded as a finding for whoever wires `rmcp` rather than reconciled by
+/// guessing which spelling the author meant.
+///
+/// [Autonomous Development]: https://100monkeys-ai.cortex.page/zaru/p/operations/autonomous-development
+pub const COMPOSER_SCOPE: [&str; 9] = [
+    "pages.list",
+    "pages.read",
+    "atoms.list",
+    "atoms.read",
+    "search.global",
+    "kg.related",
+    "kg.list_cross_links",
+    "discovery.entities",
+    "me.set_current_workspace",
+];
+
+/// The single role ADR-0007 D2 admits.
+///
+/// One variant, not a bool, because D2 calls the field `role` with the value
+/// `composer` "or unset", and because a second role is an amendment to that
+/// record rather than a new arm somebody adds in passing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The token ADR-0005's composer searches with, and ADR-0006 D2 says only
+    /// the user may move.
+    Composer,
+}
+
+impl Role {
+    /// The role's name as ADR-0007 D2 spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Composer => "composer",
+        }
+    }
+}
+
+/// A Nuclear Notes instance a token authenticates against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Instance(String);
+
+impl Instance {
+    /// Take an instance host.
+    #[must_use]
+    pub fn new(host: impl Into<String>) -> Self {
+        Self(host.into())
+    }
+
+    /// The host.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Instance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// How far a token reaches: ADR-0007 D8's instance boundary, or its absence.
+///
+/// D8: "Every token the harness mints or stores is **instance-locked** unless
+/// the user explicitly chooses otherwise", and an apex token "has no instance
+/// boundary" — it "matches every instance the bearer can reach through
+/// workspace membership".
+///
+/// Modelled as two variants rather than as an `Option<Instance>` plus a flag,
+/// so that an apex entry cannot also be carrying a stale instance nobody
+/// notices, and so that every consumer has to name the apex case to compile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reach {
+    /// The default. The token authenticates against exactly this instance.
+    InstanceLocked(Instance),
+    /// No instance boundary. Marked wherever the token appears, per D8.
+    Apex,
+}
+
+impl Reach {
+    /// Whether this reach is the apex case D8 requires marking.
+    #[must_use]
+    pub const fn is_apex(&self) -> bool {
+        matches!(self, Self::Apex)
+    }
+
+    /// How D8 requires this reach be shown, wherever the token appears.
+    ///
+    /// D8: "Apex entries are **marked wherever the token appears**:
+    /// `/notes tokens`, the status line when the composer holds one, and the
+    /// description the agent reads." One rendering, called from all three, so
+    /// the three cannot drift apart.
+    #[must_use]
+    pub fn marking(&self) -> String {
+        match self {
+            Self::InstanceLocked(instance) => instance.to_string(),
+            Self::Apex => "apex (no instance boundary)".to_owned(),
+        }
+    }
+}
+
+/// A time-to-live the caller chose.
+///
+/// ADR-0007 D6 names a TTL as "a backstop for a missed notification" and
+/// gives no number. A number invented by the thing it bounds is not a choice
+/// anybody made — the same reasoning `zaru-core`'s `Ceiling` and
+/// `TruncationBudget` carry — so it arrives as a parameter and is validated
+/// here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ttl(Duration);
+
+/// A time-to-live the store cannot work with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TtlRefused;
+
+impl fmt::Display for TtlRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "a cache time-to-live of zero is refused; ADR-0007 D6 makes the TTL a backstop for a \
+             missed list_changed notification, and a backstop that has already expired when it \
+             is written is indistinguishable from having no cache at all",
+        )
+    }
+}
+
+impl std::error::Error for TtlRefused {}
+
+impl Ttl {
+    /// Take a time-to-live from the caller, refusing zero.
+    ///
+    /// # Errors
+    ///
+    /// [`TtlRefused`] when `window` is zero.
+    pub const fn new(window: Duration) -> Result<Self, TtlRefused> {
+        if window.is_zero() {
+            return Err(TtlRefused);
+        }
+        Ok(Self(window))
+    }
+
+    /// The window.
+    #[must_use]
+    pub const fn get(self) -> Duration {
+        self.0
+    }
+}
+
+/// The tool names a token grants, as `tools/list` reported them.
+///
+/// ADR-0007 D6: "The harness calls `tools/list` once per token at attach and
+/// caches the result in the entry. The three-gate enforcement in ADR-0135
+/// means that response already reflects exactly what the token grants, so the
+/// cache needs no interpretation."
+///
+/// **Nothing in this arc calls `tools/list`.** That needs `rmcp`, which has
+/// no caller yet, so a scope here is one the caller supplied and the
+/// invalidation half of D6 — `notifications/tools/list_changed`, the TTL
+/// backstop, and the refresh-on-`forbidden` rule — is not built.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ToolScope {
+    names: Vec<String>,
+}
+
+impl ToolScope {
+    /// Take a cached scope.
+    #[must_use]
+    pub fn new<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            names: names.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// The tool names, in the order the server reported them.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// How many tools this token grants. What ADR-0007 D7's listing shows.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.names.len()
+    }
+
+    /// The first tool here that ADR-0006 D4 does not put in the composer's
+    /// scope, if any.
+    ///
+    /// This is the local half of ADR-0005's trigger clause 9 — "The
+    /// composer's own credential cannot write". The harness cannot verify
+    /// what the server granted; ADR-0135's three gates do that, server-side.
+    /// What it can do is refuse to *use* as the composer a token whose own
+    /// cached scope reaches outside D4's set, and name the tool that put it
+    /// there.
+    #[must_use]
+    pub fn outside_composer_scope(&self) -> Option<&str> {
+        self.names
+            .iter()
+            .find(|name| !COMPOSER_SCOPE.contains(&name.as_str()))
+            .map(String::as_str)
+    }
+}
+
+/// A one-line description of what a token is for.
+///
+/// ADR-0007 D2: user-supplied, "Shown to the human **and** to the agent". D3
+/// adds that descriptions "are human-authored and are rendered to the agent
+/// as **data, not instruction**".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Description(String);
+
+/// The store would not take a description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescriptionRefused {
+    /// The description as it was offered, escaped.
+    pub offered: String,
+}
+
+impl fmt::Display for DescriptionRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the description {:?} carries a control character; ADR-0007 D2 calls it \"One line on \
+             what this token is for\", and D7 renders it into a terminal listing where a control \
+             character can overwrite a neighbouring row",
+            self.offered
+        )
+    }
+}
+
+impl std::error::Error for DescriptionRefused {}
+
+impl Description {
+    /// Take a description, refusing one that is not a single renderable line.
+    ///
+    /// # Errors
+    ///
+    /// [`DescriptionRefused`] when the text carries a control character,
+    /// which includes the newline that would make it more than one line.
+    pub fn new(offered: impl Into<String>) -> Result<Self, DescriptionRefused> {
+        let offered = offered.into();
+        if offered.chars().any(char::is_control) {
+            return Err(DescriptionRefused {
+                offered: offered.escape_debug().to_string(),
+            });
+        }
+        Ok(Self(offered))
+    }
+
+    /// The description.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Description {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// One stored token.
+///
+/// The fields are private and the accessors are read-only, so the store's
+/// invariants — D4's single composer role above all — cannot be stepped
+/// around by a caller holding an entry.
+#[derive(Debug, Clone)]
+pub struct Entry {
+    alias: Alias,
+    description: Description,
+    secret: Secret,
+    reach: Reach,
+    role: Option<Role>,
+    tools: ToolScope,
+    workspace: Option<String>,
+}
+
+impl Entry {
+    /// Take an entry. Its role is unset; only the store grants one.
+    #[must_use]
+    pub fn new(alias: Alias, description: Description, secret: Secret, reach: Reach) -> Self {
+        Self {
+            alias,
+            description,
+            secret,
+            reach,
+            role: None,
+            tools: ToolScope::default(),
+            workspace: None,
+        }
+    }
+
+    /// Attach the cached tool scope D6 describes.
+    #[must_use]
+    pub fn with_tools(mut self, tools: ToolScope) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Attach the last-known workspace pointer, which D2 calls informational.
+    #[must_use]
+    pub fn with_workspace(mut self, slug: impl Into<String>) -> Self {
+        self.workspace = Some(slug.into());
+        self
+    }
+
+    /// This token's local name.
+    #[must_use]
+    pub const fn alias(&self) -> &Alias {
+        &self.alias
+    }
+
+    /// What this token is for.
+    #[must_use]
+    pub const fn description(&self) -> &Description {
+        &self.description
+    }
+
+    /// The bearer value. Never rendered; see [`Secret`].
+    #[must_use]
+    pub const fn secret(&self) -> &Secret {
+        &self.secret
+    }
+
+    /// Whether this token is instance-locked or apex.
+    #[must_use]
+    pub const fn reach(&self) -> &Reach {
+        &self.reach
+    }
+
+    /// The role this token carries, if the store granted it one.
+    #[must_use]
+    pub const fn role(&self) -> Option<Role> {
+        self.role
+    }
+
+    /// The cached tool scope.
+    #[must_use]
+    pub const fn tools(&self) -> &ToolScope {
+        &self.tools
+    }
+
+    /// The last-known workspace pointer, which the token row overrides.
+    #[must_use]
+    pub fn workspace(&self) -> Option<&str> {
+        self.workspace.as_deref()
+    }
+}
