@@ -207,10 +207,16 @@ impl Ttl {
 /// means that response already reflects exactly what the token grants, so the
 /// cache needs no interpretation."
 ///
-/// **Nothing in this arc calls `tools/list`.** That needs `rmcp`, which has
-/// no caller yet, so a scope here is one the caller supplied and the
-/// invalidation half of D6 — `notifications/tools/list_changed`, the TTL
-/// backstop, and the refresh-on-`forbidden` rule — is not built.
+/// **A scope reaches here from one `tools/list` and nothing interprets it on
+/// the way.** [`CredentialStore::cache_tool_scope`] takes D6's reading at
+/// attach and [`CredentialStore::refresh_tool_scope`] replaces it on each of
+/// D6's three signals. The two halves of that contract live in two crates
+/// that may not depend on each other: `zaru-notes` produces the signals and
+/// this crate owns the cache, because ADR-0003 D8 permits that crate no
+/// dependency on this one. See [`crate::credentials::notes`].
+///
+/// [`CredentialStore::cache_tool_scope`]: super::store::CredentialStore::cache_tool_scope
+/// [`CredentialStore::refresh_tool_scope`]: super::store::CredentialStore::refresh_tool_scope
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ToolScope {
     names: Vec<String>,

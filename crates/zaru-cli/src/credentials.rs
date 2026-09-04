@@ -64,7 +64,7 @@ pub use entry::{
     COMPOSER_SCOPE, Description, DescriptionRefused, Entry, Instance, Reach, Role, ToolScope, Ttl,
     TtlRefused,
 };
-pub use notes::bearer_for_dispatch;
+pub use notes::{Cached, Refreshed, ScopeError, bearer_for_dispatch};
 pub use port::{Confirm, SealFailure, SecretStore};
 pub use projection::{NAMESPACE_PREFIX, Namespace};
 pub use secret::{Kind, REDACTED, Secret, SecretRefused};

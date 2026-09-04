@@ -801,3 +801,168 @@ fn an_apex_token_is_marked_in_the_description_the_agent_reads() {
         "every token is marked apex, so the marking distinguishes nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0007 D6's cache: the half `zaru-cli` owns.
+//
+// The three signals are `zaru-notes`' to produce and each is asserted there.
+// What is asserted here is everything about the cache that needs no session;
+// the consumption of each signal is driven end to end in
+// `tests/notes_scope_from_outside.rs`, because constructing a `Session` at all
+// means implementing `Endpoint`, whose associated types are `rmcp`'s.
+// ---------------------------------------------------------------------------
+
+use crate::credentials::notes::Cached;
+use crate::credentials::store::{Record, StoredReach};
+
+// D6 gives the TTL no number and this workspace refuses to invent one: it
+// arrives as a caller-validated `Ttl` and `Cached::expired` is the only place
+// it is unwrapped.
+//
+// The mutant: substitute a literal for `ttl.get()`. The check owns the window
+// and the readings, so no literal can equal both the boundary below and the
+// window the assertion reads back.
+#[test]
+fn the_ttl_backstop_uses_the_window_the_store_validated_and_nothing_else() {
+    let cached = Cached {
+        scope: ToolScope::new(["pages.read"]),
+        at: Duration::from_secs(100),
+    };
+    let ttl = Ttl::new(Duration::from_secs(300)).expect("a non-zero window");
+
+    assert_eq!(
+        cached.expired(Duration::from_secs(399), ttl),
+        None,
+        "one second inside the window is inside the window"
+    );
+
+    let fired = cached
+        .expired(Duration::from_secs(400), ttl)
+        .expect("the window has elapsed exactly");
+    assert_eq!(
+        fired,
+        zaru_notes::session::Invalidation::Expired {
+            window: Duration::from_secs(300),
+            elapsed: Duration::from_secs(300),
+        },
+        "the signal must carry the window the caller validated and the elapsed time measured \
+         against it"
+    );
+
+    // A caller's clock is a caller's business, and a reading before the cache
+    // was taken is not a reason to abort a program.
+    assert_eq!(cached.expired(Duration::from_secs(50), ttl), None);
+}
+
+// The pin: a `Cached` reading is a monotonic offset from wherever the caller's
+// clock started, so it is meaningless in any other process and must never be
+// written to a file that outlives the run that took it.
+//
+// This destructures exhaustively rather than counting, so a seventh field on
+// `Record` -- an `at`, a `cached_at`, an `age` -- stops this check compiling
+// rather than travelling to disk. Same signal as
+// `what_the_agent_sees_is_three_fields_and_a_fourth_would_not_compile`.
+#[test]
+fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
+    let record = Record {
+        description: nonce("description"),
+        kind: "personal".to_owned(),
+        reach: StoredReach::Apex,
+        role: None,
+        tools: vec!["pages.read".to_owned()],
+        workspace: None,
+    };
+
+    let Record {
+        description,
+        kind,
+        reach,
+        role,
+        tools,
+        workspace,
+    } = record;
+
+    assert!(!description.is_empty());
+    assert_eq!(kind, "personal");
+    assert_eq!(reach, StoredReach::Apex);
+    assert_eq!(role, None);
+    assert_eq!(tools, vec!["pages.read".to_owned()]);
+    assert_eq!(workspace, None);
+}
+
+// D6's write-through is what makes D5 and D6 one read rather than two: the
+// projection to the agent is built from the same field the refresh replaces.
+//
+// The before-arm is what makes this discriminate. Without it, a projection
+// that had always carried the new tool would pass.
+//
+// The mutant: make `replace_tools` return `self.save()` without assigning.
+#[test]
+fn a_replaced_scope_reaches_the_agents_namespace_projection_in_the_same_read() {
+    let (scratch, _sealer, mut store, _composer_alias, agent_alias) = staged_pair();
+
+    let before: Vec<String> = store
+        .record(&agent_alias)
+        .expect("the agent token is stored")
+        .tools
+        .clone();
+    assert!(
+        !before.contains(&"kg.list_cross_links".to_owned()),
+        "the tool this check is about was already cached, so the assertion below asserts nothing: \
+         {before:?}"
+    );
+
+    let refreshed = ToolScope::new(["pages.read", "search.global", "kg.list_cross_links"]);
+    store
+        .replace_tools(&agent_alias, &refreshed)
+        .expect("a stored alias takes a scope");
+
+    // Read back through the projection, which is the consumer D5 names, and
+    // through a store reopened from the bytes on disk, which is a second
+    // reader that does not share this store's in-memory map.
+    let projected: Vec<String> = store
+        .agent_namespaces()
+        .into_iter()
+        .find(|ns| ns.name == format!("{NAMESPACE_PREFIX}:{agent_alias}"))
+        .expect("the agent token projects a namespace")
+        .tools;
+    assert_eq!(
+        projected,
+        vec![
+            "pages.read".to_owned(),
+            "search.global".to_owned(),
+            "kg.list_cross_links".to_owned(),
+        ],
+        "the refreshed scope did not reach the agent's namespace"
+    );
+
+    let reopened = CredentialStore::open(scratch.store_root()).expect("the written root reopens");
+    assert_eq!(
+        reopened
+            .record(&agent_alias)
+            .expect("the entry survived")
+            .tools,
+        projected,
+        "the refreshed scope was not written through to the file"
+    );
+}
+
+#[test]
+fn a_scope_offered_for_an_unknown_alias_is_refused_rather_than_creating_one() {
+    let (_scratch, _sealer, mut store, _composer_alias, _agent_alias) = staged_pair();
+    let stranger = Alias::new("stranger").expect("an ordinary alias");
+    let before = store.len();
+
+    let refusal = store
+        .replace_tools(&stranger, &ToolScope::new(["pages.read"]))
+        .expect_err("nothing answers to that alias");
+    assert!(
+        matches!(refusal, StoreError::UnknownAlias { .. }),
+        "an unknown alias must be refused rather than silently created: {refusal:?}"
+    );
+    assert_eq!(
+        store.len(),
+        before,
+        "the refusal added an entry, which is the failure it exists to prevent"
+    );
+}

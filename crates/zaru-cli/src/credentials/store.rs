@@ -478,6 +478,41 @@ impl CredentialStore {
             .find(|(_, record)| record.role.as_deref() == Some(Role::Composer.as_str()))
     }
 
+    /// Replace a token's cached tool scope and write the store.
+    ///
+    /// [ADR-0007] D6's cache is [`Record::tools`], and this is the only thing
+    /// that moves it after an entry is added. It is `pub(crate)` because the
+    /// public door is [`CredentialStore::refresh_tool_scope`](super::notes) —
+    /// a scope may only be replaced by a `tools/list`, and a setter anybody
+    /// could call would make that a convention rather than a mechanism.
+    ///
+    /// The write-through is what makes D5 and D6 one read: the projection to
+    /// the agent is built from this same field, so a refreshed scope reaches
+    /// the agent's namespace without a second call.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownAlias`] when nothing answers to `alias`, and
+    /// [`StoreError::Io`] when the file cannot be written.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub(crate) fn replace_tools(
+        &mut self,
+        alias: &Alias,
+        scope: &ToolScope,
+    ) -> Result<(), StoreError> {
+        if !self.entries.contains_key(alias) {
+            return Err(StoreError::UnknownAlias {
+                alias: alias.clone(),
+            });
+        }
+        self.entries
+            .get_mut(alias)
+            .expect("the alias was found above")
+            .tools = scope.names().to_vec();
+        self.save()
+    }
+
     /// Write the store to disk at [`FILE_MODE`].
     ///
     /// # Errors
