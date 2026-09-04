@@ -14,14 +14,32 @@
 //! rather than one test covering 'escalation is rejected'", and a fixture
 //! with one refused key cannot tell those two implementations apart.
 //!
+//! # The nonces come from the credential store's fixtures, not from a copy
+//!
+//! [`crate::credentials::fixtures`] already carries the awkward nonce and the
+//! ASCII core, and the reason the core exists is a mutation that survived
+//! there. Retyping either here would put one rule in two places.
 
 use crate::config::key::Key;
+use crate::config::layer::{Contribution, Layer, Source};
+use crate::config::port::{LayerSource, SourceFailure};
 use crate::config::schema::{Field, FieldKind, Schema};
-use crate::config::value::Value;
+use crate::config::value::{Table, Value};
+
+pub(crate) use crate::credentials::fixtures::{ascii_core, nonce, personal_secret_nonce};
 
 /// A key, for a fixture that knows its own spellings are well formed.
 pub(crate) fn key(text: &str) -> Key {
     Key::new(text).expect("a fixture key is well formed")
+}
+
+/// A document, from dotted keys and values.
+pub(crate) fn document(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Table {
+    let mut table = Table::new();
+    for (path, value) in entries {
+        table.insert_path(&key(path), value);
+    }
+    table
 }
 
 /// Text, spelled once.
@@ -86,4 +104,62 @@ pub(crate) fn schema() -> Schema {
                  enforce it",
             ),
         )
+}
+
+/// Every key the fixture schema refuses to the project layer, with the words
+/// its refusal should carry.
+///
+/// Walked by the check rather than retyped in it: the population comes from
+/// the schema that declares it, so a fifth refused key is covered the moment
+/// it is declared ([Verification lessons] §17).
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+pub(crate) fn keys_refused_to_projects() -> Vec<(Key, Value)> {
+    vec![
+        (key("runtime.tier"), text("linked")),
+        (key("permission.mode"), text("yolo")),
+        (key("seal.enabled"), Value::Bool(false)),
+        (key("notes.token_scope"), text("full")),
+    ]
+}
+
+/// One layer, staged with a document and a name.
+pub(crate) fn at(layer: Layer, source: &str, document: Table) -> Contribution {
+    Contribution::new(layer, Source::named(source), document)
+}
+
+/// A layer whose document a check owns, read through the product's own port.
+///
+/// [`LayerSource`] has no implementation in the product tree — a TOML parser
+/// and an argument parser are two dependencies ADR-0003 D2's table does not
+/// name. This is the check standing in as the caller those parsers will be.
+pub(crate) struct StagedSource {
+    layer: Layer,
+    source: Source,
+    document: Table,
+}
+
+impl StagedSource {
+    /// Stage one layer.
+    pub(crate) fn new(layer: Layer, source: &str, document: Table) -> Self {
+        Self {
+            layer,
+            source: Source::named(source),
+            document,
+        }
+    }
+}
+
+impl LayerSource for StagedSource {
+    fn layer(&self) -> Layer {
+        self.layer
+    }
+
+    fn source(&self) -> Source {
+        self.source.clone()
+    }
+
+    fn read(&self) -> Result<Table, SourceFailure> {
+        Ok(self.document.clone())
+    }
 }

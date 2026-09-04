@@ -36,15 +36,18 @@
 //!
 //! | ADR-0014 | Built here |
 //! | --- | --- |
-//! | D1 — five layers, higher wins | the ordered enum, with no field a pin could occupy |
+//! | D1 — five layers, higher wins | yes, as an ordered enum with no field a pin could occupy |
 //! | D2 — merge per key; arrays replace wholesale | yes |
-//! | D4 — secrets never live in config files | the type that cannot hold one, and the refusal |
-//! | D5 — unknown keys are an error naming the nearest match | the schema, the nearest match, and the refusal |
-//! | D6 — project config cannot raise a security posture | the policies each key declares |
+//! | D3 — every setting is explainable | the explanation, as data; the command surface is [ADR-0015]'s and does not exist |
+//! | D4 — secrets never live in config files | yes, both structurally and at load |
+//! | D5 — unknown keys are an error naming the nearest match | yes, against a caller-supplied schema |
+//! | D6 — project config cannot raise a security posture | the mechanism, over declared policies |
+//! | D7 — tier resolved once, immutable after | the invariant half: a resolution with no mutation surface |
 //!
-//! Layers 2, 3 and 5 need a TOML parser and an argument parser, and
-//! [ADR-0003] D2's table names neither. Layer 4 needs no dependency and is
-//! built here.
+//! Layers 2, 3 and 5 are read through [`LayerSource`], which **nothing in
+//! this crate implements**: a TOML parser and an argument parser are two
+//! dependencies and [ADR-0003] D2's table names neither. Layer 4 needs no
+//! dependency and is built. See [`port`] for the whole of that reasoning.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
@@ -52,19 +55,26 @@
 //! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+//! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 pub mod credential;
 pub mod environment;
+pub mod explain;
 pub mod key;
 pub mod layer;
+pub mod port;
 pub mod refusal;
+pub mod resolve;
 pub mod schema;
 pub mod value;
 
 pub use credential::CredentialRef;
+pub use explain::{Explanation, ExplanationRow};
 pub use key::{Key, KeyRefused};
 pub use layer::{Contribution, Layer, Source};
+pub use port::{LayerSource, SourceFailure, gather};
 pub use refusal::ConfigRefused;
+pub use resolve::Resolution;
 pub use schema::{CoercionFailure, Field, FieldKind, ProjectPolicy, Schema};
 pub use value::{Table, Value};
 
