@@ -164,12 +164,66 @@ pub trait Validators {
     ) -> impl Future<Output = Result<Vec<ValidatorReport>, PortFailure>> + Send;
 }
 
+/// Why the context policy did not return a prompt.
+///
+/// Two things, kept apart because ADR-0008 D5 puts them in different
+/// registers. A policy that could not run is an error: something the loop
+/// depended on was unavailable, and `zaru-cli` classifies it. A context that
+/// would not fit is not an error at all — it is ADR-0013 D7's second route to
+/// exhaustion, and D5 says exhaustion is neither an error nor a success. A
+/// single [`PortFailure`] could carry only the first, so the second would
+/// have arrived in the error register and been reported as the mechanism
+/// breaking rather than as the mechanism reaching its limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextRefusal {
+    /// The policy failed. This is an error.
+    Failed(PortFailure),
+    /// Assembling this iteration would exceed the context window.
+    ///
+    /// ADR-0013 D7: an iteration that would exceed the window "fails as
+    /// exhausted with a clear reason rather than continuing on a rewritten
+    /// context". Compaction is not available here, because D7 confines it to
+    /// turn boundaries and an iteration happens inside a turn.
+    WindowExceeded {
+        /// Tokens the assembled context would have needed.
+        needed: u64,
+        /// Tokens the window allows.
+        window: u64,
+    },
+}
+
+impl From<PortFailure> for ContextRefusal {
+    fn from(failure: PortFailure) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl fmt::Display for ContextRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(failure) => failure.fmt(f),
+            Self::WindowExceeded { needed, window } => write!(
+                f,
+                "the assembled context needs {needed} tokens and the window allows {window}"
+            ),
+        }
+    }
+}
+
 /// Assembles what the model actually sees. ADR-0013 owns the layering, the
 /// compaction, and the thresholds; the loop only says when.
+///
+/// **Assembly cannot compact.** ADR-0013 D7 confines compaction to turn
+/// boundaries and this method is called at an iteration boundary, which is
+/// inside a turn — so a policy under pressure refuses with
+/// [`ContextRefusal::WindowExceeded`] rather than rewriting what the model
+/// was looking at partway through a cycle.
 pub trait ContextPolicy {
     /// Assemble the prompt for the iteration that is about to begin.
-    fn assemble(&self, turn: &Turn<'_>)
-    -> impl Future<Output = Result<Prompt, PortFailure>> + Send;
+    fn assemble(
+        &self,
+        turn: &Turn<'_>,
+    ) -> impl Future<Output = Result<Prompt, ContextRefusal>> + Send;
 }
 
 /// Where elapsed time comes from.

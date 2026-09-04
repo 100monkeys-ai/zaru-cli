@@ -18,8 +18,8 @@
 
 use crate::iteration::event::{Event, EventSink, ValidatorOutcome};
 use crate::iteration::port::{
-    Clock, ContextPolicy, ExecutionOutcome, Executor, Generated, Generator, PortFailure, Prompt,
-    Turn, ValidatorReport, Validators,
+    Clock, ContextPolicy, ContextRefusal, ExecutionOutcome, Executor, Generated, Generator,
+    PortFailure, Prompt, Turn, ValidatorReport, Validators,
 };
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
@@ -355,13 +355,25 @@ fn report(name: &str, outcome: ValidatorOutcome, detail: String) -> ValidatorRep
 pub(super) struct PassThroughContext {
     trace: Arc<Trace>,
     fails: bool,
+    /// The iteration on which this policy refuses with a window exceedance,
+    /// counting from one.
+    exceeds_on: Option<u32>,
+    calls: Mutex<u32>,
 }
+
+/// The two numbers the staged window exceedance reports. Neither is a
+/// threshold this crate chose: they are what the test hands the loop, so an
+/// assertion about them is an assertion that the loop carried them.
+pub(super) const STAGED_NEEDED: u64 = 91_357;
+pub(super) const STAGED_WINDOW: u64 = 8_192;
 
 impl PassThroughContext {
     pub(super) fn new(trace: &Arc<Trace>) -> Self {
         Self {
             trace: Arc::clone(trace),
             fails: false,
+            exceeds_on: None,
+            calls: Mutex::new(0),
         }
     }
 
@@ -369,17 +381,36 @@ impl PassThroughContext {
         self.fails = true;
         self
     }
+
+    /// Refuse the `iteration`-th assembly with ADR-0013 D7's exceedance.
+    pub(super) fn exceeding_on(mut self, iteration: u32) -> Self {
+        self.exceeds_on = Some(iteration);
+        self
+    }
 }
 
 impl ContextPolicy for PassThroughContext {
-    async fn assemble(&self, turn: &Turn<'_>) -> Result<Prompt, PortFailure> {
+    async fn assemble(&self, turn: &Turn<'_>) -> Result<Prompt, ContextRefusal> {
         let text = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
         };
+        let n = {
+            let mut calls = self.calls.lock().expect("calls poisoned");
+            *calls += 1;
+            *calls
+        };
         self.trace.push(TraceEntry::ContextAssembled);
         if self.fails {
-            return Err(PortFailure::new(format!("{NONCE} context unavailable")));
+            return Err(ContextRefusal::Failed(PortFailure::new(format!(
+                "{NONCE} context unavailable"
+            ))));
+        }
+        if self.exceeds_on == Some(n) {
+            return Err(ContextRefusal::WindowExceeded {
+                needed: STAGED_NEEDED,
+                window: STAGED_WINDOW,
+            });
         }
         Ok(Prompt::new(text))
     }

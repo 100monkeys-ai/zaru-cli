@@ -429,7 +429,7 @@ fn the_transcript_is_the_loops_own_event_stream_one_event_per_line() {
         zaru_core::iteration::Event::LoopExhausted {
             iterations: 5,
             reason: zaru_core::iteration::ExhaustionReason::CeilingReached,
-            last_failure: awkward.clone(),
+            last_failure: Some(awkward.clone()),
         },
     ];
 

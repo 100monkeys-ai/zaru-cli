@@ -23,12 +23,20 @@
 //! The ceiling is checked on the transition out of `Evaluate`, so a failing
 //! iteration at the ceiling goes straight to `Exhausted` and no refinement is
 //! constructed for a candidate that will never be generated.
+//!
+//! **Two routes reach `Exhausted`.** The ceiling is one. ADR-0013 D7 is the
+//! other: a context policy that would exceed the window refuses, and the
+//! refusal is exhaustion rather than an error, because the loop worked and
+//! the window did not fit. That route leaves `Generate` before anything is
+//! generated, so it is the one transition into a terminal state that does not
+//! come out of `Evaluate`.
 
 use crate::iteration::error::{IterationError, PortKind};
 use crate::iteration::event::{Event, EventSink, ExhaustionReason, ValidatorOutcome};
 use crate::iteration::limits::Limits;
 use crate::iteration::port::{
-    Clock, ContextPolicy, Executor, Generator, Ports, Turn, ValidatorReport, Validators,
+    Clock, ContextPolicy, ContextRefusal, Executor, Generator, Ports, Turn, ValidatorReport,
+    Validators,
 };
 use crate::iteration::refinement::{self, RefinementInput, RefinementPrompt};
 use core::time::Duration;
@@ -103,12 +111,13 @@ pub enum Outcome {
     },
     /// The loop stopped without succeeding.
     Exhausted {
-        /// How many iterations ran.
+        /// How many iterations ran to an evaluation.
         iterations: u32,
         /// Why it stopped.
         reason: ExhaustionReason,
-        /// The final iteration's failing validators' output, verbatim.
-        last_failure: String,
+        /// The last iteration's failing validators' output, verbatim, or
+        /// `None` when no iteration reached an evaluation.
+        last_failure: Option<String>,
     },
 }
 
@@ -137,6 +146,11 @@ where
     let ceiling = limits.ceiling.get();
     let loop_started = ports.clock.now();
     let mut refinement: Option<RefinementPrompt> = None;
+    // The failure of the last iteration that reached an evaluation. Kept
+    // beside the refinement rather than read back out of it, because the
+    // refinement carries a *truncated* excerpt and ADR-0008 D5 has the
+    // exhausted outcome carry the failure verbatim.
+    let mut last_failure: Option<String> = None;
     let mut n: u32 = 1;
 
     loop {
@@ -153,16 +167,37 @@ where
             None => Turn::Initial { task },
             Some(built) => Turn::Refinement { refinement: built },
         };
-        let prompt =
-            ports
-                .context
-                .assemble(&turn)
-                .await
-                .map_err(|failure| IterationError::Port {
+        let prompt = match ports.context.assemble(&turn).await {
+            Ok(prompt) => prompt,
+            Err(ContextRefusal::Failed(failure)) => {
+                return Err(IterationError::Port {
                     port: PortKind::ContextPolicy,
                     iteration: n,
                     failure,
-                })?;
+                });
+            }
+            // ADR-0013 D7's second route. `n` iterations were started and
+            // `n - 1` reached an evaluation, so that is the count reported:
+            // this iteration never generated anything, and saying it ran
+            // would credit the loop with work it did not do.
+            Err(ContextRefusal::WindowExceeded { needed, window }) => {
+                let reason = ExhaustionReason::ContextWindowExceeded { needed, window };
+                let iterations = n - 1;
+                emit(
+                    sinks,
+                    &Event::LoopExhausted {
+                        iterations,
+                        reason,
+                        last_failure: last_failure.clone(),
+                    },
+                );
+                return Ok(Outcome::Exhausted {
+                    iterations,
+                    reason,
+                    last_failure,
+                });
+            }
+        };
 
         let before = ports.clock.now();
         let generated =
@@ -250,6 +285,7 @@ where
                 elapsed: ports.clock.now() - iteration_started,
             },
         );
+        last_failure = Some(failure.clone());
 
         if n >= ceiling {
             emit(
@@ -257,13 +293,13 @@ where
                 &Event::LoopExhausted {
                     iterations: n,
                     reason: ExhaustionReason::CeilingReached,
-                    last_failure: failure.clone(),
+                    last_failure: Some(failure.clone()),
                 },
             );
             return Ok(Outcome::Exhausted {
                 iterations: n,
                 reason: ExhaustionReason::CeilingReached,
-                last_failure: failure,
+                last_failure: Some(failure),
             });
         }
 

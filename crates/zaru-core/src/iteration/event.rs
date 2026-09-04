@@ -61,26 +61,42 @@ pub enum ValidatorOutcome {
 /// Why the loop stopped without succeeding.
 ///
 /// ADR-0008 D5 makes exhaustion a distinct outcome rather than an error or a
-/// success. One variant today. ADR-0013 D7 describes a second route — an
-/// iteration that would exceed the context window — which is out of this
-/// crate's scope until that record is built; this enum is where it attaches,
-/// so that adding it is a visible act rather than a new boolean.
+/// success. Two routes reach it, and they are distinguishable here rather
+/// than by a boolean, which is what the 2026-09-04 Update on ADR-0008 said
+/// this enum was for: "it exists so that the second route arrives as a
+/// variant every consumer can see rather than as a boolean nobody notices".
+///
+/// The second route is ADR-0013 D7's: "an iteration that would exceed the
+/// window fails as exhausted with a clear reason rather than continuing on a
+/// rewritten context". The reason is clear in the sense D7 asks for because
+/// the variant carries the two numbers a reader needs to understand it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExhaustionReason {
     /// The iteration ceiling the caller passed was reached.
     CeilingReached,
+    /// Assembling this iteration's context would have exceeded the window.
+    ///
+    /// ADR-0013 D7. Compaction is not an option here: it runs at turn
+    /// boundaries only, and an iteration is inside a turn.
+    ContextWindowExceeded {
+        /// Tokens the assembled context would have needed.
+        needed: u64,
+        /// Tokens the window allows.
+        window: u64,
+    },
 }
 
 /// One thing the loop did, as the loop reports it.
 ///
-/// The field names and the variant names are ADR-0008 D3's, with three
-/// additions recorded as a proposed Update on that record: `outcome` replaces
+/// The field names and the variant names are ADR-0008 D3's, with four
+/// additions recorded as proposed Updates on that record: `outcome` replaces
 /// D3's `passed` and `score` on [`Event::ValidatorEvaluated`], `elapsed`
 /// appears on every event that ends an iteration so that D6's per-iteration
-/// elapsed time has a carrier, and `reason` appears on
-/// [`Event::LoopExhausted`] so that a second exhaustion route would be
-/// distinguishable to a consumer.
+/// elapsed time has a carrier, `reason` appears on [`Event::LoopExhausted`]
+/// so that a second exhaustion route is distinguishable to a consumer, and
+/// that event's `last_failure` is an `Option` because ADR-0013 D7's route can
+/// stop a run before any iteration has reached an evaluation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Event {
@@ -145,12 +161,17 @@ pub enum Event {
     },
     /// The loop stopped without succeeding.
     LoopExhausted {
-        /// How many iterations ran.
+        /// How many iterations ran to an evaluation.
         iterations: u32,
         /// Why it stopped.
         reason: ExhaustionReason,
-        /// The final iteration's failing validators' output, verbatim.
-        last_failure: String,
+        /// The last iteration's failing validators' output, verbatim.
+        ///
+        /// `None` when no iteration reached an evaluation, which the
+        /// [`ExhaustionReason::ContextWindowExceeded`] route can produce on
+        /// the very first iteration. An empty string would be a claim that
+        /// the validators ran and said nothing.
+        last_failure: Option<String>,
     },
 }
 

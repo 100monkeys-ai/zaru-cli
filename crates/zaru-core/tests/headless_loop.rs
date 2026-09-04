@@ -18,9 +18,9 @@
 use core::time::Duration;
 use std::sync::Mutex;
 use zaru_core::iteration::{
-    Ceiling, Clock, ContextPolicy, Event, EventSink, ExecutionOutcome, Executor, Generated,
-    Generator, Limits, Outcome, PortFailure, Ports, Prompt, State, TruncationBudget, Turn,
-    ValidatorOutcome, ValidatorReport, Validators, run,
+    Ceiling, Clock, ContextPolicy, ContextRefusal, Event, EventSink, ExecutionOutcome, Executor,
+    Generated, Generator, Limits, Outcome, PortFailure, Ports, Prompt, State, TruncationBudget,
+    Turn, ValidatorOutcome, ValidatorReport, Validators, run,
 };
 
 struct FrozenClock;
@@ -37,7 +37,7 @@ impl ContextPolicy for Echo {
     fn assemble(
         &self,
         turn: &Turn<'_>,
-    ) -> impl Future<Output = Result<Prompt, PortFailure>> + Send {
+    ) -> impl Future<Output = Result<Prompt, ContextRefusal>> + Send {
         let text = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),

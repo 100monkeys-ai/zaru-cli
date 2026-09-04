@@ -18,8 +18,9 @@
 //! the one assertion that makes iteration different from retry.
 
 use super::fixtures::{
-    ManualClock, PassThroughContext, Plan, ProjectingSink, RecordingSink, StagedExecutor,
-    StagedGenerator, StagedValidators, Trace, TraceEntry, TracingSink, tag,
+    ManualClock, PassThroughContext, Plan, ProjectingSink, RecordingSink, STAGED_NEEDED,
+    STAGED_WINDOW, StagedExecutor, StagedGenerator, StagedValidators, Trace, TraceEntry,
+    TracingSink, tag,
 };
 // `run` is reached here through its own module rather than through the
 // crate's re-export, so the re-export's only consumer is the integration test
@@ -258,7 +259,7 @@ async fn exhaustion_returns_ok_and_carries_the_last_failure_not_the_first() {
         Ok(Outcome::Exhausted {
             iterations: 3,
             reason: ExhaustionReason::CeilingReached,
-            last_failure: StagedValidators::failure_text_for(3),
+            last_failure: Some(StagedValidators::failure_text_for(3)),
         }),
         "exhaustion is neither an error nor a success, and it carries the LAST failure"
     );
@@ -289,7 +290,7 @@ async fn the_ceiling_comes_from_the_caller_and_nothing_else() {
             Ok(Outcome::Exhausted {
                 iterations: staged,
                 reason: ExhaustionReason::CeilingReached,
-                last_failure: StagedValidators::failure_text_for(staged),
+                last_failure: Some(StagedValidators::failure_text_for(staged)),
             }),
             "a ceiling of {staged} should run exactly {staged} iterations"
         );
@@ -306,6 +307,91 @@ async fn the_ceiling_comes_from_the_caller_and_nothing_else() {
             "every IterationStarted should report the ceiling the caller passed"
         );
     }
+}
+
+// --- ADR-0013 D7: the second route into Exhausted --------------------------
+
+#[tokio::test]
+async fn a_context_window_exceedance_is_exhaustion_and_carries_the_numbers_it_was_given() {
+    // Staged: the policy refuses the third assembly. Two iterations reach an
+    // evaluation and fail; the third never generates. The two numbers come
+    // from the fixture and travel nowhere else, so an assertion on them is an
+    // assertion that the loop carried them rather than that it recomputed
+    // something from its own state.
+    let rig = {
+        let mut rig = Rig::new(vec![Plan::Fail]);
+        rig.context = PassThroughContext::new(&rig.trace).exceeding_on(3);
+        rig
+    };
+    let (outcome, events) = rig.record(limits(9, ROOMY)).await;
+
+    assert_eq!(
+        outcome,
+        Ok(Outcome::Exhausted {
+            iterations: 2,
+            reason: ExhaustionReason::ContextWindowExceeded {
+                needed: STAGED_NEEDED,
+                window: STAGED_WINDOW,
+            },
+            last_failure: Some(StagedValidators::failure_text_for(2)),
+        }),
+        "ADR-0013 D7: an iteration that would exceed the window fails as exhausted with a clear \
+         reason. Two of the nine permitted iterations reached an evaluation, the third could not \
+         assemble, and the ceiling was nowhere near"
+    );
+    assert!(
+        matches!(
+            events.last(),
+            Some(Event::LoopExhausted {
+                iterations: 2,
+                reason: ExhaustionReason::ContextWindowExceeded { .. },
+                last_failure: Some(_),
+            })
+        ),
+        "the event stream must carry the same outcome the return value does, and its last event \
+         was {:?}",
+        events.last()
+    );
+    assert_eq!(
+        tags(&events)
+            .iter()
+            .filter(|t| **t == "CandidateGenerated")
+            .count(),
+        2,
+        "the refused iteration must not generate: the refusal happens before the generator is \
+         reached, and a third candidate would mean the loop assembled anyway"
+    );
+}
+
+#[tokio::test]
+async fn an_exceedance_before_any_evaluation_reports_no_iterations_and_no_failure() {
+    // The first assembly is refused, so nothing has been validated and there
+    // is no failure text in existence. `Some(String::new())` here would be a
+    // claim that the validators ran and said nothing.
+    let rig = {
+        let mut rig = Rig::new(vec![Plan::Fail]);
+        rig.context = PassThroughContext::new(&rig.trace).exceeding_on(1);
+        rig
+    };
+    let (outcome, events) = rig.record(limits(5, ROOMY)).await;
+
+    assert_eq!(
+        outcome,
+        Ok(Outcome::Exhausted {
+            iterations: 0,
+            reason: ExhaustionReason::ContextWindowExceeded {
+                needed: STAGED_NEEDED,
+                window: STAGED_WINDOW,
+            },
+            last_failure: None,
+        }),
+        "no iteration reached an evaluation, so none ran and none produced a failure"
+    );
+    assert_eq!(
+        tags(&events),
+        vec!["IterationStarted", "LoopExhausted"],
+        "the iteration began and then could not proceed; nothing else happened"
+    );
 }
 
 // --- D3: the event stream --------------------------------------------------
