@@ -140,6 +140,38 @@ aes-gcm = { version = "0.11.1", default-features = false, features = [
 ] }
 keyring = { version = "4.2.0" }
 
+# `toml` is D2's row for the three files this workspace's records name:
+# [ADR-0009] D1's `./zaru.toml`, ADR-0014 D1's layers 2 and 3, and ADR-0010
+# D1's `meta.toml`. It was accepted into that table on 2026-09-05 under
+# directive 20 and this is the arc that gives it a caller.
+#
+# 1.1.5 rather than 0.9, and that is a measurement rather than a preference.
+# 1.1.5 adds SIX packages -- `serde_spanned`, `toml`, `toml_datetime`,
+# `toml_parser`, `toml_writer` and `winnow` -- and 0.9.12 adds seven, because
+# 0.9 pulls TWO `winnow` versions into one tree. Measured on 2026-09-05 against
+# the 109-package tree of that morning, which gave 115 and 116; the delta is the
+# number that matters, since other arcs move the baseline. None of the six is a
+# direct dependency outside D2's table and none is on
+# `scripts/check-crate-boundaries.py`'s network list.
+#
+# Default features off, and the four named are exactly what `default` is --
+# which is the point. Naming them is what stops a future default, `preserve_order`
+# or `fast_hash`, arriving in this tree without a decision. `serde` is not
+# optional despite this crate deriving nothing: `toml::Table` and `toml::Value`,
+# the untyped document model `config::file` converts from, are
+# `#[cfg(feature = "serde")]` in 1.x. Measured by compiling without it --
+# "cannot find `Table` in `toml` ... the item is gated behind the `serde`
+# feature" -- and it adds no package, because `serde_core` is already resolved.
+# `display` is on for ADR-0010's `meta.toml` writer, whose values arrive from
+# outside and must be escaped by the crate that defines the format rather than
+# by us.
+toml = { version = "1.1.5", default-features = false, features = [
+    "std",
+    "parse",
+    "display",
+    "serde",
+] }
+
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
 # turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-
