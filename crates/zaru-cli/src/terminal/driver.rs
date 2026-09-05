@@ -716,7 +716,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
 /// be driven by a check that has no provider: the mechanism is the loop, and
 /// the loop does not care what it is racing.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Raced<T> {
+pub enum Raced<T> {
     /// The future finished.
     Ran(T),
     /// The user left while it was running. The future was dropped.
@@ -739,7 +739,7 @@ pub(crate) enum Raced<T> {
 /// also ready — then the terminal, then the beat. Tokio's default is to pick a
 /// random ready branch, and a check over a random instrument is not a check
 /// (library verification-lessons §57).
-pub(crate) async fn race<S: Surface + Send, P: Pace + Sync, T>(
+pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
     pane: &std::sync::Mutex<Pane<'_, S>>,
     source: &Source,
     pace: &P,

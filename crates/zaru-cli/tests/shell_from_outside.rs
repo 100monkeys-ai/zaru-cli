@@ -497,3 +497,298 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
         );
     }
 }
+
+// ------------------------------------- the security corpus: an interrupted turn
+
+/// A beat that never releases anything and never sleeps.
+///
+/// The races below are ended by the terminal, not by time.
+#[derive(Debug, Default)]
+struct Beats(std::sync::atomic::AtomicUsize);
+
+impl Pace for Beats {
+    fn wait(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn elapse(&self) -> impl Future<Output = ()> + Send {
+        let counter = &self.0;
+        std::future::poll_fn(move |_| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(())
+        })
+    }
+}
+
+/// A turn that writes tool-call records and then never finishes.
+///
+/// It stands in for the real turn at exactly the point that matters: a pair
+/// written around a completed call, a lone `Started` for one still in flight,
+/// and then an await nothing will complete. What it is *not* is a model — this
+/// file's own header says the terminal half is evidence about the mechanism.
+fn a_turn_that_stops_between_two_calls(
+    path: &Path,
+    finish_the_second: bool,
+) -> impl Future<Output = &'static str> + use<'_> {
+    let path = path.to_path_buf();
+    let mut wrote = false;
+    std::future::poll_fn(move |context| {
+        if !wrote {
+            wrote = true;
+            let mut transcript = Transcript::append_to(&path).expect("the transcript opens");
+            let call = |line: &str, phase| {
+                Record::ToolCall(ToolCall {
+                    line: line.to_owned(),
+                    out_of_tree: false,
+                    destructive: false,
+                    phase,
+                })
+            };
+            transcript
+                .record(&call("fs.read `notes/one.md`", Phase::Started))
+                .expect("a record");
+            transcript
+                .record(&call("fs.read `notes/one.md`", Phase::Completed))
+                .expect("a record");
+            transcript
+                .record(&call("cmd.run `just test`", Phase::Started))
+                .expect("a record");
+            if finish_the_second {
+                transcript
+                    .record(&call("cmd.run `just test`", Phase::Completed))
+                    .expect("a record");
+                return std::task::Poll::Ready("the turn finished");
+            }
+        }
+        // Woken every poll, standing in for a provider await that a socket
+        // wakes rather than a clock.
+        context.waker().wake_by_ref();
+        std::task::Poll::Pending
+    })
+}
+
+/// Read a session's transcript back through the product's own resume.
+fn resumed(directory: &Path) -> zaru_cli::session::Resumed {
+    zaru_cli::session::resume(directory, usize::MAX).expect("the session resumes")
+}
+
+/// An interrupt between two tool calls leaves the transcript with at most the
+/// event in flight, and the next resume says which one.
+///
+/// ADR-0010 D2: "Append-only means a crash loses at most the event in flight."
+/// Its Update: "a `Started` with no matching `Completed` **is** the
+/// interruption". D4: an interrupted call "is recorded as `Interrupted` and
+/// the model is told it did not complete".
+///
+/// **A mid-turn `Ctrl-C` produces exactly that, with nothing authored for it.**
+/// The race drops the turn's future; whatever the turn had already written is
+/// on disk because every record is appended and synced as it occurs, and
+/// nothing after it is.
+///
+/// The second reader is the product's own `session::resume`, which does not
+/// share a code path with the pump (library verification-lessons §11), and the
+/// interrupt is staged in the middle of the keys rather than last (§54).
+#[test]
+fn corpus_an_interrupt_between_two_tool_calls_leaves_at_most_the_event_in_flight() {
+    let scratch = Scratch::new("interrupt-corpus");
+    let directory = scratch
+        .path()
+        .join(".zaru")
+        .join("sessions")
+        .join(scratch.id.to_string());
+    let transcript_path = directory.join("transcript.jsonl");
+    let before = resumed(&directory).tail.len();
+
+    let mut shell = Shell::open(Status::new("bare", scratch.id.to_string()));
+    let trie = NotesTrie::nothing_cached("zaru");
+    let mut surface = Recorded::of();
+    let source = Source::scripted(vec![
+        press(Key::Char('h')),
+        Input {
+            key: Key::Char('c'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        },
+        press(Key::Char('x')),
+    ]);
+    let mut now = std::time::Duration::ZERO;
+
+    let raced = {
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+            &mut shell,
+            &mut surface,
+        ));
+        zaru_cli::compose::turn::runtime()
+            .expect("a runtime")
+            .block_on(zaru_cli::terminal::driver::race(
+                &pane,
+                &source,
+                &Beats::default(),
+                &trie,
+                &mut now,
+                a_turn_that_stops_between_two_calls(&transcript_path, false),
+            ))
+    };
+    assert!(
+        matches!(
+            raced,
+            zaru_cli::terminal::driver::Raced::Interrupted(zaru_tui::shell::Leaving::Interrupt)
+        ),
+        "`Ctrl-C` between two tool calls did not leave: {raced:?}"
+    );
+
+    let after = resumed(&directory);
+    assert_eq!(
+        after.tail.len(),
+        before + 3,
+        "the transcript gained {} record(s) rather than the three the turn wrote before it was \
+         interrupted",
+        after.tail.len() - before
+    );
+    let interrupted = after
+        .interrupted
+        .as_ref()
+        .expect("a `Started` with no `Completed` is the interruption, and resume found none");
+    assert!(
+        format!("{interrupted:?}").contains("just test"),
+        "the interruption names the wrong call: {interrupted:?}"
+    );
+    assert_eq!(
+        after.fragment, None,
+        "the transcript ends mid-line, so a record was torn rather than merely not written; \
+         ADR-0010 D2 loses at most the event in flight and this lost part of one"
+    );
+}
+
+/// Its accepting sibling: a turn that was not interrupted leaves a matched
+/// pair for every call, and resume finds no interruption.
+///
+/// Without this, the check above would pass against a `resume` that reported
+/// an interruption for every session it read.
+#[test]
+fn an_uninterrupted_turn_leaves_a_matched_pair_for_every_call() {
+    let scratch = Scratch::new("interrupt-corpus-sibling");
+    let directory = scratch
+        .path()
+        .join(".zaru")
+        .join("sessions")
+        .join(scratch.id.to_string());
+    let transcript_path = directory.join("transcript.jsonl");
+    let before = resumed(&directory).tail.len();
+
+    let mut shell = Shell::open(Status::new("bare", scratch.id.to_string()));
+    let trie = NotesTrie::nothing_cached("zaru");
+    let mut surface = Recorded::of();
+    let source = Source::scripted(Vec::new());
+    let mut now = std::time::Duration::ZERO;
+
+    let raced = {
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+            &mut shell,
+            &mut surface,
+        ));
+        zaru_cli::compose::turn::runtime()
+            .expect("a runtime")
+            .block_on(zaru_cli::terminal::driver::race(
+                &pane,
+                &source,
+                &Beats::default(),
+                &trie,
+                &mut now,
+                a_turn_that_stops_between_two_calls(&transcript_path, true),
+            ))
+    };
+    assert!(
+        matches!(
+            raced,
+            zaru_cli::terminal::driver::Raced::Ran("the turn finished")
+        ),
+        "the uninterrupted turn did not finish: {raced:?}"
+    );
+
+    let after = resumed(&directory);
+    assert_eq!(after.tail.len(), before + 4);
+    assert!(
+        after.interrupted.is_none(),
+        "resume reported an interruption for a turn that finished: {:?}",
+        after.interrupted
+    );
+}
+
+/// ADR-0002 D8's standing tip yields on the first keystroke, mid-turn.
+///
+/// D8: a standing tip is "**Ephemeral: it yields the instant the user types.**"
+/// ADR-0005 D1: "Typing dismisses a tip instantly — no fade, no delay. The
+/// first keystroke switches the strip to search." Until a source could be read
+/// beside the turn there was no keystroke to yield to while one ran, which is
+/// what ADR-0005's gap paragraph named.
+///
+/// **The tip is handed in**, because nothing in this build produces one: D8's
+/// one-per-session budget and its three-displays-without-action counter are
+/// unbuilt, so this asserts the composer's half of clause 10 and claims
+/// nothing about the other. The strip is read out of a painted frame before
+/// and after, so what is compared is what a person would have seen.
+#[test]
+fn a_standing_tip_yields_on_the_first_keystroke_during_a_turn() {
+    const TIP: &str = "declaring validators would let the loop catch this";
+
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    let trie = NotesTrie::nothing_cached("zaru");
+    shell.composer_mut().set_absence(trie.absence());
+    shell.composer_mut().set_standing(0, Some(TIP.to_owned()));
+
+    let mut surface = Recorded::of();
+    let source = Source::scripted(vec![press(Key::Char('s'))]);
+    let mut now = std::time::Duration::ZERO;
+
+    // The frame before the keystroke, painted through the same `Surface` the
+    // race paints through. `race` paints on a beat and on a keystroke; it does
+    // not paint on entry, because the pump has already drawn the shell before
+    // it reaches a task.
+    surface.draw(&shell).expect("the opening frame");
+
+    let raced = {
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+            &mut shell,
+            &mut surface,
+        ));
+        zaru_cli::compose::turn::runtime()
+            .expect("a runtime")
+            .block_on(zaru_cli::terminal::driver::race(
+                &pane,
+                &source,
+                &Beats::default(),
+                &trie,
+                &mut now,
+                std::future::pending::<&'static str>(),
+            ))
+    };
+    assert!(
+        matches!(raced, zaru_cli::terminal::driver::Raced::SourceEnded),
+        "the race ended some other way: {raced:?}"
+    );
+
+    // Staging: the tip was on the strip before the keystroke. Without this the
+    // assertion below would pass against a strip that never showed it.
+    let painted_before = surface
+        .frames
+        .first()
+        .expect("no frame was painted before the keystroke")
+        .join("\n");
+    assert!(
+        painted_before.contains(TIP),
+        "the tip was never on the strip, so nothing could yield: {painted_before}"
+    );
+
+    let painted_after = surface
+        .frames
+        .last()
+        .expect("no frame was painted after the keystroke")
+        .join("\n");
+    assert!(
+        !painted_after.contains(TIP),
+        "the tip is still on the strip after a keystroke read mid-turn; ADR-0002 D8 says it \
+         yields the instant the user types:\n{painted_after}"
+    );
+}
