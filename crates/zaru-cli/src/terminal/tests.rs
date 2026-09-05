@@ -1710,3 +1710,378 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
         source.contended()
     );
 }
+
+// -------------------------- the pane repaints and reads keys while a turn runs
+
+/// A future that finishes only once the check lets it, so a turn can be held
+/// suspended for exactly as long as the check needs and not one beat longer.
+///
+/// **It is not a timer.** `poll` reads a flag, so what makes it finish is
+/// something the check did rather than something the machine scheduled
+/// (library verification-lessons §57).
+struct HeldOpen {
+    release: Arc<std::sync::atomic::AtomicBool>,
+    finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Future for HeldOpen {
+    type Output = &'static str;
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        context: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        if self.release.load(Ordering::SeqCst) {
+            self.finished.store(true, Ordering::SeqCst);
+            core::task::Poll::Ready("the turn finished")
+        } else {
+            // Wake immediately: this stands in for a provider await, which is
+            // woken by a socket rather than by a clock, and a future that
+            // never re-armed would stall the whole `select!`.
+            context.waker().wake_by_ref();
+            core::task::Poll::Pending
+        }
+    }
+}
+
+/// A beat that releases the held turn once its gate opens.
+///
+/// Deterministic in both directions: the turn cannot finish before the gate is
+/// open and the beats counted, and it cannot fail to finish after.
+#[derive(Debug)]
+struct Releasing {
+    beats: Arc<AtomicUsize>,
+    after: usize,
+    gate: Arc<std::sync::atomic::AtomicBool>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::terminal::source::Pace for Releasing {
+    fn wait(&self) {
+        self.count();
+    }
+
+    /// **Counted when polled, not when created**, and that is the whole of why
+    /// this is a `poll_fn` rather than a `ready`.
+    ///
+    /// `tokio::select!` evaluates every branch's expression before it polls
+    /// any of them, so a beat that counted at construction counted on the very
+    /// iteration the turn won — which released the turn before the terminal
+    /// branch had ever been polled, and the first form of these checks read an
+    /// empty composer because of it. A beat is a beat that was *waited*.
+    fn elapse(&self) -> impl Future<Output = ()> + Send {
+        let beats = Arc::clone(&self.beats);
+        let gate = Arc::clone(&self.gate);
+        let release = Arc::clone(&self.release);
+        let after = self.after;
+        core::future::poll_fn(move |_| {
+            let waited = beats.fetch_add(1, Ordering::SeqCst) + 1;
+            if waited >= after && gate.load(Ordering::SeqCst) {
+                release.store(true, Ordering::SeqCst);
+            }
+            core::task::Poll::Ready(())
+        })
+    }
+}
+
+impl Releasing {
+    fn count(&self) {
+        let beats = self.beats.fetch_add(1, Ordering::SeqCst) + 1;
+        if beats >= self.after && self.gate.load(Ordering::SeqCst) {
+            self.release.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Everything a race check needs, staged together.
+struct Raceable {
+    beats: Arc<AtomicUsize>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+    finished: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Raceable {
+    /// A turn released once `gate` is open and `after` beats have been waited.
+    ///
+    /// **This is what makes a check over a live reader deterministic rather
+    /// than a coin.** `race` is `biased` and polls the terminal before the
+    /// beat, so a buffered key is always taken before a beat fires; therefore
+    /// the first beat after the reader has finished sending is a beat at which
+    /// the channel is provably drained. The gate is that "has finished
+    /// sending", set by the reader thread itself.
+    fn gated(after: usize, gate: Arc<std::sync::atomic::AtomicBool>) -> (Self, Releasing) {
+        let beats = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pace = Releasing {
+            beats: Arc::clone(&beats),
+            after,
+            gate,
+            release: Arc::clone(&release),
+        };
+        (
+            Self {
+                beats,
+                release,
+                finished: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+            pace,
+        )
+    }
+
+    fn turn(&self) -> HeldOpen {
+        HeldOpen {
+            release: Arc::clone(&self.release),
+            finished: Arc::clone(&self.finished),
+        }
+    }
+}
+
+/// A source that sends `keys` and then stays open, which is what a terminal
+/// does.
+///
+/// A `Source::scripted` ends the moment it is drained, and `race` is `biased`
+/// -- so a drained script wins the race before a single beat can fire, and a
+/// check staged over one would be asserting `SourceEnded` rather than anything
+/// about a suspended turn. Returns the gate the reader opens when it has sent
+/// everything.
+fn live_source(keys: Vec<zaru_tui::shell::Input>) -> (Source, Arc<std::sync::atomic::AtomicBool>) {
+    let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let opened = Arc::clone(&sent);
+    let source = Source::over(move |sender, stop| {
+        for key in keys {
+            let _ = sender.send(key);
+        }
+        opened.store(true, Ordering::SeqCst);
+        while !stop.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    });
+    (source, sent)
+}
+
+/// The row the composer's input sits on, out of a painted frame.
+fn input_row(frame: &[String]) -> String {
+    frame[frame.len() - usize::from(COMPOSER_ROWS)]
+        .trim_end()
+        .to_owned()
+}
+
+/// The pane repaints while the turn is suspended.
+///
+/// This is the capability ADR-0005's and ADR-0008's gap paragraphs named:
+/// "while the model is thinking the pane does not repaint". The turn here is
+/// held open for five beats and the frame count is read across them, so what
+/// is asserted is that painting happened *during* the wait rather than around
+/// it. Nothing on the pane changes on a bare beat -- see `TICK` -- which is
+/// why the assertion is on the count and not on the contents.
+///
+/// The mutant: remove the beat's branch from the `select!`.
+#[test]
+fn the_pane_repaints_while_a_turn_is_suspended() {
+    let (source, sent) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, sent);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    let raced = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            staged.turn(),
+        ))
+    };
+
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Ran("the turn finished")
+    );
+    assert!(
+        staged.finished.load(Ordering::SeqCst),
+        "the staged turn never ran, so this check asserted nothing about a suspended one"
+    );
+    assert_eq!(
+        staged.beats.load(Ordering::SeqCst),
+        5,
+        "the race waited {} beat(s) rather than the five the turn was held for",
+        staged.beats.load(Ordering::SeqCst)
+    );
+    // **An equality, not a floor.** Every beat that was waited is a beat at
+    // which the turn was still suspended, and every one of them paints; the
+    // mutant that removes the beat's branch paints none. A floor would also
+    // have passed on a pane that painted once and stopped.
+    assert_eq!(
+        surface.frames.len(),
+        staged.beats.load(Ordering::SeqCst),
+        "the pane painted {} frame(s) across {} beat(s) of a suspended turn, so it is not \
+         repainting while the model thinks",
+        surface.frames.len(),
+        staged.beats.load(Ordering::SeqCst)
+    );
+}
+
+/// A keystroke during a turn reaches the composer and starts no second turn.
+///
+/// Two halves, and the second is the one ADR-0015's ruling of 2026-09-05 owes:
+/// the text is **not lost** -- it is on the input row, painted at the moment it
+/// was read -- and it is **not executed as a task**, because `Enter` is
+/// refused with `BUSY` rather than submitted or queued. The composed line
+/// survives the refusal.
+///
+/// The mutants: route the mid-turn key to nothing; let `Enter` reach the
+/// composer; let `Enter` reach `Shell::key`; clear the composer on the refusal.
+#[test]
+fn a_keystroke_during_a_turn_is_neither_lost_nor_executed_as_a_task() {
+    // Held open until the source is drained: the beat count is far past what
+    // the four keys need, so the keys are read while the turn is genuinely
+    // suspended rather than after it finished.
+    let mut typing = keys("saffron");
+    typing.push(press(Key::Enter));
+    let (source, sent) = live_source(typing);
+    // One beat after the reader has finished sending, which `race`'s `biased`
+    // ordering makes a beat at which every key has already been read.
+    let (staged, pace) = Raceable::gated(1, sent);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    let raced = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            staged.turn(),
+        ))
+    };
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Ran("the turn finished")
+    );
+
+    // Not lost: the text a user typed while waiting is in the composer.
+    assert_eq!(
+        shell.composer().text(),
+        "saffron",
+        "the line typed during the turn is not in the composer; it reads {:?}",
+        shell.composer().text()
+    );
+    let last = surface.frames.last().expect("no frame was painted");
+    assert!(
+        input_row(last).contains("saffron"),
+        "the line typed during the turn never reached the input row: {:?}",
+        input_row(last)
+    );
+
+    // Not executed as a task, and not queued: the notice ADR-0015's ruling
+    // names is on the pane, and the composer still holds the line.
+    let pane_lines: Vec<String> = shell
+        .pane_lines()
+        .iter()
+        .map(zaru_tui::shell::Line::painted)
+        .collect();
+    assert!(
+        pane_lines
+            .iter()
+            .any(|line| line.contains(crate::terminal::driver::BUSY)),
+        "`Enter` during a turn did not produce the refusal ADR-0015's ruling of 2026-09-05 \
+         requires; the pane holds {pane_lines:?}"
+    );
+}
+
+/// `Ctrl-C` during a turn leaves, and leaving drops the turn's future.
+///
+/// **The two are one act, which is the whole of what a mid-turn interrupt is
+/// by the records' words.** ADR-0015's ruling gives this key one meaning --
+/// it leaves, at ADR-0016 D5's `0` -- and dropping the future is ADR-0010 D2's
+/// "a crash loses at most the event in flight" without a crash: whatever the
+/// turn had already written is on disk and nothing after it is.
+///
+/// So the assertion is in two parts. The race reports `Interrupted`, and the
+/// staged turn **never finished** -- it was dropped, not awaited to a value.
+/// The interesting keystroke is staged in the middle of the run, with keys on
+/// each side of it, so the check cannot be satisfied by *any* key ending the
+/// race (library verification-lessons §54).
+#[test]
+fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
+    // **Released after twenty beats, not never**, and that is a lesson rather
+    // than a detail. The first form of this check held the turn open for ever
+    // so that only the interrupt could end the race — and the mutant that
+    // ignores the interrupt then span for ever, painting frames into a `Vec`
+    // that reached six gigabytes on a machine shared with other builds. A
+    // mutant that hangs is not a red; it is a hazard. So the turn is released
+    // on a beat that cannot fire until every key has been read (`race` is
+    // `biased`), and an ignored interrupt therefore reports `Ran` and fails
+    // the assertion below in milliseconds.
+    let (source, sent) = live_source(vec![
+        press(Key::Char('h')),
+        press(Key::Char('i')),
+        zaru_tui::shell::Input {
+            key: Key::Char('c'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        },
+        press(Key::Char('x')),
+        press(Key::Enter),
+    ]);
+    let (staged, pace) = Raceable::gated(20, sent);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    let raced = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            staged.turn(),
+        ))
+    };
+
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Interrupted(zaru_tui::shell::Leaving::Interrupt),
+        "`Ctrl-C` during a turn did not leave"
+    );
+    // Staging: no beat was ever waited, because the interrupt won before the
+    // terminal fell silent. A run that got here on beats would be a run in
+    // which the interrupt was read after the turn had already been released.
+    assert_eq!(
+        staged.beats.load(Ordering::SeqCst),
+        0,
+        "the race waited {} beat(s) before the interrupt, so the keys were not read while the \
+         turn was suspended",
+        staged.beats.load(Ordering::SeqCst)
+    );
+    assert!(
+        !staged.finished.load(Ordering::SeqCst),
+        "the turn's future ran to completion, so it was awaited rather than dropped and nothing \
+         was interrupted"
+    );
+    // Staging: the two keys before the interrupt were read, so the race was
+    // genuinely running rather than ending on its first poll.
+    assert_eq!(
+        shell.composer().text(),
+        "hi",
+        "the keys before the interrupt did not reach the composer, so the interrupt ended a race \
+         that had not started"
+    );
+    // ADR-0016 D5's `0`, through the one function the pump uses.
+    assert_eq!(zaru_tui::shell::Leaving::Interrupt.code(), 0);
+}

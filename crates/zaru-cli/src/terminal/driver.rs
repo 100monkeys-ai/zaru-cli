@@ -528,53 +528,158 @@ impl zaru_core::tool_call::EventSink for ToolLines {
     }
 }
 
+/// What the sentence a task typed during a turn is refused with says.
+///
+/// # The ruling this obeys, and why the case only now exists
+///
+/// [ADR-0015]'s Status tracking, 2026-09-05, under directive 20: "**A task
+/// typed while a turn is running is refused with a notice, not queued.**
+/// Neither D1 nor D2 nor any clause of this record says what a second task
+/// means while the first is still running … Refusing is the safe direction: a
+/// queue is a promise about ordering that no record has made, and a user who
+/// typed while waiting can type again." That ruling also says it is "barely
+/// reachable in practice — the shell reads no keystroke during a turn".
+///
+/// **It is reachable now**, because that sentence stopped being true the
+/// moment a source could be read beside the turn. So the notice exists, and
+/// the composed line stays on the input row rather than being cleared: not
+/// queued, because nothing will submit it, and not lost either.
+///
+/// [`Register::Announced`] rather than [`Register::Failed`] for the reason
+/// `ToolRefused` carries — a refusal that is a decision rather than one of
+/// [ADR-0016] D1's five classes is rendered "in whatever register it renders a
+/// decision in, and never in the error one".
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub const BUSY: &str = "a turn is already running · this line stays in the prompt until it ends";
+
+/// What became of a turn the pump was running.
+///
+/// Three cases and no `Option`, for [`Taken`]'s own reason: a turn that ran, a
+/// user who left in the middle of it, and a terminal that stopped answering
+/// are three different things and a caller does three different things with
+/// them.
+#[derive(Debug)]
+pub enum Turned {
+    /// The turn finished. These are the lines to leave on the pane.
+    Ran(Vec<Line>),
+    /// The user left while it was running, and the turn's future was dropped.
+    Interrupted(zaru_tui::shell::Leaving),
+    /// The terminal stopped answering. A product terminal does not do this.
+    SourceEnded,
+}
+
 /// Run one turn of this session for `task`, painting it as it happens.
 ///
-/// Returns the lines to leave on the pane. The shell and the surface are
-/// borrowed for the length of the turn and given back when it ends.
+/// # The turn, the terminal and a beat, waited on together
 ///
-/// # What does not repaint yet, said rather than smoothed
+/// Until 2026-09-05 this awaited the turn and nothing else, so **during the
+/// provider's own await nothing repainted and no keystroke was read** — the
+/// gap [ADR-0005] and [ADR-0008] both carried. The turn is one branch of a
+/// `select!` now and the terminal is another, on the runtime the session
+/// already holds. No second runtime and no second thread beyond the source's
+/// own reader.
 ///
-/// The pane paints when the loop emits and when a question is answered, and at
-/// no other moment. **During the provider's own await nothing repaints and no
-/// keystroke is read** — not because there is no source to read any more, but
-/// because nothing here races one against the turn: this function awaits the
-/// turn and only the turn. A `Ctrl-C` pressed then is read by the source's
-/// thread and sits in the channel until the await returns.
+/// **`biased`, so the polling order is a decision rather than a coin.** The
+/// turn first — a finished turn is not made to wait behind a tick that is also
+/// ready — then the terminal, then the beat. Tokio's default is a random
+/// branch, and a check over a random instrument is not a check (library
+/// verification-lessons §57).
+///
+/// # What a mid-turn `Ctrl-C` is
+///
+/// It **leaves**, exactly as one at the prompt does: [`zaru_tui::shell::leaves`]
+/// is the one rule and [ADR-0015]'s ruling of 2026-09-05 gives this key one
+/// meaning, at [ADR-0016] D5's `0`.
+///
+/// **And leaving is what makes it an interruption.** Breaking out of the loop
+/// drops the turn's future. Every event a sink emitted is already on disk —
+/// [`crate::compose::Records`] serialises, appends and syncs per event — so
+/// the transcript holds exactly what happened up to the drop, which is
+/// [ADR-0010] D2's "a crash loses at most the event in flight" without a
+/// crash. A tool call in flight has left its `Phase::Started` and no
+/// `Phase::Completed`, and that pair *is* the interruption D4 derives on the
+/// next `--resume` and hands the model as `Turn::Resumed`. Nothing is authored
+/// for it and no new state exists.
+///
+/// **An interrupted turn records no exchange.** [ADR-0013] D1's layer 6 is
+/// what came back, and nothing came back.
+///
+/// # What is not interruptible, named rather than smoothed
+///
+/// [`crate::process::Spawn::execute`] is blocking — a `std::process::Command`,
+/// `try_wait` and a sleep — and it is called from the asynchronous
+/// `Subprocess` port. **While `cmd.run` or a declared validator's command is
+/// running the current-thread runtime is blocked**, so no beat fires, no
+/// keystroke is read and an interrupt is not seen until the child returns. The
+/// provider's await and `web.fetch`'s are `reqwest` futures and do yield, so
+/// those are interruptible. Closing it needs `spawn_blocking` and therefore a
+/// runtime with a blocking pool, which is a second runtime; it is recorded on
+/// ADR-0011 and ADR-0009 as the next gap rather than taken here.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[allow(
+    clippy::too_many_arguments,
+    reason = "\
+    the same list `run` takes, minus the two it does not need. Every one is a \
+    port or a value some record owns, and bundling them would be a second name \
+    for the same list -- the argument `compose::turn::run_one` already makes"
+)]
 pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     shell: &mut Shell,
     surface: &mut S,
     source: &Source,
     pace: &P,
+    entries: &dyn zaru_tui::composer::Entries,
+    now: &mut Duration,
     turns: &mut Turns<'_>,
     task: &str,
-) -> Vec<Line> {
+) -> Turned {
     let n = turns.next;
     turns.next += 1;
 
     let mut tools = ToolLines::default();
-    let ran = {
+    let raced = {
         let pane = std::sync::Mutex::new(Pane::of(shell, surface));
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
         let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
 
-        crate::compose::turn::run_one(
-            turns.version,
-            turns.report_at,
-            turns.resolution,
-            turns.prepared,
-            turns.session,
-            n,
-            task,
-            Some(&confirm as &(dyn crate::tools::Confirm + Sync)),
-            &mut extra,
-            &mut turns.owed,
-            &mut turns.context,
+        race(
+            &pane,
+            source,
+            pace,
+            entries,
+            now,
+            crate::compose::turn::run_one(
+                turns.version,
+                turns.report_at,
+                turns.resolution,
+                turns.prepared,
+                turns.session,
+                n,
+                task,
+                Some(&confirm as &(dyn crate::tools::Confirm + Sync)),
+                &mut extra,
+                &mut turns.owed,
+                &mut turns.context,
+            ),
         )
         .await
     };
     let tool_lines = tools.taken();
+
+    let ran = match raced {
+        Raced::Ran(ran) => ran,
+        Raced::Interrupted(leaving) => return Turned::Interrupted(leaving),
+        Raced::SourceEnded => return Turned::SourceEnded,
+    };
 
     // ADR-0013 D1's layer 6, so the next turn assembles over this one. Every
     // part passes the one `Redactor` the session already holds — ADR-0008
@@ -602,7 +707,112 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         &redacted(&format!("zaru: {}", ran.lines.join("\n"))),
     ));
 
-    lines_of(&ran)
+    Turned::Ran(lines_of(&ran))
+}
+
+/// What the race broke out with, before the borrow of the pane ends.
+///
+/// Generic over what the raced future produced, which is what lets [`race`]
+/// be driven by a check that has no provider: the mechanism is the loop, and
+/// the loop does not care what it is racing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Raced<T> {
+    /// The future finished.
+    Ran(T),
+    /// The user left while it was running. The future was dropped.
+    Interrupted(zaru_tui::shell::Leaving),
+    /// The terminal stopped answering.
+    SourceEnded,
+}
+
+/// Wait on `running`, on the terminal, and on a beat, until one of them wins.
+///
+/// # This is the whole of the asynchronous terminal source's mechanism
+///
+/// [`run_a_turn`] hands it a turn; a check hands it a future it staged, which
+/// is what lets the loop be exercised without a provider, a key or a network.
+/// The mechanism and what it happens to be racing are two things, and only one
+/// of them can be got wrong.
+///
+/// **`biased`, so the polling order is a decision rather than a coin.** The
+/// future first — one that is ready is not made to wait behind a beat that is
+/// also ready — then the terminal, then the beat. Tokio's default is to pick a
+/// random ready branch, and a check over a random instrument is not a check
+/// (library verification-lessons §57).
+pub(crate) async fn race<S: Surface + Send, P: Pace + Sync, T>(
+    pane: &std::sync::Mutex<Pane<'_, S>>,
+    source: &Source,
+    pace: &P,
+    entries: &dyn zaru_tui::composer::Entries,
+    now: &mut Duration,
+    running: impl Future<Output = T>,
+) -> Raced<T> {
+    let mut running = core::pin::pin!(running);
+    loop {
+        tokio::select! {
+            biased;
+
+            ran = &mut running => break Raced::Ran(ran),
+
+            input = source.next() => {
+                let Some(input) = input else { break Raced::SourceEnded };
+                if let Some(leaving) = zaru_tui::shell::leaves(&input) {
+                    break Raced::Interrupted(leaving);
+                }
+                *now += Duration::from_millis(1);
+                read_while_busy(pane, input, *now, entries);
+            }
+
+            () = pace.elapse() => {
+                // The beat. Nothing on the pane changes because of it -- see
+                // `TICK` -- and it is what turns a suspended future into a
+                // surface that is still alive rather than one that has
+                // stopped.
+                if let Ok(mut pane) = pane.try_lock() {
+                    pane.paint();
+                }
+            }
+        }
+    }
+}
+
+/// One keystroke read while a turn is running.
+///
+/// # Neither lost nor executed as a task
+///
+/// The keystroke reaches [`zaru_tui::composer::Composer`] and the pane is
+/// painted, so a user typing during a turn sees their text and
+/// [ADR-0002] D8's standing tip yields on it — "Typing dismisses a tip
+/// instantly — no fade, no delay", which is [ADR-0005] D1's strip being "a
+/// pure function of composer state".
+///
+/// **`Enter` is intercepted before the composer**, for two reasons that point
+/// the same way. `Composer::key` would insert a newline into the text area,
+/// because [`Shell::key`] is what reads `Enter` as a submission and this is
+/// not that call. And ADR-0015's ruling says a task typed while a turn is
+/// running is refused with a notice, not queued — see [`BUSY`].
+///
+/// A pane the beat could not lock is a defect this counts rather than one it
+/// hangs on, which is [`Pane`]'s own argument; the keystroke is dropped in
+/// that case and the count is asserted zero.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+fn read_while_busy<S: Surface + Send>(
+    pane: &std::sync::Mutex<Pane<'_, S>>,
+    input: zaru_tui::shell::Input,
+    now: Duration,
+    entries: &dyn zaru_tui::composer::Entries,
+) {
+    let Ok(mut pane) = pane.try_lock() else {
+        return;
+    };
+    if input.key == zaru_tui::shell::Key::Enter {
+        pane.note(Line::new(Register::Announced, BUSY));
+    } else {
+        pane.shell.composer_mut().key(input, now, entries);
+        pane.paint();
+    }
 }
 
 /// Run the shell against a terminal until the user leaves.
@@ -664,10 +874,33 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // ADR-0008 D1: turns are the outer loop's unit, so a second
                 // task in the same session is the next turn. The session stays
                 // open whatever the turn did -- a turn that failed is not a
-                // reason to close the thing the user is inside.
+                // reason to close the thing the user is inside. **A user who
+                // left in the middle of one is a different thing**, and that
+                // is the one way out of this arm.
                 let lines = match turns {
                     Turnable::Ready(turns) => {
-                        run_a_turn(shell, surface, source, pace, turns, &task).await
+                        match run_a_turn(
+                            shell, surface, source, pace, entries, &mut now, turns, &task,
+                        )
+                        .await
+                        {
+                            Turned::Ran(lines) => lines,
+                            Turned::Interrupted(leaving) => {
+                                surface.draw(shell)?;
+                                return Ok(Pump {
+                                    exit: exit_for(leaving),
+                                });
+                            }
+                            // The terminal stopped answering mid-turn. A
+                            // product terminal does not; a script does, and
+                            // this is what stops a pump that never left from
+                            // hanging a check.
+                            Turned::SourceEnded => {
+                                return Ok(Pump {
+                                    exit: Exit::Succeeded,
+                                });
+                            }
+                        }
                     }
                     Turnable::Cannot(lines) => lines.clone(),
                 };

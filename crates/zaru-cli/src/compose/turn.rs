@@ -667,8 +667,16 @@ pub async fn run_one(
     // turn 2 it is the previous turns that fill it, which is what this
     // record's own Status tracking calls the day the threshold becomes
     // load-bearing.
+    // **Awaited rather than blocked on, since 2026-09-05.** `context-summariser`
+    // wrote this as `block_on(...)` because `run_one` was synchronous and the
+    // only runtime in reach was the one it built for itself. `run_one` is a
+    // future now -- the terminal races it against a beat and a keystroke -- so
+    // a `block_on` here would be a second runtime started inside the first,
+    // which tokio refuses at run time. It reached ADR-0016 D3's boundary as a
+    // defect on six checks the moment the two changes met, and the fix is not
+    // a nested runtime but no nesting at all: this is one sequence of awaits.
     let summariser = ModelSummariser::over(&provider, &prepared.held);
-    let compaction = match block_on(context.at_turn_boundary(&summariser, &prepared.held)) {
+    let compaction = match context.at_turn_boundary(&summariser, &prepared.held).await {
         Ok(compaction) => compaction,
         Err(failure) => {
             return Ran::refused_having_said(
