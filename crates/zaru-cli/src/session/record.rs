@@ -9,7 +9,7 @@
 //!
 //! # A producer is a variant, never a string
 //!
-//! Eight producers are named above and **three exist in this workspace**:
+//! Eight producers are named above and **four exist in this workspace**:
 //! `zaru-core`'s [`Event`], [ADR-0011] D4's transcript entry, and
 //! [ADR-0016] D1's five classes. Each is a variant of [`Record`], so a fourth
 //! producer is a variant and every match over the enum fails to compile
@@ -62,8 +62,25 @@ use crate::failure::{Classified, Presentation};
 use crate::tools::TranscriptEntry;
 use serde::{Deserialize, Serialize};
 use zaru_core::iteration::Event;
+use zaru_core::tool_call::Event as TurnEvent;
 
 /// Where a tool call had got to when this line was written.
+///
+/// # Three, and the third is a defect this arc found rather than a widening
+///
+/// A refused call fits neither of the first two. Writing `Started` and then
+/// `Completed` for it says it ran, which is untrue. Writing `Started` alone
+/// and stopping there makes [`resume`](crate::session::resume::resume) report a call
+/// the user *declined* as a call that was **interrupted** — so a resumed
+/// session would tell the model an action it consciously refused did not
+/// complete, and ADR-0010 D4's whole point is that the model is told the
+/// truth about what was in flight. Writing nothing at all would break
+/// ADR-0011 D4's "mode may remove the prompt; it never removes the record".
+///
+/// So there is a third phase. It is not a mode — ADR-0011 D4's record is the
+/// same at every mode and this is orthogonal to that — and it is recorded as
+/// a proposed Update on ADR-0010 D4 under a **delegated coordinator ruling of
+/// 2026-09-04**, open to Jeshua's veto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -71,6 +88,10 @@ pub enum Phase {
     Started,
     /// The call returned. Written after it.
     Completed,
+    /// The call did not act, because the user declined or nobody could be
+    /// asked. Written instead of [`Phase::Completed`], and it closes the
+    /// pair exactly as a completion does.
+    Refused,
 }
 
 /// [ADR-0011] D4's record of one tool call, as a transcript keeps it.
@@ -100,6 +121,18 @@ impl ToolCall {
     #[must_use]
     pub fn completed(entry: &TranscriptEntry) -> Self {
         Self::at(entry, Phase::Completed)
+    }
+
+    /// The line written when the call did not act.
+    ///
+    /// ADR-0011 D6 gives the harness no veto, so the only ways here are that
+    /// the user said no or that there was nobody to ask. Under the ADR-0016
+    /// ruling of 2026-09-04 neither is a failure, which is why this is a
+    /// phase of the call's own record rather than a
+    /// [`Record::Failure`].
+    #[must_use]
+    pub fn refused(entry: &TranscriptEntry) -> Self {
+        Self::at(entry, Phase::Refused)
     }
 
     fn at(entry: &TranscriptEntry, phase: Phase) -> Self {
@@ -167,6 +200,13 @@ pub enum Record {
     Loop(Event),
     /// ADR-0011 D4's record, which no permission mode removes.
     ToolCall(ToolCall),
+    /// ADR-0008 D1's **outer** loop's event stream.
+    ///
+    /// A fourth producer, and a variant rather than a widening of
+    /// [`Record::Loop`]: D1 makes the two loops different loops, and D3's
+    /// eight events are all iteration-shaped. See
+    /// [`zaru_core::tool_call::event`] for why that stream is its own enum.
+    TurnLoop(TurnEvent),
     /// ADR-0016 D1's classified failure, as it was presented.
     Failure(FailureLine),
 }
@@ -180,6 +220,7 @@ impl Record {
     pub const fn producer(&self) -> &'static str {
         match self {
             Self::Loop(_) => "loop",
+            Self::TurnLoop(_) => "turn_loop",
             Self::ToolCall(_) => "tool_call",
             Self::Failure(_) => "failure",
         }

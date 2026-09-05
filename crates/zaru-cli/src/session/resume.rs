@@ -35,15 +35,24 @@
 //! the two framings open; the reader's end is the only one a killed process
 //! can honour.
 //!
-//! # Telling the model is not this module's, and it is a stop
+//! # Telling the model, which now has a carrier
 //!
 //! D4's second half is "the model is told it did not complete". The model is
-//! reached through `zaru_core::iteration::ContextPolicy::assemble`, which
-//! takes a `Turn` with exactly two variants, `Initial` and `Refinement`.
-//! **Neither can carry an interruption.** A third variant is a change to
-//! `zaru-core`'s public contract and belongs to whoever builds the tool-call
-//! loop. This module produces the datum and stops at the seam; it is recorded
-//! as an open question on ADR-0008 and on `operations/adr-status`.
+//! reached through [`ContextPolicy::assemble`], which takes a
+//! [`Turn`](zaru_core::iteration::Turn) — and when this module was written
+//! that type had two variants, `Initial` and `Refinement`, neither of which
+//! could carry an interruption. It has three now:
+//! [`Turn::Resumed`](zaru_core::iteration::Turn::Resumed), added by the
+//! tool-call loop, carrying a
+//! [`Interruption`](zaru_core::iteration::Interruption) built from this
+//! module's own [`Interrupted::call`]'s rendered line.
+//!
+//! **This module still tells nobody anything.** It produces the datum, as it
+//! always did; the conversion and the turn are the caller's, and
+//! `crates/zaru-cli/tests/tool_execution_from_outside.rs` drives it end to
+//! end. The open question ADR-0008's Status tracking raised is answered.
+//!
+//! [`ContextPolicy::assemble`]: zaru_core::iteration::ContextPolicy::assemble
 //!
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 
@@ -62,6 +71,20 @@ use std::path::Path;
 pub struct Interrupted {
     /// The call, as ADR-0011 D4 rendered it into the transcript.
     pub call: ToolCall,
+}
+
+impl Interrupted {
+    /// The datum the model is told, as `zaru-core` carries it.
+    ///
+    /// ADR-0010 D4's second half. The line and nothing else, because
+    /// ADR-0011 D4 calls `render()`'s output "the line a transcript shows"
+    /// and D2's replayability claim is that re-rendering it reproduces what
+    /// the user saw — so handing the model anything else would be a second
+    /// description of one call.
+    #[must_use]
+    pub fn for_the_model(&self) -> zaru_core::iteration::Interruption {
+        zaru_core::iteration::Interruption::of(self.call.line.clone())
+    }
 }
 
 /// A session could not be resumed.
@@ -157,19 +180,25 @@ pub fn resume(directory: &Path, tail: usize) -> Result<Resumed, ResumeFailure> {
     })
 }
 
-/// The call that started and never completed, if there is one.
+/// The call that started and never finished, if there is one.
 ///
 /// One in flight at a time, which is what ADR-0011's tool-call loop describes:
-/// the model requests a tool, the harness executes it, the result returns. A
-/// `Completed` clears whatever was pending, so a session that ran a hundred
-/// calls and finished them all has nothing pending at the end.
+/// the model requests a tool, the harness executes it, the result returns.
+///
+/// **A `Started` with no matching `Completed` *or* `Refused`** is the
+/// interruption. Both of the latter close the pair, and for the same reason:
+/// the process was alive to write them. A refused call is one the user
+/// consciously declined, and reporting it to the model as an action that did
+/// not complete would tell the model the opposite of what happened —
+/// ADR-0016's ruling of 2026-09-04 is that a refusal is not a failure, and it
+/// is not an interruption either.
 fn unfinished_call(records: &[Record]) -> Option<Interrupted> {
     let mut pending: Option<&ToolCall> = None;
     for record in records {
         if let Record::ToolCall(call) = record {
             match call.phase {
                 Phase::Started => pending = Some(call),
-                Phase::Completed => pending = None,
+                Phase::Completed | Phase::Refused => pending = None,
             }
         }
     }

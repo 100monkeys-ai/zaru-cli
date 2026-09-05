@@ -11,12 +11,14 @@
 //! found at a security boundary... joins a permanent hostile-input corpus as
 //! its reproduction", and the corpus never shrinks.
 //!
-//! **Nothing here executes anything.** `cmd.run` needs a subprocess and
-//! `web.fetch` needs a network, and the harness has neither. What is built is
-//! the model, the classification, the permission decision and the refusals;
-//! the acting half sits behind ports with no implementation in this crate's
-//! product tree, exactly as `zaru-core` declares five ports it does not
-//! implement and [`credentials`](crate::credentials) declares two.
+//! **Two of the seven execute, and five do not.** `fs.read` and `fs.list` act
+//! through `std::fs` inside D4's boundary, because neither can create a path
+//! and so neither is classified against a tree it is about to change.
+//! `fs.write`, `fs.edit`, `fs.search`, `cmd.run` and `web.fetch` sit behind
+//! ports with no implementation in this crate's product tree — see
+//! [`writes`] and [`port`] for what each one is waiting on. So does the
+//! prompt, so does the allowlist, so does the destructive matcher, and so
+//! does [`seal`]'s membrane.
 //!
 //! # Where it lives, and why here
 //!
@@ -66,17 +68,21 @@
 //! [`credentials::Confirm`]: crate::credentials::Confirm
 
 pub mod decision;
+pub mod execute;
 pub mod mode;
 pub mod name;
 pub mod notice;
 pub mod output;
 pub mod port;
+pub mod seal;
 pub mod tree;
+pub mod writes;
 
 pub use decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, InvocationRefused, Permission,
     RefusedBecause, Requirement, Subject, TranscriptEntry,
 };
+pub use execute::{Executor, NotACall, OVERFLOW_PREFIX, SessionOverflow, descriptors};
 pub use mode::{Layer, Mode, ModeRefused, Tier};
 pub use name::{Effect, ToolName};
 pub use notice::SessionNotice;
@@ -84,8 +90,10 @@ pub use output::{
     BudgetIsZero, Captured, ELISION_PREFIX, Excerpt, OutputBudget, Overflow, OverflowFailure,
     PresentationRefused, Presented,
 };
-pub use port::{Allowlist, Confirm, DestructiveMatch, Question};
+pub use port::{Allowlist, Confirm, DestructiveMatch, Fetch, Question, Subprocess};
+pub use seal::{NoMembrane, Verdict, Verdicts};
 pub use tree::{Placement, Target, TreeError, WorkingDirectory};
+pub use writes::{FileWrites, Search};
 
 // `pub(crate)` rather than private, for the reason `credentials::fixtures`
 // and `config::fixtures` already are: `crate::session`'s checks need a

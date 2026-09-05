@@ -67,6 +67,7 @@ pub(crate) fn nonce(label: &str) -> String {
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 pub(crate) struct ScratchTree {
     base: std::path::PathBuf,
+    sentinel: String,
 }
 
 impl ScratchTree {
@@ -78,16 +79,30 @@ impl ScratchTree {
         let base = std::fs::canonicalize(std::env::temp_dir())
             .expect("the temporary directory resolves")
             .join(nonce("ts-tree"));
-        let tree = Self { base };
+        let tree = Self {
+            base,
+            sentinel: nonce("only-outside-the-tree"),
+        };
         std::fs::create_dir_all(tree.project().join("inside")).expect("staging: project/inside");
         std::fs::create_dir_all(tree.base.join("projectevil")).expect("staging: projectevil");
         std::fs::create_dir_all(tree.base.join("elsewhere")).expect("staging: elsewhere");
         std::fs::write(tree.project().join("inside").join("file"), b"in")
             .expect("staging: project/inside/file");
-        std::fs::write(tree.base.join("elsewhere").join("secret"), b"out")
-            .expect("staging: elsewhere/secret");
-        std::fs::write(tree.base.join("projectevil").join("loot"), b"out")
-            .expect("staging: projectevil/loot");
+        // The out-of-tree files carry a value that exists nowhere else, so a
+        // check can assert that nothing which escaped the boundary reached a
+        // caller -- an assertion about the bytes rather than about the path,
+        // which is the only kind that survives a classifier that is right and
+        // an executor that reads the wrong thing anyway.
+        std::fs::write(
+            tree.base.join("elsewhere").join("secret"),
+            tree.sentinel.as_bytes(),
+        )
+        .expect("staging: elsewhere/secret");
+        std::fs::write(
+            tree.base.join("projectevil").join("loot"),
+            tree.sentinel.as_bytes(),
+        )
+        .expect("staging: projectevil/loot");
         std::os::unix::fs::symlink(tree.base.join("elsewhere"), tree.project().join("escape"))
             .expect("staging: the escaping symlink");
         std::os::unix::fs::symlink(tree.project(), tree.base.join("by-link"))
@@ -108,6 +123,14 @@ impl ScratchTree {
     /// The directory everything else sits in.
     pub(crate) fn base(&self) -> &std::path::Path {
         &self.base
+    }
+
+    /// The value written into every out-of-tree file and nowhere else.
+    ///
+    /// A check that reads it back has read something the boundary should
+    /// have stopped, whatever the classification said.
+    pub(crate) fn sentinel(&self) -> &str {
+        &self.sentinel
     }
 }
 

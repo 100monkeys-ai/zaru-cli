@@ -149,6 +149,25 @@ impl ToolName {
         }
     }
 
+    /// What ADR-0011 D1's second column says this tool does.
+    ///
+    /// Transcribed from the record's table rather than written here, for the
+    /// reason [`ToolName::as_str`] is: it is what a model is told the tool is
+    /// for, and a description invented beside the code is a contract nobody
+    /// decided.
+    #[must_use]
+    pub const fn purpose(self) -> &'static str {
+        match self {
+            Self::FsRead => "Read a file",
+            Self::FsWrite => "Create or overwrite a file",
+            Self::FsEdit => "Replace an exact string within a file",
+            Self::FsList => "List a directory",
+            Self::FsSearch => "Content and filename search",
+            Self::CmdRun => "Execute a shell command",
+            Self::WebFetch => "Retrieve a URL",
+        }
+    }
+
     /// What this tool does to the world.
     #[must_use]
     pub const fn effect(self) -> Effect {

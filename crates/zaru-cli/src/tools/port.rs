@@ -128,3 +128,37 @@ pub trait Confirm {
     /// Ask the user, having stated what is about to happen.
     fn confirm(&self, question: &Question) -> bool;
 }
+
+/// Executes a shell command. `cmd.run`.
+///
+/// **No product implementation**, and nothing in this workspace spawns a
+/// process outside a test tree. It is also the tool ADR-0011 D6's four
+/// destructive categories are mostly about, and
+/// [`DestructiveMatch`] has no implementation either — so a
+/// `cmd.run` that acted could not be given the prompt prominence D6 requires.
+pub trait Subprocess {
+    /// Run the command and capture what it produced.
+    fn run(
+        &self,
+        command: &str,
+    ) -> impl core::future::Future<
+        Output = Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure>,
+    > + Send;
+}
+
+/// Retrieves a URL. `web.fetch`.
+///
+/// **No product implementation**, and nothing in `zaru-cli`'s own dependency
+/// closure can open a socket on its behalf. ADR-0011 D4's boundary is about
+/// paths and says nothing about outbound destinations, so a URL is carried as
+/// itself and classified by nothing — a URL allowlist would be a security
+/// vocabulary this crate has no record to transcribe.
+pub trait Fetch {
+    /// Retrieve the URL and capture what came back.
+    fn retrieve(
+        &self,
+        url: &str,
+    ) -> impl core::future::Future<
+        Output = Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure>,
+    > + Send;
+}
