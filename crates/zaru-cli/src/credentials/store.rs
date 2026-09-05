@@ -292,35 +292,70 @@ impl CredentialStore {
             }
         })?;
 
+        // One parse, shared with `reading`, so the two openers cannot come to
+        // differ about what the file says.
+        let entries = Self::entries_at(&root.join(STORE_FILE))?;
+
+        Ok(Self { root, entries })
+    }
+
+    /// Read the store under `root` **without creating anything**.
+    ///
+    /// [`open`] re-asserts `0700` on the directory on every call because it is
+    /// about to write; this never writes, so it has nothing to protect and
+    /// nothing to fix, and creating a `~/.zaru` in order to find no tokens in
+    /// it would be creating state to read state -- ADR-0014's port carries
+    /// that argument for the configuration loader and it holds identically
+    /// here.
+    ///
+    /// An absent file is an empty store rather than an error, exactly as it is
+    /// for [`open`]: a user who has never added a token has not made a
+    /// mistake, and [ADR-0007] D7's listing is what tells them so.
+    ///
+    /// **A caller that is going to write calls [`open`].** Nothing in this
+    /// harness can: `add` needs a [`SecretStore`] and a [`Confirm`], and
+    /// neither has an implementation in any product tree.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Io`] when the file exists and cannot be read, and
+    /// [`StoreError::Malformed`] when it does not parse.
+    ///
+    /// [`open`]: CredentialStore::open
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub fn reading(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let root = root.into();
         let path = root.join(STORE_FILE);
-        let entries = match fs::read_to_string(&path) {
+        let entries = Self::entries_at(&path)?;
+        Ok(Self { root, entries })
+    }
+
+    /// Read the stored file, or an empty map when it is not there.
+    fn entries_at(path: &Path) -> Result<BTreeMap<Alias, Record>, StoreError> {
+        match fs::read_to_string(path) {
             Ok(text) => {
                 let stored: StoredFile =
                     serde_json::from_str(&text).map_err(|error| StoreError::Malformed {
-                        path: path.clone(),
+                        path: path.to_path_buf(),
                         detail: error.to_string(),
                     })?;
                 let mut entries = BTreeMap::new();
                 for (key, record) in stored.entries {
                     let alias = Alias::new(&key).map_err(|refusal| StoreError::Malformed {
-                        path: path.clone(),
+                        path: path.to_path_buf(),
                         detail: refusal.to_string(),
                     })?;
                     entries.insert(alias, record);
                 }
-                entries
+                Ok(entries)
             }
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(source) => {
-                return Err(StoreError::Io {
-                    action: "read the credential store",
-                    path,
-                    source,
-                });
-            }
-        };
-
-        Ok(Self { root, entries })
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(source) => Err(StoreError::Io {
+                action: "read the credential store",
+                path: path.to_path_buf(),
+                source,
+            }),
+        }
     }
 
     /// The directory this store lives in.

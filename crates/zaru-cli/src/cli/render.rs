@@ -206,3 +206,77 @@ pub fn resumed(id: &crate::session::SessionId, resumed: &crate::session::Resumed
     lines.extend(resumed.tail_lines.iter().cloned());
     lines
 }
+
+/// [ADR-0007] D7's `tokens` listing, as lines.
+///
+/// D7: "`/notes tokens` — list aliases, descriptions, workspace, tool count",
+/// and "**`/notes tokens` shows the composer role explicitly.** A user must be
+/// able to answer 'which token is my search using' without inspecting
+/// configuration."
+///
+/// D8's apex marking is one of the three places that record requires it, and
+/// the marking is [`Reach::APEX_MARKING`](crate::credentials::Reach) rather
+/// than a spelling composed here — D8 wants a token marked identically
+/// wherever it appears, and a second spelling is how three renderings come to
+/// differ.
+///
+/// **No secret is reachable from here by construction**: the type this walks
+/// has no field one could go in, which is D3 as a property of the store rather
+/// than as a rule this renderer follows.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[must_use]
+pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
+    use crate::credentials::{Reach, Role, StoredReach};
+
+    if store.is_empty() {
+        return vec![
+            "no tokens".to_owned(),
+            "  nothing in this harness can add one yet: ADR-0007 D3's sealing is a port with no \
+             implementation, so no secret is written anywhere"
+                .to_owned(),
+        ];
+    }
+
+    let rows: Vec<[String; 6]> = store
+        .records()
+        .map(|(alias, record)| {
+            [
+                alias.to_string(),
+                record.description.clone(),
+                record
+                    .workspace
+                    .clone()
+                    .unwrap_or_else(|| NOT_SET.to_owned()),
+                format!("{} tool(s)", record.tools.len()),
+                match &record.reach {
+                    StoredReach::Apex => Reach::APEX_MARKING.to_owned(),
+                    StoredReach::InstanceLocked(instance) => instance.clone(),
+                },
+                if record.role.as_deref() == Some(Role::Composer.as_str()) {
+                    Role::Composer.as_str().to_owned()
+                } else {
+                    String::new()
+                },
+            ]
+        })
+        .collect();
+
+    let mut widths = [0usize; 6];
+    for row in &rows {
+        for (slot, cell) in widths.iter_mut().zip(row) {
+            *slot = (*slot).max(cell.chars().count());
+        }
+    }
+
+    rows.iter()
+        .map(|row| {
+            let padded: Vec<String> = row
+                .iter()
+                .zip(widths)
+                .map(|(cell, width)| format!("{cell:width$}"))
+                .collect();
+            format!("  {}", padded.join("  ")).trim_end().to_owned()
+        })
+        .collect()
+}

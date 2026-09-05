@@ -28,6 +28,7 @@ use crate::cli::classify::Surface;
 use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::cli::{help, layers, render};
 use crate::config::{Key, Resolution};
+use crate::credentials::CredentialStore;
 use crate::failure::{Classified, Exit, SessionEvidence};
 use crate::providers::{ModelAlias, ModelTable, ResolvedModel};
 use crate::runtime::{ResolvedTier, Runtime};
@@ -112,10 +113,8 @@ impl Run<'_> {
             Request::SessionsRemove { id } => self.sessions_remove(id),
             Request::Resume { id } => self.resume(id, &line.overrides),
             Request::Continue => self.resume_latest(&line.overrides),
-            Request::NotesTokens | Request::Task { .. } => Outcome::printed(vec![
-                "not reached in this commit; the surrounding arms land with their own checks"
-                    .to_owned(),
-            ]),
+            Request::NotesTokens => self.notes_tokens(),
+            Request::Task { .. } => self.no_provider(&line.overrides),
         }
     }
 
@@ -211,6 +210,30 @@ impl Run<'_> {
         match ids.last() {
             Some(id) => self.resume(id, overrides),
             None => Outcome::failed(surface.no_session_to_continue()),
+        }
+    }
+
+    /// [ADR-0007] D7's `tokens`, from outside a session.
+    ///
+    /// Read-only: `CredentialStore::reading` creates nothing, for the reason
+    /// `sessions list` does not either.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    fn notes_tokens(&self) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let root = match CredentialStore::default_root() {
+            Ok(root) => root,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        match CredentialStore::reading(root) {
+            Ok(store) => Outcome::printed(render::tokens(&store)),
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
         }
     }
 

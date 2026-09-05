@@ -592,3 +592,241 @@ fn continue_takes_the_most_recent_session_by_the_ulids_own_order() {
         ran.stdout
     );
 }
+
+/// The sealing port, implemented from outside the crate that declares it.
+///
+/// The product has no implementation and cannot get one until ADR-0007 D3's
+/// `aes-gcm` and `keyring` have a caller, so a check that wants a *populated*
+/// store has to supply one. That is why `zaru notes tokens` prints an empty
+/// listing on every real machine today, and why this check has to build the
+/// store it then asks the binary to read.
+#[derive(Default)]
+struct HeldInMemory {
+    held: std::collections::BTreeMap<String, String>,
+}
+
+impl zaru_cli::credentials::SecretStore for HeldInMemory {
+    fn seal(
+        &mut self,
+        alias: &zaru_cli::credentials::Alias,
+        secret: &zaru_cli::credentials::Secret,
+    ) -> Result<(), zaru_cli::credentials::SealFailure> {
+        self.held.insert(
+            alias.as_str().to_owned(),
+            secret.expose_for_dispatch().to_owned(),
+        );
+        Ok(())
+    }
+
+    fn unseal(
+        &self,
+        alias: &zaru_cli::credentials::Alias,
+    ) -> Result<zaru_cli::credentials::Secret, zaru_cli::credentials::SealFailure> {
+        let held = self.held.get(alias.as_str()).ok_or_else(|| {
+            zaru_cli::credentials::SealFailure::new(format!("nothing sealed under \"{alias}\""))
+        })?;
+        zaru_cli::credentials::Secret::new(held.clone())
+            .map_err(|refusal| zaru_cli::credentials::SealFailure::new(refusal.to_string()))
+    }
+}
+
+struct AlwaysConfirms;
+
+impl zaru_cli::credentials::Confirm for AlwaysConfirms {
+    fn confirm_apex(&self, _alias: &zaru_cli::credentials::Alias, _grants: &str) -> bool {
+        true
+    }
+}
+
+/// ADR-0007 D7's listing, printed by the binary over a store it can read.
+///
+/// **This is the clause moving, and only one of five surfaces.** That record's
+/// clause 10 wants all five and says "no binary reaches the credential store";
+/// one does now. `add`, `describe`, `rm` and `use` are not built: `add` needs a
+/// server, a sealer and a confirmer; the store's public door has no `describe`
+/// and no `rm`; and `use` could only ever refuse, because nothing can put a
+/// token in the store for the role to move to.
+///
+/// The planted bearer value is asserted **absent** from every byte the binary
+/// printed, and so is its ASCII core — the credential store's surviving
+/// mutation of 2026-09-04, and Verification lessons §50: an absence assertion
+/// is blind to whatever the renderer escapes.
+#[test]
+fn adr_0007_d7s_listing_shows_the_composer_role_and_marks_an_apex_token() {
+    use zaru_cli::credentials::{
+        Alias, CredentialStore, Description, Entry, Instance, Reach, Secret, ToolScope,
+    };
+
+    let home = Home::new("notes-tokens");
+    let mut sealer = HeldInMemory::default();
+    let mut store = CredentialStore::open(home.path().join(".zaru")).expect("a scratch store");
+
+    // A nonce with a combining mark, so that an escaping renderer cannot make
+    // the absence assertion pass by mangling it. The ASCII core is what no
+    // escaping alters.
+    let core = format!("csnonce{}", std::process::id());
+    let planted = format!("nn_mcp_{core}\u{301}");
+
+    store
+        .add(
+            Entry::new(
+                Alias::new("work").expect("a legal alias"),
+                // Deliberately does not contain the word `composer`. The
+                // first version of this check filtered the listing for that
+                // word and the description supplied it, so dropping the role
+                // column left the check green -- Verification lessons §51: a
+                // fixture can be awkward on one axis and ordinary on the axis
+                // the mutant moves.
+                Description::new("search from the editor").expect("one line"),
+                Secret::new(planted.clone()).expect("nn_mcp_ names a kind"),
+                Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
+            )
+            .with_tools(ToolScope::new(["pages.read", "search.global"]))
+            .with_workspace("zaru"),
+            &mut sealer,
+            None,
+        )
+        .expect("the token is stored");
+    store
+        .add(
+            Entry::new(
+                Alias::new("everywhere").expect("a legal alias"),
+                Description::new("an operator token").expect("one line"),
+                Secret::new(format!("nn_app_{core}-second")).expect("nn_app_ names a kind"),
+                Reach::Apex,
+            )
+            .with_tools(ToolScope::new(["pages.read"])),
+            &mut sealer,
+            Some(&AlwaysConfirms),
+        )
+        .expect("a confirmed apex token is stored");
+    store
+        .grant_composer_role(&Alias::new("work").expect("a legal alias"))
+        .expect("ADR-0006 D4's scope holds the role");
+    store.save().expect("the store is written");
+
+    let ran = zaru(&home, &["notes", "tokens"]);
+    assert_eq!(ran.code, 0);
+    assert_eq!(
+        ran.lines().len(),
+        2,
+        "one line per token: {:?}",
+        ran.lines()
+    );
+
+    let composer: Vec<&str> = ran
+        .lines()
+        .into_iter()
+        .filter(|line| line.trim_end().ends_with("composer"))
+        .collect();
+    assert_eq!(
+        composer.len(),
+        1,
+        "D7: the listing shows the composer role explicitly, so a user can answer \"which token \
+         is my search using\" without inspecting configuration: {:?}",
+        ran.lines()
+    );
+    assert!(
+        composer[0].starts_with("  work") && composer[0].contains("zaru"),
+        "the composer's row carries its alias and its workspace: {:?}",
+        composer[0]
+    );
+    assert!(
+        ran.stdout.contains("2 tool(s)") && ran.stdout.contains("1 tool(s)"),
+        "D7 wants a tool count per token: {}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.contains("apex (no instance boundary)"),
+        "D8 marks an apex token wherever it appears, and the listing is one of its three \
+         places: {}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.contains("100monkeys-ai.cortex.page"),
+        "an instance-locked token shows its instance, so the marking distinguishes something: {}",
+        ran.stdout
+    );
+
+    let printed = format!("{}{}", ran.stdout, ran.stderr);
+    assert!(
+        !printed.contains(&planted),
+        "a bearer value reached the listing"
+    );
+    assert!(
+        !printed.contains(&core),
+        "the bearer value's ASCII core reached the listing in some escaped form, which the raw \
+         assertion above cannot see"
+    );
+}
+
+/// `notes tokens` on a machine with no store says so and creates nothing.
+#[test]
+fn listing_tokens_on_a_fresh_machine_says_so_and_creates_nothing() {
+    let home = Home::new("notes-empty");
+
+    let ran = zaru(&home, &["notes", "tokens"]);
+    assert_eq!(ran.code, 0);
+    assert!(
+        ran.stdout.starts_with("no tokens"),
+        "an empty listing and a listing that failed look identical unless one says so: {}",
+        ran.stdout
+    );
+    assert!(
+        home.path().is_dir(),
+        "the scratch home must survive, or this reports absence for everything"
+    );
+    assert!(
+        !home.path().join(".zaru").exists(),
+        "listing tokens created ~/.zaru, which is creating state in order to read state"
+    );
+}
+
+/// A task is refused, and the two halves of what is missing are two classes.
+///
+/// **This pins the reading ruled on 2026-09-05 so that deciding it the other
+/// way reddens.** An unresolved `model.default` is the user's — the remedy
+/// names a key they can set, and setting it moves the refusal on. A resolved
+/// one is not: the user has done their half and this build carries no provider
+/// client, which is presented as ADR-0016 D1's capability class at exit 4. That
+/// class carries a `Tier` and no tier in this build offers a provider, so the
+/// line names `bare` and is true of the design rather than of this binary. D1
+/// has no row for "not built yet" and that is raised as an open question.
+#[test]
+fn the_two_halves_of_a_missing_provider_are_different_classes() {
+    let home = Home::new("task");
+
+    let unconfigured = zaru(&home, &["fix", "the", "failing", "test"]);
+    assert_eq!(
+        unconfigured.code, 2,
+        "with no model configured the refusal is the user's and the remedy is a key they can set"
+    );
+    assert!(
+        unconfigured.stderr.contains("model.default")
+            && unconfigured.stderr.contains("ZARU_MODEL_DEFAULT"),
+        "the remedy names the key and the variable ADR-0014's own transform produces: {}",
+        unconfigured.stderr
+    );
+    assert!(
+        !unconfigured.stderr.contains("config set")
+            && !unconfigured.stderr.contains("ZARU_ANTHROPIC_KEY"),
+        "ADR-0016 D2's worked remedy names a command this harness does not have and a variable \
+         the transform cannot produce, and neither is reused: {}",
+        unconfigured.stderr
+    );
+
+    let configured = zaru(
+        &home,
+        &["--model", "a-model-identifier", "do", "a", "thing"],
+    );
+    assert_eq!(
+        configured.code, 4,
+        "with a model configured what is missing is ours, and D5's capability code is what this \
+         reading claims"
+    );
+    assert!(
+        configured.stderr.contains("no provider client"),
+        "the statement must say what is missing rather than what the reader should change: {}",
+        configured.stderr
+    );
+}
