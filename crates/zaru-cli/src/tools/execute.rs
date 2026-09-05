@@ -269,6 +269,28 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
+/// The same seven, as a slice that outlives any borrow of a caller.
+///
+/// [`ToolExecutor::descriptors`] returns `&[ToolDescriptor]` borrowed from
+/// `&self`, which a caller reaching this surface through a lock cannot
+/// produce: the slice would borrow the guard and the guard is dropped at the
+/// end of the call. So the list lives in a `OnceLock` here, and **both
+/// implementations return this one** — the [`Executor`]'s and
+/// [`Shared`](crate::compose::Shared)'s — because the set the model is
+/// offered and the set the executor will accept being one set is a property
+/// this module already holds, and two accessors over two lists would give it
+/// away.
+///
+/// Owned by the caller and handed in would be a second list; built per call
+/// from [`ToolName::ALL`] would need somewhere to live across the borrow. A
+/// `OnceLock` over a value derived from a compile-time constant is neither:
+/// one walk, one allocation, and the same slice every time.
+#[must_use]
+pub fn descriptor_set() -> &'static [ToolDescriptor] {
+    static DESCRIPTORS: std::sync::OnceLock<Vec<ToolDescriptor>> = std::sync::OnceLock::new();
+    DESCRIPTORS.get_or_init(descriptors)
+}
+
 impl<C, F> Executor<'_, C, F>
 where
     C: Subprocess + Sync,
@@ -353,13 +375,7 @@ where
     F: Fetch + Sync,
 {
     fn descriptors(&self) -> &[ToolDescriptor] {
-        // Owned by the caller and handed in would be a second list; built
-        // here from `ToolName::ALL` would need somewhere to live across the
-        // borrow. A `OnceLock` over a value derived from a compile-time
-        // constant is neither: one walk, one allocation, and the same slice
-        // every time.
-        static DESCRIPTORS: std::sync::OnceLock<Vec<ToolDescriptor>> = std::sync::OnceLock::new();
-        DESCRIPTORS.get_or_init(descriptors)
+        descriptor_set()
     }
 
     async fn execute(&mut self, request: &ToolRequest) -> Result<ToolOutcome, PortFailure> {

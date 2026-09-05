@@ -1073,3 +1073,81 @@ async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() 
         );
     }
 }
+
+/// The session's one tool surface offers one descriptor list to both loops.
+///
+/// [ADR-0009] D4's branch means the outer loop and the inner loop each hold a
+/// handle to the same `Executor`, and each answers `descriptors()` through its
+/// own `ToolExecutor` implementation. If those were two lists, the set a model
+/// is offered inside an iteration and the set the executor will accept would
+/// be two sets that can disagree — which is the drift
+/// [`descriptor_set`](crate::tools::descriptor_set) exists to make
+/// unrepresentable.
+///
+/// **Asserted by pointer, not by value.** Two separately built lists compare
+/// equal: they are derived from the same `ToolName::ALL` walk, so an equality
+/// assertion passes against exactly the defect this check is about. Pointer
+/// identity is the only reading that separates one list from two copies of
+/// one list ([Verification lessons] §13).
+///
+/// Watched red by giving `Shared::descriptors` a second `OnceLock` of its own,
+/// which printed *"the two handles to one tool surface returned two descriptor
+/// lists, so the set a model is offered and the set the executor accepts are
+/// two sets"*.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[tokio::test]
+async fn the_two_handles_to_one_tool_surface_return_one_descriptor_list() {
+    use zaru_core::tool_call::ToolExecutor as _;
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("resolves");
+    let scratch = Scratch::new();
+    let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
+    let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+    let allow = StagedAllowlist(true);
+    let destructive = StagedDestructive(false);
+    let unbuilt = Unbuilt;
+    let membrane = NoMembrane;
+    let executor = executor!(
+        &working,
+        Mode::Ask,
+        &allow,
+        &destructive,
+        None,
+        &membrane,
+        &mut overflow,
+        &mut transcript,
+        &unbuilt
+    );
+
+    // The list as the executor itself answers it, taken before the value
+    // moves into the lock — which is the only order in which both readings
+    // exist to be compared.
+    let direct = executor.descriptors().as_ptr();
+
+    let cell = tokio::sync::Mutex::new(executor);
+    let outer = crate::compose::Shared::over(&cell);
+    let inner = outer;
+
+    assert!(
+        std::ptr::eq(outer.descriptors().as_ptr(), direct),
+        "the two handles to one tool surface returned two descriptor lists, so the set a model \
+         is offered and the set the executor accepts are two sets"
+    );
+    assert!(
+        std::ptr::eq(inner.descriptors().as_ptr(), direct),
+        "the two handles to one tool surface returned two descriptor lists, so the set a model \
+         is offered and the set the executor accepts are two sets"
+    );
+
+    // The staging, asserted rather than assumed: a check comparing two empty
+    // slices would pass by pointer as well ([Verification lessons] §8).
+    assert_eq!(
+        outer.descriptors().len(),
+        ToolName::ALL.len(),
+        "the list compared must be the seven ADR-0011 D1 names, or the identity above is an \
+         identity between two nothings"
+    );
+}

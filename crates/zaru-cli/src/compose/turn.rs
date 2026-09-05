@@ -642,7 +642,7 @@ pub fn run_one(
         }
     };
 
-    let mut executor = Executor {
+    let executor = Executor {
         working_directory: &prepared.here,
         // ADR-0011 D3's mode, resolved once for the session rather than per
         // turn. `mode-key` put the read where `prepare` now is, and that is
@@ -673,6 +673,12 @@ pub fn run_one(
         // record on disk is written before anything renders it -- a renderer
         // that painted an event the file does not hold would be showing the
         // user something a resume could not reproduce.
+        // ADR-0008's execution, decided 2026-09-05: one tool surface, reached
+        // by both loops. See `crate::compose::shared` for why it is a lock and
+        // why sharing the value rather than building a second one is what
+        // makes "a candidate cannot do what a turn cannot" a property.
+        let tool_surface = tokio::sync::Mutex::new(executor);
+        let mut tools = crate::compose::Shared::over(&tool_surface);
         let mut sinks: Vec<&mut dyn zaru_core::tool_call::EventSink> = vec![&mut events];
         for sink in extra.iter_mut() {
             sinks.push(&mut **sink);
@@ -684,7 +690,7 @@ pub fn run_one(
             prepared.witness,
             Ports {
                 model: &provider,
-                tools: &mut executor,
+                tools: &mut tools,
                 context: &policy,
                 clock: &clock,
                 redactor: &prepared.held,

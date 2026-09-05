@@ -103,7 +103,9 @@ pub use decision::{
     RefusedBecause, Requirement, Subject, TranscriptEntry,
 };
 pub use destructive::{Category, Shapes};
-pub use execute::{Executor, NotACall, OVERFLOW_PREFIX, SessionOverflow, descriptors};
+pub use execute::{
+    Executor, NotACall, OVERFLOW_PREFIX, SessionOverflow, descriptor_set, descriptors,
+};
 pub use mode::{Layer, Mode, ModeRefused, Tier};
 pub use name::{Effect, SubjectKind, ToolName};
 pub use notice::SessionNotice;

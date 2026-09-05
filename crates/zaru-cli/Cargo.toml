@@ -50,7 +50,23 @@ reqwest = { workspace = true }
 # features were already resolved for `reqwest`. ADR-0003 clause 7's own
 # distinction -- a caller arriving for a crate D2's table already names, rather
 # than a new dependency.
-tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }
+#
+# **`sync` was added on 2026-09-05 when the iteration loop was wired**, for
+# the same reason and by the same rule. `tool_call::run` takes the tool
+# surface by `&mut` and ADR-0009 D4's inner-loop branch in one call, so the
+# session's ONE `tools::Executor` needs two handles; both port methods
+# declare `+ Send` and the executor awaits under the guard, and a
+# `std::sync::MutexGuard` is `!Send` while `tokio::sync::MutexGuard` is `Send`
+# where its contents are. That is the whole of why the lock is this one --
+# see `crate::compose::shared`.
+#
+# **Measured with both instruments on 2026-09-05: zero and zero.** The lock
+# stays at 314 packages (`grep -c '^\[\[package\]\]' Cargo.lock`) and the
+# `zaru-cli` closure at 242 unique packages (`cargo tree -p zaru-cli -e normal
+# --prefix none`, deduplicated), because `reqwest` already enables `sync` on
+# this same crate. Declared rather than inherited for the reason the paragraph
+# above gives.
+tokio = { workspace = true, features = ["rt", "macros", "net", "time", "sync"] }
 # ADR-0009 D3's third `expect` kind. See `[workspace.dependencies]` for why
 # this crate and not `zaru-core`, and for what the two features buy.
 regex = { workspace = true }

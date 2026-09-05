@@ -33,6 +33,7 @@
 //! | [`Classifying`] | ADR-0016 D1's class of a provider failure is read from the typed failure, which only the surface sees |
 //! | [`Records`] | ADR-0010 D2's transcript is [ADR-0008] D3's stream, and the loop's sink is a `zaru-core` trait |
 //! | [`TurnContext`] | ADR-0013's `Context` is a value; `ContextPolicy` is the port the loop calls it through |
+//! | [`Shared`] | `tool_call::run` takes the tool surface by `&mut` and [ADR-0009] D4's branch in one call, so one executor needs two handles |
 //!
 //! # What a turn does not have, stated here rather than discovered
 //!
@@ -74,12 +75,14 @@ pub mod context;
 pub mod count;
 pub mod model;
 pub mod prose;
+pub mod shared;
 pub mod sink;
 pub mod turn;
 
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
 pub use model::Classifying;
+pub use shared::Shared;
 pub use sink::Records;
 pub use turn::{KINDS_WITH_A_CLIENT, Owed, Prepared, Ran};
 
