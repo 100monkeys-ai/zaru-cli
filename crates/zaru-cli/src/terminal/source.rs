@@ -59,8 +59,8 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use zaru_tui::shell::Input;
@@ -233,12 +233,30 @@ impl Source {
 
     /// How many times a reader found the receiver already locked.
     ///
-    /// **Zero by construction**, and counted rather than argued: the pump's
-    /// branch is polled only while the turn's future is suspended, and
-    /// [`crate::terminal::driver::PaneConfirm`] runs *inside* that future's
-    /// poll, so the two are never live at the same instant. That is the same
-    /// argument [`Pane`](crate::terminal::driver::Pane) already makes for its
-    /// own lock, and a check asserts the zero rather than the argument for it.
+    /// **Zero by construction**, and counted rather than argued: neither
+    /// reader holds the lock across a suspension, so neither can be holding
+    /// it while the other runs. [`try_next`](Self::try_next) takes it for one
+    /// `try_recv` and [`next`](Self::next) for one `poll_recv`, both inside a
+    /// single poll. That is the same argument
+    /// [`Pane`](crate::terminal::driver::Pane) already makes for its own lock,
+    /// and a check asserts the zero rather than the argument for it.
+    ///
+    /// # The argument this replaced, and the defect it permitted
+    ///
+    /// It used to read: the pump's branch "is polled only while the turn's
+    /// future is suspended", [`crate::terminal::driver::PaneConfirm`] "runs
+    /// *inside* that future's poll, so the two are never live at the same
+    /// instant". Both halves are true and the conclusion does not follow —
+    /// **a branch the `select!` is not polling is a branch that is still
+    /// holding**, and a future suspended in `recv().await` holds the guard
+    /// precisely while nothing is polling it. `next` did exactly that until
+    /// 2026-09-05, so a question raised inside
+    /// [`race`](crate::terminal::driver::race) found the receiver locked by
+    /// the pump's own branch, every `try_next` failed before reaching the
+    /// channel, and the answer a person typed was never read: ADR-0011 D3's
+    /// prompt could not be answered at the default mode. Measured at 21
+    /// contentions across 21 beats, one per beat, with the key already in the
+    /// channel.
     #[must_use]
     pub fn contended(&self) -> usize {
         self.contended.load(Ordering::SeqCst)
@@ -264,15 +282,34 @@ impl Source {
     /// `None` when the source has ended. A product terminal never ends; a
     /// script does, which is what stops a pump that never leaves from hanging
     /// a check.
-    pub async fn next(&self) -> Option<Input> {
-        let mut receiver = match self.receiver.try_lock() {
-            Ok(receiver) => receiver,
-            Err(_) => {
+    ///
+    /// # The lock is held for one poll and never across a suspension
+    ///
+    /// A `poll_fn` rather than an `async fn`, and that is the whole of why.
+    /// [`UnboundedReceiver::poll_recv`] registers the waker and returns within
+    /// the poll, so the guard is taken and dropped inside a single `poll` and
+    /// there is no instant at which this future is suspended holding it. An
+    /// `async fn` awaiting `recv()` under the guard reads the same and is not
+    /// the same: `tokio::select!` builds its branch futures once per
+    /// invocation and keeps them alive across every poll until a branch wins,
+    /// so the pump's branch would hold the receiver for the whole of a
+    /// suspended turn — including the poll in which that turn reaches
+    /// [`crate::terminal::driver::PaneConfirm`] and needs it. See
+    /// [`contended`](Self::contended) for the defect that was.
+    ///
+    /// The `Mutex` is `std`'s for the same reason. Nothing here may hold it
+    /// across an await ever again, and `clippy::await_holding_lock` under the
+    /// documentation and lint gates' `-D warnings` says so at the moment
+    /// somebody writes one, which an asynchronous mutex would not.
+    pub fn next(&self) -> impl Future<Output = Option<Input>> {
+        core::future::poll_fn(move |context| {
+            let Ok(mut receiver) = self.receiver.try_lock() else {
                 self.contended.fetch_add(1, Ordering::SeqCst);
-                self.receiver.lock().await
-            }
-        };
-        receiver.recv().await
+                context.waker().wake_by_ref();
+                return core::task::Poll::Pending;
+            };
+            receiver.poll_recv(context)
+        })
     }
 }
 

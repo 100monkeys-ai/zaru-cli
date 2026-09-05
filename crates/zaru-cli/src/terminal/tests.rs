@@ -3151,3 +3151,167 @@ fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
         "the provisional streamed line outlived the turn, so the answer will be painted twice"
     );
 }
+
+// ------------------ ADR-0011 D3's question, raised inside a turn a pump races
+
+/// A beat that counts, yields, and gives up rather than spinning for ever.
+///
+/// **It never sleeps and never reads a clock**, which is the discipline every
+/// `Pace` a check owns already keeps: what ends the loop below is something
+/// the check counted, not something the machine scheduled (library
+/// verification-lessons §57). The ceiling is what makes the red a *sentence*
+/// rather than a hang — the confirmation this drives cannot end itself when
+/// the receiver is held, because `try_lock` fails before `try_recv` and so
+/// even a disconnected channel is never seen.
+///
+/// `elapse` is `Pending` for ever, which is what the product's beat is for the
+/// whole of a suspended turn: [`crate::terminal::source::Beat`] sleeps a
+/// tenth of a second, and a beat that returned `Ready` on every poll would end
+/// each `select!` invocation after one poll and drop the branch futures with
+/// it — which is precisely the state this check exists to get out of.
+#[derive(Debug)]
+struct Bounded {
+    beats: Arc<AtomicUsize>,
+    limit: usize,
+    watched: Arc<Source>,
+}
+
+impl crate::terminal::source::Pace for Bounded {
+    fn wait(&self) {
+        let waited = self.beats.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(
+            waited <= self.limit,
+            "the confirmation waited {waited} beat(s) without reading the key the terminal sent; \
+             the source reports contended={} and one more read of it takes {:?}",
+            self.watched.contended(),
+            self.watched.try_next()
+        );
+        std::thread::yield_now();
+    }
+
+    fn elapse(&self) -> impl Future<Output = ()> + Send {
+        core::future::poll_fn(move |_| core::task::Poll::Pending)
+    }
+}
+
+/// A question raised inside a race is answered by a key the terminal sends.
+///
+/// # The composition no other check makes
+///
+/// The four checks above that answer a question call
+/// [`PaneConfirm::confirm`] directly, with no [`race`](crate::terminal::driver::race)
+/// alive over the same [`Source`]; the four that drive `race` race a future
+/// that never confirms. **The defect lives only where the two meet**, and it
+/// lived there from 2026-09-05 until this check: `Source::next` held the
+/// receiver's guard across `recv().await`, `tokio::select!` keeps a branch
+/// future alive across every poll of one invocation, and so the confirmation
+/// raised inside the turn's own poll found the receiver locked by the pump's
+/// branch. Every `try_next` failed before reaching the channel, the answer sat
+/// in the channel unread, and ADR-0011 D3's prompt could not be answered at
+/// the default mode — the register's Medium row of that day.
+///
+/// **A real key, not a staged answer.** The reader is a thread of its own
+/// sending down the real channel, as a person does: they read the prompt, then
+/// they press the key. And **a real runtime**, because
+/// [`futures_lite_block_on`](crate::compose::tests::futures_lite_block_on)
+/// polls once and panics on a yield, so no check that goes through it can
+/// produce a `select!` invocation that spans two polls — which is the only
+/// state in which the defect exists.
+///
+/// The mutant: give `Source::next` back its `recv().await` under the guard.
+#[tokio::test]
+async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
+    use crate::tools::port::Confirm as _;
+
+    // The reader answers only once the question stands, which is both what a
+    // person does and what keeps the key out of `read_while_busy`: a key
+    // already in the channel would be taken by the pump's branch and put in
+    // the composer, which is a different claim from this one.
+    let asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watching = Arc::clone(&asked);
+    let source = Arc::new(Source::over(move |sender, stop| {
+        while !watching.load(Ordering::SeqCst) {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        let _ = sender.send(press(Key::Char('y')));
+        while !stop.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }));
+
+    let pace = Bounded {
+        beats: Arc::new(AtomicUsize::new(0)),
+        limit: 1000,
+        watched: Arc::clone(&source),
+    };
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    let raced = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let confirm = PaneConfirm::over(&pane, &source, &pace);
+        let mut polls = 0_usize;
+        // The turn: one suspension, woken at once, then the tool call's
+        // question. The suspension is the whole staging — it is the poll at
+        // which the pump's own branch takes the source, and a turn that
+        // confirmed on its first poll would find the lock free and assert
+        // nothing.
+        let turn = core::future::poll_fn(|context| {
+            polls += 1;
+            if polls == 1 {
+                context.waker().wake_by_ref();
+                return core::task::Poll::Pending;
+            }
+            asked.store(true, Ordering::SeqCst);
+            core::task::Poll::Ready(
+                confirm
+                    .confirm(&Question {
+                        statement: "write build/out.txt".to_owned(),
+                        prominent: false,
+                    })
+                    .map_err(|failure| format!("{failure}")),
+            )
+        });
+        crate::terminal::driver::race(&pane, &source, &pace, &trie, &mut now, None, turn).await
+    };
+
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Ran(Ok(true)),
+        "the question raised inside the race was not answered `y` by the key the terminal sent"
+    );
+    // The invariant `Source::contended`'s documentation argues for. It was
+    // asserted before this check and held, because nothing had ever raised a
+    // question while the pump's branch was live.
+    assert_eq!(
+        source.contended(),
+        0,
+        "the source was contended {} time(s), so a reader held the receiver while the other \
+         needed it",
+        source.contended()
+    );
+    // ADR-0005 D1: the answer is not a keystroke the composer sees. A `y` that
+    // reached the strip would be a question answered and a line the user never
+    // typed, both at once.
+    assert_eq!(
+        shell.composer().text(),
+        "",
+        "the answer reached the composer, which reads {:?}",
+        shell.composer().text()
+    );
+    // The question was on the frame before the key was read: `confirm` paints
+    // it and then waits, so a check that only read the answer could not say
+    // the person had been asked.
+    let first = surface.frames.first().expect("no frame was painted");
+    assert!(
+        first.join("\n").contains("write build/out.txt"),
+        "the first frame painted does not carry the question, so the key was read before the \
+         person could have seen it"
+    );
+}
