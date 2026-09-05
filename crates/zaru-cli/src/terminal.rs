@@ -45,11 +45,13 @@
 
 pub mod driver;
 pub mod open;
+pub mod source;
 pub mod trie;
 pub mod vocabulary;
 
 pub use driver::{Guard, Pump, Restore, Surface, question_for_the_shell, run};
 pub use open::{shell_for, take_over};
+pub use source::{Beat, POLL, Pace, Source, TICK, Taken};
 pub use trie::{NOTHING_CACHED, NotesTrie};
 pub use vocabulary::{Transcript, Vocabulary};
 

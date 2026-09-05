@@ -18,6 +18,7 @@
 
 use crate::cli::invocation::Request;
 use crate::failure::Exit;
+use crate::terminal::source::{Pace, Source, Taken};
 use crate::tools::port::Question;
 use core::time::Duration;
 use zaru_tui::shell::port::{Confirmation, Line, Register};
@@ -35,17 +36,16 @@ pub trait Restore {
     fn restore(&mut self);
 }
 
-/// Everything the pump needs from a terminal.
+/// Everything the pump needs from a terminal it paints on.
+///
+/// **Drawing only, since 2026-09-05.** Reading a keystroke used to be a method
+/// here and blocked, which is precisely why nothing repainted while the model
+/// was thinking: a turn polled to completion on one thread could not also be
+/// inside it. The reader is [`Source`] now, on a thread of its own, so a turn
+/// and the terminal are two things the pump can wait on at once.
 pub trait Surface: Restore {
     /// Paint the shell.
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()>;
-
-    /// The next keystroke, or `None` when the user is finished.
-    ///
-    /// A product implementation blocks; a check reads from a script and
-    /// answers `None` when it runs out, so a pump that never left would hang
-    /// a check rather than passing it.
-    fn next(&mut self) -> std::io::Result<Option<zaru_tui::shell::Input>>;
 }
 
 /// Holds a restorer and gives the terminal back on drop.
@@ -385,24 +385,30 @@ impl<S: Surface + Send> zaru_core::tool_call::EventSink for PaneSink<'_, '_, S> 
 /// put "the user declined" in the transcript of a question nobody saw.
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-pub struct PaneConfirm<'m, 'a, S: Surface + Send> {
+pub struct PaneConfirm<'m, 'a, S: Surface + Send, P: Pace + Sync> {
     pane: &'m std::sync::Mutex<Pane<'a, S>>,
+    source: &'m Source,
+    pace: &'m P,
 }
 
-impl<S: Surface + Send> core::fmt::Debug for PaneConfirm<'_, '_, S> {
+impl<S: Surface + Send, P: Pace + Sync> core::fmt::Debug for PaneConfirm<'_, '_, S, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PaneConfirm").finish_non_exhaustive()
     }
 }
 
-impl<'m, 'a, S: Surface + Send> PaneConfirm<'m, 'a, S> {
-    /// A confirmer over a borrowed pane.
-    pub const fn over(pane: &'m std::sync::Mutex<Pane<'a, S>>) -> Self {
-        Self { pane }
+impl<'m, 'a, S: Surface + Send, P: Pace + Sync> PaneConfirm<'m, 'a, S, P> {
+    /// A confirmer over a borrowed pane, the terminal's keys, and a beat.
+    pub const fn over(
+        pane: &'m std::sync::Mutex<Pane<'a, S>>,
+        source: &'m Source,
+        pace: &'m P,
+    ) -> Self {
+        Self { pane, source, pace }
     }
 }
 
-impl<S: Surface + Send> crate::tools::port::Confirm for PaneConfirm<'_, '_, S> {
+impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConfirm<'_, '_, S, P> {
     fn confirm(&self, question: &Question) -> Result<bool, crate::tools::port::ConfirmFailure> {
         let mut pane = self.pane.try_lock().map_err(|_| {
             crate::tools::port::ConfirmFailure::new(
@@ -420,15 +426,24 @@ impl<S: Surface + Send> crate::tools::port::Confirm for PaneConfirm<'_, '_, S> {
             if let Some(answer) = pane.shell.answer() {
                 return Ok(answer);
             }
-            let read = pane.surface.next().map_err(|failure| {
-                crate::tools::port::ConfirmFailure::new(format!(
-                    "the answer could not be read: {failure}"
-                ))
-            })?;
-            let Some(input) = read else {
-                return Err(crate::tools::port::ConfirmFailure::new(
-                    "the terminal stopped answering before the question was".to_owned(),
-                ));
+            let input = match self.source.try_next() {
+                Taken::Key(input) => input,
+                // **The pane keeps painting while the question stands.**
+                // Nothing on it changes on a bare beat -- see `TICK` -- but
+                // the paint is what makes this loop a repaint rather than a
+                // block, and it is the same call the pump's tick makes, so a
+                // terminal that lost its screen recovers here as it does
+                // there.
+                Taken::Nothing => {
+                    pane.paint();
+                    self.pace.wait();
+                    continue;
+                }
+                Taken::Ended => {
+                    return Err(crate::tools::port::ConfirmFailure::new(
+                        "the terminal stopped answering before the question was".to_owned(),
+                    ));
+                }
             };
             now += Duration::from_millis(1);
             let acted = pane.shell.key(input, now, &NoEntries, &NoVocabulary);
@@ -518,18 +533,19 @@ impl zaru_core::tool_call::EventSink for ToolLines {
 /// Returns the lines to leave on the pane. The shell and the surface are
 /// borrowed for the length of the turn and given back when it ends.
 ///
-/// # What does not repaint, said rather than smoothed
+/// # What does not repaint yet, said rather than smoothed
 ///
 /// The pane paints when the loop emits and when a question is answered, and at
 /// no other moment. **During the provider's own await nothing repaints and no
-/// keystroke is read**, because this crate has no asynchronous terminal source
-/// — [`Surface::next`] blocks. A `Ctrl-C` pressed then is queued by raw mode,
-/// which disables the interrupt signal, and is seen when the await returns. A
-/// source that could be polled beside the turn is a real gap and is recorded
-/// on ADR-0005 and ADR-0008 as one rather than worked around here.
-pub fn run_a_turn<S: Surface + Send>(
+/// keystroke is read** — not because there is no source to read any more, but
+/// because nothing here races one against the turn: this function awaits the
+/// turn and only the turn. A `Ctrl-C` pressed then is read by the source's
+/// thread and sits in the channel until the await returns.
+pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     shell: &mut Shell,
     surface: &mut S,
+    source: &Source,
+    pace: &P,
     turns: &mut Turns<'_>,
     task: &str,
 ) -> Vec<Line> {
@@ -539,7 +555,7 @@ pub fn run_a_turn<S: Surface + Send>(
     let mut tools = ToolLines::default();
     let ran = {
         let pane = std::sync::Mutex::new(Pane::of(shell, surface));
-        let confirm = PaneConfirm::over(&pane);
+        let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
         let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
 
@@ -556,6 +572,7 @@ pub fn run_a_turn<S: Surface + Send>(
             &mut turns.owed,
             &mut turns.context,
         )
+        .await
     };
     let tool_lines = tools.taken();
 
@@ -600,9 +617,21 @@ pub fn run_a_turn<S: Surface + Send>(
 /// one operation rather than two things that agree today.
 ///
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-pub fn run<S: Surface + Send>(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "\
+    the pump wants eight distinct capabilities and each is a port or a value \
+    some record owns -- the shell, the surface it paints on, the terminal's \
+    keys, the beat, the command runner, the composer's entries, the \
+    vocabulary and the session's turns. Bundling them would be a second name \
+    for the same list, which is the argument `compose::turn::run_one` already \
+    makes for its own"
+)]
+pub async fn run<S: Surface + Send, P: Pace + Sync>(
     shell: &mut Shell,
     surface: &mut S,
+    source: &Source,
+    pace: &P,
     runner: &crate::cli::Run<'_>,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
@@ -611,7 +640,7 @@ pub fn run<S: Surface + Send>(
     let mut now = Duration::ZERO;
     surface.draw(shell)?;
 
-    while let Some(input) = surface.next()? {
+    while let Some(input) = source.next().await {
         // The shell holds no clock, so the pump supplies one. A keystroke is
         // one tick, which is enough for the composer's debounce to be ordered
         // and is not a wall clock -- ADR-0005's whole reason for taking `now`
@@ -637,7 +666,9 @@ pub fn run<S: Surface + Send>(
                 // open whatever the turn did -- a turn that failed is not a
                 // reason to close the thing the user is inside.
                 let lines = match turns {
-                    Turnable::Ready(turns) => run_a_turn(shell, surface, turns, &task),
+                    Turnable::Ready(turns) => {
+                        run_a_turn(shell, surface, source, pace, turns, &task).await
+                    }
                     Turnable::Cannot(lines) => lines.clone(),
                 };
                 for line in lines {
@@ -856,61 +887,5 @@ impl Surface for Crossterm {
         self.terminal
             .draw(|frame| shell.render(frame, frame.area()))?;
         Ok(())
-    }
-
-    fn next(&mut self) -> std::io::Result<Option<zaru_tui::shell::Input>> {
-        use ratatui::crossterm::event::{Event, read};
-
-        match read()? {
-            Event::Key(key) => Ok(Some(translate(key))),
-            // Everything else is redrawn around rather than acted on. A resize
-            // changes the regions, which the next draw reads from the frame's
-            // own area, so an empty input is the whole response.
-            _ => Ok(Some(zaru_tui::shell::Input::default())),
-        }
-    }
-}
-
-/// One crossterm key event, as the backend-agnostic input the shell reads.
-///
-/// # This translation exists because `tui-textarea` is taken on `no-backend`
-///
-/// That feature is what keeps a terminal backend out of `zaru-tui`'s closure
-/// and out of ADR-0005 D3's fast tier, and the cost of it is that the crate
-/// ships no `From<KeyEvent>`. So the mapping is here, in the crate that has
-/// crossterm, which is where the boundary puts it.
-///
-/// **Every key the shell reads has an arm and everything else is `Key::Null`.**
-/// The shell's own reading is exhaustive over what it acts on -- `Enter`,
-/// `Esc`, `y`, `n`, `Ctrl-C` -- and the composer's text area handles the rest;
-/// a key with no arm reaches the composer as nothing rather than as something
-/// else.
-fn translate(key: ratatui::crossterm::event::KeyEvent) -> zaru_tui::shell::Input {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-    use zaru_tui::shell::Key;
-
-    let code = match key.code {
-        KeyCode::Char(ch) => Key::Char(ch),
-        KeyCode::Backspace => Key::Backspace,
-        KeyCode::Enter => Key::Enter,
-        KeyCode::Left => Key::Left,
-        KeyCode::Right => Key::Right,
-        KeyCode::Up => Key::Up,
-        KeyCode::Down => Key::Down,
-        KeyCode::Home => Key::Home,
-        KeyCode::End => Key::End,
-        KeyCode::PageUp => Key::PageUp,
-        KeyCode::PageDown => Key::PageDown,
-        KeyCode::Tab => Key::Tab,
-        KeyCode::Delete => Key::Delete,
-        KeyCode::Esc => Key::Esc,
-        KeyCode::F(n) => Key::F(n),
-        _ => Key::Null,
-    };
-    zaru_tui::shell::Input {
-        key: code,
-        ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
-        alt: key.modifiers.contains(KeyModifiers::ALT),
-        shift: key.modifiers.contains(KeyModifiers::SHIFT),
     }
 }

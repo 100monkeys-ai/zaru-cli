@@ -618,7 +618,7 @@ pub fn prepare(
     argument is a port or a value some record owns, and bundling them into a \
     struct would be a second name for the same list"
 )]
-pub fn run_one(
+pub async fn run_one(
     version: &str,
     report_at: &str,
     resolution: &Resolution,
@@ -798,7 +798,7 @@ pub fn run_one(
         for sink in extra.iter_mut() {
             sinks.push(&mut **sink);
         }
-        let ran = block_on(tool_call::run(
+        let ran = tool_call::run(
             n,
             Start::Task(task),
             layers::tool_call_ceiling(),
@@ -814,7 +814,8 @@ pub fn run_one(
             // tool-call loop only."
             prepared.iterating.then_some(&inner),
             &mut sinks,
-        ));
+        )
+        .await;
         (ran, inner.kept())
     };
     let (outcome, kept) = outcome;
@@ -921,7 +922,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     // reason this is an `Option` rather than a stub that answers yes.
     let confirmer = crate::tools::prompt::Prompt::from_process();
 
-    run_one(
+    block_on(run_one(
         version,
         report_at,
         resolution,
@@ -935,7 +936,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         &mut [],
         &mut owed,
         &mut context,
-    )
+    ))
 }
 
 /// What the reader is shown, and what the process exits with.
@@ -990,6 +991,27 @@ fn rendered(provider: &Classifying<'_>, outcome: &TurnOutcome, lines: &mut Vec<S
     Ran { lines, exit }
 }
 
+/// A current-thread runtime, built once by whoever is going to poll a turn.
+///
+/// **One per session rather than one per turn, since 2026-09-05.** This
+/// function used to build a runtime, poll one turn and drop it, which a shell
+/// holding a conversation did once for every turn the user typed. It also made
+/// [`run_one`] impossible to race against anything, because the runtime was
+/// *inside* it: a caller that wanted the turn and a terminal at once had no
+/// future to select over. `run_one` is `async` now and this is what a caller
+/// drives it with -- [`task`] builds one for its single turn, and
+/// [`crate::terminal::open`] builds one for the session and reuses it.
+///
+/// # Errors
+///
+/// When the runtime cannot be built, which is the reactor failing to register
+/// with the operating system.
+pub fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 /// Poll a future to completion on a current-thread runtime.
 ///
 /// # A reactor is what `reqwest` needs and what nothing here had
@@ -1017,9 +1039,7 @@ fn rendered(provider: &Classifying<'_>, outcome: &TurnOutcome, lines: &mut Vec<S
 /// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 fn block_on<F: core::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    runtime()
         .expect("a current-thread runtime with the io and time drivers")
         .block_on(future)
 }

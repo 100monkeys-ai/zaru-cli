@@ -10,8 +10,9 @@ use crate::terminal::driver::{
     Guard, Pane as TurnPane, PaneConfirm, PaneSink, Turnable, question_for_the_shell, request_for,
     run,
 };
-use crate::terminal::fixtures::{Counting, Recording, Restores, press, typed};
+use crate::terminal::fixtures::{Counting, Held, Recording, Restores, press, typed};
 use crate::terminal::open::is_a_session;
+use crate::terminal::source::{Source, Taken};
 use crate::terminal::trie::{NOTHING_CACHED, NotesTrie};
 use crate::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use crate::tools::port::Question;
@@ -70,7 +71,9 @@ fn pump(keys: Vec<zaru_tui::shell::Input>) -> (Shell, Recording, Exit) {
 /// The same pump over a fast tier a check chose.
 fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Recording, Exit) {
     let restores: Restores = Arc::new(AtomicUsize::new(0));
-    let mut surface = Recording::of(keys, Arc::clone(&restores));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let source = Source::scripted(keys);
+    let pace = Held::default();
     let mut shell = shell();
     let runner = crate::cli::Run {
         version: VERSION,
@@ -81,15 +84,23 @@ fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Rec
         zaru_tui::shell::port::Register::Failed,
         CANNOT.to_owned(),
     )]);
-    let pumped = run(
+    let pumped = futures_lite_block_on(run(
         &mut shell,
         &mut surface,
+        &source,
+        &pace,
         &runner,
         trie,
         &Vocabulary,
         &mut turns,
-    )
+    ))
     .expect("the recording terminal never fails");
+    assert_eq!(
+        source.contended(),
+        0,
+        "the source was contended {} time(s), which a single-threaded pump cannot do",
+        source.contended()
+    );
     (shell, surface, pumped.exit)
 }
 
@@ -226,7 +237,7 @@ fn one_emission_reaches_the_transcript_and_the_pane() {
 
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
-    let mut surface = Recording::of(Vec::new(), Arc::clone(&restores));
+    let mut surface = Recording::of(Arc::clone(&restores));
     let mut written = crate::compose::Records::appending_to(&path).expect("the transcript opens");
 
     let model = OneAnswer("the rehearsal number is 4173");
@@ -336,9 +347,11 @@ fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
         let restores: Restores = Arc::new(AtomicUsize::new(0));
         // A key the shell ignores first, so the loop is asserted to keep
         // asking rather than to answer whatever it read.
-        let mut surface = Recording::of(vec![press(Key::Char('q')), press(key)], restores);
+        let mut surface = Recording::of(restores);
+        let source = Source::scripted(vec![press(Key::Char('q')), press(key)]);
+        let pace = Held::default();
         let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
-        let confirm = PaneConfirm::over(&pane);
+        let confirm = PaneConfirm::over(&pane, &source, &pace);
 
         let answered = confirm
             .confirm(&Question {
@@ -364,9 +377,11 @@ fn a_pane_that_runs_out_of_keys_refuses_rather_than_declining() {
 
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
-    let mut surface = Recording::of(Vec::new(), restores);
+    let mut surface = Recording::of(restores);
+    let source = Source::scripted(Vec::new());
+    let pace = Held::default();
     let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
-    let confirm = PaneConfirm::over(&pane);
+    let confirm = PaneConfirm::over(&pane, &source, &pace);
 
     let outcome = confirm.confirm(&Question {
         statement: "write build/out.txt".to_owned(),
@@ -388,10 +403,12 @@ fn the_question_reaches_the_painted_frame_before_a_key_is_read() {
     const STATEMENT: &str = "run `rm -rf build` in /home/someone/project";
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
-    let mut surface = Recording::of(vec![press(Key::Char('y'))], restores);
+    let mut surface = Recording::of(restores);
+    let source = Source::scripted(vec![press(Key::Char('y'))]);
+    let pace = Held::default();
     {
         let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
-        let confirm = PaneConfirm::over(&pane);
+        let confirm = PaneConfirm::over(&pane, &source, &pace);
         confirm
             .confirm(&Question {
                 statement: STATEMENT.to_owned(),
@@ -980,7 +997,9 @@ fn a_question_crosses_to_the_shell_with_its_statement_unchanged() {
 #[test]
 fn a_confirmation_renders_its_default_through_the_pump() {
     let restores: Restores = Arc::new(AtomicUsize::new(0));
-    let mut surface = Recording::of(vec![press(Key::Enter)], Arc::clone(&restores));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let source = Source::scripted(vec![press(Key::Enter)]);
+    let pace = Held::default();
     let mut shell = shell();
     shell.ask(question_for_the_shell(&Question {
         statement: "run `rm -rf build`".to_owned(),
@@ -990,14 +1009,16 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         version: VERSION,
         report_at: REPORT_AT,
     };
-    run(
+    futures_lite_block_on(run(
         &mut shell,
         &mut surface,
+        &source,
+        &pace,
         &runner,
         &NotesTrie::nothing_cached(WORKSPACE),
         &Vocabulary,
         &mut Turnable::Cannot(Vec::new()),
-    )
+    ))
     .expect("pump");
 
     let first = surface.frames.first().expect("no frame was painted");
@@ -1507,5 +1528,185 @@ fn a_turns_tool_lines_are_collected_for_layer_six_and_nothing_else_is() {
     assert!(
         collector.taken().is_empty(),
         "taking twice must not repeat a turn's tool lines into the turn after it"
+    );
+}
+
+// ---------------------------------------------- the asynchronous terminal source
+
+/// The reader thread stops and is joined when the source is dropped.
+///
+/// ADR-0005's and ADR-0008's gap paragraphs asked for "a source that could be
+/// polled beside the turn", and a source with a thread behind it owes one
+/// thing back: **the thread cannot outlive the shell.** A detached reader
+/// would keep the terminal's event source open after the guard gave the
+/// terminal back, and whatever read standard input next would be racing it.
+///
+/// The body here is not the terminal's — see `Source::over` for why the two
+/// are separate — so what this asserts is the flag, the join and the ordering,
+/// which is all of the lifecycle.
+///
+/// # Why the body sleeps, when nothing else in this module does
+///
+/// The mutant is *drop the join and keep the flag*, and it is the shape
+/// library verification-lessons §57 is written about: with a body that ends
+/// the instant it sees the flag, a detached drop still usually observes it
+/// ended, so the watch is a coin and a green run says nothing. **That mutation
+/// survived the first form of this check**, which is how the fixture below
+/// came to be written this way.
+///
+/// So the shutdown path is made slow *on purpose* and by a definite amount.
+/// The sleep is in the fixture, never in an assertion: what is asserted is an
+/// ordering — did `drop` return before the body finished — and the mutant
+/// turns a `Duration` of `SHUTDOWN` into one of microseconds, five orders of
+/// magnitude apart. That is a defect made certain rather than likelier, which
+/// is what §57 asks for.
+#[test]
+fn the_reader_thread_is_stopped_and_joined_when_the_source_is_dropped() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    /// Long enough that no scheduler confuses "joined" with "raced past".
+    const SHUTDOWN: core::time::Duration = core::time::Duration::from_millis(300);
+
+    let ended = Arc::new(AtomicBool::new(false));
+    let watched = Arc::clone(&ended);
+    let source = Source::over(move |sender, stop| {
+        // One key first, so the check knows the thread really ran rather than
+        // returning before it started.
+        let _ = sender.send(press(Key::Char('z')));
+        while !stop.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+        std::thread::sleep(SHUTDOWN);
+        watched.store(true, Ordering::Release);
+    });
+
+    // Staging: the thread is alive and has produced something. A real runtime,
+    // because this genuinely waits on another thread -- `futures_lite_block_on`
+    // is the helper for adapters that never yield and it says so when they do.
+    let runtime = crate::compose::turn::runtime().expect("a runtime");
+    assert_eq!(
+        runtime.block_on(source.next()),
+        Some(press(Key::Char('z'))),
+        "the reader thread produced nothing, so this check would assert its exit without ever \
+         having asserted its entry"
+    );
+    assert!(
+        !ended.load(Ordering::Acquire),
+        "the reader thread ended before the source was dropped, so dropping it proves nothing"
+    );
+
+    let started = std::time::Instant::now();
+    drop(source);
+    let waited = started.elapsed();
+
+    assert!(
+        ended.load(Ordering::Acquire),
+        "`Source`'s drop returned while the reader thread was still running, so nothing joins it \
+         and it can outlive the shell; the drop took {waited:?} against a shutdown path of \
+         {SHUTDOWN:?}"
+    );
+}
+
+/// A drained script ends; a source with keys left does not.
+///
+/// The two answers a synchronous reader has to tell apart, asserted together
+/// so neither can be read as the other. `Taken::Ended` is what makes a
+/// confirmation refuse rather than decline.
+#[test]
+fn a_source_says_nothing_yet_and_never_again_in_different_words() {
+    let source = Source::scripted(vec![press(Key::Char('y'))]);
+    assert_eq!(source.try_next(), Taken::Key(press(Key::Char('y'))));
+    assert_eq!(
+        source.try_next(),
+        Taken::Ended,
+        "a drained script must end, or a pane out of keys would wait for ever"
+    );
+
+    // A live reader that has sent nothing yet says `Nothing`, which is the
+    // answer a beat is painted through.
+    let waiting = Source::over(|_sender, stop| {
+        while !stop.load(core::sync::atomic::Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+    });
+    assert_eq!(
+        waiting.try_next(),
+        Taken::Nothing,
+        "a source whose reader has sent nothing must not report that it has ended"
+    );
+}
+
+/// The pane keeps painting while a question stands and nothing has arrived.
+///
+/// ADR-0011 D3's prompt is answered in the pane, and until 2026-09-05 the pane
+/// stopped while it waited. The beat is what makes the wait a repaint, and it
+/// is counted rather than timed: `Held` returns at once, so this check cannot
+/// pass or fail on how the machine scheduled.
+#[test]
+fn a_standing_question_paints_on_every_beat_it_waits() {
+    use crate::tools::port::Confirm as _;
+    use core::sync::atomic::Ordering;
+
+    // A reader that answers only after three beats have been waited, so the
+    // loop is asserted to paint *through* the wait rather than once at the
+    // start. The interesting element is in the middle of the run, not at
+    // either end of it (library verification-lessons §54).
+    let beats = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&beats);
+    let source = Source::over(move |sender, _stop| {
+        while counted.load(Ordering::SeqCst) < 3 {
+            std::hint::spin_loop();
+        }
+        let _ = sender.send(press(Key::Char('y')));
+    });
+
+    /// A beat that reports into the counter the reader above is watching.
+    #[derive(Debug)]
+    struct Counted(Arc<AtomicUsize>);
+    impl crate::terminal::source::Pace for Counted {
+        fn wait(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn elapse(&self) -> impl Future<Output = ()> + Send {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            core::future::ready(())
+        }
+    }
+
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let pace = Counted(Arc::clone(&beats));
+    let painted = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let confirm = PaneConfirm::over(&pane, &source, &pace);
+        confirm
+            .confirm(&Question {
+                statement: "write build/out.txt".to_owned(),
+                prominent: false,
+            })
+            .expect("the pane answered")
+    };
+    assert!(painted, "`y` was read as a decline");
+
+    assert!(
+        beats.load(Ordering::SeqCst) >= 3,
+        "the confirmation waited {} beat(s); the reader answers only after three, so a loop that \
+         blocked on the channel instead of pacing could not have got here",
+        beats.load(Ordering::SeqCst)
+    );
+    // One frame for the question, then one per beat waited, then one for the
+    // answer. The floor is what discriminates a loop that painted once.
+    assert!(
+        surface.frames.len() >= beats.load(Ordering::SeqCst),
+        "the pane painted {} frame(s) across {} beat(s), so it is not repainting while it waits",
+        surface.frames.len(),
+        beats.load(Ordering::SeqCst)
+    );
+    assert_eq!(
+        source.contended(),
+        0,
+        "the source was contended {} time(s), which a single-threaded confirmation cannot do",
+        source.contended()
     );
 }

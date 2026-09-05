@@ -31,6 +31,7 @@ use crate::failure::{Exit, SessionEvidence};
 use crate::runtime::ResolvedTier;
 use crate::session::{MetaFile, SessionId, SessionStore};
 use crate::terminal::driver::{Crossterm, Guard, Turnable, Turns};
+use crate::terminal::source::{Beat, Source};
 use crate::terminal::trie::NotesTrie;
 use crate::terminal::vocabulary::{Transcript, Vocabulary};
 use std::io::IsTerminal;
@@ -191,16 +192,46 @@ pub fn open(
         Err(refused) => Turnable::Cannot(crate::terminal::driver::lines_of(refused)),
     };
 
+    // **One runtime for the session, built before the terminal is taken.**
+    // Every turn of this session is polled on it, where until 2026-09-05 each
+    // turn built and dropped one of its own; and it is what lets the pump race
+    // a turn against the terminal at all, since a turn is a future now rather
+    // than a call that blocks.
+    //
+    // The `expect` is the one `compose::turn::block_on` already carried and is
+    // deliberately not a classification: a reactor that will not register with
+    // the operating system is ADR-0016 D3's defect, caught by the boundary in
+    // `main` and reported as a bug in the harness, and inventing a
+    // user-correctable class for it would be that record's "never present a
+    // defect as a user error".
+    let runtime = crate::compose::turn::runtime()
+        .expect("a current-thread runtime with the io and time drivers");
+
     let crossterm = Crossterm::take().map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
     let runner = crate::cli::Run { version, report_at };
+
+    // The terminal's own reader, on a thread of its own. It stops within
+    // `terminal::POLL` of this value being dropped, which is before the guard
+    // gives the terminal back.
+    let source = Source::over_the_terminal();
 
     // The guard is what restores. Every path out of this block -- the pump
     // returning, an I/O error, a panic unwinding through it -- drops it.
     let pumped = {
         let surface: &mut Crossterm = guard.get_mut().expect("the guard was just constructed");
-        crate::terminal::driver::run(&mut shell, surface, &runner, &trie, &Vocabulary, &mut turns)
+        runtime.block_on(crate::terminal::driver::run(
+            &mut shell,
+            surface,
+            &source,
+            &Beat,
+            &runner,
+            &trie,
+            &Vocabulary,
+            &mut turns,
+        ))
     };
+    drop(source);
     guard.restore_now();
 
     Ok(match pumped {

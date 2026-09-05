@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, ToolCall, Transcript};
 use zaru_cli::terminal::driver::{Restore, Surface, Turnable, run};
+use zaru_cli::terminal::source::{Pace, Source};
 use zaru_cli::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use zaru_cli::terminal::{NOTHING_CACHED, NotesTrie};
 use zaru_notes::trie::{CachedEntry, EntryKind};
@@ -98,22 +99,40 @@ impl Drop for Scratch {
     }
 }
 
-/// A terminal a check owns: a script, a buffer, and a count of restores.
+/// A terminal a check owns: a buffer, and a count of restores.
+///
+/// **Keys are `Source::scripted`'s** since 2026-09-05, not this type's: the
+/// reader and the painter are two things, which is what lets a turn and the
+/// terminal be waited on at once.
 struct Recorded {
     terminal: Terminal<TestBackend>,
-    script: std::vec::IntoIter<Input>,
     restores: usize,
     frames: Vec<Vec<String>>,
 }
 
 impl Recorded {
-    fn of(keys: Vec<Input>) -> Self {
+    fn of() -> Self {
         Self {
             terminal: Terminal::new(TestBackend::new(72, 14)).expect("test terminal"),
-            script: keys.into_iter(),
             restores: 0,
             frames: Vec::new(),
         }
+    }
+}
+
+/// A beat an outside caller implements, so the port is asserted reachable from
+/// outside this crate rather than only from its own fixtures.
+///
+/// It never sleeps: a check that waited on a clock would pass or fail on how
+/// the machine scheduled (library verification-lessons §57).
+#[derive(Debug, Default)]
+struct Instant;
+
+impl Pace for Instant {
+    fn wait(&self) {}
+
+    fn elapse(&self) -> impl Future<Output = ()> + Send {
+        tokio::task::yield_now()
     }
 }
 
@@ -138,10 +157,6 @@ impl Surface for Recorded {
                 .collect(),
         );
         Ok(())
-    }
-
-    fn next(&mut self) -> std::io::Result<Option<Input>> {
-        Ok(self.script.next())
     }
 }
 
@@ -190,22 +205,34 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
 
     let mut keys = typed("/runtime");
     keys.extend(typed("/exit"));
-    let mut surface = Recorded::of(keys);
+    let mut surface = Recorded::of();
+    let source = Source::scripted(keys);
     let runner = zaru_cli::cli::Run {
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
-    let pumped = run(
-        &mut shell,
-        &mut surface,
-        &runner,
-        &trie,
-        &Vocabulary,
-        &mut Turnable::Cannot(Vec::new()),
-    )
-    .expect("the pump");
+    // The product's own runtime constructor, which is what the binary uses to
+    // hold a session -- not a second executor written beside it.
+    let pumped = zaru_cli::compose::turn::runtime()
+        .expect("a runtime")
+        .block_on(run(
+            &mut shell,
+            &mut surface,
+            &source,
+            &Instant,
+            &runner,
+            &trie,
+            &Vocabulary,
+            &mut Turnable::Cannot(Vec::new()),
+        ))
+        .expect("the pump");
+    assert_eq!(
+        source.contended(),
+        0,
+        "the source was contended, which a single-threaded pump cannot do"
+    );
 
     let opened = surface
         .frames
@@ -426,20 +453,25 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
         shell.composer_mut().set_absence(trie.absence());
 
         let keys: Vec<Input> = typing.chars().map(|ch| press(Key::Char(ch))).collect();
-        let mut surface = Recorded::of(keys);
+        let mut surface = Recorded::of();
+        let source = Source::scripted(keys);
         let runner = zaru_cli::cli::Run {
             version: env!("CARGO_PKG_VERSION"),
             report_at: env!("CARGO_PKG_REPOSITORY"),
         };
-        run(
-            &mut shell,
-            &mut surface,
-            &runner,
-            &trie,
-            &Vocabulary,
-            &mut Turnable::Cannot(Vec::new()),
-        )
-        .expect("the pump");
+        zaru_cli::compose::turn::runtime()
+            .expect("a runtime")
+            .block_on(run(
+                &mut shell,
+                &mut surface,
+                &source,
+                &Instant,
+                &runner,
+                &trie,
+                &Vocabulary,
+                &mut Turnable::Cannot(Vec::new()),
+            ))
+            .expect("the pump");
 
         let frame = surface.frames.last().expect("a frame was painted").clone();
         println!("-- {label}: the frame after typing {typing:?} --");
