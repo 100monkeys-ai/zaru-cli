@@ -47,7 +47,7 @@
 //! | D4 — resolution is layered and every layer is inspectable | through ADR-0014's own fold and its own explanation, never a second one |
 //! | D5 — local endpoints are first-class | as a missing field: [`ProviderEndpoint`] has no local-versus-hosted variant |
 //! | D6 — disagreement is surfaced, never reconciled | the value, with reconciliation made a compile error |
-//! | D7 — cost and tokens are always visible | the datum; there is no status line to put it in |
+//! | D7 — cost and tokens are always visible | the datum, and since 2026-09-05 the row it goes on: `cli::render::usage` composes the line and `zaru_tui::shell::Status` carries it |
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
