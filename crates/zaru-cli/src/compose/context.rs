@@ -41,7 +41,7 @@
 //! | 4 project manifest summary | empty: no record says what a manifest summary is, and inventing a shape would settle it |
 //! | 5 user attachments | empty: [ADR-0005] D5's attachments are not built and the trie is `zaru-notes`' |
 //! | 6 conversation and tool results | empty on the first turn; the turn's own results ride on `ModelRequest.results` rather than here, which is [ADR-0013] D7 as `tool_call::run` reads it, and a finished turn joins it through [`Exchange::of_turn`](zaru_core::context::Exchange::of_turn) at the boundary |
-//! | 7 iteration history | empty: no iteration runs, because there is no inner loop |
+//! | 7 iteration history | empty: an iteration's memory is [ADR-0008]'s refinement prompt, which arrives as the turn's own tail rather than as a layer |
 //!
 //! **Six of the seven are empty and the prefix says so about the one that
 //! matters.** An empty layer contributes nothing to the rendered text rather
@@ -49,6 +49,23 @@
 //! actually receives is the one absence line and the task. That is a small
 //! prompt and it is an honest one; the layers exist, they are reached, and
 //! what fills them is other records' work.
+//!
+//! Layer 7's line said "no iteration runs, because there is no inner loop"
+//! until 2026-09-05, and the `iteration-wiring` arc's landing made it false
+//! while leaving the layer genuinely empty. It is corrected here rather than
+//! left, because a reason that is false is worse than no reason: it tells the
+//! next reader the layer is waiting on a capability that already exists.
+//!
+//! # One sentence rides the tail, and only on the iterating branch
+//!
+//! [`prose::ITERATION_IS_ONE_EXCHANGE`] is prepended by
+//! [`TurnContext::assemble`] when the project declared validators. It is not a
+//! layer: it is [ADR-0008] D1's statement of what an iteration is, true of the
+//! inner loop and **false of the outer one**, so a prefix layer carrying it
+//! would state a falsehood on every turn that declares no validators. That
+//! function's own documentation carries the whole argument.
+//!
+//! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //!
 //! [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 //! [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
@@ -91,6 +108,15 @@ pub struct TurnContext<'a> {
     context: &'a Context,
     counter: ByteCounter,
     redactor: &'a (dyn Redactor + Sync),
+    /// Whether this turn's body is [ADR-0008] D1's iteration.
+    ///
+    /// The composition already computes it — `let iterating =
+    /// !declared.is_empty()` — and it arrives here rather than being derived
+    /// a second time, because two answers to "is this an iteration" is how
+    /// the prefix and the branch would drift apart.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    iterating: bool,
 }
 
 impl core::fmt::Debug for TurnContext<'_> {
@@ -111,12 +137,21 @@ impl core::fmt::Debug for TurnContext<'_> {
 
 impl<'a> TurnContext<'a> {
     /// Assemble against this context, counting bytes, redacting held secrets.
+    ///
+    /// `iterating` is the composition's own boolean and decides one thing:
+    /// whether the assembled prompt carries
+    /// [`prose::ITERATION_IS_ONE_EXCHANGE`]. See [`Self::assemble`].
     #[must_use]
-    pub const fn over(context: &'a Context, redactor: &'a (dyn Redactor + Sync)) -> Self {
+    pub const fn over(
+        context: &'a Context,
+        redactor: &'a (dyn Redactor + Sync),
+        iterating: bool,
+    ) -> Self {
         Self {
             context,
             counter: ByteCounter,
             redactor,
+            iterating,
         }
     }
 
@@ -143,12 +178,51 @@ impl ContextPolicy for TurnContext<'_> {
     /// in a sentence of this module's own would be a second description of one
     /// call.
     ///
+    /// # The one sentence this function does add, and where it does not
+    ///
+    /// **The rule above is about the three tails and it is unchanged**: no
+    /// variant is wrapped, re-described or annotated. What is prepended, when
+    /// and only when `iterating` is set, is
+    /// [`prose::ITERATION_IS_ONE_EXCHANGE`] — [ADR-0008] D1's statement of
+    /// what an iteration is, which is a property of the loop the prompt is
+    /// being assembled for rather than a gloss on the task inside it.
+    ///
+    /// It is prepended **here** rather than in `refinement::construct`, which
+    /// is `zaru-core`'s fixed prose, for two reasons that are both structural.
+    /// The first is that the sentence has to reach [`Turn::Initial`] — the
+    /// first iteration is the one that decides whether the model explores or
+    /// acts, and a refinement prompt arrives too late to change it. The second
+    /// is [ADR-0008] D4: that prompt carries the validator's output verbatim
+    /// and "never paraphrased", and a harness sentence inside those bytes is
+    /// the paraphrase the clause exists to forbid, arriving through a side
+    /// door — the same argument the `process-runner` arc already made once
+    /// when it refused to append a sentence to a captured stream.
+    ///
+    /// **Where it is not added**: a turn with no declared validators, where
+    /// the sentence would be false. There the results of a call come back
+    /// inside the turn on `ModelRequest.results`, so telling a model they do
+    /// not would be a falsehood stated on every `bare`-tier turn that declares
+    /// nothing.
+    ///
+    /// The prepend goes through the same assembly the tail does, so it is
+    /// counted by the same [`ByteCounter`] against [ADR-0013] D6's window and
+    /// passes the same [`Redactor`] — it is not a second path into a prompt
+    /// and [ADR-0008]'s clause-6 enumeration gains no row, because a static
+    /// constant of this harness's own is not captured bytes.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
     async fn assemble(&self, turn: &Turn<'_>) -> Result<Prompt, ContextRefusal> {
         let tail = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
             Turn::Resumed { interrupted } => interrupted.call().to_owned(),
+        };
+        let tail = if self.iterating {
+            format!("{}\n\n{tail}", prose::ITERATION_IS_ONE_EXCHANGE)
+        } else {
+            tail
         };
         let assembled = self
             .context

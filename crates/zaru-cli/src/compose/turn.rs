@@ -751,7 +751,7 @@ pub async fn run_one(
     // --- ADR-0013's context, assembled once inside the turn ----------------
     let clock = SystemClock::started_now();
     let outcome = {
-        let policy = context.policy(&prepared.held);
+        let policy = context.policy(&prepared.held, prepared.iterating);
         // ADR-0008's execution, decided 2026-09-05: one tool surface, reached
         // by both loops. See `crate::compose::shared` for why it is a lock and
         // why sharing the value rather than building a second one is what

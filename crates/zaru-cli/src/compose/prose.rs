@@ -1,13 +1,24 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The three sentences a turn shows a person, transcribed from the records
+//! Every sentence this harness states on a turn, transcribed from the records
 //! and authored nowhere.
+//!
+//! # Three are said to a person and two are said to a model
+//!
+//! [`NOT_A_SANDBOX`], [`NO_VALIDATORS`] and [`DECLARE_ONE`] are read by the
+//! person running the harness. [`SUMMARISE_SPAN`] and
+//! [`ITERATION_IS_ONE_EXCHANGE`] are read by a model and never by a user, and
+//! each says so where it is defined. [`NO_PERSONA`] is layer 1's own line
+//! about what layer 1 does not have. The register differs between the two
+//! kinds and the reason it differs is on each constant; what they share is
+//! that no wording here was chosen by whoever typed it.
 //!
 //! # Why these are here and not at the places that print them
 //!
-//! Each of the three is a **required argument with no default** at the module
-//! that uses it, and each of those modules says why in its own words. From
+//! Each of the user-facing three is a **required argument with no default** at
+//! the module that uses it, and each of those modules says why in its own
+//! words. From
 //! [`crate::tools::notice`]:
 //!
 //! > What the user is told they are *not* getting is user-facing prose about
@@ -33,8 +44,12 @@
 //! wording as a proposal, it is still a proposal — landing it in code does not
 //! accept it, and the arc that landed it says so at the point a person reads.
 //!
-//! **The exception is [`NO_PERSONA`]**, which no record drafted, and its own
-//! documentation says exactly what it is and is not.
+//! **The exceptions are [`NO_PERSONA`], and one sentence each of
+//! [`SUMMARISE_SPAN`] and [`ITERATION_IS_ONE_EXCHANGE`]**, which no record
+//! drafted. Each says exactly which of its words came from a record and which
+//! were authored under directive 20 as a functional instruction, because a
+//! constant that did not distinguish them would let an authored sentence be
+//! read later as a record's.
 //!
 //! [Autonomous Development]: https://100monkeys-ai.cortex.page/project-management/p/process/autonomous-development
 
@@ -144,3 +159,77 @@ pub const NO_PERSONA: &str = "[no persona: this harness reached no prompt server
 pub const SUMMARISE_SPAN: &str = "Summarise the conversation below into a replacement for it, keeping the decisions made and \
      the constraints established. It replaces these exchanges in your own context; the full text \
      stays on disk. Write the summary and nothing else.";
+
+/// What [ADR-0008] D1's iteration is, told to the model that is inside one.
+///
+/// # Why this exists: a measurement, twice
+///
+/// The `iteration-wiring` arc ran four tasks against `gemini-3.6-flash` on
+/// 2026-09-05 and found that three of them, whose task needed the model to
+/// look before acting, spent **every** iteration exploring and never wrote.
+/// The `gemini-read-loop` arc then found a defect in this harness's own client
+/// — the model's turns were not being resent — and **withdrew** that
+/// inference pending re-measurement, because a model handed its own tool
+/// output under a name matching no declaration asked again six times in eight,
+/// which is a property of the client rather than of the model.
+///
+/// **The re-measurement was made on the fixed client and the finding stands.**
+/// Twenty-four runs, the same four tasks six times each: the task naming what
+/// the file must contain succeeded five times of six on its first candidate,
+/// and the three that need a look exhausted **eighteen times out of eighteen**.
+/// All nineteen exhaustions were one shape — `fs.list`, then `fs.read`, then
+/// `fs.list` **again**, never a write — and in eleven of them every byte the
+/// model needed was already in the prompt it was reading, carried there by
+/// [ADR-0008] D4. So the sentence below is written against a measured failure
+/// rather than an anticipated one.
+///
+/// # Two of its three sentences are the record's own words
+///
+/// - **"it is one exchange: the tool calls you return are applied together as
+///   your whole proposed change"** is that record's own amendment: "An
+///   iteration is **one** exchange: the generator asks once, the calls that
+///   come back are the candidate, they are applied", with [ADR-0012]'s
+///   "`Calls` are the candidate" beside it.
+/// - **"it reaches you in the next iteration's prompt, in full, together with
+///   what the validators said"** is the rest of the same amendment — "their
+///   output reaches the model only in the *next* iteration's refinement
+///   prompt" — over D1's own sentence that `Refine` "constructs the next
+///   prompt from the previous candidate, the execution output, and the
+///   validator's failure text". "In full" is D4's "verbatim, truncated but
+///   never paraphrased".
+/// - **"So propose the change itself rather than looking first, and never ask
+///   again for output this prompt has already given you"** has no source. It
+///   was authored under directive 20 of 2026-09-05 as a **functional
+///   instruction** rather than persona — it says what shape the answer takes,
+///   not who is speaking — and the record names it as the missing sentence in
+///   as many words: "nothing in D1, D4 or [ADR-0013] D1's layer 1 says a
+///   candidate is a complete proposed change or that an iteration is one
+///   shot". Its second half is what the re-measurement above added and what
+///   nothing before it could have known.
+///
+/// Recorded as an accepted Update on [ADR-0008] D1 and quoted for Jeshua at
+/// READY, open to his veto exactly as [`NOT_A_SANDBOX`] and [`SUMMARISE_SPAN`]
+/// are. **This is what a model reads and never what a user reads**, which it
+/// shares with [`SUMMARISE_SPAN`] alone.
+///
+/// # It is prepended only where it is true
+///
+/// [`TurnContext::assemble`](crate::compose::TurnContext) adds it when the
+/// project declared validators and not otherwise. In the **outer** tool-call
+/// loop the sentence is false — there the results of a call do come back
+/// inside the turn, on `ModelRequest.results` — so a layer-1 prefix carrying
+/// it unconditionally would state a falsehood on every `bare`-tier turn that
+/// declares no validators. That asymmetry is the argument for [ADR-0008] D1
+/// owning this sentence rather than [ADR-0013] D1's layer 1, and
+/// `a_turn_with_no_declared_validators_is_not_told_an_iteration_is_one_exchange`
+/// is where it is pinned.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub const ITERATION_IS_ONE_EXCHANGE: &str = "This is one iteration of a validated loop, and it is \
+     one exchange: the tool calls you return are applied together as your whole proposed change. \
+     Their output does not come back to you inside this exchange; it reaches you in the next \
+     iteration's prompt, in full, together with what the validators said. So propose the change \
+     itself rather than looking first, and never ask again for output this prompt has already \
+     given you.";

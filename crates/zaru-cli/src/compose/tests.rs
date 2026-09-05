@@ -172,7 +172,7 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
     .expect("the threshold is below the window");
     let context = Context::opened(context::prefix_for(), limits);
     let held = HeldSecrets::none();
-    let policy = TurnContext::over(&context, &held);
+    let policy = TurnContext::over(&context, &held, false);
 
     let task = "x".repeat(4096);
     let refusal = futures_lite_block_on(policy.assemble(&Turn::Initial { task: &task }))
@@ -214,7 +214,7 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
 fn a_turn_that_fits_carries_the_prefix_and_then_the_task() {
     let context = Context::opened(context::prefix_for(), crate::cli::layers::context_limits());
     let held = HeldSecrets::none();
-    let policy = TurnContext::over(&context, &held);
+    let policy = TurnContext::over(&context, &held, false);
 
     let prompt = futures_lite_block_on(policy.assemble(&Turn::Initial {
         task: "read src/lib.rs and say what it is",
@@ -1125,7 +1125,7 @@ fn one_turn_in_layer_six_carries_the_task_the_tool_results_and_the_answer() {
 fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     // let held = HeldSecrets::none();
     // let mut session = SessionContext::opened(context::prefix_for(), limits);
-    // let policy = session.policy(&held);
+    // let policy = session.policy(&held, false);
     // futures_lite_block_on(session.at_turn_boundary(&Failing, &held));  // E0502
     // drop(policy);
 
@@ -1136,7 +1136,7 @@ fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     let mut session =
         crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 1_200));
     {
-        let policy = session.policy(&held);
+        let policy = session.policy(&held, false);
         let _ = futures_lite_block_on(policy.assemble(&Turn::Initial { task: "a task" }));
     }
     futures_lite_block_on(session.at_turn_boundary(&Counting::answering("x"), &held))

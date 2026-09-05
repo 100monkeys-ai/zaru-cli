@@ -291,6 +291,10 @@ struct Run_<'a> {
     mode: Mode,
     confirmer: Option<&'a (dyn Confirm + Sync)>,
     held: &'a HeldSecrets,
+    /// Whether the turn is handed an inner loop, which is ADR-0009 D4's
+    /// branch: `true` is a project that declared validators and `false` is
+    /// the outer tool-call loop running alone.
+    with_inner: bool,
 }
 
 /// Drive [ADR-0009] D4's branch to an outcome, and hand back the transcript.
@@ -299,7 +303,7 @@ struct Run_<'a> {
 /// `compose`'s `Generating`, `Applying` and `Inner`, `zaru-cli`'s `Executor`
 /// over ADR-0011 D4's boundary and D3's permission decision, `zaru-core`'s
 /// `Dispatch`, and `Spawn` running each validator as a real child process.
-fn drive(staged: &Run_<'_>) -> (Outcome, String) {
+fn drive<P: ContextPolicy + Sync>(staged: &Run_<'_>, policy: &P) -> (Outcome, String) {
     let working = WorkingDirectory::at(staged.scratch.project()).expect("the boundary resolves");
     let store = SessionStore::open(staged.scratch.sessions()).expect("the session store opens");
     let id = SessionId::mint(&SystemWallClock).expect("a session id");
@@ -336,7 +340,6 @@ fn drive(staged: &Run_<'_>) -> (Outcome, String) {
     };
 
     let clock = Ticking::default();
-    let policy = Policy;
     let patterns = zaru_cli::validators::Patterns::new(zaru_cli::cli::layers::pattern_ceiling());
     let schemas =
         zaru_cli::validators::SchemaFiles::new(&working, zaru_cli::cli::layers::file_ceiling());
@@ -352,7 +355,7 @@ fn drive(staged: &Run_<'_>) -> (Outcome, String) {
                 generator: &generating,
                 executor: &applying,
                 validators: &dispatch,
-                context: &policy,
+                context: policy,
                 clock: &clock,
                 redactor: staged.held,
             },
@@ -372,11 +375,15 @@ fn drive(staged: &Run_<'_>) -> (Outcome, String) {
             Ports {
                 model: staged.provider,
                 tools: &mut tools,
-                context: &policy,
+                context: policy,
                 clock: &clock,
                 redactor: staged.held,
             },
-            Some(&inner),
+            if staged.with_inner {
+                Some(&inner)
+            } else {
+                None
+            },
             &mut [&mut sink],
         ))
         .expect("no port failed")
@@ -441,15 +448,19 @@ fn adr_0009_d4s_branch_runs_the_loop_and_exhaustion_is_reported_as_itself() {
     let held = HeldSecrets::none();
     let accepting = Declining::nothing();
 
-    let (outcome, transcript) = drive(&Run_ {
-        scratch: &scratch,
-        plan: &plan,
-        provider: &provider,
-        ceiling: 2,
-        mode: Mode::Ask,
-        confirmer: Some(&accepting),
-        held: &held,
-    });
+    let (outcome, transcript) = drive(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 2,
+            mode: Mode::Ask,
+            confirmer: Some(&accepting),
+            held: &held,
+            with_inner: true,
+        },
+        &Policy,
+    );
 
     let LoopOutcome::Exhausted {
         iterations,
@@ -546,15 +557,19 @@ fn a_validator_that_fails_once_passes_after_the_models_fix() {
     let held = HeldSecrets::none();
     let accepting = Declining::nothing();
 
-    let (outcome, transcript) = drive(&Run_ {
-        scratch: &scratch,
-        plan: &plan,
-        provider: &provider,
-        ceiling: 3,
-        mode: Mode::Ask,
-        confirmer: Some(&accepting),
-        held: &held,
-    });
+    let (outcome, transcript) = drive(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 3,
+            mode: Mode::Ask,
+            confirmer: Some(&accepting),
+            held: &held,
+            with_inner: true,
+        },
+        &Policy,
+    );
 
     let LoopOutcome::Succeeded { iterations, .. } = expect_iterated(&outcome) else {
         panic!(
@@ -637,15 +652,19 @@ fn a_held_secret_in_a_validators_output_is_redacted_in_the_refinement_and_kept_i
     let held = held_from_a_store(&scratch, secret);
     let accepting = Declining::nothing();
 
-    let (_outcome, transcript) = drive(&Run_ {
-        scratch: &scratch,
-        plan: &plan,
-        provider: &provider,
-        ceiling: 2,
-        mode: Mode::Ask,
-        confirmer: Some(&accepting),
-        held: &held,
-    });
+    let (_outcome, transcript) = drive(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 2,
+            mode: Mode::Ask,
+            confirmer: Some(&accepting),
+            held: &held,
+            with_inner: true,
+        },
+        &Policy,
+    );
 
     let prompts = provider.prompts();
     assert_eq!(prompts.len(), 2, "two iterations are two exchanges");
@@ -716,15 +735,19 @@ fn a_candidates_write_outside_the_tree_is_decided_like_a_turns() {
         ("would-land", "nor this"),
     ])]);
     let declining = Declining::once();
-    let (_outcome, transcript) = drive(&Run_ {
-        scratch: &scratch,
-        plan: &plan,
-        provider: &provider,
-        ceiling: 1,
-        mode: Mode::Ask,
-        confirmer: Some(&declining),
-        held: &held,
-    });
+    let (_outcome, transcript) = drive(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 1,
+            mode: Mode::Ask,
+            confirmer: Some(&declining),
+            held: &held,
+            with_inner: true,
+        },
+        &Policy,
+    );
 
     assert!(
         !outside.exists(),
@@ -766,15 +789,19 @@ fn a_candidates_write_outside_the_tree_is_decided_like_a_turns() {
         ("would-land", "and so is this"),
     ])]);
     let accepting = Declining::nothing();
-    let _ = drive(&Run_ {
-        scratch: &sibling,
-        plan: &plan,
-        provider: &provider,
-        ceiling: 1,
-        mode: Mode::Ask,
-        confirmer: Some(&accepting),
-        held: &held,
-    });
+    let _ = drive(
+        &Run_ {
+            scratch: &sibling,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 1,
+            mode: Mode::Ask,
+            confirmer: Some(&accepting),
+            held: &held,
+            with_inner: true,
+        },
+        &Policy,
+    );
     assert!(
         elsewhere.exists() && landing.exists(),
         "both writes must land when the user says yes -- without this the refusal above says \
@@ -1060,4 +1087,149 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
              transcript claims an outcome the loop never reached"
         );
     }
+}
+/// A real [`TurnContext`] over a real context, which is what the binary builds.
+///
+/// The staged [`Policy`] above is deliberately bare, so that the checks about
+/// the loop see exactly what the loop constructed. The two checks below are
+/// about the **prompt** instead, so they use the product's own policy: the
+/// prefix, the byte counter, the redactor and the prepend are all the ones a
+/// person's run gets.
+fn product_policy<'a>(
+    context: &'a zaru_core::context::Context,
+    held: &'a HeldSecrets,
+    iterating: bool,
+) -> zaru_cli::compose::TurnContext<'a> {
+    zaru_cli::compose::TurnContext::over(context, held, iterating)
+}
+
+/// [ADR-0008] D1's sentence reaches the model on the **first** exchange and on
+/// every refinement after it.
+///
+/// # Why the first exchange is the load-bearing half
+///
+/// The failure this sentence exists to close was measured twice — four runs by
+/// the `iteration-wiring` arc, then twenty-four by the `prompt-wording` arc on
+/// the fixed client, of which the three look-first tasks exhausted eighteen
+/// times out of eighteen. In every one of those exhaustions the model spent
+/// iteration 1 on `fs.list`. **Iteration 1 is where the run is decided**, so a
+/// check that asserted the sentence only in a refinement would pass over an
+/// implementation that put it in `refinement::construct` — which is
+/// `zaru-core`'s fixed prose, which ADR-0008 D4 forbids adding to, and which
+/// the model does not see until it is already too late.
+///
+/// The assertion is on the **exact bytes** rather than on a phrase, so that
+/// paraphrasing the constant reddens this check rather than passing it.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+#[test]
+fn the_iteration_instruction_reaches_the_model_on_the_first_exchange_and_on_every_refinement() {
+    let scratch = Scratch::new("iteration-instruction");
+    let plan = one_validator("cat report.txt", "TOTAL: 3");
+    // Two candidates that never satisfy the validator, so the loop runs to its
+    // ceiling of two and there is a refinement to read as well as a first ask.
+    let provider = Provider::scripted([
+        writes("not-the-report", "no"),
+        writes("not-the-report", "no again"),
+    ]);
+    let held = HeldSecrets::none();
+    let accepting = Declining::nothing();
+    let context = zaru_core::context::Context::opened(
+        zaru_cli::compose::prefix_for(),
+        zaru_cli::cli::layers::context_limits(),
+    );
+    let policy = product_policy(&context, &held, true);
+
+    let _ = drive(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 2,
+            mode: Mode::Ask,
+            confirmer: Some(&accepting),
+            held: &held,
+            with_inner: true,
+        },
+        &policy,
+    );
+
+    let prompts = provider.prompts();
+    assert!(
+        prompts.len() >= 2,
+        "a ceiling of two must ask twice, so that there is a refinement to read; it asked \
+         {} time(s)",
+        prompts.len()
+    );
+    for (n, prompt) in prompts.iter().enumerate() {
+        assert!(
+            prompt.contains(zaru_cli::compose::prose::ITERATION_IS_ONE_EXCHANGE),
+            "the model must be told what an iteration is on exchange {} -- iteration 1 is where \
+             the run is decided -- and the prompt it actually got was:\n{prompt}",
+            n + 1
+        );
+    }
+}
+
+/// The same sentence is **absent** from a turn that declared no validators.
+///
+/// # This is the accepting sibling, and it is why ADR-0008 D1 owns the words
+///
+/// Without it the check above would pass over an implementation that put the
+/// sentence into [ADR-0013] D1's layer 1 unconditionally — and there it would
+/// be a **falsehood**: the outer tool-call loop hands a call's result back
+/// inside the same turn, on `ModelRequest.results`, so a model told its output
+/// "does not come back to you inside this exchange" would have been lied to on
+/// every `bare`-tier turn that declares nothing.
+///
+/// It also keeps the absence from passing vacuously: the task itself is
+/// asserted **present** in the same prompt, so a policy that assembled nothing
+/// at all could not satisfy this.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[test]
+fn a_turn_with_no_declared_validators_is_not_told_an_iteration_is_one_exchange() {
+    let scratch = Scratch::new("no-declared-validators");
+    let plan = Plan::from_declared(Vec::new()).expect("a project may declare nothing");
+    // One answer with nothing to execute, so the outer loop ends the turn.
+    let provider = Provider::scripted([ModelResponse::Text {
+        text: "there is nothing to do".to_owned(),
+        tokens: usage(),
+    }]);
+    let held = HeldSecrets::none();
+    let accepting = Declining::nothing();
+    let context = zaru_core::context::Context::opened(
+        zaru_cli::compose::prefix_for(),
+        zaru_cli::cli::layers::context_limits(),
+    );
+    let policy = product_policy(&context, &held, false);
+
+    let _ = drive(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 2,
+            mode: Mode::Ask,
+            confirmer: Some(&accepting),
+            held: &held,
+            with_inner: false,
+        },
+        &policy,
+    );
+
+    let prompts = provider.prompts();
+    assert_eq!(prompts.len(), 1, "one answer with no calls is one exchange");
+    assert!(
+        prompts[0].contains("do the work"),
+        "the accepting half: the task must reach the model, or the absence below is vacuous; the \
+         prompt was:\n{}",
+        prompts[0]
+    );
+    assert!(
+        !prompts[0].contains(zaru_cli::compose::prose::ITERATION_IS_ONE_EXCHANGE),
+        "a turn with no declared validators runs the outer loop, where that sentence is false, \
+         and it was in the prompt anyway:\n{}",
+        prompts[0]
+    );
 }

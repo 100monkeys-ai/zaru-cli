@@ -120,9 +120,18 @@ impl SessionContext {
     /// borrows `self` immutably for as long as it lives, so
     /// [`Self::at_turn_boundary`] — which needs `&mut self` — cannot be
     /// called while a turn is in progress.
+    ///
+    /// `iterating` is passed straight through to [`TurnContext::over`] and
+    /// decides whether the assembled prompt tells the model an iteration is
+    /// one exchange. It is the composition's boolean rather than one derived
+    /// here, because this type cannot see a manifest.
     #[must_use]
-    pub fn policy<'a>(&'a self, redactor: &'a (dyn Redactor + Sync)) -> TurnContext<'a> {
-        TurnContext::over(&self.context, redactor)
+    pub fn policy<'a>(
+        &'a self,
+        redactor: &'a (dyn Redactor + Sync),
+        iterating: bool,
+    ) -> TurnContext<'a> {
+        TurnContext::over(&self.context, redactor, iterating)
     }
 
     /// What the context costs right now. [ADR-0013] D6's continuous number.
