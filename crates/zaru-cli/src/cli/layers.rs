@@ -758,11 +758,21 @@ pub const CONTEXT_WINDOW_TOKENS: u64 = 1_048_576;
 /// `Context::compact`, which does nothing at or below this threshold and
 /// summarises the oldest span above it.
 ///
-/// **On the binary's own path it is still never crossed**, and that is stated
-/// plainly rather than dressed up: one invocation is one turn, layer 6 is empty
-/// at the only boundary that turn has, and an empty layer 6 cannot exceed
-/// anything. The number becomes load-bearing on the day a session holds more
-/// than one turn. Its other effect is unchanged:
+/// **A session can now reach it, and nothing a person has typed has.** This
+/// paragraph read "on the binary's own path it is still never crossed …  one
+/// invocation is one turn, layer 6 is empty at the only boundary that turn
+/// has", and that stopped being true when the `shell-task-turns` arc made a
+/// typed line the next turn of the session it is typed in: layer 6 has a
+/// producer, every turn adds to it, and each turn boundary compares against
+/// this number. What is still true is the *practical* half — three quarters of
+/// 1,048,576 is 786,432 bytes of conversation, so a real session reaches it
+/// only after a great deal of one, and no run of this binary has. So the
+/// compaction path is reachable rather than dead, and it is exercised at the
+/// seam with limits a check can cross rather than by staging 786 KB.
+///
+/// **It is visible while it is approached**, which is [ADR-0013] D6, and the
+/// number on `zaru_tui::shell::Status` is the one measured against this pair.
+/// Its other effect is unchanged:
 /// [`ContextLimits::new`](zaru_core::context::ContextLimits::new) refuses a
 /// threshold above its window, and this pair is accepted.
 ///
