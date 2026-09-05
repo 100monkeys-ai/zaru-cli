@@ -101,15 +101,46 @@ pub fn field() -> Field {
     Field::refused_to_projects(FieldKind::Text, PROJECT_REFUSAL)
 }
 
+/// The tier [ADR-0014] D1's layer 1 supplies when nothing else does.
+///
+/// **`bare`, decided 2026-09-05 under directive 20**, as a delegated
+/// coordinator ruling open to Jeshua's veto, and written as accepted Updates
+/// on [ADR-0001] D2 and ADR-0014 D1. Until then this module refused an unset
+/// tier outright, on the ground that ADR-0001 names no fallback and choosing
+/// one decides which membrane a user gets when they said nothing.
+///
+/// What changed is that the binary can now be run, and a harness that refuses
+/// to do anything on a machine with no configuration contradicts [ADR-0001]
+/// D1's own sentence about this tier: "a plain agentic harness. No AEGIS, no
+/// account, no cortex, full tool capability. **This is the on-ramp and it is
+/// not a trial: it is complete, it is supported, and a user may stay here
+/// permanently.**" [ADR-0003] D7 is the third voice — "the default install is
+/// **zaru alone**... with `bare` fully functional".
+///
+/// It is a *layer* rather than a fallback inside this module, which is the
+/// load-bearing half: it arrives as [ADR-0014] D1's layer 1 like any other
+/// compiled-in value, so `zaru config explain runtime.tier` names `built-in`
+/// as the supplier and every layer above it wins in the ordinary way. A
+/// default hidden inside [`ResolvedTier::from_configuration`] would be a value
+/// the trace could not show.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+pub const BUILT_IN_TIER: Tier = Tier::Bare;
+
 /// Why a tier could not be taken from a resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TierRefused {
     /// No layer set the key.
     ///
-    /// **Not a default.** ADR-0001 names no fallback tier, and choosing one
-    /// here would decide which membrane a user gets when they said nothing —
-    /// which is a security posture, and on the human side of the boundary.
-    /// Layer 1 is where a built-in belongs, and it is a caller's to supply.
+    /// **Not a default, and this refusal stays.** ADR-0001 names no fallback
+    /// tier, and choosing one *here* would decide which membrane a user gets
+    /// when they said nothing, invisibly — which is a security posture, and on
+    /// the human side of the boundary. Layer 1 is where a built-in belongs and
+    /// it is a caller's to supply: since 2026-09-05 the `zaru` binary supplies
+    /// [`BUILT_IN_TIER`] there, so this variant is what a caller that declares
+    /// no layer-1 default gets, which is every caller that is not that binary.
     NotSet {
         /// The key that was looked for.
         key: Key,

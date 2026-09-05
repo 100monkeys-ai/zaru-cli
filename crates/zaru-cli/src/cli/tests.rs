@@ -706,3 +706,214 @@ fn a_file_this_harness_wrote_is_a_defect_and_a_missing_one_is_the_users() {
          ADR-0016 D3's own worked mistake"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0014 D1 — layers 1 and 5
+// ---------------------------------------------------------------------------
+
+/// The flags are a layer rather than a value the program reads separately.
+///
+/// The mutant this catches is the obvious shortcut — reading
+/// `overrides.tier` where the tier is wanted — which produces a tier the
+/// explain block cannot account for, because it never entered the fold.
+#[test]
+fn a_flag_reaches_the_tier_through_adr_0014s_layer_five_and_not_around_it() {
+    let overrides = Overrides {
+        tier: Some("linked".to_owned()),
+        model: None,
+    };
+    let resolution = layers::resolve(&overrides, []).expect("three readable layers fold");
+    let explanation = resolution.explain(&crate::runtime::key());
+
+    assert_eq!(
+        explanation.effective_layer(),
+        Some(crate::config::Layer::Flag),
+        "a tier given as a flag must be supplied by layer 5, so `config explain` and the resolved \
+         tier are one reading rather than two"
+    );
+
+    let resolved = crate::runtime::ResolvedTier::from_configuration(&resolution)
+        .expect("`linked` is one of ADR-0001 D1's three tiers");
+    assert_eq!(resolved.tier(), crate::runtime::Tier::Linked);
+    assert_eq!(resolved.supplied_by(), crate::config::Layer::Flag);
+}
+
+/// Layer 1 supplies `bare`, so a machine with no configuration has a tier.
+///
+/// Both arms. The refusal alone is satisfied by a binary that always answers
+/// `bare`; the default alone by one that ignores what the user set. What
+/// separates them is that the *supplying layer* differs, which is the thing
+/// D3's block exists to print.
+#[test]
+fn adr_0014_layer_one_supplies_bare_and_every_higher_layer_still_wins() {
+    let bare = layers::resolve(&Overrides::default(), []).expect("layer 1 alone folds");
+    let resolved = crate::runtime::ResolvedTier::from_configuration(&bare)
+        .expect("layer 1 supplies ADR-0001 D1's on-ramp tier");
+    assert_eq!(
+        (resolved.tier(), resolved.supplied_by()),
+        (crate::runtime::BUILT_IN_TIER, crate::config::Layer::BuiltIn),
+        "with nothing configured the tier is the built-in one and the trace says so; a default \
+         hidden inside the resolution would be a value D3's block could not show"
+    );
+
+    let overridden = layers::resolve(
+        &Overrides {
+            tier: Some("contained".to_owned()),
+            model: None,
+        },
+        [],
+    )
+    .expect("layers 1 and 5 fold");
+    let resolved = crate::runtime::ResolvedTier::from_configuration(&overridden)
+        .expect("`contained` is one of ADR-0001 D1's three tiers");
+    assert_eq!(
+        (resolved.tier(), resolved.supplied_by()),
+        (crate::runtime::Tier::Contained, crate::config::Layer::Flag),
+        "layer 5 beats layer 1, or the built-in is a floor rather than a default"
+    );
+}
+
+/// A flag can reach two keys and no others.
+///
+/// D1 names `--tier` and `--model` for layer 5 and this harness spells the
+/// first `--runtime`, per ADR-0001 D2. What the check holds is the *count*:
+/// a flag that reached a third key would let the command line set something
+/// no record put on layer 5.
+#[test]
+fn layer_five_carries_exactly_the_two_keys_adr_0014_d1_names() {
+    use crate::config::LayerSource;
+
+    let everything = Overrides {
+        tier: Some("bare".to_owned()),
+        model: Some("a-model".to_owned()),
+    };
+    let document = layers::Flags::of(&everything)
+        .read()
+        .expect("a flag layer was read from the process before it was built");
+
+    let mut reached: Vec<String> = Vec::new();
+    fn walk(prefix: &str, table: &crate::config::Table, into: &mut Vec<String>) {
+        for (name, value) in table.iter() {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            match value {
+                crate::config::Value::Table(inner) => walk(&path, inner, into),
+                _ => into.push(path),
+            }
+        }
+    }
+    walk("", &document, &mut reached);
+    reached.sort();
+
+    assert_eq!(
+        reached,
+        vec!["model.default".to_owned(), "runtime.tier".to_owned()],
+        "layer 5 reaches exactly the two keys ADR-0014 D1 names for it"
+    );
+
+    let nothing = layers::Flags::of(&Overrides::default())
+        .read()
+        .expect("an empty flag layer is still a layer");
+    assert!(
+        nothing.is_empty(),
+        "a command line with no settings must contribute an empty layer 5, which D3 renders as \
+         `(not set)`, rather than a layer carrying defaults"
+    );
+}
+
+/// Layers 2 and 3 have no reader, and the block says so in their own words.
+///
+/// The alternative — naming `~/.zaru/config.toml` in the source column — would
+/// claim a reading that did not happen, which is the one thing D3's block is
+/// for. Ruled 2026-09-05.
+#[test]
+fn an_unread_layer_names_its_own_label_rather_than_a_file_nothing_opened() {
+    let resolution =
+        layers::resolve(&Overrides::default(), []).expect("three readable layers fold");
+    let rendered = resolution.explain(&crate::runtime::key()).to_string();
+
+    assert!(
+        rendered.contains("user config") && rendered.contains("project config"),
+        "layers 2 and 3 must appear under their own labels: {rendered}"
+    );
+    assert!(
+        !rendered.contains(".toml"),
+        "no layer this binary cannot read may name a file in D3's source column, or the block \
+         claims a reading that did not happen: {rendered}"
+    );
+}
+
+/// Layer 4 reaches the same keys as layer 5, and layer 5 beats it.
+///
+/// The pair matters more than either: an adjacent-pair check is the only one
+/// that sees a precedence order wrong in the middle, which the configuration
+/// arc measured on this very fold.
+#[test]
+fn the_environment_sets_the_same_keys_and_a_flag_beats_it() {
+    let from_environment = layers::resolve(
+        &Overrides::default(),
+        [("ZARU_RUNTIME_TIER".to_owned(), "contained".to_owned())],
+    )
+    .expect("layers 1 and 4 fold");
+    let resolved = crate::runtime::ResolvedTier::from_configuration(&from_environment)
+        .expect("`contained` is a tier");
+    assert_eq!(
+        (resolved.tier(), resolved.supplied_by()),
+        (
+            crate::runtime::Tier::Contained,
+            crate::config::Layer::Environment
+        )
+    );
+
+    let flag_wins = layers::resolve(
+        &Overrides {
+            tier: Some("linked".to_owned()),
+            model: None,
+        },
+        [("ZARU_RUNTIME_TIER".to_owned(), "contained".to_owned())],
+    )
+    .expect("layers 1, 4 and 5 fold");
+    let resolved =
+        crate::runtime::ResolvedTier::from_configuration(&flag_wins).expect("`linked` is a tier");
+    assert_eq!(
+        (resolved.tier(), resolved.supplied_by()),
+        (crate::runtime::Tier::Linked, crate::config::Layer::Flag),
+        "ADR-0014 D1's layer 5 beats layer 4, and the trace says which supplied it"
+    );
+}
+
+/// A tier no record names is refused once, by the fold, naming its layer.
+///
+/// This is the consequence of the parser deliberately not validating a tier:
+/// there is one refusal for a bad `--runtime`, it comes from the module that
+/// owns ADR-0001 D1's three tiers, and it can say which layer offered it.
+#[test]
+fn a_tier_no_record_names_is_refused_once_and_the_refusal_names_its_layer() {
+    let resolution = layers::resolve(
+        &Overrides {
+            tier: Some("sandboxed".to_owned()),
+            model: None,
+        },
+        [],
+    )
+    .expect("an unknown tier is a well-formed text value and folds");
+
+    match crate::runtime::ResolvedTier::from_configuration(&resolution) {
+        Err(refusal @ crate::runtime::TierRefused::NoSuchTier { .. }) => {
+            let said = refusal.to_string();
+            assert!(
+                said.contains("flag"),
+                "the refusal must name the layer the value arrived in, so the reader knows what \
+                 to change: {said}"
+            );
+            assert!(
+                said.contains("bare") && said.contains("contained") && said.contains("linked"),
+                "the refusal lists ADR-0001 D1's three tiers, walked from Tier::ALL: {said}"
+            );
+        }
+        other => panic!("an unknown tier was not refused by the fold: {other:?}"),
+    }
+}

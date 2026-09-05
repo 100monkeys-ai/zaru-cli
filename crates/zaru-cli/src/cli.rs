@@ -33,6 +33,14 @@
 //! and D2's namespaces have no clause at all. A seventh is drafted on the
 //! record for D2 under a delegated coordinator ruling of 2026-09-05.
 //!
+//! # It also becomes ADR-0014 layer 5's first reader
+//!
+//! [`layers::Flags`] implements [`LayerSource`](crate::config::LayerSource)
+//! for [`Layer::Flag`](crate::config::Layer), which is the first
+//! implementation of that port anywhere in this crate's product tree, and
+//! [`layers::BuiltIn`] supplies layer 1's one compiled-in key. Layers 2 and 3
+//! still have no reader.
+//!
 //! # This module is the first thing in the harness a user can run
 //!
 //! Which makes it the first place several other records become observable
@@ -55,6 +63,7 @@ pub mod classify;
 pub mod flag;
 pub mod help;
 pub mod invocation;
+pub mod layers;
 pub mod namespace;
 pub mod parse;
 pub mod refusal;
@@ -62,6 +71,7 @@ pub mod refusal;
 pub use classify::Surface;
 pub use flag::Flag;
 pub use invocation::{CommandLine, Overrides, Request};
+pub use layers::{Flags, LoadFailure};
 pub use namespace::Namespace;
 pub use parse::{parse, parse_process};
 pub use refusal::CommandRefused;

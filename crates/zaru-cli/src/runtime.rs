@@ -55,7 +55,7 @@ pub mod tier;
 
 pub use datum::{Difference, Runtime};
 pub use defaults::{Inference, InferenceRefused, Placement, ceiling, iterations};
-pub use resolve::{KEY, PROJECT_REFUSAL, ResolvedTier, TierRefused, field, key};
+pub use resolve::{BUILT_IN_TIER, KEY, PROJECT_REFUSAL, ResolvedTier, TierRefused, field, key};
 pub use tier::{Cortex, Engagement, Loop, Membrane, Network, Tier};
 
 #[cfg(test)]
