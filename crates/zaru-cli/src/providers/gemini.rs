@@ -82,6 +82,7 @@
 pub mod endpoint;
 pub mod failure;
 pub mod map;
+pub mod stream;
 pub mod wire;
 
 #[cfg(test)]

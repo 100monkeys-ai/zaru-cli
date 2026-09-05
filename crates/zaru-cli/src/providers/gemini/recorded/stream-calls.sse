@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "fs.read", "args": {"path": "notes.txt"}, "id": "call_1605341"}, "thoughtSignature": "<scrubbed: an opaque signature, 348 bytes as recorded>"}], "role": "model"}, "index": 0}], "usageMetadata": {"promptTokenCount": 67, "candidatesTokenCount": 14, "totalTokenCount": 118, "promptTokensDetails": [{"modality": "TEXT", "tokenCount": 67}], "thoughtsTokenCount": 37, "serviceTier": "standard"}, "modelVersion": "gemini-3.6-flash", "responseId": "<scrubbed>"}
+
+data: {"candidates": [{"content": {"parts": [{"text": ""}], "role": "model"}, "finishReason": "STOP", "index": 0}], "usageMetadata": {"promptTokenCount": 67, "candidatesTokenCount": 14, "totalTokenCount": 118, "promptTokensDetails": [{"modality": "TEXT", "tokenCount": 67}], "thoughtsTokenCount": 37, "serviceTier": "standard"}, "modelVersion": "gemini-3.6-flash", "responseId": "<scrubbed>"}
+

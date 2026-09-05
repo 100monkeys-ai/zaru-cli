@@ -508,3 +508,103 @@ fn within_geminis_subset(schema: Value) -> Value {
     }
     Value::Object(kept)
 }
+
+/// Fold every frame of a streamed exchange into the one response it is.
+///
+/// # One exchange is one response, and that is the whole reason this exists
+///
+/// A streamed `functionCall` and the `finishReason` that ends the same
+/// exchange **arrive in different frames**. Measured 2026-09-05 against
+/// `gemini-3.6-flash`: the call came back complete in frame 1 with no finish
+/// reason, and frame 2 carried `finishReason: "STOP"` beside an empty text
+/// part. A reader that mapped each frame as it arrived would map frame 1 as
+/// [`ModelResponse::Calls`] and frame 2 as [`ModelResponse::Stopped`] and
+/// report two answers to one question — so the frames are folded first and
+/// [`response_from`] is called **once**, on the fold.
+///
+/// That also preserves the ordering `provider-client` recorded as
+/// load-bearing. Its finding was that tool calls must be read before the
+/// finish reason, because a non-streamed tool-call response carries
+/// `finishReason: "STOP"` alongside the call; the stream widens the same trap
+/// across two frames rather than removing it, and folding closes both at
+/// once because [`response_from`] still reads the calls first.
+///
+/// # A `functionCall` is taken whole because the contract sends it whole
+///
+/// **Measured, not assumed.** The recorded tool-call stream delivered
+/// `{"functionCall": {"name": "fs.read", "args": {"path": "notes.txt"},
+/// "id": "call_1605341"}, "thoughtSignature": "…"}` as one complete part in
+/// one frame — the arguments a finished JSON object, the id beside them, the
+/// signature on the same part. **No `functionCall` was ever split across
+/// frames**, so nothing here accumulates partial arguments and no second JSON
+/// parser exists to go wrong. If that ever stops being true it stops being
+/// true loudly, at the `serde` boundary, rather than quietly producing a call
+/// with truncated arguments.
+///
+/// # Why concatenating the parts is the entire fold
+///
+/// [`response_from`] already collects every `functionCall` part into
+/// [`ModelResponse::Calls`] and already joins every text part into one
+/// string. So a fold that concatenates each frame's parts, in arrival order,
+/// into a single candidate gives that function exactly the input it would
+/// have had from a non-streamed response of the same content — which is why
+/// there is one mapping here rather than two, and why the three recorded
+/// fixtures keep their meaning: each is a stream of one frame.
+///
+/// A `thoughtSignature` needs no special handling for the same reason. It
+/// rides on the part that carries it — on the `functionCall` part in the
+/// tool-call stream, and on an empty-text final part in the text stream, both
+/// measured — and moving the parts moves the signatures with them.
+///
+/// # The usage is the last frame's, because the counts are cumulative
+///
+/// Every frame carries a full `usageMetadata` and the counts **grow**:
+/// measured across a three-frame text stream, `candidatesTokenCount` ran 13,
+/// 15, 15 while `promptTokenCount` held at 13 and `thoughtsTokenCount` at
+/// 183. So the last frame's metadata is the exchange's total. **Summing them
+/// would multiply the prompt count by the number of frames** — the shape of
+/// error ADR-0012 D7 exists to prevent, in the direction that over-reports
+/// rather than under-reports.
+///
+/// The `finishReason` is the last one any frame carried, and the
+/// `modelVersion` the last one, for the same reason: a later frame is a later
+/// statement about the same exchange.
+#[must_use]
+pub fn fold(frames: &[wire::Response]) -> wire::Response {
+    let mut parts: Vec<wire::Part> = Vec::new();
+    let mut finish_reason: Option<String> = None;
+    let mut usage_metadata: Option<wire::UsageMetadata> = None;
+    let mut model_version: Option<String> = None;
+
+    for frame in frames {
+        if let Some(usage) = frame.usage_metadata {
+            usage_metadata = Some(usage);
+        }
+        if let Some(version) = frame.model_version.clone() {
+            model_version = Some(version);
+        }
+        // The first candidate, which is the one this client reads -- the same
+        // choice `response_from` documents.
+        let Some(candidate) = frame.candidates.first() else {
+            continue;
+        };
+        if let Some(reason) = candidate.finish_reason.clone() {
+            finish_reason = Some(reason);
+        }
+        if let Some(content) = candidate.content.as_ref() {
+            parts.extend(content.parts.iter().cloned());
+        }
+    }
+
+    wire::Response {
+        candidates: vec![wire::Candidate {
+            content: Some(wire::Content {
+                role: wire::ROLE_MODEL.to_owned(),
+                parts,
+            }),
+            finish_reason,
+        }],
+        usage_metadata,
+        model_version,
+    }
+}

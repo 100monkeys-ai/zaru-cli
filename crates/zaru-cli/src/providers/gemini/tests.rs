@@ -12,7 +12,7 @@
 use super::endpoint::{API_VERSION, DEFAULT_ENDPOINT, Endpoint, METHOD};
 use super::failure::{DETAIL_WITHHELD, GeminiFailure};
 use super::wire;
-use super::{API_KEY_HEADER, map};
+use super::{API_KEY_HEADER, map, stream};
 use crate::credentials::Alias;
 use crate::credentials::fixtures::{ascii_core, provider_secret_nonce};
 use crate::providers::ProviderKind;
@@ -1012,4 +1012,265 @@ fn no_tool_declaration_carries_a_keyword_geminis_schema_subset_refuses() {
             );
         }
     }
+}
+
+// --- The streamed transport, over recorded bytes and no socket -------------
+
+/// The recorded streamed text exchange, three frames.
+const RECORDED_STREAM_TEXT: &str = include_str!("recorded/stream-text.sse");
+
+/// The recorded streamed tool call, two frames.
+const RECORDED_STREAM_CALLS: &str = include_str!("recorded/stream-calls.sse");
+
+// The same guard the non-streamed fixtures carry, over the two streamed ones.
+// A fixture recorded from a live exchange is exactly where a credential would
+// arrive if a scrub were skipped.
+#[test]
+fn no_recorded_stream_fixture_carries_a_credential() {
+    for (name, body) in [
+        ("stream-text.sse", RECORDED_STREAM_TEXT),
+        ("stream-calls.sse", RECORDED_STREAM_CALLS),
+    ] {
+        assert!(
+            !body.contains("AIza"),
+            "{name} carries something shaped like a Google API key"
+        );
+        assert!(
+            !body.contains("x-goog-api-key"),
+            "{name} carries the header the key travels in"
+        );
+        assert!(
+            body.contains(r#""responseId": "<scrubbed>""#),
+            "{name} carries an unscrubbed responseId, so either the scrub did not run or the \
+             fixture was replaced with a raw capture"
+        );
+        assert!(
+            !body.contains("thoughtSignature\": \"E"),
+            "{name} carries an unscrubbed thoughtSignature"
+        );
+    }
+}
+
+/// Every frame of a recorded stream, parsed.
+fn frames_of(body: &str) -> Vec<wire::Response> {
+    let mut reader = stream::Frames::new();
+    let mut payloads = reader.feed(body.as_bytes());
+    payloads.extend(reader.finish());
+    payloads
+        .iter()
+        .map(|payload| {
+            serde_json::from_str(payload).expect("a recorded frame is a well-formed response")
+        })
+        .collect()
+}
+
+// A read from a socket is not a frame. This feeds the recorded stream one
+// byte at a time -- the worst split a network can produce -- and asserts the
+// same frames come out as when it arrives whole. The mutant is a reader that
+// treats each read as a frame, which works on every fast connection and fails
+// on a slow one, where it is hardest to reproduce.
+#[test]
+fn a_frame_split_across_reads_is_reassembled() {
+    let whole = frames_of(RECORDED_STREAM_TEXT);
+    assert_eq!(whole.len(), 3, "the recorded text stream is three frames");
+
+    let mut reader = stream::Frames::new();
+    let mut payloads = Vec::new();
+    for byte in RECORDED_STREAM_TEXT.as_bytes() {
+        payloads.extend(reader.feed(&[*byte]));
+    }
+    payloads.extend(reader.finish());
+
+    assert_eq!(
+        payloads.len(),
+        whole.len(),
+        "feeding the same bytes one at a time produced a different number of frames"
+    );
+}
+
+// The accepting sibling: two whole frames in one read are two frames, not one
+// and not three.
+#[test]
+fn two_frames_in_one_read_are_two_frames() {
+    let mut reader = stream::Frames::new();
+    let payloads = reader.feed(b"data: {\"a\":1}\n\ndata: {\"b\":2}\n\n");
+    assert_eq!(payloads, vec![r#"{"a":1}"#, r#"{"b":2}"#]);
+    assert_eq!(reader.finish(), None, "nothing was left over");
+}
+
+// A producer that ends without a trailing blank line has still sent a frame.
+// The mutant drops it -- and the frame it drops is the last one, which is the
+// only frame carrying the finish reason and the final usage.
+#[test]
+fn a_final_frame_without_a_terminator_is_not_lost() {
+    let mut reader = stream::Frames::new();
+    assert!(reader.feed(b"data: {\"a\":1}").is_empty());
+    assert_eq!(reader.finish().as_deref(), Some(r#"{"a":1}"#));
+}
+
+// A heartbeat comment keeps a connection alive through a proxy. It is an
+// event with no data, and a reader that handed it on as a payload would turn
+// a healthy connection into a parse failure this harness reported as its own.
+#[test]
+fn a_comment_frame_carries_no_payload_and_is_not_a_parse_failure() {
+    let mut reader = stream::Frames::new();
+    let payloads = reader.feed(b": keep-alive\n\ndata: {\"a\":1}\n\n");
+    assert_eq!(payloads, vec![r#"{"a":1}"#]);
+}
+
+// The decisive property of the fold, and the reason it exists. The recorded
+// tool-call stream carries the call in frame 1 and `finishReason: "STOP"` in
+// frame 2. Mapping frame by frame would answer one question twice -- `Calls`
+// and then `Stopped`. The mutant is exactly that.
+#[test]
+fn a_streamed_tool_call_and_its_finish_reason_are_one_response() {
+    let frames = frames_of(RECORDED_STREAM_CALLS);
+    assert_eq!(frames.len(), 2, "the recorded call stream is two frames");
+    assert!(
+        frames[0].candidates[0].finish_reason.is_none(),
+        "the frame carrying the call carries no finish reason, which is what makes this trap real"
+    );
+    assert_eq!(
+        frames[1].candidates[0].finish_reason.as_deref(),
+        Some("STOP")
+    );
+
+    let folded = map::fold(&frames);
+    let mapped = map::response_from(&folded, RECORDED_STREAM_CALLS.len())
+        .expect("the recorded call stream maps");
+
+    match mapped {
+        ModelResponse::Calls { calls, .. } => {
+            assert_eq!(calls.len(), 1, "one call was asked for");
+            assert_eq!(calls[0].name, "fs.read");
+            assert_eq!(
+                calls[0].id, "call_1605341",
+                "the id is carried, never generated"
+            );
+            assert_eq!(calls[0].arguments, r#"{"path":"notes.txt"}"#);
+        }
+        other => panic!("a streamed tool call became {other:?} rather than a call"),
+    }
+}
+
+// A `functionCall` arrives complete in one frame, and this asserts the
+// contract this client is built on rather than the client's own behaviour. If
+// Google ever splits one, this reddens and says so -- which is the point.
+#[test]
+fn a_streamed_function_call_arrives_whole_in_one_frame() {
+    let frames = frames_of(RECORDED_STREAM_CALLS);
+    let calls: Vec<_> = frames
+        .iter()
+        .flat_map(|frame| frame.candidates.first())
+        .flat_map(|candidate| candidate.content.as_ref())
+        .flat_map(|content| content.parts.iter())
+        .filter_map(|part| match part {
+            wire::Part::FunctionCall { function_call, .. } => Some(function_call),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(calls.len(), 1, "one frame carried one whole call");
+    assert!(
+        calls[0].args.get("path").is_some(),
+        "the arguments arrived as a finished object rather than as a fragment"
+    );
+    assert!(
+        calls[0].id.is_some(),
+        "the id arrived with the call rather than in a later frame"
+    );
+}
+
+// The text arm: three frames whose text concatenates into the answer, painted
+// as it arrived. The mutant keeps only the last frame's text, which is what a
+// reader that overwrites rather than accumulates produces.
+#[test]
+fn a_streamed_answer_is_folded_into_the_whole_text() {
+    let frames = frames_of(RECORDED_STREAM_TEXT);
+    let folded = map::fold(&frames);
+    let mapped = map::response_from(&folded, RECORDED_STREAM_TEXT.len())
+        .expect("the recorded text stream maps");
+
+    match mapped {
+        ModelResponse::Text { text, .. } => {
+            assert!(text.starts_with("One\nTwo"), "the first frame's text is kept");
+            assert!(text.ends_with("Eight"), "the last frame's text is kept");
+            assert_eq!(
+                text.lines().count(),
+                8,
+                "every frame's text is kept, in order: {text:?}"
+            );
+        }
+        other => panic!("a streamed answer became {other:?} rather than text"),
+    }
+}
+
+// The usage is the last frame's, because every frame carries a cumulative
+// total. The mutant sums them, which multiplies the prompt count by the frame
+// count -- over-reporting what the user pays, which is the direction
+// ADR-0012 D7 cares about most.
+#[test]
+fn the_folded_usage_is_the_last_frames_and_is_not_a_sum() {
+    let frames = frames_of(RECORDED_STREAM_TEXT);
+    // The recorded counts rise across the frames, which is what makes summing
+    // and taking-the-last two different answers rather than the same one.
+    let counts: Vec<u64> = frames
+        .iter()
+        .filter_map(|frame| frame.usage_metadata)
+        .map(|usage| usage.candidates_token_count)
+        .collect();
+    assert_eq!(counts, vec![13, 15, 15], "the recorded counts are cumulative");
+
+    let folded = map::fold(&frames);
+    let usage = folded
+        .usage_metadata
+        .expect("the fold carries the last frame's usage");
+    assert_eq!(usage.prompt_token_count, 13, "the prompt count is not summed");
+    assert_eq!(usage.candidates_token_count, 15);
+}
+
+// A `thoughtSignature` rides on the part that carries it, and the fold moves
+// the parts. On the text stream it is on an empty-text final part; on the
+// call stream it is on the `functionCall` part. Losing it is one third of the
+// defect `gemini-read-loop` fixed, so it is asserted rather than assumed.
+#[test]
+fn the_fold_carries_a_thought_signature_on_either_part() {
+    for (name, body) in [
+        ("text", RECORDED_STREAM_TEXT),
+        ("calls", RECORDED_STREAM_CALLS),
+    ] {
+        let folded = map::fold(&frames_of(body));
+        let parts = &folded.candidates[0]
+            .content
+            .as_ref()
+            .expect("the fold builds content")
+            .parts;
+        let signed = parts.iter().any(|part| match part {
+            wire::Part::FunctionCall {
+                thought_signature, ..
+            }
+            | wire::Part::Text {
+                thought_signature, ..
+            } => thought_signature.is_some(),
+            _ => false,
+        });
+        assert!(signed, "the {name} fold lost its thought signature");
+    }
+}
+
+// The accepting sibling for the whole fold: a stream of one frame folds to
+// what that frame already was. It is why the three non-streamed fixtures keep
+// their meaning -- each is a stream of length one.
+#[test]
+fn a_stream_of_one_frame_folds_to_that_frame() {
+    let one: wire::Response =
+        serde_json::from_str(RECORDED_CALLS).expect("the recorded response parses");
+    let folded = map::fold(std::slice::from_ref(&one));
+
+    let direct = map::response_from(&one, RECORDED_CALLS.len()).expect("maps");
+    let through_fold = map::response_from(&folded, RECORDED_CALLS.len()).expect("maps");
+    assert_eq!(
+        direct, through_fold,
+        "folding a single frame changed what it means"
+    );
 }
