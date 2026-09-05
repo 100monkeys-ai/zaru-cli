@@ -242,16 +242,46 @@ pub trait Subprocess {
 
 /// Retrieves a URL. `web.fetch`.
 ///
-/// **No product implementation**, and nothing in `zaru-cli`'s own dependency
-/// closure can open a socket on its behalf. ADR-0011 D4's boundary is about
-/// paths and says nothing about outbound destinations, so a URL is carried as
-/// itself and classified by nothing — a URL allowlist would be a security
-/// vocabulary this crate has no record to transcribe.
+/// # It takes a [`RequestedUrl`](crate::web::RequestedUrl) and not a string,
+/// and that is the scheme rule
+///
+/// Parsing text into a URL is [`crate::web::url`]'s, and it happens **before**
+/// the permission decision, because [ADR-0011] D4's transcript entry and D3's
+/// prompt both show the target and a string nobody has parsed is not yet one.
+/// It is the same signature [`Subprocess`] has and it carries the same
+/// guarantee: by the time this port is reached the scheme is already one of
+/// the two `web.fetch` retrieves, so an implementation has nothing left to
+/// decide about what kind of thing it was handed. A `file://` URL cannot
+/// reach here at all.
+///
+/// # No credential can be attached to a request made through it
+///
+/// One parameter, and it is a URL. There is no header argument, no options
+/// struct and no builder — so the harness's held secrets cannot travel on a
+/// request by any route, which is a property of this signature rather than a
+/// rule an implementation keeps. [ADR-0011] D1's argument contract gives
+/// `web.fetch` the single field `url`, so there is no route from the model
+/// either.
+///
+/// # A URL allowlist is not this
+///
+/// D4's boundary is about paths and says nothing about outbound destinations,
+/// so **no record answers which URLs a model may choose** and nothing here
+/// classifies one. What [`crate::web::Destinations`] refuses is narrower and
+/// structural — this machine and the link-local range — and it is not an
+/// allowlist: it names no site, admits no configuration and cannot be widened
+/// without a record. The allowlist question itself is open and is recorded on
+/// ADR-0011 rather than answered by an implementer.
+///
+/// The product implementation is [`WebClient`](crate::web::WebClient), over
+/// the one `reqwest::Client` this workspace builds.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub trait Fetch {
     /// Retrieve the URL and capture what came back.
     fn retrieve(
         &self,
-        url: &str,
+        url: &crate::web::url::RequestedUrl,
     ) -> impl core::future::Future<
         Output = Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure>,
     > + Send;

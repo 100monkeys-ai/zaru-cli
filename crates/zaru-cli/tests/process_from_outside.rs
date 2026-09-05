@@ -389,7 +389,7 @@ impl EventSink for Printing {
 struct Unbuilt;
 
 impl Fetch for Unbuilt {
-    async fn retrieve(&self, _url: &str) -> Result<Captured, PortFailure> {
+    async fn retrieve(&self, _url: &zaru_cli::web::RequestedUrl) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("web.fetch has no implementation"))
     }
 }

@@ -4,7 +4,7 @@
 //! The acting half of [ADR-0011]: what happens after the permission decision
 //! says a call may act.
 //!
-//! # Six of the seven act, and one does not
+//! # All seven act
 //!
 //! | Tool | Here |
 //! | --- | --- |
@@ -12,7 +12,7 @@
 //! | `fs.write`, `fs.edit` | [`files`], through [`crate::atomic`] at the file's own mode |
 //! | `fs.search` | [`files`], walking `std::fs` under D4's classified root |
 //! | `cmd.run` | [`Subprocess`], over [`Spawn`](crate::process::Spawn), started at D4's boundary root |
-//! | `web.fetch` | [`Fetch`], no implementation |
+//! | `web.fetch` | [`Fetch`], over [`WebClient`](crate::web::WebClient) and the one HTTP client this workspace builds |
 //!
 //! **`fs.write` and `fs.edit` act as of 2026-09-05.** They were ported until
 //! then because D4's classification resolves a candidate through its longest
@@ -23,7 +23,11 @@
 //! **`fs.search` acts as of 2026-09-05** over a literal needle and a literal
 //! filename substring, taking neither a regular-expression engine — which is
 //! not in [ADR-0003] D2's table — nor a glob semantics this crate would be
-//! inventing. `web.fetch` needs a socket, and the harness has none.
+//! inventing. **`web.fetch` acts as of 2026-09-05**, over `http` and `https`
+//! only, following no redirect across a host, refusing this machine and the
+//! link-local range, and refusing a body over a caller-passed ceiling rather
+//! than cutting one short — see [`crate::web`] for each of those and for what
+//! is deliberately not claimed.
 //!
 //! **`cmd.run` acts as of 2026-09-05**, and it is not classified against D4 at
 //! all: a command addresses a command line, and its boundary is the working
@@ -118,6 +122,21 @@ pub enum NotACall {
         /// Why, in the splitter's own words.
         because: crate::process::line::NotACommandLine,
     },
+    /// A `web.fetch` carried something that is not a URL it can retrieve.
+    ///
+    /// **Not a refusal by the harness**, for the same reason its siblings are
+    /// not: text that is not a URL, or one whose scheme this surface does not
+    /// retrieve, is not a call this surface can make, so there is nothing to
+    /// permit or deny. The model is told which and the turn carries on.
+    ///
+    /// **No transcript record is written**, because the refusal is reached
+    /// before the decision and before the first `Phase::Started`. A
+    /// *destination* this surface declines to reach is a different thing and
+    /// **is** recorded — see [`crate::web::Destinations`].
+    NotARetrievableUrl {
+        /// Why, in the parser's own words.
+        because: crate::web::url::UrlRefused,
+    },
     /// The arguments are not the JSON object the tool declares.
     ///
     /// The same shape as its two siblings and for the same reason: a request
@@ -147,6 +166,7 @@ impl core::fmt::Display for NotACall {
                 "the call to {tool} carried no target, so there is nothing to address it to"
             ),
             Self::NotACommandLine { because } => write!(f, "{because}"),
+            Self::NotARetrievableUrl { because } => write!(f, "{because}"),
             Self::NotTheDeclaredArguments { because } => write!(f, "{because}"),
         }
     }
@@ -204,7 +224,8 @@ pub struct Executor<'a, C, F> {
     pub redactor: &'a (dyn Redactor + Sync),
     /// `cmd.run`. No product implementation.
     pub subprocess: &'a C,
-    /// `web.fetch`. No product implementation.
+    /// `web.fetch`. The product implementation is
+    /// [`WebClient`](crate::web::WebClient).
     pub fetch: &'a F,
 }
 
@@ -365,8 +386,30 @@ where
         // one its arm produced.
         let classified;
         let line;
+        let requested;
         let invocation = match &call {
-            Call::Fetch { url } => Invocation::fetching(url),
+            Call::Fetch { url } => {
+                // Parsed before the decision, for the reason `cmd.run` is
+                // split before it: D4's transcript entry and D3's prompt both
+                // show the target, and a string nobody has parsed is not yet
+                // one. A scheme this surface does not retrieve is therefore
+                // refused before anything is recorded or asked.
+                requested = match crate::web::RequestedUrl::parse(url) {
+                    Ok(requested) => requested,
+                    Err(because) => {
+                        let refused = NotACall::NotARetrievableUrl { because };
+                        return Ok(ToolOutcome::Refused {
+                            decision: ToolDecision {
+                                statement: refused.to_string(),
+                                permitted: false,
+                            },
+                            id: request.id.clone(),
+                            because: refused.to_string(),
+                        });
+                    }
+                };
+                Invocation::fetching(&requested)
+            }
             Call::Run { command } => {
                 // Split before the decision, because D4's transcript entry
                 // and D3's prompt both show the command, and a string that

@@ -998,6 +998,31 @@ impl Surface<'_> {
         )
     }
 
+    /// The HTTP client `web.fetch` retrieves through could not be built.
+    ///
+    /// **Environmental, and the same class the provider client's own
+    /// `Unavailable` gets for the same cause**: `reqwest` fails to build a
+    /// client on a machine with no usable TLS backend, which is a property of
+    /// the machine and not of anything a reader typed. It is not a defect —
+    /// nothing here supplied a bad argument — and it is not correctable,
+    /// because there is no key to change.
+    ///
+    /// No wait is offered. Running again on the same machine gets the same
+    /// answer, so saying "try later" would be the retry policy on a
+    /// environmental failure that ADR-0016 D4 names and no record gives
+    /// numbers for.
+    #[must_use]
+    pub fn web_client(refusal: &crate::web::ClientUnavailable) -> Classified {
+        Classified::Environmental {
+            statement: Statement::sanitised(refusal.to_string()),
+            wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                "web.fetch needs an HTTP client and this machine could not provide one, which \
+                 waiting does not change. Every other built-in works without it"
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// The allowlist a user's configuration set could not be read.
     #[must_use]
     pub fn allowlist(refusal: &crate::tools::AllowlistRefused) -> Classified {

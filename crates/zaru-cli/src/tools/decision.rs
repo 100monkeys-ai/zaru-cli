@@ -49,6 +49,7 @@ use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Question};
 use crate::tools::tree::{Placement, Target};
+use crate::web::url::RequestedUrl;
 use core::fmt;
 
 /// A tool call could not be described.
@@ -110,8 +111,14 @@ pub enum Subject<'a> {
     },
     /// A command line, already split into a program and its arguments.
     Command(&'a CommandLine),
-    /// A URL, which D4 says nothing about.
-    Url(&'a str),
+    /// A URL that parsed, carrying a scheme `web.fetch` retrieves.
+    ///
+    /// A [`RequestedUrl`] rather than a `&str` for
+    /// the reason [`Subject::Command`] is a `CommandLine`: the parse happens
+    /// before the decision, so the line a transcript shows is a URL that
+    /// parsed rather than text nobody has looked at. D4 still says nothing
+    /// about it — a URL has no placement.
+    Url(&'a RequestedUrl),
 }
 
 /// One tool call, as the permission decision sees it.
@@ -158,7 +165,7 @@ impl<'a> Invocation<'a> {
     /// The tool is not a parameter, because there is exactly one and passing
     /// it would let a caller describe an `fs.read` of a URL.
     #[must_use]
-    pub const fn fetching(url: &'a str) -> Self {
+    pub const fn fetching(url: &'a RequestedUrl) -> Self {
         Self {
             tool: ToolName::WebFetch,
             subject: Subject::Url(url),
@@ -229,7 +236,7 @@ impl<'a> Invocation<'a> {
                 format!("{} {needle:?}", root.resolved().display())
             }
             Subject::Command(line) => line.render(),
-            Subject::Url(url) => url.to_owned(),
+            Subject::Url(url) => url.as_str().to_owned(),
         }
     }
 }

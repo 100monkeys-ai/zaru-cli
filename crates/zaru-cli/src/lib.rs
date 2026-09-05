@@ -39,21 +39,26 @@
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //!
 //! What that means for what acts. `session` writes a real directory, a real
-//! append-only transcript and a real checkpoint. `tools` decides, and **three
-//! of ADR-0011 D1's seven built-ins now act**: `fs.read` and `fs.list`,
-//! through `std::fs`, inside D4's working-directory boundary, and `cmd.run`,
-//! through [`process`] — which is the one place this workspace starts a child
-//! process, and the first thing here that acts on the world outside a file.
+//! append-only transcript and a real checkpoint. `tools` decides, and **all seven
+//! of ADR-0011 D1's built-ins now act**: the five filesystem ones through
+//! `std::fs`, inside D4's working-directory boundary; `cmd.run` through
+//! [`process`], which is the one place this workspace starts a child process;
+//! and `web.fetch` through [`web`], which is the one place a model-chosen URL
+//! is retrieved and the one place an HTTP client is built. That count read
+//! **three** until 2026-09-05 and was already false when `fs.write`,
+//! `fs.edit` and `fs.search` landed; it is corrected here rather than left
+//! for a reader to measure.
 //! `process` also implements ADR-0009 D3's `ValidatorRunner`, so a declared
 //! validator's command runs, and [`validators`] implements the other two
 //! ports that record needs — so **all four of its `expect` kinds are decided
 //! here** as of 2026-09-05, `matches` over `regex` and `json_schema` over
-//! `boon` with a loader that opens nothing. The other four built-ins sit behind ports with
-//! no implementation in this product tree, as do the prompt, the allowlist,
-//! the destructive matcher, the credential store's apex confirmer — its
-//! *sealing* left this list on 2026-09-05 and is now ordinary code over the OS
-//! keyring — ADR-0012's provider and its alias negotiation, and ADR-0004's
-//! membrane. **Every port that reads or writes a file has an implementation as
+//! `boon` with a loader that opens nothing. **No built-in sits behind a port
+//! with no implementation any more.** What still does: the credential store's
+//! apex confirmer — its *sealing* left this list on 2026-09-05 and is now
+//! ordinary code over the OS keyring — ADR-0012's alias negotiation, and
+//! ADR-0004's membrane. The prompt, the allowlist and the destructive matcher
+//! left it on 2026-09-05, and ADR-0012's provider left it with the first
+//! `gemini` client. **Every port that reads or writes a file has an implementation as
 //! of 2026-09-05**: ADR-0014's layers 2 and 3 through
 //! [`cli::layers::UserFile`] and [`cli::layers::ProjectFile`], its layer 5
 //! through [`cli::layers::Flags`], ADR-0009's manifest through
@@ -96,7 +101,10 @@
 //! nothing else in the workspace can see them. **The provider trait has one
 //! implementation** as of 2026-09-05, [`providers::gemini::GeminiClient`],
 //! which implements ADR-0012's `Provider` and `zaru-core`'s `Model` from one
-//! statement of what it can do.
+//! statement of what it can do — over the same HTTP client [`web`] builds for
+//! `web.fetch`, because two builders would be two answers to what a client
+//! here does about cookies and TLS. The other four of ADR-0012 D3's kinds
+//! have none.
 //!
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
@@ -136,3 +144,4 @@ pub mod session;
 pub mod terminal;
 pub mod tools;
 pub mod validators;
+pub mod web;

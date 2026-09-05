@@ -275,6 +275,63 @@ pub fn search_ceiling() -> SizeCeiling {
     SizeCeiling::new(SEARCH_CEILING_BYTES).expect("a mebibyte is not zero")
 }
 
+/// The largest response body [ADR-0011] D1's `web.fetch` will accept.
+///
+/// **One mebibyte, the same magnitude as [`SEARCH_CEILING_BYTES`] and
+/// deliberately not the same constant** — for the reason that one gives about
+/// the configuration-file ceiling: the two are answerable by different records
+/// and a single constant would make a later change to one silently change the
+/// other. A page of markup is a fraction of this; what the number is really
+/// bounding is how much of a model-chosen response the harness will hold in
+/// memory and write into a session directory.
+///
+/// **Over it is a refusal rather than a truncation** — see
+/// [`BodyCeiling`](crate::web::BodyCeiling) for why D5's own sentence decides
+/// that, and note that this is *not* what a model is shown: D5's output budget
+/// truncates the capture afterwards, and it is much smaller.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub const FETCH_BODY_CEILING_BYTES: u64 = 1 << 20;
+
+/// How long one `web.fetch` may take, start to finished body.
+///
+/// **Thirty seconds, and it is deliberately shorter than the sixty
+/// [`EXCHANGE_TIMEOUT`](crate::providers::gemini::EXCHANGE_TIMEOUT) a model
+/// completion gets.** A completion is slow on purpose — a large prompt on a
+/// slow link is the case that number protects — whereas a page that has not
+/// answered in thirty seconds will not be useful to the turn that asked for
+/// it, and a tool call happens *inside* a turn that still has to reach the
+/// model afterwards. A fetch that outlived the exchange around it would spend
+/// the turn's budget on the cheaper half.
+pub const FETCH_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
+
+/// How many redirects **within one host** a `web.fetch` follows.
+///
+/// **Three.** `reqwest`'s own default is ten, and that number is for chains
+/// that may cross hosts, which this policy never does — a redirect that leaves
+/// the host is refused whatever this says. Within one host the redirects that
+/// actually occur are a scheme upgrade and a path canonicalisation, so three
+/// is one more than the observed shapes need and small enough that a server
+/// looping on itself is cut off quickly rather than after ten round trips
+/// inside the turn's own timeout.
+pub const FETCH_REDIRECT_LIMIT: usize = 3;
+
+/// The three bounds `web.fetch` runs under in this binary.
+///
+/// # Panics
+///
+/// Never. [`FETCH_BODY_CEILING_BYTES`] and [`FETCH_TIMEOUT`] are not zero, and
+/// [`FETCH_REDIRECT_LIMIT`] is allowed to be.
+#[must_use]
+pub fn fetch_bounds() -> crate::web::FetchBounds {
+    crate::web::FetchBounds {
+        body: crate::web::BodyCeiling::new(FETCH_BODY_CEILING_BYTES)
+            .expect("a mebibyte is not zero"),
+        timeout: crate::web::FetchTimeout::new(FETCH_TIMEOUT).expect("thirty seconds is not zero"),
+        redirects: crate::web::RedirectLimit::new(FETCH_REDIRECT_LIMIT),
+    }
+}
+
 /// [ADR-0014] D1's layer 2: `~/.zaru/config.toml`.
 ///
 /// **The loader never creates `~/.zaru/`.** That directory has exactly one

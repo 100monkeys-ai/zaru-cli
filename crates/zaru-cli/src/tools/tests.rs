@@ -1223,7 +1223,9 @@ fn two_built_ins_do_not_address_a_path_and_carry_no_placement() {
         "the refusal does not say why: {refusal}"
     );
 
-    let fetch = Invocation::fetching("https://example.invalid/thing");
+    let url = crate::web::RequestedUrl::parse("https://example.invalid/thing")
+        .expect("staging: a https URL parses");
+    let fetch = Invocation::fetching(&url);
     assert_eq!(fetch.tool(), ToolName::WebFetch);
     assert_eq!(
         fetch.placement(),
@@ -2148,7 +2150,9 @@ fn a_path_and_a_url_are_never_destructive() {
         target.resolved()
     );
 
-    let fetch = Invocation::fetching("https://example.invalid/rm?args=-rf");
+    let url = crate::web::RequestedUrl::parse("https://example.invalid/rm?args=-rf")
+        .expect("staging: a https URL parses");
+    let fetch = Invocation::fetching(&url);
     assert!(
         !matcher.is_destructive(&fetch),
         "a URL was annotated as a destructive command"

@@ -63,7 +63,7 @@
 
 use crate::cli::classify::Surface;
 use crate::cli::layers;
-use crate::compose::{Classifying, NoFetch, Records, TurnContext, context, prose};
+use crate::compose::{Classifying, Records, TurnContext, context, prose};
 use crate::config::Resolution;
 use crate::credentials::{CredentialStore, HarnessKeys, OsKeyring};
 use crate::failure::{Classified, Exit, SessionEvidence};
@@ -368,7 +368,15 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         }
     };
     let spawn = crate::process::Spawn::new(&here, environment, layers::process_ceiling());
-    let fetch = NoFetch;
+    // ADR-0011 D1's seventh built-in, over `crate::web` -- the one place a
+    // model-chosen URL is retrieved. `NoFetch` stood here until 2026-09-05
+    // and its own module said it would go the day this landed; it has.
+    let fetch = match crate::web::WebClient::new(layers::fetch_bounds()) {
+        Ok(fetch) => fetch,
+        Err(refusal) => {
+            return Ran::refused_having_said(lines, Surface::web_client(&refusal));
+        }
+    };
 
     let executor = Executor {
         working_directory: &here,

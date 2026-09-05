@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! What the composition's five adapters do, checked one at a time.
+//! What the composition's four adapters do, checked one at a time.
 //!
 //! Every check here is about an adapter's own contract. What the adapters do
 //! *together* is a turn, and a turn is checked from outside the crate against
@@ -11,11 +11,10 @@
 //!
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use crate::compose::{ByteCounter, NoFetch, Records, TurnContext, context, prose};
+use crate::compose::{ByteCounter, Records, TurnContext, context, prose};
 use crate::credentials::fixtures::ScratchRoot;
 use crate::redaction::HeldSecrets;
 use crate::session::Record;
-use crate::tools::port::Fetch;
 use zaru_core::context::{Context, ContextLimits, ContextWindow, PressureThreshold, TokenCounter};
 use zaru_core::iteration::{ContextPolicy, ContextRefusal, Turn};
 use zaru_core::tool_call::{Event, EventSink, TurnEnding};
@@ -58,33 +57,46 @@ fn the_counter_counts_bytes_and_never_characters() {
     );
 }
 
-/// `web.fetch` reports the work's failure and never a port failure.
+/// A turn's `web.fetch` is the real client, under the numbers this binary
+/// declares.
 ///
-/// The difference is a whole turn: a `PortFailure` reaches
-/// `ToolCallError::Port` and ends the run, while a `Captured` with a non-zero
-/// exit code is ADR-0016 D1 row 1's expected register and the loop carries on.
+/// **This replaces `the_unbuilt_built_in_fails_as_the_work_rather_than_as_a_port`,
+/// whose subject was `NoFetch` and which went with it on 2026-09-05.** What
+/// that check held is not lost: that a failing retrieval is the work's failure
+/// and never a `PortFailure` is now a property of the port's signature — see
+/// `crate::web::ports`, where the implementation cannot return `Err` — rather
+/// than of one stand-in's body, and `crate::web`'s own checks assert it over a
+/// real socket.
 ///
-/// Watched red by returning `Err(PortFailure::new(NOT_BUILT))`, which printed
-/// *"web.fetch must report the work's failure rather than a port failure: a
-/// port failure ends the whole turn"*.
+/// What is worth pinning here instead is the seam this module owns: that the
+/// composition hands the executor a client built from
+/// [`layers::fetch_bounds`](crate::cli::layers::fetch_bounds) rather than from
+/// numbers invented at the call site.
 #[test]
-fn the_unbuilt_built_in_fails_as_the_work_rather_than_as_a_port() {
-    let captured = futures_lite_block_on(NoFetch.retrieve("https://example.invalid/"));
-    let captured = captured.expect(
-        "web.fetch must report the work's failure rather than a port failure: a port failure ends \
-         the whole turn",
+fn a_turn_fetches_through_the_real_client_with_the_binary_s_own_bounds() {
+    let bounds = crate::cli::layers::fetch_bounds();
+    let client = crate::web::WebClient::new(bounds)
+        .expect("this machine builds an HTTP client, or every other check here is meaningless");
+    assert_eq!(
+        client.bounds(),
+        bounds,
+        "the composition's fetch carries the binary's declared bounds and not a second set"
     );
-    assert_ne!(
-        captured.exit_code, 0,
-        "a tool that did nothing must not report success"
+    assert_eq!(
+        bounds.body.get(),
+        crate::cli::layers::FETCH_BODY_CEILING_BYTES,
+        "the body ceiling is the declared constant"
     );
-    assert!(
-        captured.stderr.contains(crate::compose::fetch::NOT_BUILT),
-        "the model is told nothing it can act on: {captured:?}"
+    assert_eq!(
+        bounds.redirects.get(),
+        crate::cli::layers::FETCH_REDIRECT_LIMIT,
+        "the redirect limit is the declared constant"
     );
-    // The URL came from the model and is not echoed back at it.
-    assert!(!captured.stderr.contains("example.invalid"));
-    assert!(captured.stdout.is_empty());
+    assert_eq!(
+        bounds.timeout.get(),
+        crate::cli::layers::FETCH_TIMEOUT,
+        "the timeout is the declared constant"
+    );
 }
 
 /// The prefix carries the absence line in layer 1 and nothing in the other
@@ -289,11 +301,16 @@ fn every_event_the_loop_emits_becomes_one_transcript_line() {
 
 /// Poll a future to completion on this thread, with no runtime.
 ///
-/// The adapters' futures never yield — `NoFetch` and `TurnContext::assemble`
-/// both do their whole work synchronously and hand back a future that is
-/// already resolved, exactly as `ValidatorRunner`'s product implementation
-/// does. So a check can poll one once rather than taking a reactor, and these
-/// checks stay free of the runtime the *binary* needs for `reqwest`.
+/// The adapters' futures never yield — `TurnContext::assemble` does its whole
+/// work synchronously and hands back a future that is already resolved,
+/// exactly as `ValidatorRunner`'s product implementation does. So a check can
+/// poll one once rather than taking a reactor, and these checks stay free of
+/// the runtime the *binary* needs for `reqwest`.
+///
+/// **`NoFetch` was named here too until 2026-09-05 and was the one that would
+/// have stopped being true.** A real `web.fetch` awaits a socket, so its future
+/// yields and this helper would panic on it — which is why `crate::web`'s own
+/// checks take a `#[tokio::test]` runtime and none of them comes through here.
 ///
 /// It panics rather than looping if a future ever does yield, because that
 /// would mean an adapter had grown a real await and this helper had silently

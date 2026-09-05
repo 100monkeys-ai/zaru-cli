@@ -167,13 +167,20 @@ impl GeminiClient {
         alias: Alias,
         key: Secret,
     ) -> Result<Self, GeminiFailure> {
-        let http = reqwest::Client::builder()
-            .timeout(EXCHANGE_TIMEOUT)
-            .build()
-            .map_err(|error| GeminiFailure::Unavailable {
-                code: None,
-                detail: error.to_string(),
-            })?;
+        // Built through [`crate::web::client::build`], which is the one
+        // place this workspace builds an HTTP client. What this caller
+        // differs on is passed as an argument -- its own timeout, and
+        // `reqwest`'s default redirect policy, where `web.fetch` passes one
+        // that never leaves a host. Two builders would be two answers to what
+        // a client here does about cookies and TLS, which is the
+        // rule-in-two-places that made `Layer` drift while it was declared
+        // twice.
+        let http =
+            crate::web::client::build(EXCHANGE_TIMEOUT, reqwest::redirect::Policy::default())
+                .map_err(|error| GeminiFailure::Unavailable {
+                    code: None,
+                    detail: error.detail().to_owned(),
+                })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
             configured: endpoint,

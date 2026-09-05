@@ -18,12 +18,18 @@
 //! is [`crate::session`]'s, and the two loops are `zaru-core`'s. This module
 //! calls constructors and passes values.
 //!
-//! # The five things it does add, and each is an adapter
+//! # The four things it does add, and each is an adapter
+//!
+//! There were five until 2026-09-05. The fifth was `NoFetch`, a stand-in for
+//! ADR-0011 D1's seventh built-in, and its own module said it would go on the
+//! day a real one landed; [`crate::web`] is that, so it did. **It was the one
+//! entry here that was not an adapter** — the other four exist because a
+//! `zaru-core` port needs a `zaru-cli` value, while that one existed because a
+//! capability did not.
 //!
 //! | Here | Why it is not somewhere else |
 //! | --- | --- |
 //! | [`ByteCounter`] | ADR-0003 D2's table names no tokeniser, and `zaru-core` may not invent one |
-//! | [`NoFetch`] | ADR-0011 D1's seventh built-in has no implementation and the model is still offered it |
 //! | [`Classifying`] | ADR-0016 D1's class of a provider failure is read from the typed failure, which only the surface sees |
 //! | [`Records`] | ADR-0010 D2's transcript is [ADR-0008] D3's stream, and the loop's sink is a `zaru-core` trait |
 //! | [`TurnContext`] | ADR-0013's `Context` is a value; `ContextPolicy` is the port the loop calls it through |
@@ -66,7 +72,6 @@
 
 pub mod context;
 pub mod count;
-pub mod fetch;
 pub mod model;
 pub mod prose;
 pub mod sink;
@@ -74,7 +79,6 @@ pub mod turn;
 
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
-pub use fetch::NoFetch;
 pub use model::Classifying;
 pub use sink::Records;
 pub use turn::{KINDS_WITH_A_CLIENT, Ran};
