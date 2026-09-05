@@ -291,7 +291,7 @@ fn a_kind_this_value_model_has_no_variant_for_is_refused_naming_the_key() {
             "datetime",
         ),
     ] {
-        let (_, file) = staged(&root, name, body.as_bytes());
+        let (path, file) = staged(&root, name, body.as_bytes());
         let refusal = file
             .read()
             .expect_err("no configuration key can hold this kind");
@@ -305,9 +305,34 @@ fn a_kind_this_value_model_has_no_variant_for_is_refused_naming_the_key() {
         };
         assert_eq!((named.as_str(), *reported), (key, kind));
         let rendered = refusal.to_string();
+
+        // The refusal names the file it read, and the value must not appear
+        // anywhere else in it. **The path is removed from the haystack before
+        // the value is looked for**, because a value's digits occurring inside
+        // a temporary directory's name is not this refusal publishing the
+        // value -- and because leaving it in made this check's verdict depend
+        // on the clock. `ScratchRoot`'s name is built from a nineteen-digit
+        // nanosecond timestamp, and `1788591949963197976` contains `1979`, so
+        // roughly one run in six hundred reddened on a tree nobody had
+        // touched. Recorded on ADR-0014's Status tracking as a check defect
+        // found and fixed, with the cause.
+        //
+        // The removal is asserted rather than assumed: a path that is not in
+        // the rendering would make the strip a no-op and the check would be
+        // looking at the same haystack it was before.
+        let shown = path.display().to_string();
         assert!(
-            rendered.contains(key) && !rendered.contains("1.5") && !rendered.contains("1979"),
-            "the refusal names the key and never the value: {rendered}"
+            rendered.contains(&shown),
+            "the refusal does not name the file it read, so removing the path below removes \
+             nothing and this check is not what it says it is: {rendered}"
+        );
+        let without_path = rendered.replace(&shown, "<the file>");
+
+        assert!(
+            without_path.contains(key)
+                && !without_path.contains("1.5")
+                && !without_path.contains("1979"),
+            "the refusal names the key and never the value: {without_path}"
         );
         println!("refused: {rendered}");
     }
