@@ -340,10 +340,25 @@ fn an_unbuilt_namespace_is_refused_in_the_pane_and_the_shell_stays_open() {
     assert_eq!(exit.code(), 0, "the shell did not exit 0 on the leave word");
 }
 
-/// A task is refused with the sentence the out-of-session surface prints, in
-/// the pane, and the shell stays open.
+/// A task is answered in the pane, the shell stays open, and **nothing on this
+/// machine gains a session**.
+///
+/// The second half is the one that matters and it is why this check counts
+/// sessions rather than only reading the pane. Until 2026-09-05 the pane's
+/// task arm executed a `Request::Task` through a real `cli::Run`, and after
+/// the arc that made that request run a turn, this check drove a path that
+/// would mint a session, ask a model an empty prompt and read the user's own
+/// standard input — under the developer's real `HOME`, because nothing here
+/// can set one. It stayed green only because the machine running it had no
+/// provider key.
+///
+/// So the count is taken through the product's own store, before and after,
+/// and an unreadable store on either side is the same answer on both. The
+/// staging is asserted too, so a pump that did nothing could not satisfy it.
 #[test]
-fn a_task_is_refused_in_the_pane_and_the_session_stays_open() {
+fn a_task_is_answered_in_the_pane_and_mints_no_session() {
+    let before = sessions_on_this_machine();
+
     let mut keys = typed("rename the widget");
     keys.extend(typed("/exit"));
     let (shell, surface, exit) = pump(keys);
@@ -355,8 +370,8 @@ fn a_task_is_refused_in_the_pane_and_the_session_stays_open() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        !said.is_empty(),
-        "a task produced nothing at all, so the user was told nothing"
+        said.contains(crate::terminal::driver::NO_TASK_TURN_YET),
+        "the pane does not carry the notice a task gets; it said {said:?}"
     );
     assert_eq!(exit.code(), 0);
     assert!(
@@ -364,6 +379,27 @@ fn a_task_is_refused_in_the_pane_and_the_session_stays_open() {
         "the shell closed rather than staying open: only {} frames were painted",
         surface.frames.len()
     );
+
+    let after = sessions_on_this_machine();
+    assert_eq!(
+        before, after,
+        "typing a task at the prompt changed what sessions exist on this machine: \
+         {before:?} before, {after:?} after"
+    );
+}
+
+/// Every session id under this machine's own session root, or `None` when the
+/// root cannot be read at all.
+///
+/// `None` on both sides of a pump is the same answer as an equal list: a
+/// machine with no `~/.zaru` is one where a session could only have been
+/// created by making the directory, which is exactly what is being asserted
+/// did not happen.
+fn sessions_on_this_machine() -> Option<Vec<crate::session::SessionId>> {
+    crate::session::SessionStore::default_root()
+        .ok()
+        .map(crate::session::SessionStore::reading)
+        .and_then(|store| store.ids().ok())
 }
 
 // -------------------------------------------------------------- ADR-0011 D3

@@ -137,6 +137,13 @@ pub fn question_for_the_shell(question: &Question) -> Confirmation {
 /// retyped.
 pub(crate) const UNAVAILABLE: &str = "needs something this harness does not have yet";
 
+/// What the pane says to a task, until the in-session turn is wired.
+///
+/// Named once so a check looks for this rather than for a phrase somebody
+/// retyped, exactly as [`UNAVAILABLE`] is.
+pub(crate) const NO_TASK_TURN_YET: &str =
+    "this session cannot run a task yet; `zaru \"<task>\"` runs one outside a session";
+
 /// What one turn of the pump produced.
 #[derive(Debug)]
 pub struct Pump {
@@ -186,13 +193,11 @@ pub fn run(
                     shell.notice(line);
                 }
             }
-            Action::Task(_) => {
-                // ADR-0012 D3's provider trait has no implementation in any
-                // product tree, so this is the refusal the out-of-session
-                // surface already prints, shown in the pane. The session stays
-                // open: the user asked for something the harness cannot do,
-                // which is not a reason to close the thing they are inside.
-                for line in refuse_a_task(runner) {
+            Action::Task(task) => {
+                // The session stays open: the user asked for something this
+                // build cannot do yet, which is not a reason to close the
+                // thing they are inside.
+                for line in task_notice(&task) {
                     shell.notice(line);
                 }
             }
@@ -311,30 +316,30 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
     }
 }
 
-/// The refusal a task gets, in the pane.
-fn refuse_a_task(runner: &crate::cli::Run<'_>) -> Vec<Line> {
-    let line = crate::cli::invocation::CommandLine {
-        request: Request::Task { words: Vec::new() },
-        overrides: crate::cli::invocation::Overrides::default(),
-    };
-    let outcome = runner.execute(&line);
-    match &outcome.exit {
-        Exit::Failed(classified) => {
-            let presentation = crate::failure::Presentation::of(classified);
-            let mut lines = vec![Line::new(Register::Failed, presentation.headline)];
-            lines.extend(presentation.lines.into_iter().map(|line| {
-                Line::new(
-                    Register::Plain,
-                    match line.lead {
-                        Some(lead) => format!("{lead} {}", line.text),
-                        None => line.text,
-                    },
-                )
-            }));
-            lines
-        }
-        Exit::Succeeded => Vec::new(),
-    }
+/// What the pane says about a task, and it says it without running anything.
+///
+/// # It takes no runner, and that signature is the fix rather than a style
+///
+/// Until 2026-09-05 this was `refuse_a_task(runner)`, which built a
+/// `Request::Task { words: Vec::new() }` and **executed it** through
+/// [`crate::cli::Run`]. That was written by the arc that opened this shell,
+/// when `Request::Task` was itself a refusal and executing it was how the
+/// pane got the refusal's own sentence. The arc that wired a provider client
+/// into [ADR-0008] D1's loop made `Request::Task` **run a turn**, and this
+/// call site was not revisited: on a machine holding a provider key, typing
+/// anything at this prompt started a real session, asked a model an **empty**
+/// prompt, and constructed [`crate::tools::prompt::Prompt`] over a standard
+/// input the terminal was already holding in raw mode.
+///
+/// So the seam is the same one [`request_for`] already uses against the same
+/// class of accident: **a function with nothing to execute cannot execute
+/// anything**. What a typed line *means* and what running it *does* are two
+/// things, and only the second belongs anywhere near a `Run`.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+pub(crate) fn task_notice(task: &str) -> Vec<Line> {
+    let _ = task;
+    vec![Line::new(Register::Failed, NO_TASK_TURN_YET.to_owned())]
 }
 
 /// The product terminal: `ratatui` over crossterm, reached through `ratatui`'s
