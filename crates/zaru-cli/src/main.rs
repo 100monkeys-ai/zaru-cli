@@ -33,7 +33,7 @@
 //!
 //! ADR-0010 is not started, so there is no `~/.zaru/sessions/<ulid>/` and no
 //! transcript. This binary passes
-//! [`SessionEvidence::NoSessionExists`](zaru_cli::failure::SessionEvidence::NoSessionExists),
+//! [`SessionEvidence::NoSessionExists`],
 //! which is the whole reason that variant exists: D3 says a defect's message
 //! says the transcript is on disk, and claiming one that was never written
 //! would be worse than admitting there is none. **This is the one call site

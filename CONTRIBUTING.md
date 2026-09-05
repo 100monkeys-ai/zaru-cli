@@ -58,7 +58,7 @@ By making a contribution to this project, I certify that:
 
 ## What CI will check
 
-Seven gates run on every pull request. Run them locally before opening one; each
+Eight gates run on every pull request. Run them locally before opening one; each
 prints what it checked, not only a verdict.
 
 ```sh
@@ -66,10 +66,17 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --workspace --locked --all-targets
 cargo test --workspace --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 scripts/check-license-headers.sh
 scripts/check-dco.sh
 scripts/check-crate-boundaries.py
 ```
+
+`-D warnings` on the documentation gate is there for the same reason clippy
+carries it. Rustdoc's lints are warnings by default, and a dangling intra-doc
+link renders as plain text — nothing on the published page says the link was
+meant to go somewhere, so it ships silently. Three were shipping when the gate
+was added.
 
 ## Licence headers
 

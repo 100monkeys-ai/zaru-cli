@@ -29,8 +29,8 @@
 //!
 //! A process that has been killed writes nothing, so `Interrupted` cannot be
 //! a record appended at the moment of interruption. What is appended is the
-//! pair [`Phase::Started`](crate::session::Phase::Started) before the call and
-//! [`Phase::Completed`](crate::session::Phase::Completed) after it, and a
+//! pair [`Phase::Started`] before the call and
+//! [`Phase::Completed`] after it, and a
 //! `Started` with no matching `Completed` **is** the interruption. D4 leaves
 //! the two framings open; the reader's end is the only one a killed process
 //! can honour.

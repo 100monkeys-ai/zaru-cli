@@ -127,3 +127,21 @@ jobs:
         run: rustup show && rustc --version && cargo --version
       - name: Check crate boundaries
         run: python3 scripts/check-crate-boundaries.py
+
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Materialise the pinned toolchain
+        run: rustup show && rustc --version && cargo --version && rustdoc --version
+      # `-D warnings` for the same reason clippy carries it: rustdoc's lints are
+      # warnings by default, and a warning in a job whose verdict is a single
+      # exit status is a warning nobody reads. A dangling intra-doc link is the
+      # one this gate exists for -- it renders as plain text, so nothing about
+      # the published page says the link was meant to go somewhere. Three were
+      # shipping on `main` when this job was written.
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings

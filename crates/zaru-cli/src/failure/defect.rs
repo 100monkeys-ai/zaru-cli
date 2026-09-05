@@ -31,7 +31,7 @@
 //! D3's list is the session id, the version, where to report, and that the
 //! transcript is on disk; the message belongs to the transcript, which is
 //! ADR-0010 D2's. The boundary captures it beside the report rather than
-//! inside it — see [`guard`](crate::failure::defect::guard) — so a
+//! inside it — see [`guard`](crate::failure::guard::guard) — so a
 //! presentation cannot show it, because it is not in the value a presentation
 //! is built from.
 //!

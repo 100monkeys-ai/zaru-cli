@@ -63,7 +63,7 @@
 //!
 //! Every remedy names a key, an alias or a layer, exactly as the refusals it
 //! is built from already do — [`ConfigRefused`] carries no value by
-//! construction and [`SecretRefused`](crate::credentials::SecretRefused)
+//! construction and [`SecretRefused`]
 //! carries nothing at all. The checks assert the absence of a planted bearer
 //! value **and of its ASCII core** from every statement, remedy and rendering
 //! this module can produce.

@@ -26,7 +26,7 @@
 //!
 //! # The tool call is stored as its rendered line, and that is D2's own claim
 //!
-//! [`TranscriptEntry`](crate::tools::TranscriptEntry) has private fields and
+//! [`TranscriptEntry`] has private fields and
 //! derives no `Serialize`, and **nothing in `tools/` is changed here**. What
 //! is stored is what that type's own public door yields: `render()` — which
 //! ADR-0011 D4 calls "the line a transcript shows", produced in exactly one
@@ -117,7 +117,7 @@ impl ToolCall {
 /// Stored as the projection rather than as the `Classified` itself, for the
 /// reason the tool call is stored as its line: a transcript is a record of
 /// what the user was shown, and
-/// [`Presentation`](crate::failure::Presentation) is what a renderer shows.
+/// [`Presentation`] is what a renderer shows.
 /// It also means the transcript carries no `PathBuf` and no `Tier`, so the
 /// stored shape does not move when those types do.
 ///

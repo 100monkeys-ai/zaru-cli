@@ -13,7 +13,7 @@
 //!
 //! What is in the checkpoint is [ADR-0013]'s layering and compaction, which
 //! is unbuilt. So the value here is an opaque
-//! [`serde_json::Value`](serde_json::Value): this module writes it whole,
+//! [`serde_json::Value`]: this module writes it whole,
 //! reads it whole, and interprets no field. **Nothing here compacts
 //! anything.**
 //!

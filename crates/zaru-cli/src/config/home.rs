@@ -32,7 +32,7 @@
 //! # The layout constant is not re-typed here
 //!
 //! [`HOME_DIRECTORY`](crate::credentials::store::HOME_DIRECTORY) and
-//! [`DIRECTORY_MODE`](crate::credentials::store::DIRECTORY_MODE) stay where
+//! [`DIRECTORY_MODE`] stay where
 //! the credential store declared them and are read from there. Moving them
 //! would be more than the call-site substitution the ruling permits in that
 //! module, and copying them would be the rule-in-two-places this function

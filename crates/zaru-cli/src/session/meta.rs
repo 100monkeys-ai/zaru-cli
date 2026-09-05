@@ -11,7 +11,7 @@
 //!
 //! # The tier is transcribed from nowhere
 //!
-//! [`Tier`](crate::tools::Tier) is [ADR-0001] D1's three, already declared in
+//! [`Tier`] is [ADR-0001] D1's three, already declared in
 //! this crate for [ADR-0011] D2's enforcement table and re-used here.
 //! **Nothing in this module resolves a tier**; ADR-0001 D2 resolves it once
 //! at session start and this value records whatever it was handed.

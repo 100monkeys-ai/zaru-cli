@@ -46,7 +46,7 @@
 //!
 //! Under a **delegated coordinator ruling of 2026-09-04**, open to Jeshua's
 //! veto: the message travels beside the report in [`OwnWords`] rather than
-//! inside it, so no [`Presentation`](crate::failure::Presentation) can show it
+//! inside it, so no [`Presentation`] can show it
 //! — it is not in the value a presentation is built from. It is the one field
 //! on this path that can carry arbitrary captured text, which is the surface
 //! [ADR-0008]'s open trigger clause 6 blocks on, and it belongs to ADR-0010's

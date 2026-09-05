@@ -52,7 +52,7 @@
 //! symlink is followed, and `..` cannot escape through a segment that does
 //! not exist.
 //!
-//! Step 4 is where the third one dies. See [`is_within`].
+//! Step 4 is where the third one dies. See `is_within` below.
 //!
 //! # Unix
 //!

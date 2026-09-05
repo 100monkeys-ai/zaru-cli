@@ -12,7 +12,7 @@
 //! is refusing to have a field to put one in**."
 //!
 //! [`CredentialRef`] has exactly one field and it is an
-//! [`Alias`](crate::credentials::Alias) — the type [ADR-0007] D2 already
+//! [`Alias`] — the type [ADR-0007] D2 already
 //! decided, already validated, already exported by this crate. It has no
 //! string form: no `From<String>`, no `new(&str)`, no public field of any
 //! other type. **A bearer value cannot be put in it**, and that is a property

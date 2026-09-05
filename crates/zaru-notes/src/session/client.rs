@@ -6,7 +6,7 @@
 //! # A session has no field a bearer value could occupy
 //!
 //! [`Session::attach`] takes a [`Bearer`], hands it to
-//! [`Endpoint::open`](super::Endpoint::open), and drops it. **The struct has no
+//! [`Endpoint::open`], and drops it. **The struct has no
 //! bearer field.** That is the strongest form of [ADR-0007] D3's "the token
 //! string appears in no prompt, no transcript, no log, and no tool result": not
 //! a redaction that could be forgotten, but the same argument [ADR-0014] D4

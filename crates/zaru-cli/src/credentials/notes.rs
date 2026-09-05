@@ -7,7 +7,7 @@
 //!
 //! [ADR-0003] D8 gives `zaru-notes` no sibling dependency, so that crate
 //! carries its own [`Bearer`] rather than reusing this crate's
-//! [`Secret`](super::Secret) — measured by the `notes-client` arc rather than
+//! [`Secret`] — measured by the `notes-client` arc rather than
 //! assumed, because `scripts/check-crate-boundaries.py` counts a
 //! *dev*-dependency as a sibling edge exactly as it counts a normal one.
 //! `zaru-cli` is the composition root and is therefore where the two meet.
@@ -29,7 +29,7 @@
 //!
 //! # Why it lives beside the store rather than on `Entry`
 //!
-//! The value that exists at dispatch time is a [`Secret`](super::Secret)
+//! The value that exists at dispatch time is a [`Secret`]
 //! handed back by [`CredentialStore::secret`](super::CredentialStore::secret).
 //! An [`Entry`](super::Entry) is *consumed* by
 //! [`CredentialStore::add`](super::CredentialStore::add) and is never seen

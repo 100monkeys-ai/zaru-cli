@@ -31,7 +31,7 @@
 //! any code can construct.
 //!
 //! Clause 5's "asserted distinct from iterations in the rendered output" is
-//! half here too: the label is [`RETRY_LABEL`](crate::failure::RETRY_LABEL)
+//! half here too: the label is [`RETRY_LABEL`]
 //! and the word *iteration* appears in nothing this module renders, which a
 //! check asserts over every class.
 //!

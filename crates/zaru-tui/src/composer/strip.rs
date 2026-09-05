@@ -43,7 +43,7 @@ pub enum PickerKind {
 
 /// What the strip is showing.
 ///
-/// One variant per row of D1's table. [`StripContent::Staged`] is deliberately
+/// One variant per row of D1's table. A `Staged` variant is deliberately
 /// absent: D5's running token cost needs a tokeniser and a counting rule no
 /// record names, so attachments are out of scope and the grammar in
 /// [`PickerKind`] detects and filters while attaching nothing.

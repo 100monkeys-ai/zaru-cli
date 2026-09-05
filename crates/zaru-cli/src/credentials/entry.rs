@@ -6,7 +6,7 @@
 //! D2's table has eight fields and this module carries all eight. `alias`,
 //! `description` and `role` are the user's; `kind` is derived from the secret
 //! and is therefore not a field at all but a method on
-//! [`Secret`](super::Secret); `instance` and `secret` come from the server;
+//! [`Secret`]; `instance` and `secret` come from the server;
 //! `tools` and `workspace` are cached.
 //!
 //! # An entry is what the user supplies; a record is what the store keeps
