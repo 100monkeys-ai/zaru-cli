@@ -2798,3 +2798,150 @@ fn the_two_once_ever_lines_read_back_in_the_registers_their_records_give_them() 
     assert_eq!(lines[0].text, "bare tier has no membrane.");
     assert_eq!(lines[1].text, "no validators are declared · declare one");
 }
+
+// ------------------------------- ADR-0010 D4's interruption, held and told once
+
+/// Stage a session directory whose transcript ends the way `phases` says.
+///
+/// The staging deliberately puts a **finished** call before whatever comes
+/// last, so a carrier that reported the first started call, or any started
+/// call, would name the wrong one.
+fn a_session_whose_last_call(
+    scratch: &crate::credentials::fixtures::ScratchRoot,
+    seed: u8,
+    close_it_with: Option<crate::session::Phase>,
+) -> crate::session::Resumed {
+    use crate::session::{Record as SessionRecord, SessionStore, ToolCall};
+
+    let store = SessionStore::open(scratch.store_root()).expect("the store opens");
+    let session = store
+        .start(crate::session::fixtures::id_at(1_700_000_000_000, seed))
+        .expect("the session starts");
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working = crate::tools::WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let finished = crate::session::fixtures::entry_for(&working, "src/finished.rs", false);
+    let last = crate::session::fixtures::entry_for(&working, "src/in-flight.rs", true);
+
+    let mut transcript = crate::session::Transcript::append_to(session.transcript_path())
+        .expect("the transcript opens");
+    for record in [
+        SessionRecord::ToolCall(ToolCall::started(&finished)),
+        SessionRecord::ToolCall(ToolCall::completed(&finished)),
+        SessionRecord::ToolCall(ToolCall::started(&last)),
+    ] {
+        transcript.record(&record).expect("a record is appended");
+    }
+    if let Some(phase) = close_it_with {
+        let closing = match phase {
+            crate::session::Phase::Completed => ToolCall::completed(&last),
+            crate::session::Phase::Refused => ToolCall::refused(&last),
+            crate::session::Phase::Started => panic!("a `Started` does not close a pair"),
+        };
+        transcript
+            .record(&SessionRecord::ToolCall(closing))
+            .expect("the closing record is appended");
+    }
+    crate::session::resume(session.directory(), usize::MAX).expect("the session resumes")
+}
+
+/// **ADR-0010 D4's second half, on the carrier a resumed session hands a turn.**
+///
+/// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
+/// is told it did not complete**." The derivation is `session::resume`'s and
+/// is not repeated here; what this holds is the rule the shell needs and had
+/// nowhere to put — that a resumed session owes the model **one** telling,
+/// before anything else, and owes it only when a call was genuinely in flight.
+///
+/// The mutants, named before the check was written ([Verification lessons]
+/// §12):
+///
+/// - **The `Resumed` start is dropped** — `Pending::of` answers `None` for an
+///   interrupted transcript, so a resumed session starts its first turn as
+///   `Task` and D4's second half reaches no model. Caught by the first arm.
+/// - **The interruption is told twice** — `tell_once` peeks instead of taking.
+///   Caught by the second arm.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_resumed_session_owes_the_model_one_telling_and_then_owes_nothing() {
+    use crate::terminal::driver::Pending;
+
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let resumed = a_session_whose_last_call(&scratch, 41, None);
+    let line = resumed
+        .interrupted
+        .as_ref()
+        .expect("the staging left a call in flight")
+        .call
+        .line
+        .clone();
+
+    let mut pending = Pending::of(&resumed, &Nothing);
+    assert!(
+        pending.is_owed(),
+        "a resumed session whose transcript ends in a call that never completed owes the model \
+         nothing, so ADR-0010 D4's second half would reach no model",
+    );
+
+    let told = pending
+        .tell_once()
+        .expect("the first turn of a resumed session is told the interruption");
+    assert_eq!(
+        told.call(),
+        line,
+        "the telling named a different call from the one the transcript left in flight",
+    );
+
+    assert!(
+        !pending.is_owed(),
+        "the interruption is still owed after being told, so a second turn would be told it again",
+    );
+    assert!(
+        pending.tell_once().is_none(),
+        "the interruption was told on the second turn as well as the first; an interruption is \
+         told once",
+    );
+}
+
+/// The accepting siblings: a session that owes nothing must be told nothing.
+///
+/// Three shapes, because three different rules would pass the check above and
+/// fail here. A transcript whose last call **completed**; one whose last call
+/// the user **refused**, which closes the pair exactly as a completion does
+/// (ADR-0016's ruling of 2026-09-04: a refusal is not a failure, and it is not
+/// an interruption either — telling the model that a call the user declined
+/// did not complete says the opposite of what happened); and a session being
+/// minted, which is `Pending::none`.
+///
+/// The mutant this catches: **a clean resume is told anyway** — `Pending::of`
+/// carrying an interruption whatever `Resumed::interrupted` holds.
+#[test]
+fn a_session_with_nothing_in_flight_owes_the_model_nothing() {
+    use crate::terminal::driver::Pending;
+
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+
+    for (seed, closing, what) in [
+        (42, crate::session::Phase::Completed, "completed"),
+        (43, crate::session::Phase::Refused, "the user refused"),
+    ] {
+        let resumed = a_session_whose_last_call(&scratch, seed, Some(closing));
+        assert_eq!(
+            resumed.interrupted, None,
+            "the staging is wrong: a call the record says closed the pair was derived as an \
+             interruption",
+        );
+        let mut pending = Pending::of(&resumed, &Nothing);
+        assert!(
+            !pending.is_owed() && pending.tell_once().is_none(),
+            "a session whose last call {what} owes the model an interruption, so a resume would \
+             tell the model an action that finished did not complete",
+        );
+    }
+
+    let mut minted = Pending::none();
+    assert!(
+        !minted.is_owed() && minted.tell_once().is_none(),
+        "a session being minted owes an interruption, and nothing has happened in it yet",
+    );
+}

@@ -18,9 +18,12 @@
 
 use crate::cli::invocation::Request;
 use crate::failure::Exit;
+use crate::session::Resumed;
 use crate::terminal::source::{Pace, Source, Taken};
 use crate::tools::port::Question;
 use core::time::Duration;
+use zaru_core::iteration::Interruption;
+use zaru_core::redaction::Redactor;
 use zaru_tui::shell::port::{Confirmation, Line, Register};
 use zaru_tui::shell::{Action, Command, Shell};
 
@@ -174,6 +177,119 @@ pub enum Turnable<'a> {
 pub struct Pump {
     /// What the process should exit with.
     pub exit: Exit,
+}
+
+/// [ADR-0010] D4's interruption, held by a resumed session and told once.
+///
+/// # What this holds and what it deliberately does not
+///
+/// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
+/// is told it did not complete**." The first half is
+/// [`crate::session::resume`]'s and has been built since `session-lifecycle`:
+/// a `Phase::Started` with no `Completed` or `Refused` closing it **is** the
+/// interruption, because a killed process writes nothing. The second half is
+/// the turn's, and until 2026-09-05 nothing in any product tree started one —
+/// [`Start::Resumed`] appeared twice in this repository and both were in test
+/// trees, which is [ADR-0010]'s own standing gap, written there by
+/// `session-restore`: "reachable from an outside caller and from no door a
+/// person can open".
+///
+/// **This is the carrier and not a second derivation.** [`Self::of`] reads
+/// [`Resumed::interrupted`], which `session::resume` already produced, and
+/// converts it through [`crate::session::Interrupted::for_the_model`], which
+/// is the one redaction seam [ADR-0008] clause 6 already enumerates. Nothing
+/// here scans a transcript, and nothing here writes one.
+///
+/// # Once, and the mechanism is that taking it empties it
+///
+/// [`Self::tell_once`] moves the value out, so a second call answers `None`
+/// whatever the caller does — the shape [`crate::tools::SessionNotice`]'s
+/// `state_once` already uses for [ADR-0011] D2's line, and for the same
+/// reason: a rule enforced by a type is not a rule anybody has to keep.
+///
+/// **It is once per resumed process rather than once ever, and that is
+/// forced.** The interruption is derived from the transcript's shape and
+/// nothing closes the pair — writing a `Completed` or an `Interrupted` record
+/// for a call that never finished would author an event that did not happen,
+/// which is exactly what [ADR-0010] D2's replayability claim forbids. So a
+/// session resumed twice whose resumed turn called no tool is told twice.
+/// Where that turn *did* call a tool, `session::resume`'s "one in flight at a
+/// time" clears the older pending call and the second resume tells nothing.
+///
+/// # It is not one of [ADR-0002] D8's once-ever lines
+///
+/// D8 governs a **recommendation**: output the harness volunteers to the
+/// *user*, "appended to the end of the triggering turn", budgeted at one per
+/// session. This is none of those. It is addressed to the **model**, it is a
+/// turn's *start* rather than a line appended to a turn, and it is caused by
+/// the user's own act of resuming rather than volunteered — so it needs no
+/// `Record::Said` and takes no row in `once-ever-counter`'s witness.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[derive(Default)]
+pub struct Pending(Option<Interruption>);
+
+impl core::fmt::Debug for Pending {
+    /// Says whether one is owed and never what it is.
+    ///
+    /// The line is redacted by the time it is here, so this is not a secrets
+    /// argument — it is [`Turns`]'s own: a `Debug` is what ends up in a panic
+    /// message, and a session's command line is the session's rather than the
+    /// panic's. A check asserts that a planted value reaches no `Debug` on
+    /// this path, and that check has to be able to fail.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pending")
+            .field("owed", &self.is_owed())
+            .finish()
+    }
+}
+
+impl Pending {
+    /// What a resumed session owes the model, if it owes anything.
+    ///
+    /// `None` for a session whose every call closed — including one the user
+    /// **refused**, which closes the pair exactly as a completion does:
+    /// [ADR-0016]'s ruling of 2026-09-04 is that a refusal is not a failure,
+    /// and `session::resume` records that it is not an interruption either.
+    /// Telling the model that a call the user consciously declined did not
+    /// complete would say the opposite of what happened.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn of<R: Redactor + ?Sized>(resumed: &Resumed, redactor: &R) -> Self {
+        Self(
+            resumed
+                .interrupted
+                .as_ref()
+                .map(|interrupted| interrupted.for_the_model(redactor)),
+        )
+    }
+
+    /// A session that owes nothing.
+    ///
+    /// What [`crate::compose::turn::task`] has, and it is a **fact rather than
+    /// a default**: that path mints a session directory and runs turn one in
+    /// it, so nothing was in flight because nothing has happened yet. The same
+    /// argument [`crate::session::AlreadySaid::none`] makes for its own.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    /// Whether a turn still owes the model this. A reader for a check, not a
+    /// second copy of the state.
+    #[must_use]
+    pub const fn is_owed(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// The interruption, once. `None` on every call after the first.
+    pub fn tell_once(&mut self) -> Option<Interruption> {
+        self.0.take()
+    }
 }
 
 /// Everything a turn needs to run inside the session this shell is in.
