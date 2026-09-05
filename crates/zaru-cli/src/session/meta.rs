@@ -24,6 +24,11 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
+pub mod file;
+
+#[cfg(test)]
+mod tests;
+
 use crate::runtime::{ResolvedTier, Tier};
 use crate::session::id::Millis;
 use core::fmt;
@@ -138,26 +143,17 @@ impl std::error::Error for MetaFailure {}
 
 /// Where [`Meta`] rests between sessions.
 ///
-/// **Nothing in this crate's product tree implements this**, exactly as
-/// nothing implements the credential store's
-/// [`Confirm`](crate::credentials::Confirm), configuration's
-/// [`LayerSource`](crate::config::LayerSource), or any of `zaru-core`'s five
-/// loop ports. A check implements it; the product does not, which is why no
-/// `meta.toml` is written anywhere and a session directory holds two files
-/// rather than three.
+/// **[`file::MetaFile`] is the implementation**, landed 2026-09-05 when
+/// [ADR-0003] D2's `toml` row took a caller. It stays a port rather than a
+/// concrete type on [`Session`](crate::session::Session) because a check that
+/// wants no filesystem implements it in memory, and because whatever starts a
+/// session should be able to say where its metadata goes.
 ///
-/// # Why this is a port and not code
-///
-/// [ADR-0003] D2's table names no TOML crate. Its first proposed amendment
-/// names this exact file and its third proposes the crate; **neither is
-/// accepted**, and the same amendment is what holds [ADR-0007] clause 4 and
-/// [ADR-0014]'s file layers. Until one is accepted the honest shape is a
-/// declared seam — and see [`crate::session`] for why a `std`-only emitter
-/// for five flat keys is not the honest alternative it looks like.
+/// **Nothing in the product calls either half yet**: the binary starts no
+/// session, so no `meta.toml` is written anywhere and a session directory on
+/// any real machine still holds two files rather than three.
 ///
 /// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
-/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
-/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub trait MetaStore {
     /// Record what this session is.
     ///

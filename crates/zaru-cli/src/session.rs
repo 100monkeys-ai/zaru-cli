@@ -24,25 +24,38 @@
 //! | D5 — nothing leaves the machine | yes, wider than the clause: this module takes no tier and reaches no network at any of them |
 //! | D6 — bounded retention, real deletion | yes, over a caller-passed window |
 //!
-//! # `meta.toml` has no writer, and that is a dependency stop
+//! # `meta.toml` has a writer, as of 2026-09-05
 //!
-//! [ADR-0003] D2's table names no TOML crate. Its **first proposed
-//! amendment** predicts this exact file — "ADR-0014 D1 and ADR-0010 D1 will
-//! want `toml` on the same reading, for `~/.zaru/config.toml` and
-//! `meta.toml`" — and its third proposes the crate outright; **neither is
-//! accepted**, and the same amendment holds [ADR-0007] clause 4 and
-//! [ADR-0014]'s file layers. So [`MetaStore`] is a port with no
-//! implementation in this crate's product tree, exactly as ADR-0014's layers
-//! 2, 3 and 5 are and as ADR-0007's sealing is.
+//! [ADR-0003] D2's table gained its `toml` row on 2026-09-05 under directive
+//! 20, and [`MetaFile`] is what took a caller for it. So D1's directory holds
+//! three files and all three are written: the transcript appended, the
+//! checkpoint and the metadata each replaced atomically through one function.
 //!
-//! A `std`-only emitter for five flat keys was considered and refused. It is
-//! two lines of `format!` only for values that never carry a quote, a
-//! newline, a backslash or a control character, and `workspace` and
-//! `provider` arrive from outside; getting TOML's basic-string escaping
-//! *nearly* right and calling the file `meta.toml` is the "for now" the
-//! harness forbids, and it would be a file the accepted crate later reads
-//! differently. There is no honest `std`-only **reader** at all, because a
-//! reader must survive whatever a person hand-edited.
+//! The replace itself is [`crate::atomic::write`], which the `credential-sealing`
+//! arc lifted out of the checkpoint on 2026-09-05 for the credential store; the
+//! metadata file is its third caller and `zaru init`'s create-once is
+//! deliberately not one, because "never overwrite" is a guarantee a replace
+//! cannot make.
+//!
+//! A `std`-only emitter for five flat keys was considered and refused when this
+//! module landed, and that judgement is worth keeping now that it is moot: it
+//! is two lines of `format!` only for values that never carry a quote, a
+//! newline, a backslash or a control character, and `workspace` and `provider`
+//! arrive from outside. The check that holds the writer plants exactly those
+//! bytes, and the mutation that replaces the crate's rendering with a `format!`
+//! reddens on the read-back.
+//!
+//! **The file records a sixth thing D1 does not name**, and it has to: a
+//! [`Meta`]'s tier is a [`ResolvedTier`](crate::runtime::ResolvedTier), which
+//! cannot be built without naming the configuration layer it came from, so a
+//! writer that recorded the tier alone would force the reader to invent one.
+//! See [`crate::session::meta::file`], and ADR-0010 D1's accepted Update.
+//!
+//! **Nothing in the product calls it yet.** The binary starts no session, so no
+//! product path writes a `meta.toml` and none reads one; `resume` and `sessions
+//! list` are deliberately not wired to it, because every session directory that
+//! exists predates this writer and a read wired into resume would report a
+//! defect for each of them.
 //!
 //! # This module designs no redaction, and the transcript is where a value lands
 //!
@@ -92,6 +105,7 @@ pub use id::{
     ALPHABET, ID_LENGTH, Millis, MintFailure, SessionId, SessionIdRefused, SystemWallClock,
     WallClock,
 };
+pub use meta::file::MetaFile;
 pub use meta::{Meta, MetaFailure, MetaStore};
 pub use record::{FailureLine, Phase, Record, ToolCall};
 pub use resume::{Interrupted, ResumeFailure, Resumed, resume};

@@ -148,6 +148,26 @@ impl Layer {
         }
     }
 
+    /// The layer whose [`Layer::label`] this is, if it is one.
+    ///
+    /// Walked from [`Layer::ALL`] rather than matched against literals, so a
+    /// sixth layer is reachable the moment it is declared — the shape
+    /// [`Tier::named`](crate::runtime::Tier::named) and
+    /// [`Flag::named`](crate::cli::Flag::named) already use.
+    ///
+    /// **The label is the round trip, not a second spelling.** [ADR-0010] D1's
+    /// `meta.toml` records which layer supplied a session's tier, and it
+    /// records it by the same word [ADR-0014] D3's block prints in its supplier
+    /// column, so a person reading the file and a person reading the block see
+    /// one vocabulary.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    #[must_use]
+    pub fn named(offered: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|layer| layer.label() == offered)
+    }
+
     /// This layer's index into [`Layer::ALL`].
     ///
     /// Read out of `ALL` rather than from the variant's discriminant, so the

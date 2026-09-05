@@ -48,7 +48,9 @@ pub const TRANSCRIPT_FILE: &str = "transcript.jsonl";
 /// D1's checkpoint.
 pub const CHECKPOINT_FILE: &str = "context.json";
 
-/// D1's metadata. **Nothing writes it** — see [`crate::session::meta`].
+/// D1's metadata. Written by [`MetaFile`](crate::session::MetaFile) since
+/// 2026-09-05, and by nothing in the product, because the binary starts no
+/// session — see [`crate::session::meta::file`].
 pub const META_FILE: &str = "meta.toml";
 
 /// The mode every file in a session directory carries.
@@ -317,8 +319,9 @@ impl Session {
         self.directory.join(CHECKPOINT_FILE)
     }
 
-    /// D1's `meta.toml`. **Nothing writes it** — see
-    /// [`MetaStore`](crate::session::MetaStore).
+    /// D1's `meta.toml`. [`MetaFile`](crate::session::MetaFile) is what reads
+    /// and writes it; nothing in the product calls that yet, because this
+    /// binary starts no session.
     #[must_use]
     pub fn meta_path(&self) -> PathBuf {
         self.directory.join(META_FILE)
