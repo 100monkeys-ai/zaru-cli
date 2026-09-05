@@ -15,9 +15,26 @@
 //! model guess rather than a correction. Truncation keeps the head and the
 //! tail and marks the elision, since a stack trace's first frames and its
 //! final assertion are the load-bearing parts and the middle rarely is.
+//!
+//! # This is the first of the paths ADR-0008 clause 6's port covers
+//!
+//! Clause 6 was decided on 2026-09-05 and this module carries its first
+//! application. **All four of the prompt's variable-length parts pass the
+//! port**, not only the failure text: the two streams of
+//! [`ExecutionOutcome`] are the executed candidate's captured output by any
+//! reading, and the previous candidate is text a model wrote about them. The
+//! identity seam this replaces sat on the failure text alone, which was
+//! narrower than the path it was documented as sitting on — a finding of the
+//! `redaction-seam` arc, recorded on ADR-0008 and ruled in on 2026-09-05.
+//!
+//! **Each part is redacted before it is truncated.** Truncating first would
+//! cut a held value in half at the elision boundary and leave its head in the
+//! prompt as a fragment the redactor no longer recognises. Redacting first
+//! means the elision falls in text that has no secret left in it.
 
 use crate::iteration::limits::TruncationBudget;
 use crate::iteration::port::ExecutionOutcome;
+use crate::redaction::{Redacted, Redactor};
 
 /// What the refinement is built from: ADR-0008 D1's three named inputs, and
 /// the iteration they came from.
@@ -34,17 +51,20 @@ pub struct RefinementInput<'a> {
 }
 
 /// The prompt the next iteration generates from.
+///
+/// Both fields are [`Redacted`], so this type cannot be built out of raw
+/// captured bytes at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefinementPrompt {
-    text: String,
-    failure_excerpt: String,
+    text: Redacted,
+    failure_excerpt: Redacted,
 }
 
 impl RefinementPrompt {
     /// The whole prompt.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.text
+        self.text.as_str()
     }
 
     /// The failure text as it went into the prompt, after truncation.
@@ -53,27 +73,18 @@ impl RefinementPrompt {
     /// renders the same excerpt the model was given rather than a second
     /// truncation of its own.
     ///
+    /// It is **redacted**, and that is deliberate: this event's own contract
+    /// is that a consumer renders what the model was given, so an excerpt
+    /// that differed from the prompt's would be a second description of one
+    /// thing. The raw failure survives on `Event::IterationFailed`, on
+    /// `Event::ValidatorEvaluated` and on `Outcome::Exhausted`, which is what
+    /// ADR-0010's transcript keeps.
+    ///
     /// [`Event::RefinementConstructed`]: crate::iteration::Event::RefinementConstructed
     #[must_use]
     pub fn failure_excerpt(&self) -> &str {
-        &self.failure_excerpt
+        self.failure_excerpt.as_str()
     }
-}
-
-/// The single point on the path from a validator's captured output to the
-/// refinement prompt.
-///
-/// It is the identity and it does nothing. ADR-0008's trigger clause 6 — that
-/// a decision must exist for secret redaction in failure text — is
-/// deliberately open, and this function exists so that the decision, when it
-/// is made, has exactly one place to attach. It is not a hook and takes no
-/// policy: nothing may pass behaviour through it, because a configurable
-/// redaction point would be the decision itself, settled in code.
-///
-/// ADR-0008's Consequences already name the obligation: verbatim failure text
-/// can carry secrets from a failing command into a model prompt.
-const fn failure_text_for_prompt(raw: &str) -> &str {
-    raw
 }
 
 /// Build the next iteration's prompt.
@@ -82,12 +93,21 @@ const fn failure_text_for_prompt(raw: &str) -> &str {
 /// independently: the previous candidate, the execution's two streams, and
 /// the failure text. One number bounds each part rather than four numbers
 /// nobody has chosen.
+///
+/// Every one of those four also passes `redactor`, before it is truncated.
+/// See the module documentation for why the order matters.
 #[must_use]
-pub fn construct(input: &RefinementInput<'_>, budget: TruncationBudget) -> RefinementPrompt {
-    let failure_excerpt = truncate_marked(failure_text_for_prompt(input.failure_text), budget);
-    let candidate = truncate_marked(input.previous_candidate, budget);
-    let stdout = truncate_marked(&input.execution.stdout, budget);
-    let stderr = truncate_marked(&input.execution.stderr, budget);
+pub fn construct<R: Redactor + ?Sized>(
+    input: &RefinementInput<'_>,
+    budget: TruncationBudget,
+    redactor: &R,
+) -> RefinementPrompt {
+    let failure_excerpt = redacted_then_truncated(redactor, input.failure_text, budget);
+    let candidate = redacted_then_truncated(redactor, input.previous_candidate, budget);
+    let stdout = redacted_then_truncated(redactor, &input.execution.stdout, budget);
+    let stderr = redacted_then_truncated(redactor, &input.execution.stderr, budget);
+    let (candidate, stdout, stderr) = (candidate.as_str(), stdout.as_str(), stderr.as_str());
+    let excerpt = failure_excerpt.as_str();
 
     let text = format!(
         "The previous attempt did not satisfy the declared validators.\n\
@@ -103,14 +123,35 @@ pub fn construct(input: &RefinementInput<'_>, budget: TruncationBudget) -> Refin
          {stderr}\n\
          \n\
          --- VALIDATOR FAILURES ---\n\
-         {failure_excerpt}\n",
+         {excerpt}\n",
         input.iteration, input.execution.exit_code,
     );
 
     RefinementPrompt {
-        text,
+        // The whole is passed again so that what this type carries was
+        // produced by the port rather than assembled around it. Redaction is
+        // idempotent -- a marker carries no held value -- so the second pass
+        // over already-redacted parts changes nothing, which
+        // `redaction_is_idempotent_because_a_marker_carries_no_value`
+        // asserts.
+        text: Redacted::by(redactor, &text),
         failure_excerpt,
     }
+}
+
+/// Redact `text`, then keep the head and the tail of what is left.
+///
+/// **This order is load-bearing.** Truncating first cuts a held value in half
+/// at the elision boundary and leaves its head in the prompt as a fragment no
+/// redactor recognises; redacting first means the cut falls in text with no
+/// secret in it.
+fn redacted_then_truncated<R: Redactor + ?Sized>(
+    redactor: &R,
+    text: &str,
+    budget: TruncationBudget,
+) -> Redacted {
+    let redacted = Redacted::by(redactor, text);
+    Redacted::by(redactor, &truncate_marked(redacted.as_str(), budget))
 }
 
 /// Keep the head and the tail of `text` and mark what was dropped.
@@ -162,6 +203,7 @@ mod tests {
     use super::{RefinementInput, construct};
     use crate::iteration::limits::TruncationBudget;
     use crate::iteration::port::ExecutionOutcome;
+    use crate::redaction::fixtures::{HoldingOne, NothingHeld, ascii_core, staged_secret};
 
     /// A budget large enough that nothing here is truncated.
     const ROOMY: usize = 4096;
@@ -177,6 +219,7 @@ mod tests {
                 failure_text: &failure,
             },
             TruncationBudget::new(32).expect("budget"),
+            &NothingHeld,
         );
         let excerpt = built.failure_excerpt();
 
@@ -211,6 +254,7 @@ mod tests {
                     failure_text: &failure,
                 },
                 TruncationBudget::new(32).expect("budget"),
+                &NothingHeld,
             );
             let excerpt = built.failure_excerpt();
             if length <= 32 {
@@ -242,6 +286,7 @@ mod tests {
                 failure_text: "FAILURE-SENTINEL",
             },
             TruncationBudget::new(ROOMY).expect("budget"),
+            &NothingHeld,
         );
 
         for sentinel in [
@@ -270,9 +315,139 @@ mod tests {
                 failure_text: "the failure",
             },
             TruncationBudget::new(ROOMY).expect("budget"),
+            &NothingHeld,
         );
         assert_eq!(built.failure_excerpt(), "the failure");
         assert!(built.as_str().contains("ATTEMPT 2"));
+    }
+
+    // --- ADR-0008 trigger clause 6, decided 2026-09-05 ---------------------
+
+    #[test]
+    fn every_variable_length_part_of_the_refinement_prompt_passes_the_port() {
+        // The identity seam this replaced sat on the failure text alone,
+        // while `construct` also embeds the execution's two streams and the
+        // previous candidate. Three of the four bypassed the one place
+        // ADR-0008's Status tracking said a redaction decision would attach.
+        // All four now pass the port, and this check is what says so.
+        let secret = staged_secret();
+        let core = ascii_core(&secret);
+        assert!(
+            !core.is_empty() && core != secret,
+            "the staged secret must have an ASCII core distinct from itself"
+        );
+        let holding = HoldingOne::new(secret.clone(), "work");
+        let marker = "<redacted: work>";
+
+        let execution = ExecutionOutcome {
+            exit_code: 3,
+            stdout: format!("stdout carries {secret} here"),
+            stderr: format!("stderr carries {secret} here"),
+        };
+        let input = RefinementInput {
+            iteration: 2,
+            previous_candidate: &format!("the candidate quoted {secret} back"),
+            execution: &execution,
+            failure_text: &format!("the validator printed {secret}"),
+        };
+        let budget = TruncationBudget::new(ROOMY).expect("budget");
+
+        let redacted = construct(&input, budget, &holding);
+        assert!(
+            !redacted.as_str().contains(&secret),
+            "a held value reached the refinement prompt: {:?}",
+            redacted.as_str()
+        );
+        assert!(
+            !redacted.as_str().contains(core),
+            "a held value's ASCII core reached the refinement prompt, so an \
+             escaping renderer would publish it: {:?}",
+            redacted.as_str()
+        );
+        assert_eq!(
+            redacted.as_str().matches(marker).count(),
+            4,
+            "all four variable-length parts must be redacted -- the failure \
+             text, both execution streams, and the previous candidate -- and \
+             this prompt carries a different number of markers: {:?}",
+            redacted.as_str()
+        );
+
+        // The discriminating arm. Without it a `construct` that returned an
+        // empty prompt would satisfy both absence assertions above, and the
+        // four separate placements would prove nothing about which parts the
+        // port actually reached.
+        let carried = construct(&input, budget, &NothingHeld);
+        assert_eq!(
+            carried.as_str().matches(secret.as_str()).count(),
+            4,
+            "with nothing held, every one of the four parts must carry its \
+             bytes through unaltered, or the check above is not about \
+             redaction: {:?}",
+            carried.as_str()
+        );
+        assert!(!carried.as_str().contains(marker));
+    }
+
+    #[test]
+    fn a_held_value_is_redacted_before_it_is_truncated() {
+        // Order matters and this is the only check that sees it. Truncating
+        // first cuts a held value in half at the elision boundary and leaves
+        // its head in the prompt as a fragment no redactor recognises, so the
+        // value is published by a code path that ran the port.
+        let secret = staged_secret();
+        let core = ascii_core(&secret);
+        // The budget is chosen so the kept head ends **inside** the ASCII
+        // core. A first draft used a budget whose head boundary fell exactly
+        // at the end of the core, so the truncate-first mutant left a
+        // fragment the redactor still recognised as the core, replaced it,
+        // and the check stayed green. The mutation was invisible because of
+        // where the fixture's cut happened to land -- Verification lessons
+        // §9 arriving from the direction that is easy to miss.
+        let budget: usize = 40;
+        let head_kept = budget.div_ceil(2);
+        assert!(
+            head_kept < core.len(),
+            "the kept head must end inside the ASCII core, or a truncate-first \
+             implementation leaves a fragment the redactor still matches and \
+             this check sees nothing: {head_kept} vs {}",
+            core.len()
+        );
+        let head_of_the_core = &core[..head_kept / 2];
+        let holding = HoldingOne::new(secret.clone(), "work");
+
+        // The secret leads the failure text, so with the port applied first
+        // the marker is what the kept head contains; with truncation first
+        // the kept head is the secret's own first bytes.
+        let failure = format!("{secret}{}", "B".repeat(300));
+        let built = construct(
+            &RefinementInput {
+                iteration: 1,
+                previous_candidate: "candidate",
+                execution: &execution(),
+                failure_text: &failure,
+            },
+            TruncationBudget::new(budget).expect("budget"),
+            &holding,
+        );
+        let excerpt = built.failure_excerpt();
+
+        assert!(
+            excerpt.contains("bytes elided"),
+            "the staging must actually truncate, or this check is about \
+             nothing: {excerpt:?}"
+        );
+        assert!(
+            excerpt.contains("<redacted: work>"),
+            "the kept head must be the marker, which is what redacting before \
+             truncating produces: {excerpt:?}"
+        );
+        assert!(
+            !excerpt.contains(head_of_the_core),
+            "the first bytes of a held value survived into the excerpt as a \
+             fragment, which is what truncating before redacting leaves \
+             behind: {excerpt:?}"
+        );
     }
 
     fn execution() -> ExecutionOutcome {

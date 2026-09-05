@@ -39,6 +39,7 @@ use crate::iteration::port::{
     Validators,
 };
 use crate::iteration::refinement::{self, RefinementInput, RefinementPrompt};
+use crate::redaction::Redactor;
 use core::time::Duration;
 
 /// A state of the iteration loop.
@@ -130,10 +131,10 @@ pub enum Outcome {
 ///
 /// [`IterationError::Port`] when a port fails. That is not the loop failing —
 /// see the module documentation on [`crate::iteration::error`].
-pub async fn run<G, X, V, P, K>(
+pub async fn run<G, X, V, P, K, R>(
     task: &str,
     limits: Limits,
-    ports: Ports<'_, G, X, V, P, K>,
+    ports: Ports<'_, G, X, V, P, K, R>,
     sinks: &mut [&mut dyn EventSink],
 ) -> Result<Outcome, IterationError>
 where
@@ -142,6 +143,7 @@ where
     V: Validators,
     P: ContextPolicy,
     K: Clock,
+    R: Redactor + ?Sized,
 {
     let ceiling = limits.ceiling.get();
     let loop_started = ports.clock.now();
@@ -312,6 +314,7 @@ where
                 failure_text: &failure,
             },
             limits.budget,
+            ports.redactor,
         );
         emit(
             sinks,

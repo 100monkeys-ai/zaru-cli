@@ -33,6 +33,8 @@ use crate::iteration::{
     Ceiling, Event, EventSink, ExhaustionReason, IterationError, Limits, Outcome, PortKind, Ports,
     State, TruncationBudget,
 };
+use crate::redaction::Redactor;
+use crate::redaction::fixtures::{HoldingOne, NothingHeld, ascii_core};
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -62,6 +64,11 @@ struct Rig {
     executor: StagedExecutor,
     validators: StagedValidators,
     context: PassThroughContext,
+    /// ADR-0008 clause 6's port. `NothingHeld` unless a check stages a
+    /// secret, so that every existing check drives the loop with the port
+    /// present and the identity behind it -- which is the arm that
+    /// discriminates a redactor from one that erases everything.
+    redactor: Box<dyn Redactor>,
 }
 
 impl Rig {
@@ -73,9 +80,16 @@ impl Rig {
             executor: StagedExecutor::new(&clock, EXECUTE_COST),
             validators: StagedValidators::new(&clock, EVALUATE_COST, plans),
             context: PassThroughContext::new(&trace),
+            redactor: Box::new(NothingHeld),
             clock,
             trace,
         }
+    }
+
+    /// Stage a redactor that holds `value` under `alias`.
+    fn holding(mut self, value: impl Into<String>, alias: &str) -> Self {
+        self.redactor = Box::new(HoldingOne::new(value, alias));
+        self
     }
 
     async fn drive(
@@ -92,6 +106,7 @@ impl Rig {
                 validators: &self.validators,
                 context: &self.context,
                 clock: self.clock.as_ref(),
+                redactor: self.redactor.as_ref(),
             },
             sinks,
         )
@@ -244,6 +259,90 @@ async fn validator_failure_text_reaches_the_refinement_prompt_byte_for_byte() {
          looked for: {carried:?}\n\
          prompt was: {:?}",
         prompts[1]
+    );
+}
+
+// --- ADR-0008 trigger clause 6, decided 2026-09-05 -------------------------
+
+/// Everything one of the two clause-6 checks below asserts about one prompt.
+///
+/// A helper rather than two copies, because the two differ only in which
+/// captured stream the held value came out of, and a check whose body is
+/// copied is a check whose two copies diverge.
+fn assert_redacted(prompt: &str, held: &str, what: &str) {
+    let core = ascii_core(held);
+    assert!(
+        !core.is_empty() && core != held,
+        "{what}: the staged value must have an ASCII core distinct from \
+         itself, or the escaped-form arm asserts nothing: {held:?}"
+    );
+    assert!(
+        !prompt.contains(held),
+        "{what}: a held value reached the model's prompt: {prompt:?}"
+    );
+    assert!(
+        !prompt.contains(core),
+        "{what}: a held value's ASCII core reached the model's prompt, so an \
+         escaping renderer would publish it: {prompt:?}"
+    );
+    assert!(
+        prompt.contains("<redacted: work>"),
+        "{what}: nothing marks where the value was, and a redactor that \
+         erased its whole input would satisfy the two assertions above on \
+         its own: {prompt:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_held_secret_in_validator_output_is_absent_from_the_next_prompt() {
+    // The path ADR-0008 D4 describes, driven end to end and read out of the
+    // *generator* -- one layer beyond the policy that built the prompt, so
+    // neither arm of the comparison travels back through the code under test.
+    //
+    // The discriminating arm is not staged here: it is
+    // `validator_failure_text_reaches_the_refinement_prompt_byte_for_byte`
+    // above, which drives the same rig with nothing held and asserts these
+    // exact bytes are present. Both must pass, and only a real redaction
+    // makes that possible.
+    let held = StagedValidators::failure_detail_for(1);
+    let rig = Rig::new(vec![Plan::Fail, Plan::Pass]).holding(held.clone(), "work");
+    let (outcome, _) = rig.record(limits(3, ROOMY)).await;
+    outcome.expect("the staged run should reach an outcome");
+
+    let prompts = rig.generator.prompts();
+    assert_eq!(
+        prompts.len(),
+        2,
+        "the fixture stages exactly two generations"
+    );
+    assert_redacted(&prompts[1], &held, "the validator's failure text");
+}
+
+#[tokio::test]
+async fn a_held_secret_in_the_executions_stdout_is_absent_from_the_next_prompt() {
+    // The finding this arc raised and the coordinator ruled in on
+    // 2026-09-05: `construct` embeds the execution's two streams as well as
+    // the failure text, and the identity seam that was replaced sat on the
+    // failure text alone. A secret printed by the candidate's own execution
+    // reached the prompt through a part nothing was documented as covering.
+    let held = StagedExecutor::stdout_for(1);
+    let rig = Rig::new(vec![Plan::Fail, Plan::Pass]).holding(held.clone(), "work");
+    let (outcome, _) = rig.record(limits(3, ROOMY)).await;
+    outcome.expect("the staged run should reach an outcome");
+
+    let prompts = rig.generator.prompts();
+    assert_redacted(&prompts[1], &held, "the execution's stdout");
+
+    // The discriminating arm, staged here because no existing check asserts
+    // the stdout's presence: the same run with nothing held must carry it.
+    let carried = Rig::new(vec![Plan::Fail, Plan::Pass]);
+    let (outcome, _) = carried.record(limits(3, ROOMY)).await;
+    outcome.expect("the staged run should reach an outcome");
+    assert!(
+        carried.generator.prompts()[1].contains(&held),
+        "with nothing held the execution's stdout must reach the prompt \
+         unaltered, or the assertions above are not about redaction: {:?}",
+        carried.generator.prompts()[1]
     );
 }
 

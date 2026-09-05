@@ -230,6 +230,7 @@ async fn a_caller_outside_this_crate_declares_validators_and_the_loop_reports_on
             validators: &dispatch,
             context: &Echo,
             clock: &FrozenClock,
+            redactor: &NothingHeld,
         },
         sinks,
     )
@@ -316,6 +317,7 @@ async fn a_failing_validators_captured_output_reaches_the_refinement_prompt_byte
             validators: &dispatch,
             context: &Echo,
             clock: &FrozenClock,
+            redactor: &NothingHeld,
         },
         sinks,
     )

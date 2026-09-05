@@ -437,6 +437,7 @@ async fn an_iteration_that_would_exceed_the_window_is_exhausted_and_not_an_error
             validators: &AlwaysPasses,
             context: &policy,
             clock: &FrozenClock,
+            redactor: &NothingHeld,
         },
         &mut [&mut events],
     )

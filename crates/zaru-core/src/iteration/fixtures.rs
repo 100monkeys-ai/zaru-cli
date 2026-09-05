@@ -230,12 +230,34 @@ impl StagedExecutor {
         self.candidates.lock().expect("candidates poisoned").clone()
     }
 
+    /// The staged standard output for iteration `n`.
+    ///
+    /// It ends in [`AWKWARD_TAIL`] — a decomposed grapheme cluster, a
+    /// precomposed one and an astral-plane character — because a check
+    /// asserting this value is absent from a prompt is blind to a formatter
+    /// that escapes: `{:?}` renders a combining mark as `\u{301}`, so the
+    /// value as typed is absent from a rendering that published every byte of
+    /// it. A first draft of
+    /// `a_held_secret_in_the_executions_stdout_is_absent_from_the_next_prompt`
+    /// could not run at all against the plain ASCII this used to be, because
+    /// its ASCII core was the whole value. [Verification lessons] §9: the
+    /// answer is a fixture that is awkward in the direction the check needs.
+    ///
+    /// [`AWKWARD_TAIL`]: crate::redaction::fixtures::AWKWARD_TAIL
+    /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
     pub(super) fn stdout_for(n: u32) -> String {
-        format!("{NONCE}-stdout-{n}")
+        format!(
+            "{NONCE}-stdout-{n}{}",
+            crate::redaction::fixtures::AWKWARD_TAIL
+        )
     }
 
+    /// The staged standard error for iteration `n`. See [`Self::stdout_for`].
     pub(super) fn stderr_for(n: u32) -> String {
-        format!("{NONCE}-stderr-{n}")
+        format!(
+            "{NONCE}-stderr-{n}{}",
+            crate::redaction::fixtures::AWKWARD_TAIL
+        )
     }
 }
 

@@ -29,6 +29,7 @@ use crate::context::limits::{ContextLimits, ContextWindow, LimitsRefused, Pressu
 use crate::context::prefix::{PrefixParts, StablePrefix};
 use crate::iteration::machine::run;
 use crate::iteration::{Ceiling, Limits, Ports, TruncationBudget};
+use crate::redaction::fixtures::NothingHeld;
 
 /// How many words each of the four prefix layers is staged with.
 const PREFIX_WORDS: usize = 6;
@@ -625,6 +626,7 @@ async fn the_newest_failure_reaches_the_model_byte_for_byte_through_a_real_loop_
             validators: &validators,
             context: &policy,
             clock: &FrozenClock,
+            redactor: &NothingHeld,
         },
         &mut [],
     )
@@ -691,6 +693,7 @@ async fn a_loop_run_under_pressure_compacts_nothing() {
             validators: &validators,
             context: &policy,
             clock: &FrozenClock,
+            redactor: &NothingHeld,
         },
         &mut [],
     )

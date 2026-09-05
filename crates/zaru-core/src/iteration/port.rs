@@ -334,12 +334,12 @@ impl Clock for SystemClock {
     }
 }
 
-/// The five ports one run of the loop needs.
+/// The six ports one run of the loop needs.
 ///
 /// Bundled because the loop takes them together and a function taking each
 /// separately is a function whose argument order is a thing to get wrong.
 #[derive(Debug)]
-pub struct Ports<'a, G, X, V, P, K> {
+pub struct Ports<'a, G, X, V, P, K, R: ?Sized> {
     /// Produces candidates.
     pub generator: &'a G,
     /// Makes a candidate's effect real.
@@ -350,4 +350,10 @@ pub struct Ports<'a, G, X, V, P, K> {
     pub context: &'a P,
     /// Supplies elapsed time.
     pub clock: &'a K,
+    /// Removes the harness's own secrets from what reaches the model.
+    ///
+    /// ADR-0008 trigger clause 6's port, decided 2026-09-05. The loop hands
+    /// it to the refinement construction, which is the first of the paths
+    /// from captured bytes into a prompt; see [`crate::redaction`].
+    pub redactor: &'a R,
 }

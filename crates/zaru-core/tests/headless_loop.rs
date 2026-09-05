@@ -139,6 +139,7 @@ async fn a_caller_outside_this_crate_can_drive_the_loop_to_an_outcome() {
             validators: &validators,
             context: &Echo,
             clock: &FrozenClock,
+            redactor: &NothingHeld,
         },
         &mut [&mut events],
     )
