@@ -16,9 +16,8 @@
 //! and the gate then prints a confident, specific, wrong finding naming a file
 //! that is perfectly correct.
 //!
-//! The licence gate did exactly that until 2026-09-05, and was observed doing
-//! it by four separate arcs before the cause was found. `scripts/check-dco.sh`
-//! carries the same shape and is not fixed in this commit.
+//! Both gates did exactly that until 2026-09-05, and the licence gate was
+//! observed doing it by four separate arcs before the cause was found.
 //!
 //! # Why the race itself is pinned structurally
 //!
@@ -327,21 +326,64 @@ fn a_head_that_could_not_read_names_the_file_rather_than_dying_silently() {
     );
 }
 
+/// The same property on the other gate, which shares the shape. Forced rather
+/// than observed: this one has never been seen to redden, because its needle
+/// spans a whole single-line trailer and `grep` therefore always reads to the
+/// end. That is a property of the payload, and a payload is not a guarantee.
+#[test]
+fn a_grep_that_could_not_look_is_not_read_as_a_missing_signoff() {
+    let repo = ScratchRepo::new("dco2");
+    repo.write("README.md", "first\n");
+    repo.stage();
+    repo.git(&[
+        "commit",
+        "--quiet",
+        "-m",
+        "first\n\nSigned-off-by: Gate Check <gate@example.invalid>",
+    ]);
+    repo.write("README.md", "second\n");
+    repo.stage();
+    repo.git(&[
+        "commit",
+        "--quiet",
+        "-m",
+        "second\n\nSigned-off-by: Gate Check <gate@example.invalid>",
+    ]);
+
+    let shim_dir = shim("dco2-shim", "grep", 2);
+    let output = run_with_shim("check-dco.sh", &repo.root, Some(&shim_dir));
+    let stderr = stderr_of(&output);
+
+    assert!(
+        stderr.contains("could not be checked at all, which is not the same as failing the check"),
+        "a grep that could not run must be reported as such; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("(the sign-off grep exited 2)"),
+        "the failure must name the command and the status; stderr was:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("carry no Signed-off-by matching their author"),
+        "a grep that could not look must NOT be reported as a missing sign-off; \
+         stderr was:\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The structural arm: the race, pinned by its cause.
 // ---------------------------------------------------------------------------
 
 /// The mutant this exists for: writing `printf '%s\n' "$x" | grep -q ...` back
-/// into the script. Every forced-status check above would still pass, because
+/// into either script. Every forced-status check above would still pass, because
 /// the pipeline only misreports under a scheduling race that no check can be
 /// made to lose on demand.
 ///
-/// Comment lines are excluded deliberately — the script *describes* the
+/// Comment lines are excluded deliberately — both scripts *describe* the
 /// forbidden shape at length, and a check that could not tell an explanation
 /// from an instruction would forbid explaining the defect it prevents.
 #[test]
 fn neither_gate_script_reads_a_verdict_out_of_a_pipeline_into_grep() {
-    let scripts = ["check-license-headers.sh"];
+    let scripts = ["check-license-headers.sh", "check-dco.sh"];
 
     for script in scripts {
         let path = repo_root().join("scripts").join(script);
