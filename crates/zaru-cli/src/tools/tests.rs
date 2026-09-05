@@ -18,6 +18,7 @@
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
+use crate::redaction::HeldSecrets;
 use crate::tools::decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
 };
@@ -1253,7 +1254,7 @@ fn output_is_truncated_head_and_tail_with_the_elision_marked() {
     let base = std::env::temp_dir().join(nonce("ts-overflow"));
     let mut sink = ScratchOverflow::in_directory(base.clone());
     let shown = captured
-        .present(budget, Some(&mut sink))
+        .present(budget, &HeldSecrets::none(), Some(&mut sink))
         .expect("a sink was supplied");
     let text = shown.stdout.as_str();
 
@@ -1292,7 +1293,7 @@ fn output_is_truncated_head_and_tail_with_the_elision_marked() {
             stdout: body.clone(),
             stderr: String::new(),
         }
-        .present(budget, Some(&mut sink))
+        .present(budget, &HeldSecrets::none(), Some(&mut sink))
         .expect("a sink was supplied");
         if length <= 32 {
             assert_eq!(
@@ -1333,7 +1334,11 @@ fn both_streams_are_carried_separately_and_neither_leaks_into_the_other() {
         stderr: err.clone(),
     };
     let shown = captured
-        .present(OutputBudget::new(4096).expect("a non-zero budget"), None)
+        .present(
+            OutputBudget::new(4096).expect("a non-zero budget"),
+            &HeldSecrets::none(),
+            None,
+        )
         .expect("nothing is elided within this budget");
 
     assert_eq!(
@@ -1382,7 +1387,7 @@ fn output_that_overflows_with_nowhere_to_keep_it_is_refused_rather_than_clipped(
     };
 
     let refusal = captured
-        .present(budget, None)
+        .present(budget, &HeldSecrets::none(), None)
         .expect_err("nothing can hold the rest of this output");
     assert!(
         matches!(
@@ -1399,7 +1404,7 @@ fn output_that_overflows_with_nowhere_to_keep_it_is_refused_rather_than_clipped(
 
     let mut refusing = RefusingOverflow;
     let not_preserved = captured
-        .present(budget, Some(&mut refusing))
+        .present(budget, &HeldSecrets::none(), Some(&mut refusing))
         .expect_err("the sink refused");
     assert!(
         matches!(not_preserved, PresentationRefused::NotPreserved(_)),
@@ -1409,7 +1414,7 @@ fn output_that_overflows_with_nowhere_to_keep_it_is_refused_rather_than_clipped(
     let base = std::env::temp_dir().join(nonce("ts-overflow"));
     let mut sink = ScratchOverflow::in_directory(base.clone());
     let shown = captured
-        .present(budget, Some(&mut sink))
+        .present(budget, &HeldSecrets::none(), Some(&mut sink))
         .expect("a working sink preserves it");
     let path = shown
         .full_text_at
@@ -1438,7 +1443,7 @@ fn output_that_overflows_with_nowhere_to_keep_it_is_refused_rather_than_clipped(
             stdout: "short".to_owned(),
             stderr: String::new(),
         }
-        .present(budget, None)
+        .present(budget, &HeldSecrets::none(), None)
         .is_ok(),
         "output within the budget needs no overflow sink"
     );
@@ -1468,7 +1473,11 @@ fn tool_output_reaches_the_caller_byte_for_byte() {
         stderr: awkward.clone(),
     };
     let shown = captured
-        .present(OutputBudget::new(4096).expect("a non-zero budget"), None)
+        .present(
+            OutputBudget::new(4096).expect("a non-zero budget"),
+            &HeldSecrets::none(),
+            None,
+        )
         .expect("nothing is elided within this budget");
 
     assert_eq!(

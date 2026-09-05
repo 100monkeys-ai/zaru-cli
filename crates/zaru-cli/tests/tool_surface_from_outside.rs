@@ -39,6 +39,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::tools::{
     Allowlist, Assessment, Captured, Confirm, Decision, DestructiveMatch, Invocation, Layer, Mode,
     ModeRefused, Overflow, OverflowFailure, Permission, Question, RefusedBecause, Requirement,
@@ -235,7 +236,7 @@ fn a_caller_outside_this_crate_can_classify_decide_and_be_refused() {
     };
     let budget = zaru_cli::tools::OutputBudget::new(24).expect("a non-zero budget");
     let shown = captured
-        .present(budget, Some(&mut sink))
+        .present(budget, &HeldSecrets::none(), Some(&mut sink))
         .expect("a sink was supplied");
     println!("--- ADR-0011 D5: what a caller is shown of 508 bytes at a 24-byte budget ---");
     println!("  exit {}", shown.exit_code);
@@ -255,7 +256,9 @@ fn a_caller_outside_this_crate_can_classify_decide_and_be_refused() {
         "the preserved file does not carry the whole output"
     );
     assert!(
-        captured.present(budget, None).is_err(),
+        captured
+            .present(budget, &HeldSecrets::none(), None)
+            .is_err(),
         "output that overflows with nowhere to keep it must be refused, not clipped"
     );
 

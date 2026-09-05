@@ -18,6 +18,7 @@ use crate::credentials::fixtures::{
 use crate::credentials::secret::Secret;
 use crate::credentials::store::CredentialStore;
 use crate::redaction::{HeldSecrets, ascii_core, held_secrets_for_redaction, marker};
+use crate::tools::{Captured, OutputBudget};
 use std::borrow::Cow;
 use zaru_core::redaction::{Redacted, Redactor};
 
@@ -250,4 +251,270 @@ fn nothing_here_matches_a_pattern_and_an_unheld_secret_is_carried_through() {
          {:?}",
         redacted.as_str()
     );
+}
+
+#[test]
+fn a_held_value_across_a_tools_elision_boundary_leaves_no_fragment() {
+    // The defect the staged outside-caller evidence caught, kept as a check.
+    // `Captured::present` truncates head-and-tail under ADR-0011 D5; if the
+    // port ran after that, a held value straddling the cut would be halved
+    // and its head would survive in what the model reads, where no later
+    // redaction recognises it. `zaru-core`'s refinement construction had this
+    // rule written down and this path did not.
+    let scratch = ScratchRoot::new();
+    let value = personal_secret_nonce();
+    let core = ascii_core(&value);
+    let (store, sealer, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
+    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+
+    // A budget whose kept head ends **inside** the value: the head keeps
+    // `budget / 2` rounded up, so the value must start before that and end
+    // after it.
+    // Chosen so that the boundary falls inside the value in the *raw* stream
+    // and the whole marker still fits in the kept head of the *redacted* one
+    // -- otherwise this check reddens on a truncated marker rather than on a
+    // surviving fragment, which is a different failure wearing the same red.
+    let budget: usize = 48;
+    let head_kept = budget.div_ceil(2);
+    let lead = "x: ";
+    assert!(
+        lead.len() < head_kept && head_kept < lead.len() + core.len(),
+        "the staging must put the elision boundary inside the value, or a \
+         truncate-first implementation leaves nothing for this check to see"
+    );
+    assert!(
+        lead.len() + marker(&aliases[0]).len() <= head_kept,
+        "the whole marker must fit in the kept head, or the presence \
+         assertion below fails on a truncated marker rather than on a \
+         surviving fragment"
+    );
+    let captured = Captured {
+        exit_code: 0,
+        stdout: format!("{lead}{value}{}", "T".repeat(400)),
+        stderr: String::new(),
+    };
+
+    let mut sink = Preserving::default();
+    let shown = captured
+        .present(
+            OutputBudget::new(budget).expect("a non-zero budget"),
+            &held,
+            Some(&mut sink),
+        )
+        .expect("a sink was supplied");
+
+    let stdout = shown.stdout.as_str();
+    assert!(
+        stdout.contains("bytes elided"),
+        "the staging must actually truncate: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(&value),
+        "the whole held value survived truncation: {stdout:?}"
+    );
+    // The head of the core is what a truncate-first implementation leaves.
+    let head_of_the_core = &core[..head_kept - lead.len()];
+    assert!(
+        !stdout.contains(head_of_the_core),
+        "the first bytes of a held value survived into what a caller is \
+         shown, which is what truncating before redacting leaves behind: \
+         {stdout:?}"
+    );
+    assert!(
+        stdout.contains(&marker(&aliases[0])),
+        "nothing marks where the value was: {stdout:?}"
+    );
+
+    // And the record still has all of it. ADR-0011 D5 promises the whole
+    // output survives where the user can read it; a redaction that reached
+    // the preserved file would have taken the evidence with it.
+    assert!(
+        sink.preserved.contains(&value),
+        "the overflow sink preserved a redacted capture rather than the whole \
+         one: {:?}",
+        sink.preserved
+    );
+}
+
+/// An overflow sink that keeps what it was handed, so a check can assert the
+/// record is raw as well as asserting the excerpt is not.
+#[derive(Default)]
+struct Preserving {
+    preserved: String,
+}
+
+impl crate::tools::Overflow for Preserving {
+    fn preserve(
+        &mut self,
+        captured: &Captured,
+    ) -> Result<std::path::PathBuf, crate::tools::OverflowFailure> {
+        self.preserved = format!("{}{}", captured.stdout, captured.stderr);
+        Ok(std::path::PathBuf::from("/staged/output-0001.txt"))
+    }
+}
+
+// --- The enumeration ADR-0008's decision asks for --------------------------
+
+/// Every product source file the redaction port is called from, and what path
+/// each one is.
+///
+/// **This list is the authority on how many paths there are**, and the
+/// decision's own "three today" is the number that was known when it was
+/// written. It is four: the `redaction-seam` arc found a fourth by reading
+/// the code, and a coordinator ruling of 2026-09-05 put it in. The decision
+/// was amended on ADR-0008 to point at this check rather than at a count.
+const PATHS: [(&str, &str); 6] = [
+    (
+        "zaru-core/src/iteration/refinement.rs",
+        "the refinement prompt's four variable-length parts (ADR-0008 D4)",
+    ),
+    (
+        "zaru-core/src/context/assembly.rs",
+        "the assembled context, covering layers 6 and 7 (ADR-0013 D5 and D1)",
+    ),
+    (
+        "zaru-core/src/tool_call/port.rs",
+        "a refusal's sentence becoming the next turn's content (ADR-0011 D6)",
+    ),
+    (
+        "zaru-cli/src/tools/output.rs",
+        "a tool's two captured streams, before D5's truncation (ADR-0011 D5)",
+    ),
+    (
+        "zaru-cli/src/tools/execute.rs",
+        "the assembled tool result, which is what a `ToolResult` is built from",
+    ),
+    (
+        "zaru-cli/src/session/resume.rs",
+        "a resumed session's interrupted call (ADR-0010 D4)",
+    ),
+];
+
+#[test]
+fn no_captured_bytes_reach_a_prompt_except_through_the_port() {
+    // ADR-0008's decision of 2026-09-05 asks for the paths to be "enumerated
+    // by a check", so that a fifth added later reddens rather than arriving
+    // unnoticed. The type system holds the other half: `Prompt` and
+    // `ToolResult::content` can only be built from a `Redacted`, and
+    // `Redacted` has one constructor which takes a `Redactor`. This walk is
+    // what notices a *new* door being opened or a *new* path appearing.
+    //
+    // Agent lessons §44: when a rule is enforced by matching source text, the
+    // matching is part of the rule, so a walk that found too little must fail
+    // rather than pass. Comment lines are stripped, so a doc comment naming
+    // the call does not count as one.
+    let cli = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("zaru-core")
+        .join("src");
+    let sources: Vec<(std::path::PathBuf, String)> = product_sources(&cli)
+        .into_iter()
+        .chain(product_sources(&core))
+        .collect();
+    let lines: usize = sources.iter().map(|(_, body)| body.lines().count()).sum();
+    println!(
+        "the port's enumeration scanned {} product source file(s) and {lines} line(s) across \
+         zaru-cli and zaru-core",
+        sources.len()
+    );
+    assert!(
+        sources.len() >= 60 && lines >= 8_000,
+        "scanned {} product source file(s) and {lines} line(s) across two crates, which is less \
+         than they hold; the walk is broken rather than the tree clean",
+        sources.len()
+    );
+
+    let mut found: Vec<String> = Vec::new();
+    let mut second_doors: Vec<String> = Vec::new();
+    for (path, body) in &sources {
+        let code: String = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let shown = shown_path(path);
+        if code.contains("Redacted::by(") {
+            found.push(shown.clone());
+        }
+        // The tuple constructor. `Redacted::by` is the only door and the only
+        // place that may build one is the module that declares the type.
+        if code.contains("Redacted(") && !shown.ends_with("zaru-core/src/redaction.rs") {
+            second_doors.push(shown);
+        }
+    }
+    found.sort();
+    found.dedup();
+
+    assert!(
+        !found.is_empty(),
+        "no product source calls the redaction port at all, so ADR-0008 clause 6's decision is \
+         declared and not applied; {} file(s) and {lines} line(s) were scanned",
+        sources.len()
+    );
+    assert!(
+        second_doors.is_empty(),
+        "a second way to build a `Redacted` was added outside the module that declares it, which \
+         is the bypass the absent constructor exists to prevent: {second_doors:?}"
+    );
+
+    let mut expected: Vec<String> = PATHS.iter().map(|(path, _)| (*path).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        found,
+        expected,
+        "the set of product files calling ADR-0008 clause 6's port changed. A path added here is \
+         a path from captured bytes into a model prompt, and the decision of 2026-09-05 requires \
+         it to be named on the record before it is added; a path removed here is a path that has \
+         stopped being redacted. What each known one is:\n{}",
+        PATHS
+            .iter()
+            .map(|(path, what)| format!("  {path} -- {what}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// A path as this check names it: the crate directory and everything under
+/// it, with the platform's separator normalised.
+///
+/// Not the absolute path, which carries the worktree's own name -- the
+/// `manifest-validators` arc reported a false offender because a substring
+/// test matched the directory it was working in.
+fn shown_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    for crate_name in ["zaru-cli/src/", "zaru-core/src/"] {
+        if let Some(at) = text.rfind(crate_name) {
+            return text[at..].to_owned();
+        }
+    }
+    text
+}
+
+/// Every `.rs` file under `root` that is not part of a module's test tree.
+fn product_sources(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    let mut found = Vec::new();
+    let mut frontier = vec![root.to_path_buf()];
+    while let Some(here) = frontier.pop() {
+        let entries = std::fs::read_dir(&here)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", here.display()));
+        for entry in entries {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                frontier.push(path);
+                continue;
+            }
+            if path.extension().is_some_and(|extension| extension == "rs")
+                && !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("fixtures.rs" | "tests.rs")
+                )
+            {
+                let body = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
+                found.push((path, body));
+            }
+        }
+    }
+    found
 }

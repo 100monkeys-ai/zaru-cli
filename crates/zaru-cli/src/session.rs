@@ -46,8 +46,11 @@
 //!
 //! # This module designs no redaction, and the transcript is where a value lands
 //!
-//! [ADR-0008]'s trigger clause 6 is open and nothing here answers it.
-//! ADR-0010's own Negative section is explicit about the consequence:
+//! [ADR-0008]'s trigger clause 6 was decided on 2026-09-05 — one `Redactor`
+//! port on every path from captured bytes into a **model prompt** — and
+//! nothing on this path is such a path. The transcript is the record, and the
+//! decision is deliberately not applied to it. ADR-0010's own Negative
+//! section is explicit about the consequence:
 //! "Plain-text transcripts on disk contain whatever the session contained,
 //! including secrets that appeared in command output. Filesystem permissions
 //! are the only protection, and that is worth saying out loud rather than
@@ -57,7 +60,17 @@
 //! — and **no filter is added anywhere**. What the checks assert instead is
 //! that a planted value reaches the transcript, where the record puts it, and
 //! reaches no refusal and no `Debug` of anything that is *about* a session
-//! rather than *is* its data.
+//! rather than *is* its data. `tests/redaction_from_outside.rs` asserts the
+//! same thing from the other side, on a session a model-driven `fs.read`
+//! actually wrote: the value is absent from what the model was given and
+//! present in the session's files.
+//!
+//! One thing on this path does pass the port, and it is not the record.
+//! [`resume::Interrupted::for_the_model`] redacts the line it hands a model
+//! under ADR-0010 D4, and leaves [`ToolCall::line`] untouched.
+//!
+//! [`resume::Interrupted::for_the_model`]: crate::session::Interrupted::for_the_model
+//! [`ToolCall::line`]: crate::session::ToolCall::line
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store

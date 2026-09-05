@@ -319,7 +319,7 @@ where
                 self.record(&Record::ToolCall(ToolCall::started(&entry)))?;
                 let captured = self.act(tool, &target).await?;
                 let presented = captured
-                    .present(self.budget, Some(&mut *self.overflow))
+                    .present(self.budget, self.redactor, Some(&mut *self.overflow))
                     .map_err(|refused| PortFailure::new(refused.to_string()))?;
                 self.record(&Record::ToolCall(ToolCall::completed(&entry)))?;
                 Ok(ToolOutcome::Completed {
@@ -379,17 +379,14 @@ impl<W, S, C, F> Executor<'_, W, S, C, F> {
 /// fed to the model." Both are here, labelled, and the path of any preserved
 /// overflow with them — which is D5's "with the path shown".
 ///
-/// # This is where ADR-0008 clause 6's port applies on the tool path
+/// # The port is applied twice on this path, and each pass has a job
 ///
-/// It replaces the identity seam the `tool-surface` arc left in
-/// [`crate::tools::output`], and it sits **here** rather than there
-/// deliberately. That seam was on the path from a capture to *its caller*,
-/// which includes the human; D5 says both streams are surfaced, and redacting
-/// what the user is shown of their own machine's output is not what clause 6
-/// asks for. This function is the narrower thing: the point where a
-/// [`Presented`] becomes the bytes a **model** reads. The `Presented` itself,
-/// the `Captured` behind it, the transcript and the preserved overflow file
-/// all keep raw bytes.
+/// [`Captured::present`] applies it to each stream **before** truncating, so
+/// that a held value cannot be cut in half at the elision boundary and leave
+/// its head behind. This function applies it again to the assembled text,
+/// which is what produces the [`Redacted`] a [`ToolResult`] can be built
+/// from — the type gate rather than the filter. Redaction is idempotent, so
+/// the second pass changes nothing.
 fn render<R: Redactor + ?Sized>(redactor: &R, presented: &Presented) -> Redacted {
     let mut out = format!("exit code: {}\n", presented.exit_code);
     out.push_str("stdout:\n");

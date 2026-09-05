@@ -47,14 +47,16 @@
 //! no argument schema for any of them; [`ToolDescriptor::parameters`] is an
 //! opaque string and the question is raised on that record.
 //!
-//! **Anything about redaction.** [ADR-0008]'s trigger clause 6 is open. A
-//! tool's output reaching a model prompt is the **third** path that clause
-//! blocks on, after the validator's and the tool surface's, and this module
-//! adds no filter, no policy and no third seam — the two identity functions
-//! that already exist are where a decision attaches. The event stream carries
-//! byte counts rather than content, so it does not become a fourth place a
-//! secret can land. Clause 6 still blocks acceptance and nothing here changes
-//! that.
+//! # Redaction, which this module no longer leaves open
+//!
+//! [ADR-0008]'s trigger clause 6 was decided on 2026-09-05 and a tool's
+//! output becoming the next turn's content is one of the paths it names.
+//! [`ToolResult::content`] is a [`Redacted`](crate::redaction::Redacted), so
+//! this loop cannot hand a model text that did not pass the port, and
+//! [`ToolOutcome::for_the_model`] is the one place a refusal's own sentence
+//! does. **The event stream is deliberately not redacted**: it carries byte
+//! counts rather than content, [ADR-0010] D2's transcript is written from it,
+//! and that record keeps whatever the session kept.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop

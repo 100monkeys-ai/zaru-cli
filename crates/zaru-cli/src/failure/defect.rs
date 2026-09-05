@@ -38,10 +38,14 @@
 //! That is a stronger guarantee than a field a renderer is trusted to omit,
 //! and it matters because a panic's message is the one field on this path that
 //! can carry arbitrary captured text — a failing command's output, a provider
-//! response — which is the surface [ADR-0008]'s open trigger clause 6 blocks
-//! on. **This module designs no redaction and adds no filter.** Whether a
-//! defect report may ever show the message is recorded as an open question on
-//! ADR-0016 with its alternatives named.
+//! response. **This module designs no redaction and adds no filter**, and
+//! [ADR-0008]'s trigger clause 6 — decided on 2026-09-05 — does not ask it
+//! to: that decision covers every path from captured bytes into a **model
+//! prompt**, and a defect report is read by a person. The structural
+//! guarantee here is stronger than a filter anyway, because the message is
+//! not in the value a presentation is built from. Whether a defect report may
+//! ever show the message is recorded as an open question on ADR-0016 with its
+//! alternatives named.
 //!
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript

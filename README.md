@@ -60,6 +60,16 @@ harness — with the version and where to report it — rather than as a Rust
 panic. The process exits with a documented code for what happened. Today the
 binary does nothing that can fail, so the only code it can reach is `0`.
 
+Cutting across three of those eight is one port rather than a ninth piece:
+every path from captured bytes into a model prompt passes a `Redactor`, and
+the type a prompt is built from cannot be made any other way. The single
+implementation removes the bearer values the harness is itself holding in the
+credential store, by exact value and by the ASCII core an escaping formatter
+would leave intact. It matches no patterns and looks for nothing it does not
+hold, so a secret the harness never saw is out of scope and said to be. The
+transcript, the checkpoint and the preserved output of an oversized command
+keep the raw bytes: redaction is on what a model reads, not on the record.
+
 No provider, no SEAL, no terminal interface, and no command surface exists.
 Seven of the eight pieces above are reachable only from their own tests.
 

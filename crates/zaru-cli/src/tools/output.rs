@@ -47,17 +47,32 @@
 //! showing a path that does not exist would be exactly the unnoticeable
 //! truncation D5 names.
 //!
-//! # A capture is raw here, and redaction is not this module's
+//! # Redaction happens before truncation, and the order is the whole point
 //!
 //! The identity seam this module used to carry — one named private function
 //! on the path from a tool's captured output to its caller — is gone.
 //! [ADR-0008]'s trigger clause 6 was decided on 2026-09-05 and its port is
-//! applied where a [`Presented`] becomes the bytes a **model** reads, in
-//! [`crate::tools::execute`]. It is not applied here, because this path also
-//! serves the human: D5 says both streams are surfaced, and redacting what a
-//! user is shown of their own machine's output is not what that clause asks
-//! for. A [`Captured`] and a [`Presented`] carry raw bytes, and so do the
-//! transcript and the overflow file written from them.
+//! applied here, to each stream, **before** [`Excerpt`] keeps its head and
+//! its tail.
+//!
+//! A first version of this arc applied the port one step later, where a
+//! [`Presented`] becomes the bytes a model reads. The staged evidence caught
+//! it: a held value straddling the elision boundary is cut in half, its head
+//! survives in the kept text, and no later redaction recognises the fragment
+//! — the value published by a code path that ran the port. `zaru-core`'s
+//! refinement construction had the same rule written down and this module did
+//! not, which is the shape a rule stated in one of two places always takes.
+//!
+//! **The consequence, stated rather than left to be discovered: a caller is
+//! shown the marker too, not only the model.** D5's "both surfaced" is about
+//! stdout and stderr both being present, and it is untouched. What a reader
+//! loses is the ability to see a bearer the harness itself is holding, which
+//! they can read out of the credential store instead.
+//!
+//! **[`Captured`] is untouched, and so is what the overflow sink preserves.**
+//! [`Captured::present`] hands `self` to [`Overflow::preserve`], so the whole
+//! raw capture goes to [ADR-0010]'s session directory exactly as D5 requires.
+//! Redaction is on what a model reads and not on the record.
 //!
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -66,6 +81,7 @@
 
 use core::fmt;
 use std::path::PathBuf;
+use zaru_core::redaction::{Redacted, Redactor};
 
 /// A budget the caller passed that cannot bound anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,13 +284,18 @@ impl Captured {
     /// stream exceeds the budget and `overflow` is `None`.
     ///
     /// [`PresentationRefused::NotPreserved`] when the sink refused.
-    pub fn present(
+    ///
+    /// `redactor` is ADR-0008 clause 6's port and is applied to each stream
+    /// **before** it is truncated. See the module documentation for the
+    /// defect that order prevents.
+    pub fn present<R: Redactor + ?Sized>(
         &self,
         budget: OutputBudget,
+        redactor: &R,
         overflow: Option<&mut dyn Overflow>,
     ) -> Result<Presented, PresentationRefused> {
-        let stdout = excerpt(&self.stdout, budget);
-        let stderr = excerpt(&self.stderr, budget);
+        let stdout = excerpt(Redacted::by(redactor, &self.stdout).as_str(), budget);
+        let stderr = excerpt(Redacted::by(redactor, &self.stderr).as_str(), budget);
 
         let elided_bytes = stdout.elided.unwrap_or_default() + stderr.elided.unwrap_or_default();
         let full_text_at = if elided_bytes == 0 {
@@ -283,6 +304,10 @@ impl Captured {
             let Some(overflow) = overflow else {
                 return Err(PresentationRefused::ThereWasNowhereToKeepTheRest { elided_bytes });
             };
+            // `self`, not the redacted excerpts. ADR-0011 D5 promises the
+            // **whole** output survives where the user can read it, and
+            // ADR-0010's Negative section says the session's files carry
+            // whatever the session carried.
             Some(
                 overflow
                     .preserve(self)

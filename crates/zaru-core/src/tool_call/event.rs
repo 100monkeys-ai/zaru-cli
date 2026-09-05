@@ -30,10 +30,17 @@
 //! the load-bearing one. [ADR-0010] D2 writes every event to
 //! `transcript.jsonl`, and ADR-0011 D4 already writes the tool call there, so
 //! carrying the output here would put it on disk twice. And a tool's output
-//! is the third path into a model prompt that [ADR-0008]'s open trigger
-//! clause 6 blocks on — after the validator's and the tool surface's — so
-//! this stream deliberately does not become a fourth place a secret can
-//! land. **No redaction is designed here and clause 6 is untouched.**
+//! is one of the paths into a model prompt that [ADR-0008]'s trigger clause 6
+//! covers, decided on 2026-09-05 — so this stream deliberately does not
+//! become one more place a secret can land.
+//!
+//! **This stream carries raw text and that is not an oversight.** ADR-0010 D2
+//! makes the transcript this stream, and that record's Negative section says
+//! the transcript holds whatever the session held. Redaction applies to what
+//! a model reads, which is `ToolResult::content`, and not to the record.
+//! `a_refusals_sentence_is_redacted_before_it_becomes_the_next_turns_content`
+//! asserts both halves at once: the value absent from what the model saw, and
+//! the raw sentence present on `ToolRefused`.
 //!
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript

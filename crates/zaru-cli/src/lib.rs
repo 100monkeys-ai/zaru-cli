@@ -23,10 +23,19 @@
 //! crate "Binary, configuration, session lifecycle, the credential store, the
 //! local tool surface and its permission model".
 //!
-//! Seven things are built here, and the sentence that said ADR-0010's session
-//! lifecycle was not is corrected: it landed on 2026-09-04. Read off this
-//! crate's own module list rather than off a commit log — `config`,
-//! `credentials`, `failure`, `manifest`, `providers`, `session` and `tools`.
+//! Nine things are built here. Read off this crate's own module list rather
+//! than off a commit log — `config`, `credentials`, `failure`, `manifest`,
+//! `providers`, `redaction`, `runtime`, `session` and `tools`.
+//!
+//! [`redaction`] is the newest and it is the **only** product implementation
+//! of [ADR-0008] trigger clause 6's port, decided on 2026-09-05: the harness
+//! removes from what it sends a model the bearer values it is itself holding
+//! in [ADR-0007]'s store, by exact value and by ASCII core, and looks for
+//! nothing else. Unknown secrets in command output are named as out of scope
+//! by that decision. `zaru-core` declares the port and implements it nowhere.
+//!
+//! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+//! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //!
 //! What that means for what acts. `session` writes a real directory, a real
 //! append-only transcript and a real checkpoint. `tools` decides, and **two
