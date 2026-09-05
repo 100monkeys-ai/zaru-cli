@@ -331,3 +331,196 @@ pub(crate) fn futures_lite_block_on<F: core::future::Future>(future: F) -> F::Ou
         ),
     }
 }
+
+// --- ADR-0008's inner loop: the two reserved questions, as ports ------------
+
+/// A model that answers with whatever it was staged with, and records the
+/// request it was given.
+///
+/// The request is kept because the property under test is partly about **what
+/// the generator asked for** — the seven tools a turn offers — and a check
+/// that only read the answer could not see it.
+struct Staged {
+    answer: std::sync::Mutex<Option<zaru_core::tool_call::ModelResponse>>,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl Staged {
+    fn answering(answer: zaru_core::tool_call::ModelResponse) -> Self {
+        Self {
+            answer: std::sync::Mutex::new(Some(answer)),
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn tools_it_was_offered(&self) -> Vec<String> {
+        self.asked.lock().expect("not poisoned").clone()
+    }
+}
+
+impl zaru_core::tool_call::Model for Staged {
+    fn capabilities(&self) -> zaru_core::tool_call::Capabilities {
+        zaru_core::tool_call::Capabilities { tool_calling: true }
+    }
+
+    async fn respond(
+        &self,
+        request: &zaru_core::tool_call::ModelRequest<'_>,
+    ) -> Result<zaru_core::tool_call::ModelResponse, zaru_core::iteration::PortFailure> {
+        *self.asked.lock().expect("not poisoned") =
+            request.tools.iter().map(|tool| tool.name.clone()).collect();
+        Ok(self
+            .answer
+            .lock()
+            .expect("not poisoned")
+            .take()
+            .expect("staging: the model was asked twice and staged once"))
+    }
+}
+
+fn usage() -> zaru_core::tool_call::TokenUsage {
+    zaru_core::tool_call::TokenUsage {
+        prompt: 11,
+        completion: 7,
+    }
+}
+
+fn prompt(text: &str) -> zaru_core::iteration::Prompt {
+    zaru_core::iteration::Prompt::new(zaru_core::redaction::Redacted::by(
+        &HeldSecrets::none(),
+        text,
+    ))
+}
+
+/// The generator asks with the seven tools a turn offers, and authors no prose.
+///
+/// This is the whole of how a candidate reaches the harness without a sentence
+/// anybody wrote. ADR-0008 D1's refinement prompt is fixed in `zaru-core` and
+/// `TurnContext::assemble` adds nothing to it, so the only place a "produce
+/// tool calls" instruction could live is a sentence this arc invented — and
+/// the provider's own function-calling contract makes one unnecessary.
+///
+/// Asserted against `ToolName::ALL` rather than against a literal list, so the
+/// day an eighth built-in exists this check is about the eighth too.
+///
+/// Watched red by offering the model no tools, which printed *"the generator
+/// asked with 0 tools and a turn's first exchange offers 7; a candidate that
+/// is a tool call needs the same contract a turn's call uses"*.
+#[tokio::test]
+async fn the_generator_asks_with_the_same_tools_a_turn_offers() {
+    use zaru_core::iteration::Generator as _;
+
+    let model = Staged::answering(zaru_core::tool_call::ModelResponse::Text {
+        text: "nothing to apply".to_owned(),
+        tokens: usage(),
+    });
+    let generating = crate::compose::Generating::over(&model);
+    generating
+        .generate(&prompt("do the work"))
+        .await
+        .expect("the staged model answered");
+
+    let offered = model.tools_it_was_offered();
+    assert_eq!(
+        offered.len(),
+        crate::tools::ToolName::ALL.len(),
+        "the generator asked with {} tools and a turn's first exchange offers {}; a candidate \
+         that is a tool call needs the same contract a turn's call uses",
+        offered.len(),
+        crate::tools::ToolName::ALL.len()
+    );
+    for tool in crate::tools::ToolName::ALL {
+        assert!(
+            offered.iter().any(|name| name == tool.as_str()),
+            "the generator did not offer {}, so a candidate could not ask for it",
+            tool.as_str()
+        );
+    }
+}
+
+/// A candidate's text is what the model asked for, with no sentence around it.
+///
+/// The text is what `zaru-core` puts under `--- ATTEMPT n ---` in the next
+/// refinement prompt, so the model is shown its own previous attempt. ADR-0008
+/// D4 forbids paraphrase on the failure-text path and the same reasoning holds
+/// one step earlier: a harness sentence wrapped around the attempt would be
+/// the model reading a description of what it asked for.
+///
+/// The staged arguments carry a nonce so that an implementation which
+/// hard-coded a plausible rendering could not produce them.
+///
+/// Watched red by wrapping the rendering in *"the model proposed: "*, which
+/// printed *"the candidate's text carries a sentence this harness wrote:
+/// \"the model proposed: fs.write ...\""*.
+#[tokio::test]
+async fn a_candidates_text_is_the_calls_it_asked_for_and_no_sentence_of_ours() {
+    use zaru_core::iteration::Generator as _;
+
+    let arguments = r#"{"path":"notes.txt","contents":"rehearsal 4173"}"#;
+    let model = Staged::answering(zaru_core::tool_call::ModelResponse::Calls {
+        calls: vec![zaru_core::tool_call::ToolRequest {
+            id: "call-1".to_owned(),
+            name: "fs.write".to_owned(),
+            arguments: arguments.to_owned(),
+        }],
+        tokens: usage(),
+    });
+    let generating = crate::compose::Generating::over(&model);
+    let generated = generating
+        .generate(&prompt("write the file"))
+        .await
+        .expect("the staged model answered");
+
+    let text = generated.candidate.as_ref();
+    assert_eq!(
+        text,
+        format!("fs.write {arguments}"),
+        "the candidate's text carries a sentence this harness wrote: {text:?}"
+    );
+    assert_eq!(
+        generated.candidate.calls().len(),
+        1,
+        "a `Calls` answer is a candidate that proposes those calls"
+    );
+    assert_eq!(
+        generated.tokens,
+        usage().total(),
+        "the candidate reports what the exchange cost, from the provider's own number"
+    );
+}
+
+/// A `Text` answer is a candidate with nothing to apply, and says so by being
+/// empty rather than by an error.
+///
+/// The degenerate arm is honest: the model proposed nothing the harness can
+/// apply, the execution will say so, and the validators then report on a tree
+/// nothing changed — a failing iteration, which is the loop working, and not
+/// ADR-0016's error register.
+///
+/// Watched red by treating a `Text` answer as a port failure, which printed
+/// *"a model that answered in prose is not a port failing"*.
+#[tokio::test]
+async fn a_prose_answer_is_a_candidate_with_nothing_to_apply() {
+    use zaru_core::iteration::Generator as _;
+
+    let said = "I would rather not — 日本語 — nonce-4173";
+    let model = Staged::answering(zaru_core::tool_call::ModelResponse::Text {
+        text: said.to_owned(),
+        tokens: usage(),
+    });
+    let generating = crate::compose::Generating::over(&model);
+    let generated = generating
+        .generate(&prompt("write the file"))
+        .await
+        .expect("a model that answered in prose is not a port failing");
+
+    assert!(
+        generated.candidate.calls().is_empty(),
+        "a prose answer proposes no calls, so there is nothing to apply"
+    );
+    assert_eq!(
+        generated.candidate.as_ref(),
+        said,
+        "the candidate's text is what the model said, byte for byte"
+    );
+}

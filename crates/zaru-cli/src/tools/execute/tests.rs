@@ -1151,3 +1151,278 @@ async fn the_two_handles_to_one_tool_surface_return_one_descriptor_list() {
          identity between two nothings"
     );
 }
+
+/// A candidate applied whole reports zero, and its output is what the tools
+/// produced.
+///
+/// ADR-0008's reserved question — "what an execution *is*" — was decided on
+/// 2026-09-05 as a candidate applied through the same tool surface a turn
+/// uses. This is that, from the executor's own side.
+///
+/// Watched red by reporting `1` for a candidate every call of which completed,
+/// which printed *"a candidate whose every call completed reported a failing
+/// execution, so the validators would be told the change did not apply"*.
+#[tokio::test]
+async fn a_candidate_applied_whole_reports_zero_and_carries_what_the_tools_produced() {
+    use zaru_core::iteration::Executor as _;
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("resolves");
+    let scratch = Scratch::new();
+    let marker = nonce("applied");
+    std::fs::write(tree.project().join("inside").join("file"), &marker).expect("staging");
+
+    let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
+    let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+    let allow = StagedAllowlist(true);
+    let destructive = StagedDestructive(false);
+    let unbuilt = Unbuilt;
+    let membrane = NoMembrane;
+    let executor = executor!(
+        &working,
+        Mode::Yolo,
+        &allow,
+        &destructive,
+        None,
+        &membrane,
+        &mut overflow,
+        &mut transcript,
+        &unbuilt
+    );
+    let cell = tokio::sync::Mutex::new(executor);
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
+
+    let candidate = candidate(&[("fs.read", &["inside/file"]), ("fs.list", &["inside"])]).await;
+    let outcome = applying.execute(&candidate).await.expect("no port failed");
+
+    assert_eq!(
+        outcome.exit_code, 0,
+        "a candidate whose every call completed reported a failing execution, so the validators \
+         would be told the change did not apply"
+    );
+    assert!(
+        outcome.stdout.contains(&marker),
+        "the execution's standard output must carry what the tools produced, and it carried {:?}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stderr.is_empty(),
+        "nothing was refused, so there is nothing for standard error to say: {:?}",
+        outcome.stderr
+    );
+}
+
+/// A refused call stops the candidate, and the call after it is not applied.
+///
+/// **For the security corpus, which only grows.** ADR-0011 D3's prompt is a
+/// question about one call, and applying a candidate's second write after the
+/// user declined its first would apply part of a change they said no to.
+///
+/// **The staging is the discriminating part and it took two attempts.** A
+/// confirmer that declines *everything* cannot separate "stopped at the first
+/// refusal" from "continued, and the second was refused too" — both leave the
+/// second file absent, so the check passes against an executor with no stop in
+/// it at all. That mutant survived, which is [Verification lessons] §13: an
+/// invariant holding because both sides are wrong together. So the confirmer
+/// declines the **first** question and accepts every one after it, and the
+/// second write is a call that would land if anything asked for it.
+///
+/// **Asserted on the filesystem**, not on the outcome: an executor that
+/// reported a refusal and wrote the file anyway is exactly the defect an
+/// outcome assertion cannot see.
+///
+/// Watched red by removing the `break`, which printed *"the second call of a
+/// candidate was applied after the first was refused: the file the user never
+/// approved exists"*.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[tokio::test]
+async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied() {
+    use zaru_core::iteration::Executor as _;
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("resolves");
+    let scratch = Scratch::new();
+    let first = tree.project().join("inside").join("first");
+    let second = tree.project().join("inside").join("second");
+    let candidate = candidate(&[
+        ("fs.write", &["inside/first", "one"]),
+        ("fs.write", &["inside/second", "two"]),
+    ])
+    .await;
+
+    let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
+    let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+    // Nothing pre-approved, so every write is a call that needs asking.
+    let allow = StagedAllowlist(false);
+    let destructive = StagedDestructive(false);
+    let unbuilt = Unbuilt;
+    let membrane = NoMembrane;
+    let confirmer = Declining::once();
+    let executor = executor!(
+        &working,
+        Mode::Ask,
+        &allow,
+        &destructive,
+        Some(&confirmer as &(dyn Confirm + Sync)),
+        &membrane,
+        &mut overflow,
+        &mut transcript,
+        &unbuilt
+    );
+    let cell = tokio::sync::Mutex::new(executor);
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
+    let outcome = applying.execute(&candidate).await.expect("no port failed");
+
+    assert!(
+        !second.exists(),
+        "the second call of a candidate was applied after the first was refused: the file the \
+         user never approved exists at {}",
+        second.display()
+    );
+    assert!(
+        !first.exists(),
+        "the refused call itself wrote its file, which is a refusal in name only: {}",
+        first.display()
+    );
+    assert_eq!(
+        confirmer.asked(),
+        1,
+        "the candidate stopped at the refusal, so exactly one question reached the user; {} did",
+        confirmer.asked()
+    );
+    assert_ne!(
+        outcome.exit_code, 0,
+        "a candidate the permission model stopped did not apply, and an execution reporting zero \
+         would tell the validators it did"
+    );
+    assert!(
+        !outcome.stderr.is_empty(),
+        "the refusal's own sentence is what standard error carries, and it carried nothing"
+    );
+
+    // The accepting sibling, on the same candidate: a confirmer that says yes
+    // applies both writes. Without it the refusal above is satisfied by an
+    // executor that refuses everything.
+    let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
+    let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+    let accepting = Declining::nothing();
+    let executor = executor!(
+        &working,
+        Mode::Ask,
+        &allow,
+        &destructive,
+        Some(&accepting as &(dyn Confirm + Sync)),
+        &membrane,
+        &mut overflow,
+        &mut transcript,
+        &unbuilt
+    );
+    let cell = tokio::sync::Mutex::new(executor);
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
+    let accepted = applying.execute(&candidate).await.expect("no port failed");
+    assert_eq!(
+        accepted.exit_code, 0,
+        "the accepting sibling must apply, or the refusal above says nothing about the \
+         permission model"
+    );
+    assert!(
+        first.exists() && second.exists(),
+        "both writes must land when nothing refuses them"
+    );
+}
+
+/// A user who declines the first `decline` questions and accepts the rest.
+///
+/// `Declining::once()` is the discriminating staging: the call after the
+/// refusal is one that **would** land, so an executor that carries on past a
+/// refusal leaves a file behind. A confirmer declining everything cannot
+/// separate an executor that stops from one that does not — see the check
+/// above, whose first form staged exactly that and let the mutant survive.
+struct Declining {
+    decline: usize,
+    asked: std::sync::Mutex<usize>,
+}
+
+impl Declining {
+    fn once() -> Self {
+        Self {
+            decline: 1,
+            asked: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn nothing() -> Self {
+        Self {
+            decline: 0,
+            asked: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn asked(&self) -> usize {
+        *self.asked.lock().expect("not poisoned")
+    }
+}
+
+impl Confirm for Declining {
+    fn confirm(&self, _question: &Question) -> Result<bool, ConfirmFailure> {
+        let mut asked = self.asked.lock().expect("not poisoned");
+        *asked += 1;
+        Ok(*asked > self.decline)
+    }
+}
+
+/// A candidate carrying the named calls, built from the same `request` helper
+/// every other check here uses.
+///
+/// Built **through the generator** rather than by hand, so the shape a check
+/// applies is the shape a model's answer actually produces. `Candidate` has no
+/// public constructor for exactly that reason.
+async fn candidate(calls: &[(&str, &[&str])]) -> crate::compose::Candidate {
+    use zaru_core::iteration::Generator as _;
+
+    let staged: Vec<ToolRequest> = calls
+        .iter()
+        .map(|(name, values)| request(name, values))
+        .collect();
+    let model = StagedCalls(std::sync::Mutex::new(Some(staged)));
+    crate::compose::Generating::over(&model)
+        .generate(&staged_prompt())
+        .await
+        .expect("the staged model answered")
+        .candidate
+}
+
+/// A model that answers once with the calls it was staged with.
+struct StagedCalls(std::sync::Mutex<Option<Vec<ToolRequest>>>);
+
+impl zaru_core::tool_call::Model for StagedCalls {
+    fn capabilities(&self) -> zaru_core::tool_call::Capabilities {
+        zaru_core::tool_call::Capabilities { tool_calling: true }
+    }
+
+    async fn respond(
+        &self,
+        _request: &zaru_core::tool_call::ModelRequest<'_>,
+    ) -> Result<zaru_core::tool_call::ModelResponse, PortFailure> {
+        Ok(zaru_core::tool_call::ModelResponse::Calls {
+            calls: self
+                .0
+                .lock()
+                .expect("not poisoned")
+                .take()
+                .expect("staging: asked twice, staged once"),
+            tokens: zaru_core::tool_call::TokenUsage {
+                prompt: 0,
+                completion: 0,
+            },
+        })
+    }
+}
+
+fn staged_prompt() -> zaru_core::iteration::Prompt {
+    zaru_core::iteration::Prompt::new(zaru_core::redaction::Redacted::by(
+        &HeldSecrets::none(),
+        "staging",
+    ))
+}
