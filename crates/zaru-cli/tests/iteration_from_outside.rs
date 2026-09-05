@@ -906,118 +906,132 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
         .expect("a current-thread runtime");
 
     let pid = runtime.block_on(async {
-        let mut transcript = Transcript::append_to(&transcript_path).expect("the transcript opens");
-        let mut overflow = SessionOverflow::in_session(session.directory());
-        let allowlist = NothingAllowed;
-        let destructive = NothingDestructive;
-        let membrane = NoMembrane;
-        let unbuilt = Unbuilt;
-        let environment = Environment::inherited_minimum().expect("a child environment");
-        let spawn = Spawn::new(
-            &working,
-            environment,
-            ProcessCeiling::new(Duration::from_secs(20)).expect("a usable ceiling"),
-        );
-        let executor = Executor {
-            working_directory: &working,
-            mode: Mode::Yolo,
-            allowlist: &allowlist,
-            destructive: &destructive,
-            confirmer: None,
-            verdicts: &membrane,
-            budget: OutputBudget::new(4096).expect("a usable budget"),
-            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
-            overflow: &mut overflow,
-            transcript: &mut transcript,
-            redactor: &held,
-            subprocess: &spawn,
-            fetch: &unbuilt,
-        };
-        let clock = Ticking::default();
-        let policy = Policy;
-        let patterns =
-            zaru_cli::validators::Patterns::new(zaru_cli::cli::layers::pattern_ceiling());
-        let schemas =
-            zaru_cli::validators::SchemaFiles::new(&working, zaru_cli::cli::layers::file_ceiling());
-        let dispatch = Dispatch::new(&plan, &spawn, &patterns, &schemas);
-
-        let cell = tokio::sync::Mutex::new(executor);
-        let mut tools = Shared::over(&cell);
-        let generating = Generating::over(&provider);
-        let applying = Applying::through(tools);
-        let inner = Inner::over(
-            zaru_core::iteration::Ports {
-                generator: &generating,
-                executor: &applying,
-                validators: &dispatch,
-                context: &policy,
-                clock: &clock,
+        let pid = {
+            let mut transcript =
+                Transcript::append_to(&transcript_path).expect("the transcript opens");
+            let mut overflow = SessionOverflow::in_session(session.directory());
+            let allowlist = NothingAllowed;
+            let destructive = NothingDestructive;
+            let membrane = NoMembrane;
+            let unbuilt = Unbuilt;
+            let environment = Environment::inherited_minimum().expect("a child environment");
+            let spawn = Spawn::new(
+                &working,
+                environment,
+                ProcessCeiling::new(Duration::from_secs(20)).expect("a usable ceiling"),
+            );
+            let executor = Executor {
+                working_directory: &working,
+                mode: Mode::Yolo,
+                allowlist: &allowlist,
+                destructive: &destructive,
+                confirmer: None,
+                verdicts: &membrane,
+                budget: OutputBudget::new(4096).expect("a usable budget"),
+                search_ceiling: zaru_cli::cli::layers::search_ceiling(),
+                overflow: &mut overflow,
+                transcript: &mut transcript,
                 redactor: &held,
-            },
-            Limits {
-                ceiling: Ceiling::new(2).expect("a usable ceiling"),
-                budget: TruncationBudget::new(4096).expect("a usable budget"),
-            },
-            &transcript_path,
-        );
-        let witness = ToolCalling::required(&provider, "staged").expect("it calls tools");
-        let mut sink = Records::appending_to(&transcript_path).expect("a second handle");
-        let mut sinks: [&mut dyn zaru_core::tool_call::EventSink; 1] = [&mut sink];
-        let running = run(
-            1,
-            Start::Task("do the work"),
-            ToolCallCeiling::new(8).expect("a usable ceiling"),
-            witness,
-            Ports {
-                model: &provider,
-                tools: &mut tools,
-                context: &policy,
-                clock: &clock,
-                redactor: &held,
-            },
-            Some(&inner),
-            &mut sinks,
-        );
-        tokio::pin!(running);
+                subprocess: &spawn,
+                fetch: &unbuilt,
+            };
+            let clock = Ticking::default();
+            let policy = Policy;
+            let patterns =
+                zaru_cli::validators::Patterns::new(zaru_cli::cli::layers::pattern_ceiling());
+            let schemas = zaru_cli::validators::SchemaFiles::new(
+                &working,
+                zaru_cli::cli::layers::file_ceiling(),
+            );
+            let dispatch = Dispatch::new(&plan, &spawn, &patterns, &schemas);
 
-        let mut polls = 0_usize;
-        loop {
-            tokio::select! {
-                biased;
+            let cell = tokio::sync::Mutex::new(executor);
+            let mut tools = Shared::over(&cell);
+            let generating = Generating::over(&provider);
+            let applying = Applying::through(tools);
+            let inner = Inner::over(
+                zaru_core::iteration::Ports {
+                    generator: &generating,
+                    executor: &applying,
+                    validators: &dispatch,
+                    context: &policy,
+                    clock: &clock,
+                    redactor: &held,
+                },
+                Limits {
+                    ceiling: Ceiling::new(2).expect("a usable ceiling"),
+                    budget: TruncationBudget::new(4096).expect("a usable budget"),
+                },
+                &transcript_path,
+            );
+            let witness = ToolCalling::required(&provider, "staged").expect("it calls tools");
+            let mut sink = Records::appending_to(&transcript_path).expect("a second handle");
+            let mut sinks: [&mut dyn zaru_core::tool_call::EventSink; 1] = [&mut sink];
+            let running = run(
+                1,
+                Start::Task("do the work"),
+                ToolCallCeiling::new(8).expect("a usable ceiling"),
+                witness,
+                Ports {
+                    model: &provider,
+                    tools: &mut tools,
+                    context: &policy,
+                    clock: &clock,
+                    redactor: &held,
+                },
+                Some(&inner),
+                &mut sinks,
+            );
+            tokio::pin!(running);
 
-                done = &mut running => panic!(
-                    "the turn finished before the validator could be interrupted: {done:?}"
-                ),
+            let mut polls = 0_usize;
+            loop {
+                tokio::select! {
+                    biased;
 
-                () = tokio::task::yield_now() => {
-                    polls += 1;
-                    if let Ok(held) = std::fs::read_to_string(&pidfile)
-                        && let Ok(pid) = held.trim().parse::<u32>()
-                    {
-                        break pid;
+                    done = &mut running => panic!(
+                        "the turn finished before the validator could be interrupted: {done:?}"
+                    ),
+
+                    () = tokio::task::yield_now() => {
+                        polls += 1;
+                        if let Ok(held) = std::fs::read_to_string(&pidfile)
+                            && let Ok(pid) = held.trim().parse::<u32>()
+                        {
+                            break pid;
+                        }
+                        assert!(
+                            polls < VALIDATOR_POLL_BUDGET,
+                            "the validator's command never reported its process id in \
+                             {VALIDATOR_POLL_BUDGET} polls"
+                        );
                     }
-                    assert!(
-                        polls < VALIDATOR_POLL_BUDGET,
-                        "the validator's command never reported its process id in \
-                         {VALIDATOR_POLL_BUDGET} polls"
-                    );
                 }
             }
-        }
-        // Everything the turn held is dropped as this block ends. That is the
-        // interrupt.
-    });
+            // Everything the turn held is dropped as this block ends. That
+            // is the interrupt.
+        };
 
-    let mut polls = 0_usize;
-    while still_running(pid) {
-        polls += 1;
-        assert!(
-            polls < VALIDATOR_POLL_BUDGET,
-            "the validator's child {pid} is still in the process table after the turn was \
-             interrupted, so a `Ctrl-C` during an iteration leaves a project's command running"
-        );
-        std::thread::yield_now();
-    }
+        // **The wait is inside the runtime, and that is not a detail.** A
+        // killed child is reaped by the runtime's own reaper, so a check that
+        // dropped the runtime first would be waiting for a zombie nobody had
+        // ever waited for — and it would pass or fail on whether the reaping
+        // happened to land before the drop returned, which is the
+        // probabilistic instrument [Verification lessons] §57 refuses. The
+        // shell keeps running on this same runtime after an interrupt, so
+        // this is also what the product does.
+        let mut polls = 0_usize;
+        while still_running(pid) {
+            polls += 1;
+            assert!(
+                polls < VALIDATOR_POLL_BUDGET,
+                "the validator's child {pid} is still in the process table after the turn was \
+                 interrupted, so a `Ctrl-C` during an iteration leaves a project's command running"
+            );
+            tokio::task::yield_now().await;
+        }
+        pid
+    });
     println!("  the validator's child {pid} left the process table");
 
     let written = std::fs::read_to_string(&transcript_path).expect("the transcript was written");
