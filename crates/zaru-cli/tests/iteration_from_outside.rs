@@ -1,380 +1,406 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! [ADR-0009] D4's branch, driven from the built binary.
+//! [ADR-0009] D4's branch, driven by a caller outside this crate.
 //!
-//! # A loopback server, and why one had to be built
+//! # No socket, and that was a ruling rather than a convenience
 //!
-//! The iteration loop cannot be reached from `zaru` without a model that
-//! answers, and the runner has no key and no business having one. Every
-//! previous check that needed a provider used a **closed** loopback port, which
-//! makes a socket fail and is enough for [ADR-0016] D5's `3` and for nothing
-//! else: a refusal is not a loop.
+//! The first form of this file bound `127.0.0.1:0` and served Gemini-shaped
+//! JSON, so that the loop could be reached from the built binary on a runner
+//! with no key. **It was refused on 2026-09-05**, by the ruling already given
+//! to the `composer-wiring` arc on the same proposal: a listener answering
+//! canned provider JSON is a fake of Google at the wire, which is the mock
+//! [Testing] refuses, and `provider-client`'s recorded-exchange fixture
+//! already covers the mapping from those bytes to a [`ModelResponse`].
 //!
-//! So this file binds `127.0.0.1:0` and serves the responses. It is a
-//! stand-in for **Google**, not for anything this workspace wrote: the bytes
-//! travel over a real socket, `reqwest` parses them, `providers::gemini::map`
-//! maps them, and every seam between the socket and `ExecutionOutcome` is the
-//! product's own. It is the same argument `zaru-notes` makes for
-//! `tokio::io::duplex` — "real protocol bytes, nothing listens on a port" —
-//! one notch weaker, because something does listen, on the loopback
-//! interface, inside the test process. **No packet leaves the machine and no
-//! credential exists**: the key in the store is a nonce and the server never
-//! looks at it.
+//! So the loop is driven **here**, at the library level, over a staged
+//! [`Model`]. [`Generating`](zaru_cli::compose::Generating) is generic over
+//! that port, so a staged model reaching `compose`'s branch needs no socket
+//! and no credential — and everything between the candidate and the validator
+//! is the product's own: the real [`Executor`] over the real working-directory
+//! boundary and permission decision, the real [`Dispatch`] over a real
+//! [`Plan`], validators run as **real child processes** through
+//! [`Spawn`], and the real transcript.
 //!
-//! **The response bodies are shaped from `providers/gemini/recorded/`**, which
-//! are real responses the API returned, rather than from a shape somebody
-//! imagined. Where a case needs a different function call, the call changes
-//! and the envelope does not.
-//!
-//! The `composer-wiring` arc proposed this and did not build it; the coordinator
-//! ruled the outside caller this arc's on 2026-09-05. It is flagged in that
-//! arc's report as a decision open to veto, because a server in `tests/` is
-//! the kind of thing [Testing]'s "build the seam, not a mock" is about — and
-//! the reading taken is that a provider is not our seam.
+//! **What is left to the artefact, and it is one thing.** Whether a real model
+//! produces a candidate at all is a question about a model, and no fixture can
+//! answer it; that is the arc's run against `gemini-3.6-flash` behind the key
+//! discipline, quoted in its report, and the finding it produced is on
+//! [ADR-0008]'s amendments page.
 //!
 //! # What is deliberately not here
 //!
 //! **A validator killed at the process ceiling.** `cli::layers::PROCESS_CEILING`
 //! is a compiled-in two minutes with no configuration key, so a check that
-//! reached it would take two minutes. What is asserted instead is the property
-//! that matters and is reachable — a validator whose command exits non-zero is
-//! exhaustion and never success — and the kill itself is `process`'s own
-//! check. Stated rather than skipped silently.
+//! reached it would take two minutes — and `process_from_outside.rs` already
+//! drives a kill against a ceiling it owns. What is asserted instead is the
+//! property that matters here: a validator whose command exits non-zero is
+//! exhaustion and never success.
 //!
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-//! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
+//! [`Dispatch`]: zaru_core::iteration::validator::Dispatch
+//! [`Executor`]: zaru_cli::tools::Executor
+//! [`Plan`]: zaru_core::iteration::validator::Plan
+//! [`Spawn`]: zaru_cli::process::Spawn
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use core::time::Duration;
+use std::sync::Mutex;
+use zaru_cli::compose::{Applying, Generating, Inner, Records, Shared};
+use zaru_cli::credentials::{
+    Alias, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
+    SealingKey, Secret, ToolScope,
+};
+use zaru_cli::process::{Environment, ProcessCeiling, Spawn};
+use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction};
+use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
+use zaru_cli::tools::{
+    Captured, Confirm, ConfirmFailure, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget,
+    Question, SessionOverflow, WorkingDirectory,
+};
+use zaru_core::iteration::validator::{Declared, Dispatch, Expect, Name, Pattern, Plan, Run};
+use zaru_core::iteration::{
+    Ceiling, Clock, ContextPolicy, ContextRefusal, Limits, Outcome as LoopOutcome, PortFailure,
+    Prompt, TruncationBudget, Turn,
+};
+use zaru_core::redaction::Redacted;
+use zaru_core::tool_call::{
+    Capabilities, Model, ModelRequest, ModelResponse, Outcome, Ports, Start, TokenUsage,
+    ToolCallCeiling, ToolCalling, ToolRequest, run,
+};
 
-/// The sealing key, so the store opens without a keyring.
-const SEALING_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+// ------------------------------------------------------------------ scratch
 
-/// A nonce standing where a provider key would be. It is never sent anywhere
-/// that reads it: the server below ignores every header.
-const NONCE_KEY: &str = "not-a-key-4173-iteration-wiring";
+/// A project to run in and a session beside it, removed when the check ends.
+struct Scratch {
+    base: std::path::PathBuf,
+}
 
-// --- The stand-in for Google -----------------------------------------------
+impl Scratch {
+    fn new(label: &str) -> Self {
+        let base = std::fs::canonicalize(std::env::temp_dir())
+            .expect("the temporary directory resolves")
+            .join(format!(
+                "iw-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("after the epoch")
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(base.join("project")).expect("staging: the project");
+        std::fs::create_dir_all(base.join("sessions")).expect("staging: the session root");
+        Self { base }
+    }
 
-/// A loopback HTTP server answering a fixed queue of bodies, once each.
+    fn project(&self) -> std::path::PathBuf {
+        self.base.join("project")
+    }
+
+    fn sessions(&self) -> std::path::PathBuf {
+        self.base.join("sessions")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
+// -------------------------------------------------------------- staged ports
+
+#[derive(Debug, Default)]
+struct Ticking(Mutex<Duration>);
+
+impl Clock for Ticking {
+    fn now(&self) -> Duration {
+        *self.0.lock().expect("clock poisoned")
+    }
+}
+
+/// The provider, staged, because no product tree has one that answers offline.
+///
+/// It records the prompt of every exchange, which is what the redaction check
+/// and the refinement check read: what the **model** was given, rather than
+/// what the harness says it was given.
 struct Provider {
-    origin: String,
-    thread: Option<std::thread::JoinHandle<usize>>,
+    script: Mutex<std::collections::VecDeque<ModelResponse>>,
+    prompts: Mutex<Vec<String>>,
 }
 
 impl Provider {
-    /// Serve these bodies, in order, one per request.
-    ///
-    /// The thread returns how many requests it served, which a check reads to
-    /// assert how many exchanges the loop actually made — a number no other
-    /// instrument here can see.
-    fn serving(bodies: Vec<String>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
-        let origin = format!(
-            "http://{}",
-            listener.local_addr().expect("the bound address")
-        );
-        let wanted = bodies.len();
-        let thread = std::thread::spawn(move || {
-            let mut queue = bodies.into_iter();
-            let mut served = 0;
-            // The client is `reqwest` and it pools connections, so the
-            // responses are keep-alive and several requests arrive on one
-            // socket. Closing after each one raced the pool: the second
-            // request went out on a socket the server had already dropped and
-            // came back as "error sending request", which is a flake rather
-            // than a finding. If the peer does close, the outer loop accepts
-            // another connection and carries on.
-            'accepting: while served < wanted {
-                let Ok((stream, _)) = listener.accept() else {
-                    break;
-                };
-                let mut writer = stream.try_clone().expect("the stream clones for writing");
-                let mut reader = BufReader::new(stream);
-                while served < wanted {
-                    let mut length = 0usize;
-                    let mut saw_a_request = false;
-                    loop {
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                            // The peer closed. Take the next connection.
-                            if !saw_a_request {
-                                continue 'accepting;
-                            }
-                            continue 'accepting;
-                        }
-                        saw_a_request = true;
-                        if let Some(value) = line
-                            .to_ascii_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(str::trim)
-                            .and_then(|value| value.parse::<usize>().ok())
-                        {
-                            length = value;
-                        }
-                        if line == "\r\n" || line == "\n" {
-                            break;
-                        }
-                    }
-                    let mut sink = vec![0u8; length];
-                    if reader.read_exact(&mut sink).is_err() {
-                        continue 'accepting;
-                    }
-                    let body = queue.next().expect("served fewer than were queued");
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
-                         {}\r\n\r\n{body}",
-                        body.len()
-                    );
-                    if writer.write_all(response.as_bytes()).is_err() {
-                        continue 'accepting;
-                    }
-                    let _ = writer.flush();
-                    served += 1;
-                }
-            }
-            served
-        });
+    fn scripted(responses: impl IntoIterator<Item = ModelResponse>) -> Self {
         Self {
-            origin,
-            thread: Some(thread),
+            script: Mutex::new(responses.into_iter().collect()),
+            prompts: Mutex::new(Vec::new()),
         }
     }
 
-    fn origin(&self) -> &str {
-        &self.origin
+    fn prompts(&self) -> Vec<String> {
+        self.prompts.lock().expect("poisoned").clone()
     }
 
-    /// How many exchanges the loop made. Consumes the server.
-    fn served(mut self) -> usize {
-        // A connection of our own unblocks an `accept` still waiting for a
-        // request that will never come, so the thread can finish.
-        let _ = std::net::TcpStream::connect(self.origin.trim_start_matches("http://"));
-        self.thread
-            .take()
-            .expect("the thread is taken exactly once")
-            .join()
-            .expect("the server thread did not panic")
+    fn asked(&self) -> usize {
+        self.prompts.lock().expect("poisoned").len()
     }
 }
 
-/// One `generateContent` response carrying tool calls.
+impl Model for Provider {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { tool_calling: true }
+    }
+
+    async fn respond(&self, request: &ModelRequest<'_>) -> Result<ModelResponse, PortFailure> {
+        self.prompts
+            .lock()
+            .expect("poisoned")
+            .push(request.prompt.as_str().to_owned());
+        self.script
+            .lock()
+            .expect("script poisoned")
+            .pop_front()
+            .ok_or_else(|| PortFailure::new("the script ran out"))
+    }
+}
+
+/// The context policy, staged, so that what a candidate's generator is handed
+/// is exactly what the loop constructed and nothing else.
+#[derive(Default)]
+struct Policy;
+
+impl ContextPolicy for Policy {
+    async fn assemble(&self, turn: &Turn<'_>) -> Result<Prompt, ContextRefusal> {
+        let rendered = match turn {
+            Turn::Initial { task } => (*task).to_owned(),
+            Turn::Refinement { refinement } => refinement.as_str().to_owned(),
+            Turn::Resumed { interrupted } => interrupted.call().to_owned(),
+        };
+        Ok(Prompt::new(Redacted::by(&HeldSecrets::none(), &rendered)))
+    }
+}
+
+struct Unbuilt;
+
+impl Fetch for Unbuilt {
+    async fn retrieve(&self, _url: &zaru_cli::web::RequestedUrl) -> Result<Captured, PortFailure> {
+        Err(PortFailure::new("web.fetch is not reached by these checks"))
+    }
+}
+
+/// Nothing is pre-approved, so every write is a call that needs asking.
+struct NothingAllowed;
+impl zaru_cli::tools::Allowlist for NothingAllowed {
+    fn approves(&self, _invocation: &Invocation<'_>) -> bool {
+        false
+    }
+}
+
+struct NothingDestructive;
+impl zaru_cli::tools::DestructiveMatch for NothingDestructive {
+    fn is_destructive(&self, _invocation: &Invocation<'_>) -> bool {
+        false
+    }
+}
+
+/// A user who declines the first `decline` questions and accepts the rest.
+struct Declining {
+    decline: usize,
+    asked: Mutex<usize>,
+}
+
+impl Declining {
+    const fn once() -> Self {
+        Self {
+            decline: 1,
+            asked: Mutex::new(0),
+        }
+    }
+
+    const fn nothing() -> Self {
+        Self {
+            decline: 0,
+            asked: Mutex::new(0),
+        }
+    }
+
+    fn asked(&self) -> usize {
+        *self.asked.lock().expect("poisoned")
+    }
+}
+
+impl Confirm for Declining {
+    fn confirm(&self, _question: &Question) -> Result<bool, ConfirmFailure> {
+        let mut asked = self.asked.lock().expect("poisoned");
+        *asked += 1;
+        Ok(*asked > self.decline)
+    }
+}
+
+// ------------------------------------------------------------------ staging
+
+fn usage() -> TokenUsage {
+    TokenUsage {
+        prompt: 11,
+        completion: 7,
+    }
+}
+
+/// One answer proposing a write, which is the candidate shape a model produces
+/// through the provider's own function-calling contract.
+fn writes(path: &str, contents: &str) -> ModelResponse {
+    writes_all(&[(path, contents)])
+}
+
+/// One answer proposing several writes, in order.
+fn writes_all(pairs: &[(&str, &str)]) -> ModelResponse {
+    ModelResponse::Calls {
+        calls: pairs
+            .iter()
+            .enumerate()
+            .map(|(index, (path, contents))| ToolRequest {
+                id: format!("call-{index}"),
+                name: "fs.write".to_owned(),
+                arguments: serde_json::json!({ "path": path, "contents": contents }).to_string(),
+            })
+            .collect(),
+        tokens: usage(),
+    }
+}
+
+/// A plan of one validator: run `command`, and pass when its output matches.
+fn one_validator(command: &str, wanted: &str) -> Plan {
+    Plan::from_declared(vec![Declared {
+        name: Name::new("report").expect("a validator name"),
+        run: Run::new(command).expect("a command line"),
+        expect: Expect::Matches(Pattern::new(wanted).expect("a pattern")),
+        after: Vec::new(),
+    }])
+    .expect("one validator resolves")
+}
+
+/// Everything a run of the branch needs, so that a check reads as the case it
+/// is about rather than as eleven constructors.
+struct Run_<'a> {
+    scratch: &'a Scratch,
+    plan: &'a Plan,
+    provider: &'a Provider,
+    ceiling: u32,
+    mode: Mode,
+    confirmer: Option<&'a (dyn Confirm + Sync)>,
+    held: &'a HeldSecrets,
+}
+
+/// Drive [ADR-0009] D4's branch to an outcome, and hand back the transcript.
 ///
-/// The envelope is `providers/gemini/recorded/calls.json`'s, which is a real
-/// response; only the calls differ.
-fn answers_with_calls(calls: &[(&str, serde_json::Value)]) -> String {
-    let parts: Vec<serde_json::Value> = calls
-        .iter()
-        .enumerate()
-        .map(|(index, (name, arguments))| {
-            serde_json::json!({
-                "functionCall": {
-                    "name": name,
-                    "args": arguments,
-                    "id": format!("call_{index}")
-                }
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "candidates": [{
-            "content": { "parts": parts, "role": "model" },
-            "finishReason": "STOP",
-            "index": 0
-        }],
-        "usageMetadata": {
-            "promptTokenCount": 54,
-            "candidatesTokenCount": 17,
-            "totalTokenCount": 133,
-            "thoughtsTokenCount": 62
-        },
-        "modelVersion": "gemini-3.6-flash"
-    })
-    .to_string()
-}
+/// Every port between the candidate and the validator is the **product's**:
+/// `compose`'s `Generating`, `Applying` and `Inner`, `zaru-cli`'s `Executor`
+/// over ADR-0011 D4's boundary and D3's permission decision, `zaru-core`'s
+/// `Dispatch`, and `Spawn` running each validator as a real child process.
+fn drive(staged: &Run_<'_>) -> (Outcome, String) {
+    let working = WorkingDirectory::at(staged.scratch.project()).expect("the boundary resolves");
+    let store = SessionStore::open(staged.scratch.sessions()).expect("the session store opens");
+    let id = SessionId::mint(&SystemWallClock).expect("a session id");
+    let session = store.start(id).expect("the session starts");
+    let transcript_path = session.transcript_path();
 
-// --- The scratch home, the project, and the binary --------------------------
-
-struct Home {
-    path: PathBuf,
-}
-
-impl Home {
-    fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "zaru-iteration-from-outside-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(path.join("project")).expect("a scratch home and project");
-        std::fs::create_dir_all(path.join(".zaru")).expect("a scratch configuration directory");
-        Self { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn project(&self) -> PathBuf {
-        self.path.join("project")
-    }
-
-    /// Write `~/.zaru/config.toml`, which is ADR-0014 D1's layer 2.
-    fn user_config(&self, contents: &str) {
-        std::fs::write(self.path.join(".zaru/config.toml"), contents)
-            .expect("staging: the user's configuration");
-    }
-
-    /// Write `./zaru.toml`, which is ADR-0009 D1's manifest and layer 3.
-    fn manifest(&self, contents: &str) {
-        std::fs::write(self.project().join("zaru.toml"), contents)
-            .expect("staging: the project's manifest");
-    }
-
-    /// Every `Record::Loop` line the session's transcript holds, in order.
-    ///
-    /// **Refuses rather than skipping** when there is no session: a check that
-    /// silently found none would assert nothing about a loop and report it as
-    /// a pass (library verification lessons §4).
-    fn one_session(&self) -> PathBuf {
-        let sessions = self.path.join(".zaru/sessions");
-        let mut found: Vec<PathBuf> = std::fs::read_dir(&sessions)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "no sessions directory at {}: {error}. A turn that ran creates one",
-                    sessions.display()
-                )
-            })
-            .map(|entry| entry.expect("a readable directory entry").path())
-            .collect();
-        found.sort();
-        assert_eq!(found.len(), 1, "one invocation is one turn is one session");
-        found.remove(0)
-    }
-
-    fn iteration_records(&self) -> Vec<serde_json::Value> {
-        let sessions = self.path.join(".zaru/sessions");
-        let mut found: Vec<PathBuf> = std::fs::read_dir(&sessions)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "no sessions directory at {}: {error}. A turn that ran creates one",
-                    sessions.display()
-                )
-            })
-            .map(|entry| entry.expect("a readable directory entry").path())
-            .collect();
-        found.sort();
-        assert_eq!(found.len(), 1, "one invocation is one turn is one session");
-        let transcript = std::fs::read_to_string(found[0].join("transcript.jsonl"))
-            .expect("a turn that ran wrote a transcript");
-        // `Record` is externally tagged, so a line is one object whose single
-        // key names the producer. What is returned is the `Event` inside the
-        // `loop` key, which is itself externally tagged the same way.
-        transcript
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter_map(|record| record.get("loop").cloned())
-            .collect()
-    }
-}
-
-impl Drop for Home {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-struct Ran {
-    stdout: String,
-    stderr: String,
-    code: i32,
-}
-
-impl Ran {
-    fn everything(&self) -> String {
-        format!("{}\n{}", self.stdout, self.stderr)
-    }
-}
-
-fn zaru(home: &Home, provider: &Provider, arguments: &[&str]) -> Ran {
-    let output: Output = Command::new(env!("CARGO_BIN_EXE_zaru"))
-        .args(arguments)
-        .env_clear()
-        .env("HOME", home.path())
-        .env("ZARU_CREDENTIAL_KEY", SEALING_KEY)
-        .env("ZARU_PROVIDER_GEMINI_ENDPOINT", provider.origin())
-        .env("ZARU_MODEL_DEFAULT", "gemini-3.6-flash")
-        .current_dir(home.project())
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to execute the built binary");
-    let ran = Ran {
-        stdout: String::from_utf8(output.stdout).expect("zaru printed invalid UTF-8"),
-        stderr: String::from_utf8(output.stderr).expect("zaru printed invalid UTF-8 on stderr"),
-        code: output
-            .status
-            .code()
-            .expect("the binary was killed by a signal rather than exiting"),
-    };
-    println!("-- zaru {} --", arguments.join(" "));
-    for line in ran.stdout.lines() {
-        println!("   {line}");
-    }
-    for line in ran.stderr.lines() {
-        println!(" ! {line}");
-    }
-    println!("   exit {}", ran.code);
-    ran
-}
-
-/// Put the nonce in the sealed store through the surface a user uses.
-fn store_a_key(home: &Home) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
-        .args(["providers", "keys", "add", "gemini"])
-        .env_clear()
-        .env("HOME", home.path())
-        .env("ZARU_CREDENTIAL_KEY", SEALING_KEY)
-        .current_dir(home.project())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to execute the built binary");
-    child
-        .stdin
-        .as_mut()
-        .expect("the child's standard input is a pipe")
-        .write_all(format!("{NONCE_KEY}\n").as_bytes())
-        .expect("the key reaches the child");
-    let output = child.wait_with_output().expect("the child exits");
-    assert!(
-        output.status.success(),
-        "staging: the key was not stored: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut transcript = Transcript::append_to(&transcript_path).expect("the transcript opens");
+    let mut overflow = SessionOverflow::in_session(session.directory());
+    let allowlist = NothingAllowed;
+    let destructive = NothingDestructive;
+    let membrane = NoMembrane;
+    let unbuilt = Unbuilt;
+    let environment = Environment::inherited_minimum().expect("a child environment");
+    let spawn = Spawn::new(
+        &working,
+        environment,
+        ProcessCeiling::new(Duration::from_secs(20)).expect("a usable ceiling"),
     );
+
+    let executor = Executor {
+        working_directory: &working,
+        mode: staged.mode,
+        allowlist: &allowlist,
+        destructive: &destructive,
+        confirmer: staged.confirmer,
+        verdicts: &membrane,
+        budget: OutputBudget::new(4096).expect("a usable budget"),
+        search_ceiling: zaru_cli::cli::layers::search_ceiling(),
+        overflow: &mut overflow,
+        transcript: &mut transcript,
+        redactor: staged.held,
+        subprocess: &spawn,
+        fetch: &unbuilt,
+    };
+
+    let clock = Ticking::default();
+    let policy = Policy;
+    let patterns = zaru_cli::validators::Patterns::new(zaru_cli::cli::layers::pattern_ceiling());
+    let schemas =
+        zaru_cli::validators::SchemaFiles::new(&working, zaru_cli::cli::layers::file_ceiling());
+    let dispatch = Dispatch::new(staged.plan, &spawn, &patterns, &schemas);
+
+    let outcome = {
+        let cell = tokio::sync::Mutex::new(executor);
+        let mut tools = Shared::over(&cell);
+        let generating = Generating::over(staged.provider);
+        let applying = Applying::through(tools);
+        let inner = Inner::over(
+            zaru_core::iteration::Ports {
+                generator: &generating,
+                executor: &applying,
+                validators: &dispatch,
+                context: &policy,
+                clock: &clock,
+                redactor: staged.held,
+            },
+            Limits {
+                ceiling: Ceiling::new(staged.ceiling).expect("a usable ceiling"),
+                budget: TruncationBudget::new(4096).expect("a usable budget"),
+            },
+            &transcript_path,
+        );
+        let witness = ToolCalling::required(staged.provider, "staged").expect("it calls tools");
+        let mut sink = Records::appending_to(&transcript_path).expect("a second handle");
+        block_on(run(
+            1,
+            Start::Task("do the work"),
+            ToolCallCeiling::new(8).expect("a usable ceiling"),
+            witness,
+            Ports {
+                model: staged.provider,
+                tools: &mut tools,
+                context: &policy,
+                clock: &clock,
+                redactor: staged.held,
+            },
+            Some(&inner),
+            &mut [&mut sink],
+        ))
+        .expect("no port failed")
+    };
+
+    let written = std::fs::read_to_string(&transcript_path).expect("the transcript was written");
+    (outcome, written)
 }
 
-/// A manifest declaring one validator that passes only once `marker` exists.
-///
-/// `test -f` rather than a shell line, because ADR-0009 D1's `run` is a
-/// command line and the harness runs no shell.
-fn one_validator_wanting(marker: &str) -> String {
-    format!(
-        "[project]\nname = \"scratch\"\n\n[[validator]]\nname = \"marker\"\nrun = \"test -f \
-         {marker}\"\nexpect = \"exit-zero\"\n"
-    )
+/// Poll a future to completion on a current-thread runtime, as the binary does.
+fn block_on<F: core::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime")
+        .block_on(future)
 }
 
-/// The name of each event, in order, from its own external tag.
-fn event_names(events: &[serde_json::Value]) -> Vec<String> {
-    events
-        .iter()
+/// The name of each `Record::Loop` event in the transcript, in order.
+fn loop_events(transcript: &str) -> Vec<String> {
+    transcript
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|record| record.get("loop").cloned())
         .filter_map(|event| {
             event
                 .as_object()
@@ -383,230 +409,269 @@ fn event_names(events: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
-// --- The checks -------------------------------------------------------------
+// ------------------------------------------------------------------- checks
 
-/// ADR-0009 D4's branch runs, and ADR-0008 D5's exhaustion is exit 1.
+/// ADR-0009 D4's branch runs, and ADR-0008 D5's exhaustion is reported as
+/// itself at ADR-0016 D5's `1`.
 ///
-/// Every previous run of this binary refused a validator-declaring project at
-/// [ADR-0016] D5's `4`. It runs one now: two iterations, each generating a
-/// candidate the model wrote, applying it through the tool surface, and
-/// evaluating the declared validator against it.
-///
-/// The model writes the **wrong** file both times, so the validator never
-/// passes and the loop reaches its ceiling. That is ADR-0008 D5's outcome, and
-/// D5 says it "is not an error and is not a success" — so the code is `1`, the
-/// expected register, and the line says what was tried.
+/// The model writes the **wrong** file every time, so the declared validator
+/// never passes and the loop reaches its ceiling. That is D5's outcome, and D5
+/// says it "is not an error and is not a success" — so the class it is
+/// presented in is [ADR-0016] D1 row 1's expected register, whose
+/// `is_the_error_register()` is `false` by construction, at exit `1`.
 ///
 /// **`RefinementConstructed` appears once, not twice.** ADR-0008 D1: the
 /// ceiling is checked on the transition out of `Evaluate`, so a run of *n*
 /// iterations at a ceiling of *n* emits *n* minus one. That is the assertion
 /// that separates this loop from a retry wrapper with a counter.
 ///
-/// Watched red by supplying the inner loop unconditionally, which ran the loop
-/// over an empty plan and printed *"a project that declares validators must
-/// run the iteration loop and exhaust at 1, and it exited 0"*.
+/// Watched red by supplying `None` at the branch, which ran the tool-call loop
+/// instead and printed *"a project that declares validators must run the
+/// iteration loop"*.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[test]
-fn adr_0009_d4s_branch_runs_the_loop_and_exhaustion_is_exit_one() {
-    let home = Home::new("exhausted");
-    home.manifest(&one_validator_wanting("marker"));
-    // ADR-0014 D1's layer 2 raising ADR-0001 D3's `bare` cell of one, which is
-    // D3's own next sentence: "a user who wants more raises it explicitly".
-    home.user_config("[runtime]\nmax_iterations = 2\n");
-    store_a_key(&home);
+fn adr_0009_d4s_branch_runs_the_loop_and_exhaustion_is_reported_as_itself() {
+    let scratch = Scratch::new("exhausted");
+    let plan = one_validator("cat report.txt", "TOTAL: 3");
+    let provider = Provider::scripted([
+        writes("not-the-report", "no"),
+        writes("not-the-report", "no again"),
+    ]);
+    let held = HeldSecrets::none();
+    let accepting = Declining::nothing();
 
-    let wrong = answers_with_calls(&[(
-        "fs.write",
-        serde_json::json!({ "path": "not-the-marker", "contents": "no" }),
-    )]);
-    let provider = Provider::serving(vec![wrong.clone(), wrong]);
-    let ran = zaru(
-        &home,
-        &provider,
-        &["--mode", "yolo", "make the marker exist"],
-    );
+    let (outcome, transcript) = drive(&Run_ {
+        scratch: &scratch,
+        plan: &plan,
+        provider: &provider,
+        ceiling: 2,
+        mode: Mode::Ask,
+        confirmer: Some(&accepting),
+        held: &held,
+    });
 
+    let LoopOutcome::Exhausted {
+        iterations,
+        reason,
+        last_failure,
+    } = expect_iterated(&outcome)
+    else {
+        panic!(
+            "a project that declares validators must run the iteration loop to exhaustion, and it \
+             produced {outcome:?}"
+        );
+    };
+    assert_eq!(iterations, 2, "a ceiling of two runs two iterations");
     assert_eq!(
-        ran.code,
-        1,
-        "a project that declares validators must run the iteration loop and exhaust at 1, and it \
-         exited {}: {}",
-        ran.code,
-        ran.everything()
+        reason,
+        zaru_core::iteration::ExhaustionReason::CeilingReached,
+        "the run stopped at its ceiling and reported another reason"
     );
-    assert_eq!(
-        provider.served(),
-        2,
-        "a ceiling of two is two generations, and the loop made a different number of exchanges"
-    );
-
-    let records = home.iteration_records();
-    let names = event_names(&records);
     assert!(
-        names.iter().any(|name| name == "loop_exhausted"),
-        "the transcript must carry the loop's own exhaustion, and it carried {names:?}"
+        last_failure.is_some(),
+        "the ceiling route always carries the failure it stopped on"
     );
     assert_eq!(
-        names
+        provider.asked(),
+        2,
+        "one generation per iteration, and the loop made a different number of exchanges"
+    );
+
+    let events = loop_events(&transcript);
+    assert!(
+        events.iter().any(|name| name == "loop_exhausted"),
+        "the transcript must carry the loop's own exhaustion: {events:?}"
+    );
+    assert_eq!(
+        events
             .iter()
             .filter(|name| name.as_str() == "refinement_constructed")
             .count(),
         1,
-        "a run of two iterations at a ceiling of two emits one refinement, not two: ADR-0008 D1 \
-         checks the ceiling on the way out of Evaluate. The events were {names:?}"
+        "a run of two iterations at a ceiling of two emits ONE refinement, not two: ADR-0008 D1 \
+         checks the ceiling on the way out of Evaluate. The events were {events:?}"
     );
-    assert!(
-        ran.everything().contains("marker"),
-        "ADR-0008 D5 has the harness present what was tried, and the validator's name is the \
-         least of it: {}",
-        ran.everything()
+
+    // The class this outcome is presented in, from the mapping the binary uses.
+    let classified = zaru_cli::cli::classify::Surface::loop_exhausted(
+        iterations,
+        reason,
+        last_failure.as_deref(),
+    );
+    let exit = zaru_cli::failure::Exit::Failed(classified);
+    assert_eq!(
+        exit.code(),
+        1,
+        "ADR-0016 D5's `1` is \"the work failed (loop exhausted, validator never satisfied)\""
+    );
+    assert_eq!(
+        exit.class()
+            .map(zaru_cli::failure::Class::is_the_error_register),
+        Some(false),
+        "ADR-0008 D5 puts exhaustion in a register of its own, and D1 row 1 keeps it out of the \
+         error one"
     );
 }
 
 /// The loop refines: a validator that fails once passes after the model's fix.
 ///
-/// This is the accepting sibling of the check above and it is the product
-/// claim. The model's **first** candidate writes the wrong file and its second
+/// This is the product claim and it is the accepting sibling of the check
+/// above. The model's **first** candidate writes the wrong file and its second
 /// writes the right one, so the validator fails, the failure reaches the
-/// refinement, and the next iteration succeeds. Exit 0.
+/// refinement, and the next iteration succeeds. Without this arm the
+/// exhaustion check is satisfied by a loop that can never succeed at all.
 ///
-/// Without this arm the exhaustion check is satisfied by a loop that can never
-/// succeed at all.
+/// **The refinement prompt is read off the model rather than off the harness**:
+/// the staged provider records what it was handed, so the assertion is about
+/// what the model actually saw.
 ///
-/// Watched red by making the second answer identical to the first, which
-/// printed *"the loop must succeed once the model writes the file the
-/// validator wants, and it exited 1"*.
+/// Watched red by making both answers write the wrong file, which printed
+/// *"the loop must succeed once the model writes the file the validator
+/// wants"*.
 #[test]
 fn a_validator_that_fails_once_passes_after_the_models_fix() {
-    let home = Home::new("refined");
-    home.manifest(&one_validator_wanting("marker"));
-    home.user_config("[runtime]\nmax_iterations = 3\n");
-    store_a_key(&home);
+    let scratch = Scratch::new("refined");
+    let plan = one_validator("cat report.txt", "TOTAL: 3");
+    // Three answers for a ceiling of three, though a correct loop uses two:
+    // the third exists so that an implementation which applied NOTHING runs to
+    // the ceiling and meets this check's own sentence, rather than dying on a
+    // staging that ran out ([Verification lessons] §4 -- a check that fails in
+    // its fixture asserts nothing about the product).
+    let provider = Provider::scripted([
+        writes("not-the-report", "no"),
+        writes("report.txt", "TOTAL: 3\n"),
+        writes("not-the-report", "nor this"),
+    ]);
+    let held = HeldSecrets::none();
+    let accepting = Declining::nothing();
 
-    let wrong = answers_with_calls(&[(
-        "fs.write",
-        serde_json::json!({ "path": "not-the-marker", "contents": "no" }),
-    )]);
-    let right = answers_with_calls(&[(
-        "fs.write",
-        serde_json::json!({ "path": "marker", "contents": "yes" }),
-    )]);
-    let provider = Provider::serving(vec![wrong, right]);
-    let ran = zaru(
-        &home,
-        &provider,
-        &["--mode", "yolo", "make the marker exist"],
-    );
+    let (outcome, transcript) = drive(&Run_ {
+        scratch: &scratch,
+        plan: &plan,
+        provider: &provider,
+        ceiling: 3,
+        mode: Mode::Ask,
+        confirmer: Some(&accepting),
+        held: &held,
+    });
 
+    let LoopOutcome::Succeeded { iterations, .. } = expect_iterated(&outcome) else {
+        panic!(
+            "the loop must succeed once the model writes the file the validator wants, and it \
+             produced {outcome:?}"
+        );
+    };
     assert_eq!(
-        ran.code,
-        0,
-        "the loop must succeed once the model writes the file the validator wants, and it exited \
-         {}: {}",
-        ran.code,
-        ran.everything()
-    );
-    assert!(
-        home.project().join("marker").exists(),
-        "the succeeding candidate's write must have landed on disk"
+        iterations, 2,
+        "one failing iteration and one passing one is two"
     );
     assert_eq!(
-        provider.served(),
-        2,
-        "one failing iteration and one passing one is two exchanges"
+        std::fs::read_to_string(scratch.project().join("report.txt")).expect("the write landed"),
+        "TOTAL: 3\n",
+        "the succeeding candidate's write must be on disk"
     );
 
-    let records = home.iteration_records();
-    let names = event_names(&records);
+    let events = loop_events(&transcript);
     assert!(
-        names.iter().any(|name| name == "refinement_constructed"),
-        "a run that failed once must have refined, and its events were {names:?}"
+        events.iter().any(|name| name == "refinement_constructed"),
+        "a run that failed once must have refined: {events:?}"
     );
     assert!(
-        names.iter().any(|name| name == "loop_succeeded"),
-        "a run that ended satisfied must say so on the stream: {names:?}"
+        events.iter().any(|name| name == "loop_succeeded"),
+        "a run that ended satisfied must say so on the stream: {events:?}"
+    );
+
+    // ADR-0008 clause 2, from the model's own side: the second prompt is the
+    // refinement, and it carries what the validator printed.
+    let prompts = provider.prompts();
+    assert_eq!(prompts.len(), 2, "two iterations are two exchanges");
+    assert!(
+        prompts[1].contains("did not satisfy the declared validators"),
+        "the second exchange must be the refinement `zaru-core` constructed: {:?}",
+        prompts[1]
+    );
+    assert!(
+        prompts[1].contains("cat: report.txt: No such file or directory"),
+        "ADR-0008 D4 carries the validator's own output into the next prompt verbatim, and the \
+         model was given {:?}",
+        prompts[1]
     );
 }
 
-/// ADR-0008 clause 2 from the binary, and clause 6's port on the same path.
+/// ADR-0008 clause 6's port on the refinement path, and ADR-0010 D2's record
+/// keeping what it redacts.
 ///
 /// **Two assertions that must both hold, and they point opposite ways.** The
-/// validator prints the harness's own stored key. `RefinementConstructed`'s
-/// excerpt is what the model was given, so the key must be **absent** from it;
-/// `IterationFailed`'s reason is what ADR-0010 D2's record holds, so the key
-/// must be **present** there. One of those alone proves nothing: an
-/// implementation that redacted everything passes the first, and one that
-/// redacted nothing passes the second.
+/// validator prints a value the harness holds. The prompt the **model** was
+/// given must not carry it; the transcript's own record of the failure must.
+/// One of those alone proves nothing: an implementation that redacted
+/// everything passes the first, and one that redacted nothing passes the
+/// second.
 ///
-/// The failure text also has to reach the prompt verbatim otherwise, which is
-/// clause 2 — so the check asserts a nonce the validator prints beside the key
-/// survives into the excerpt.
+/// The validator also prints a nonce beside it, which must survive into the
+/// prompt — otherwise "absent" could be satisfied by a prompt carrying nothing
+/// at all.
 ///
-/// Watched red by handing the refinement construction a redactor holding
-/// nothing, which printed *"the harness's own key reached the refinement
-/// prompt"*.
+/// Watched red by handing the inner loop a redactor holding nothing, which
+/// printed *"the harness's own held value reached the refinement prompt"*.
 #[test]
 fn a_held_secret_in_a_validators_output_is_redacted_in_the_refinement_and_kept_in_the_record() {
-    let home = Home::new("redacted");
+    let scratch = Scratch::new("redacted");
     let nonce = "rehearsal-4173";
-    // `printf` rather than a shell line: ADR-0009 D1's `run` is a command line
-    // and the harness runs no shell. One validator has to both print the
-    // secret and fail, because ADR-0009 D5 sends only a FAILING validator's
-    // output into refinement -- so `cat` prints the file and `exit-code = 9`
-    // makes exiting 0 a failure, which is D3's second kind doing exactly what
-    // it says.
-    home.manifest(
-        "[project]\nname = \"scratch\"\n\n[[validator]]\nname = \"leaky\"\nrun = \"cat          leaked\"\nexpect = { exit-code = 9 }\n",
-    );
+    let secret = "nn_mcp_held4173iterationwiring";
     std::fs::write(
-        home.project().join("leaked"),
-        format!("{nonce} {NONCE_KEY}\n"),
+        scratch.project().join("leaked"),
+        format!("{nonce} {secret}\n"),
     )
     .expect("staging: the file the validator prints");
-    home.user_config("[runtime]\nmax_iterations = 2\n");
-    store_a_key(&home);
 
-    let wrong = answers_with_calls(&[(
-        "fs.write",
-        serde_json::json!({ "path": "not-the-marker", "contents": "no" }),
-    )]);
-    let provider = Provider::serving(vec![wrong.clone(), wrong]);
-    let ran = zaru(&home, &provider, &["--mode", "yolo", "fix it"]);
-    assert_eq!(
-        ran.code,
-        1,
-        "the validator never passes: {}",
-        ran.everything()
-    );
+    // `cat` prints and exits 0, and the validator wants a pattern the file does
+    // not carry — so it fails while printing, which is what ADR-0009 D5 sends
+    // into refinement.
+    let plan = one_validator("cat leaked", "NEVER-MATCHES");
+    let provider = Provider::scripted([
+        writes("not-the-report", "no"),
+        writes("not-the-report", "no again"),
+    ]);
+    let held = held_from_a_store(&scratch, secret);
+    let accepting = Declining::nothing();
 
-    let records = home.iteration_records();
-    let excerpts: String = records
-        .iter()
-        .filter(|event| event.get("refinement_constructed").is_some())
-        .map(std::string::ToString::to_string)
-        .collect();
-    let reasons: String = records
-        .iter()
-        .filter(|event| event.get("iteration_failed").is_some())
-        .map(std::string::ToString::to_string)
-        .collect();
+    let (_outcome, transcript) = drive(&Run_ {
+        scratch: &scratch,
+        plan: &plan,
+        provider: &provider,
+        ceiling: 2,
+        mode: Mode::Ask,
+        confirmer: Some(&accepting),
+        held: &held,
+    });
 
+    let prompts = provider.prompts();
+    assert_eq!(prompts.len(), 2, "two iterations are two exchanges");
+    let refinement = &prompts[1];
     assert!(
-        !excerpts.is_empty() && !reasons.is_empty(),
-        "both events must have been emitted, or neither assertion below reads anything"
-    );
-    assert!(
-        excerpts.contains(nonce),
+        refinement.contains(nonce),
         "ADR-0008 clause 2: the validator's own output reaches the refinement prompt verbatim, \
-         and the nonce it printed is not in {excerpts}"
+         and the nonce it printed is not in {refinement:?}"
     );
     assert!(
-        !excerpts.contains(NONCE_KEY),
-        "the harness's own key reached the refinement prompt: {excerpts}"
+        !refinement.contains(secret),
+        "the harness's own held value reached the refinement prompt: {refinement:?}"
+    );
+
+    let kept: String = transcript
+        .lines()
+        .filter(|line| line.contains("iteration_failed"))
+        .collect();
+    assert!(
+        !kept.is_empty(),
+        "the failing iteration must have been recorded, or the assertion below reads nothing"
     );
     assert!(
-        reasons.contains(NONCE_KEY),
+        kept.contains(secret),
         "ADR-0010 D2 keeps what the session contained, and the transcript's own record of the \
-         failure lost the bytes the command printed: {reasons}"
+         failure lost the bytes the command printed: {kept}"
     );
 }
 
@@ -614,92 +679,149 @@ fn a_held_secret_in_a_validators_output_is_redacted_in_the_refinement_and_kept_i
 ///
 /// **For the security corpus, which only grows.** ADR-0011 D4's boundary
 /// belongs to the tool surface, and a candidate reaches the tool surface — so
-/// nothing here classifies a candidate's path differently from a turn's. Both
-/// halves are asserted:
+/// nothing classifies a candidate's path differently from a turn's. Both
+/// halves are asserted: the write is refused and the file does not exist, and
+/// the transcript marks the call `out_of_tree` in the same field a turn's call
+/// is marked with and closes it as `refused`.
 ///
-/// - At D3's default mode with no terminal to ask at, the write is **refused**
-///   and the file does not exist. That is D3's own rule — "a call that needed
-///   asking is refused rather than performed" — reaching a candidate.
-/// - The transcript marks the call `out_of_tree`, which is D4's record, and
-///   it is the same field a turn's call is marked with.
-///
-/// **The accepting sibling is the same candidate at `yolo`**, where D3 says
-/// there are no prompts and the write lands. Without it the refusal is
-/// satisfied by a harness in which `fs.write` never works at all, which is the
-/// shape that already let one mutant survive in this arc (library verification
-/// lessons §13).
+/// **The staging is the discriminating part and it took two attempts.** A
+/// confirmer that declines *everything* cannot separate "the permission model
+/// refused this" from "`fs.write` never works here"; the accepting sibling
+/// below is the same candidate with a confirmer that says yes, and the write
+/// lands.
 ///
 /// Watched red by giving the tool surface a permission mode of its own rather
-/// than the user's — which is what a second executor built for the inner loop
-/// would amount to — and it printed *"a candidate wrote outside the working
-/// directory, at /tmp/…/outside-the-tree"*.
+/// than the caller's — which is what a second executor built for the inner
+/// loop would amount to — and it printed *"a candidate wrote outside the
+/// working directory"*.
 #[test]
 fn a_candidates_write_outside_the_tree_is_decided_like_a_turns() {
-    let home = Home::new("out-of-tree");
-    home.manifest(&one_validator_wanting("marker"));
-    home.user_config("[runtime]\nmax_iterations = 1\n");
-    store_a_key(&home);
+    let scratch = Scratch::new("out-of-tree");
+    let outside = scratch.base.join("outside-the-tree");
+    let plan = one_validator("cat report.txt", "TOTAL: 3");
+    let held = HeldSecrets::none();
 
-    let outside = home.path().join("outside-the-tree");
-    let asking = answers_with_calls(&[(
-        "fs.write",
-        serde_json::json!({
-            "path": outside.to_string_lossy(),
-            "contents": "this must not be written"
-        }),
-    )]);
+    // --- Declined: refused, and nothing on disk ---------------------------
+    //
+    // TWO calls, the out-of-tree one first and an in-tree one after it. That
+    // is what separates "the candidate stopped at the refusal" from "the
+    // second call was refused as well": the second would land, and an
+    // executor that carried on past a refusal leaves it on disk.
+    let inside = scratch.project().join("would-land");
+    let provider = Provider::scripted([writes_all(&[
+        (
+            outside.to_string_lossy().as_ref(),
+            "this must not be written",
+        ),
+        ("would-land", "nor this"),
+    ])]);
+    let declining = Declining::once();
+    let (_outcome, transcript) = drive(&Run_ {
+        scratch: &scratch,
+        plan: &plan,
+        provider: &provider,
+        ceiling: 1,
+        mode: Mode::Ask,
+        confirmer: Some(&declining),
+        held: &held,
+    });
 
-    // --- No terminal, default mode: refused --------------------------------
-    let provider = Provider::serving(vec![asking.clone()]);
-    let refused = zaru(&home, &provider, &["write outside"]);
     assert!(
         !outside.exists(),
         "a candidate wrote outside the working directory, at {}",
         outside.display()
     );
+    assert!(
+        !inside.exists(),
+        "the second call of a candidate was applied after the first was refused: the file the \
+         user never approved exists at {}",
+        inside.display()
+    );
     assert_eq!(
-        refused.code,
+        declining.asked(),
         1,
-        "the validator was never satisfied, so the run is exhaustion: {}",
-        refused.everything()
+        "the candidate stopped at the refusal, so exactly one question reached the user; {} did",
+        declining.asked()
     );
-    let marked = std::fs::read_to_string(home.one_session().join("transcript.jsonl"))
-        .expect("a turn that ran wrote a transcript");
     assert!(
-        marked.contains("\"out_of_tree\":true"),
+        transcript.contains("\"out_of_tree\":true"),
         "ADR-0011 D4 marks a call that left the tree, and a candidate's call is marked by the \
-         same field a turn's is: {marked}"
+         same field a turn's is: {transcript}"
     );
     assert!(
-        marked.contains("\"phase\":\"refused\""),
-        "ADR-0011 D4's record closes a refused call as refused, and a candidate's call closes the \
-         same way a turn's does: {marked}"
+        transcript.contains("\"phase\":\"refused\""),
+        "D4's record closes a refused call as refused, and a candidate's closes the same way a \
+         turn's does: {transcript}"
     );
 
-    // --- The accepting sibling, at `yolo` ----------------------------------
-    let home = Home::new("out-of-tree-permitted");
-    home.manifest(&one_validator_wanting("marker"));
-    home.user_config("[runtime]\nmax_iterations = 1\n");
-    store_a_key(&home);
-    let outside = home.path().join("outside-the-tree");
-    let asking = answers_with_calls(&[(
-        "fs.write",
-        serde_json::json!({
-            "path": outside.to_string_lossy(),
-            "contents": "permitted by the mode the user chose"
-        }),
-    )]);
-    let provider = Provider::serving(vec![asking]);
-    let permitted = zaru(&home, &provider, &["--mode", "yolo", "write outside"]);
-    assert_eq!(
-        permitted.code,
-        1,
-        "the validator is still never satisfied: {}",
-        permitted.everything()
-    );
+    // --- The accepting sibling: the same write, permitted ------------------
+    let sibling = Scratch::new("out-of-tree-permitted");
+    let elsewhere = sibling.base.join("outside-the-tree");
+    let landing = sibling.project().join("would-land");
+    let provider = Provider::scripted([writes_all(&[
+        (
+            elsewhere.to_string_lossy().as_ref(),
+            "permitted by the user who was asked",
+        ),
+        ("would-land", "and so is this"),
+    ])]);
+    let accepting = Declining::nothing();
+    let _ = drive(&Run_ {
+        scratch: &sibling,
+        plan: &plan,
+        provider: &provider,
+        ceiling: 1,
+        mode: Mode::Ask,
+        confirmer: Some(&accepting),
+        held: &held,
+    });
     assert!(
-        outside.exists(),
-        "ADR-0011 D3's `yolo` has no prompts, so the same write must land -- without this the \
-         refusal above says nothing about the permission model"
+        elsewhere.exists() && landing.exists(),
+        "both writes must land when the user says yes -- without this the refusal above says \
+         nothing about the permission model"
     );
+}
+
+/// A sealing key the check owns, so no keyring is needed.
+struct StagedKey(SealingKey);
+
+impl KeyStore for StagedKey {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// A store on the scratch root holding one bearer, and the redactor the
+/// composition would build from it.
+///
+/// Built through `held_secrets_for_redaction` rather than from a list, because
+/// that is the one function the product uses: a check that assembled the held
+/// set itself would be asserting about a set nothing in the product produces.
+fn held_from_a_store(scratch: &Scratch, value: &str) -> HeldSecrets {
+    let keys = StagedKey(SealingKey::mint());
+    let mut store =
+        CredentialStore::open(scratch.base.join("zaru")).expect("the credential store opens");
+    let entry = Entry::notes(
+        Alias::new("planted").expect("a plain name is a legal alias"),
+        Description::new("the bearer this check plants").expect("one line"),
+        Secret::notes(value.to_owned()).expect("nn_mcp_ names a kind"),
+        Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
+    )
+    .expect("an nn_ value builds a Nuclear Notes entry")
+    .with_tools(ToolScope::new(["pages.read"]));
+    store.add(entry, &keys, None).expect("the entry is stored");
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
+    assert_eq!(held.len(), 1, "the store held nothing to redact");
+    held
+}
+
+/// The turn ended as an iteration, or say what it ended as instead.
+fn expect_iterated(outcome: &Outcome) -> LoopOutcome {
+    match outcome {
+        Outcome::Iterated(inner) => inner.clone(),
+        other => panic!(
+            "ADR-0009 D4's branch was supplied, so the turn's body is an iteration; it ended as \
+             {other:?}"
+        ),
+    }
 }
