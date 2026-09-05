@@ -130,5 +130,6 @@ pub mod providers;
 pub mod redaction;
 pub mod runtime;
 pub mod session;
+pub mod terminal;
 pub mod tools;
 pub mod validators;

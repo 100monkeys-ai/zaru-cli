@@ -213,6 +213,40 @@ impl Namespace {
         }
     }
 
+    /// The verbs this namespace takes **inside** a session.
+    ///
+    /// # Not the same list as [`Namespace::verbs`], and that is a record
+    ///
+    /// [ADR-0010] D4: "`zaru --resume <id>`, or `zaru --continue` for the most
+    /// recent session in this directory... **Inside a session the same
+    /// operation is `/session resume <id>` and `/session continue`**." Outside
+    /// a session those two are *flags* and cannot be verbs, because there is
+    /// no session to be inside; inside one they are verbs and the flags have
+    /// nowhere to go. So `/session` takes four verbs where `zaru sessions`
+    /// takes two, and the difference is two records rather than an oversight.
+    ///
+    /// Every other namespace answers identically on both surfaces, and that is
+    /// written as a delegation rather than as a second copy: only `Session`
+    /// has an arm of its own.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    #[must_use]
+    pub const fn slash_verbs(self) -> &'static [&'static str] {
+        match self {
+            Self::Session => &["resume", "continue", "list", "rm"],
+            Self::Runtime
+            | Self::Models
+            | Self::Init
+            | Self::Config
+            | Self::Notes
+            | Self::Providers
+            | Self::Stack
+            | Self::Memory
+            | Self::Learned
+            | Self::Inbox => self.verbs(),
+        }
+    }
+
     /// The verbs this namespace takes outside a session, in the order
     /// `--help` lists them.
     ///

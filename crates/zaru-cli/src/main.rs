@@ -24,24 +24,33 @@
 //! [ADR-0012] D3's trait has no implementation in any product tree. `zaru
 //! --help` says so rather than leaving the user to find out.
 //!
-//! # This file is three things and no more
+//! # This file is three things and one branch
 //!
-//! Parse, execute, write. Everything a check could want to reach lives in
+//! Parse, execute, write — and, since 2026-09-05, one branch before the
+//! execute: `--resume` and `--continue` open [ADR-0005]'s terminal when
+//! standard output is a terminal, and fall through to the print when it is
+//! not. That branch is [`zaru_cli::terminal::take_over`], which carries the
+//! decision and its reason; what is here is the call and nothing else.
+//!
+//! Everything a check could want to reach lives in
 //! [`zaru_cli::cli`], because a binary target cannot be named from an
 //! integration test — the same reason this crate grew a library target for the
 //! credential store. What is left here is the boundary, the two writers, and
 //! the exit code.
 //!
-//! # The session is still absent and the binary still says so
+//! # The binary still starts no session, and now it can be inside one
 //!
-//! [ADR-0010]'s lifecycle is built and this binary reads it, but it starts no
-//! session: `zaru sessions list` lists what is there and `zaru --resume`
-//! restores one, and neither creates `~/.zaru/sessions/<ulid>/` for a session
-//! that never had a turn. So [`SessionEvidence::NoSessionExists`] is still what
-//! [ADR-0016] D3's boundary is given, and it is still true. **The day that call
-//! site changes is the day something reaches the loop.**
+//! [ADR-0010]'s lifecycle is built and this binary reads it, but it **creates**
+//! nothing: `zaru sessions list` lists what is there and `zaru --resume` opens
+//! one that already exists, and neither creates `~/.zaru/sessions/<ulid>/` for
+//! a session that never had a turn. So [`SessionEvidence::NoSessionExists`] is
+//! still what [ADR-0016] D3's boundary is given, and it is still true of this
+//! process: the shell restores a session rather than starting one, and nothing
+//! in the workspace writes a first record. **The day that call site changes is
+//! the day something reaches the loop.**
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+//! [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -62,7 +71,15 @@ fn run() -> Exit {
     let report_at = env!("CARGO_PKG_REPOSITORY");
 
     let outcome = match parse_process() {
-        Ok(line) => Run { version, report_at }.execute(&line),
+        // ADR-0010 D4's two readings, one per reader. A person at a terminal
+        // is left inside the session; a pipe is handed the transcript and
+        // nothing else. See `zaru_cli::terminal::open`, which carries the
+        // decision and the reason. This is the only branch in this file that
+        // is not parse, execute, write.
+        Ok(line) => match zaru_cli::terminal::take_over(&line, version, report_at) {
+            Some(exit) => return exit,
+            None => Run { version, report_at }.execute(&line),
+        },
         Err(refusal) => zaru_cli::cli::Outcome {
             lines: Vec::new(),
             exit: Exit::Failed(Surface::new(version, report_at).command(&refusal)),

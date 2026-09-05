@@ -180,8 +180,11 @@ impl Run<'_> {
     /// **Nothing is spared.** D6's guard is for the session a user is inside,
     /// and outside one there is none — this binary starts no session, so the
     /// `current` a `prune` would pass is `None` and there is no id to compare
-    /// against. `/session rm` inside a session is where that guard bites, and
-    /// it is `zaru-tui`'s.
+    /// against. `/session rm` inside a session is where that guard bites. **The
+    /// in-session spelling exists as of 2026-09-05** and reaches this same
+    /// function through `terminal::driver`'s dispatch, so the guard is unbuilt
+    /// rather than unreachable: this binary starts no session, so there is
+    /// still no `current` id to spare.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     fn sessions_remove(&self, id: &SessionId) -> Outcome {

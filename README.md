@@ -30,8 +30,15 @@ zaru init                     # write ADR-0009 D1's manifest here, once, if ther
 ```
 
 `--runtime <tier>` and `--model <identifier>` set the two keys the flag layer
-carries for one run. `--resume <id>` and `--continue` restore a session and
-print its transcript. `--help` lists exactly what runs and nothing else.
+carries for one run. `--help` lists exactly what runs and nothing else.
+
+`--resume <id>` and `--continue` restore a session, and **what they do next
+depends on who is asking**. At a terminal they open the session: a status line
+carrying the tier, a pane showing the last stretch of the transcript, and a
+prompt that takes the same commands as the subcommands above, spelled with a
+slash. Through a pipe they print the transcript's own bytes and exit, because
+there is nobody there to be inside anything. `/exit` or `Ctrl-C` leaves, and
+both exit 0.
 
 **It cannot run a task**, and it says so rather than letting you find out. A
 provider client exists as of 2026-09-05 — the `gemini` kind, which is the one
@@ -40,7 +47,7 @@ other four of ADR-0012 D3's kinds have no client at all. What is missing is the
 wiring, and it is missing for every kind alike, which is why a task invocation
 is refused with the same sentence whichever alias resolves.
 
-Eleven pieces exist behind that binary and the command surface reaches seven of
+Eleven pieces exist behind that binary and the command surface reaches eight of
 them. The iteration loop and the tool-call loop are in `zaru-core`, headless,
 driven through ports that nothing in any product tree implements — except the
 three a declared validator calls out through, which all have one in `zaru-cli`
@@ -49,11 +56,23 @@ as of 2026-09-05. A validator's command runs as a real child process; a
 from a repository you cloned cannot cost exponential time; and a `json_schema`
 validator reads its schema inside the working directory and resolves no `$ref`
 out of it. **No command this binary runs declares a validator or runs one**, so
-none of that is reachable from the terminal yet. The composer is in
-`zaru-tui`, rendered under a test backend, reaching its two search tiers through
-a port and a request/response pair that nothing implements either — **nothing
-this binary prints goes through it**; the terminal is unbuilt and every command
-above writes plain lines to standard output.
+none of that is reachable from the terminal yet.
+
+The terminal is in `zaru-tui` as of 2026-09-05, and it is what every other
+piece has been waiting on. A status line, a transcript pane and the composer,
+all headless — the shell renders into a frame and reads a backend-agnostic
+keystroke, and the terminal itself is `zaru-cli`'s, which is what keeps a
+terminal backend out of the composer's search tier. The slash grammar is a
+second grammar over one vocabulary: the eleven namespaces, their two spellings
+each and the nearest-match rule are declared once, in `zaru-cli`, and handed
+across, so a command reached with a slash runs the *same function* the
+subcommand runs. Seven of the eleven namespaces answer; the other four need
+things that do not exist and say so rather than guessing at a nearest.
+
+The composer is in `zaru-tui` too, reaching its two search tiers through a port
+and a request/response pair that nothing implements — **so the hint strip shows
+nothing while you type**, and that is the largest missing piece of this
+surface. The trie belongs to `zaru-notes` and is not built.
 
 The credential store is in `zaru-cli`, holding named tokens on disk with the
 bearer value **sealed**: AES-256-GCM, a fresh nonce per seal, and the alias
