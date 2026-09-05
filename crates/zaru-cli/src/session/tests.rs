@@ -1406,6 +1406,77 @@ fn a_resume_reports_a_trailing_fragment_and_refuses_a_malformed_complete_line() 
     );
 }
 
+/// D4's accepted Update of 2026-09-05: the next turn is one more than the
+/// greatest `n` any `turn_started` record carries, and one when there is none.
+///
+/// # The staging is what tells four rules apart
+///
+/// `n` is staged as **1, 5, 2** in that order, and every part of that is
+/// deliberate. The greatest is neither first nor last, so *the last record*
+/// and *the first* are both wrong ([Verification lessons] §54). The gap
+/// between 2 and 5 separates the greatest from the **count**, which is the
+/// rule that agrees with it on every transcript this harness writes and
+/// disagrees on a truncated or hand-edited one — and D1 promises the user can
+/// read and edit these files with ordinary tools. So:
+///
+/// | Rule | Answer |
+/// | --- | --- |
+/// | greatest + 1 | **6** |
+/// | count + 1 | 4 |
+/// | last + 1 | 3 |
+/// | restart | 1 |
+///
+/// Four rules, four answers, one assertion. The second session is the
+/// accepting sibling: a transcript with no `turn_started` record at all — a
+/// session that has had no turn — must answer one, so a derivation that
+/// invented a number could not pass both.
+///
+/// The mutant: `next: 1`, or counting the records instead of reading `n`.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons-2
+#[test]
+fn a_resumed_session_continues_the_turn_count_from_the_transcript() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+
+    let conversed = store
+        .start(id_at(1_700_000_000_000, 31))
+        .expect("could not start a session");
+    let mut transcript = Transcript::append_to(conversed.transcript_path())
+        .expect("could not open the transcript");
+    for n in [1u32, 5, 2] {
+        transcript
+            .record(&Record::TurnLoop(
+                zaru_core::tool_call::Event::TurnStarted { n, of: 8 },
+            ))
+            .expect("could not append");
+    }
+    // A record from the other stream, so the filter is asserted to be reading
+    // `turn_started` rather than everything the file holds.
+    transcript
+        .record(&Record::Loop(super::fixtures::sequenced_event(0, 4)))
+        .expect("could not append");
+
+    let resumed =
+        crate::session::resume(conversed.directory(), usize::MAX).expect("the session resumed");
+    assert_eq!(
+        resumed.turns, 5,
+        "a session whose transcript numbers a turn 5 has had five turns; {} is what a rule \
+         other than the greatest `n` returns, and the next turn would reuse a number the \
+         transcript already holds",
+        resumed.turns,
+    );
+
+    let fresh = store
+        .start(id_at(1_700_000_000_001, 32))
+        .expect("could not start a session");
+    let resumed = crate::session::resume(fresh.directory(), usize::MAX).expect("the session resumed");
+    assert_eq!(
+        resumed.turns, 0,
+        "a session that has had no turn has had none, so its first turn is turn one",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // D6 — retention is bounded, deletion is real
 // ---------------------------------------------------------------------------

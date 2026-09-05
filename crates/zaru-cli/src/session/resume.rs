@@ -154,6 +154,15 @@ pub struct Resumed {
     /// honest way to show a transcript is to show the file. D4's *re-render*
     /// is the terminal's and is a different act.
     pub tail_lines: Vec<String>,
+    /// How many turns this session has already had.
+    ///
+    /// **The greatest `n` any `turn_started` record carries, and zero when
+    /// there is none** — so the next turn is this plus one. See
+    /// [`turns_so_far`] for why it is the greatest rather than the count, and
+    /// [ADR-0010] D4's accepted Update of 2026-09-05 for the decision.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    pub turns: u32,
     /// A call that was in flight when the process died, if one was.
     pub interrupted: Option<Interrupted>,
     /// How many bytes of a partial line the transcript ends with, if any.
@@ -191,12 +200,68 @@ pub fn resume(directory: &Path, tail: usize) -> Result<Resumed, ResumeFailure> {
         .map_err(ResumeFailure::Checkpoint)?;
 
     Ok(Resumed {
+        // Over every record rather than over the tail: `tail` is how many the
+        // caller wants re-rendered, and a session's turn count is not a
+        // property of how much of it somebody asked to see.
+        turns: turns_so_far(&reading.records),
         interrupted: unfinished_call(&reading.records),
         tail: reading.tail(tail).to_vec(),
         tail_lines: reading.tail_lines(tail).to_vec(),
         fragment: reading.fragment,
         checkpoint,
     })
+}
+
+/// How many turns this session has had, read off the transcript.
+///
+/// # The disk does say, and until 2026-09-05 nothing read it
+///
+/// [ADR-0010]'s amendments page carried this from the `shell-task-turns` arc:
+/// "**nothing on disk says how many turns a session has already had** — the
+/// transcript holds the events but no arc has decided that counting them is
+/// the answer. So a session resumed a second time numbers its turns from one
+/// again, and the transcript shows two `turn_started {"n": 1}` records for one
+/// session."
+///
+/// **Half of that is false and the other half is why this function exists.**
+/// [ADR-0008] D1's outer loop emits `TurnStarted { n, of }`, D2 puts every
+/// event of it in this file, and `n` is the turn's own number — so the disk
+/// says it in as many words. What was true is that no record had decided that
+/// *reading* it is the answer. That is now decided, as an accepted Update to
+/// D4 under directive 20 of 2026-09-05, open to Jeshua's veto: **the next turn
+/// is one more than the greatest `n` any `turn_started` record carries, and
+/// one when there is none.**
+///
+/// # The greatest rather than the count, the last, or one
+///
+/// The four rules give four different answers and only on a file this harness
+/// wrote do three of them agree. The **count** re-derives a number the file
+/// already states, which is a proxy for it rather than the thing; on a
+/// transcript truncated by a crash, or trimmed by the user D1 promises can
+/// read and edit these files, it is short by exactly the records that went
+/// missing and the next turn reuses a number the file still holds. The
+/// **last** is whatever record happens to be last, which on an out-of-order
+/// or interleaved file is not the highest. And **one** is the behaviour this
+/// replaces. `a_resumed_session_continues_the_turn_count_from_the_transcript`
+/// stages `n` of 1, 5 and 2 in that order so that all four disagree.
+///
+/// **Not the restored exchange count either**, which is the fifth rule and the
+/// one that looks cheapest from `compose::boundary`: `crate::terminal::driver`
+/// records no exchange for an interrupted turn, so one interrupt makes the
+/// next turn reuse a number the transcript already holds — the exact oddity
+/// this closes.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+fn turns_so_far(records: &[Record]) -> u32 {
+    records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnLoop(zaru_core::tool_call::Event::TurnStarted { n, .. }) => Some(*n),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The call that started and never finished, if there is one.
