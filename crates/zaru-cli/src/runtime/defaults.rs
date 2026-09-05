@@ -71,7 +71,7 @@
 //! # Nothing here names a tier to `zaru-core`
 //!
 //! [`ceiling`] hands back `zaru-core`'s own
-//! [`Ceiling`](zaru_core::iteration::Ceiling), which is a number and carries
+//! [`Ceiling`], which is a number and carries
 //! no tier. [ADR-0008] D5 says the loop "takes one and never chooses one", and
 //! its `limits` module says ADR-0001 D3 owns the numbers. This is the boundary
 //! where that ownership is exercised.
