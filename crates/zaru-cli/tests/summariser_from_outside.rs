@@ -643,9 +643,20 @@ fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
 /// (§8, and `the_absence_walk_finds_the_value_when_nothing_is_held` above is
 /// the file's own general form).
 ///
-/// The mutant: measuring the unredacted text in `Context::usage`, which does
-/// not put the value on the row — so this check is honest about what it can
-/// see, and what it can see is a renderer that put layer 6's text there.
+/// # The bearer is planted at BOTH ends of layer 6, and a red-watch is why
+///
+/// The first draft staged it through [`session_carrying`] alone, which puts
+/// the value in the **oldest** exchange. A mutant that rendered layer 6's
+/// **newest** exchange onto the row then survived — the row carried an
+/// exchange, just not the one holding the secret — while the same mutant
+/// reading the oldest reddened at once. That is a finding about the check
+/// rather than about the product ([Verification lessons] §15): an absence
+/// assertion over a rendering is only as wide as the part of the haystack the
+/// staging can reach. So a final exchange carries the bearer too, and a
+/// renderer showing *either* end of layer 6 is now visible.
+///
+/// The mutants: rendering `exchanges().first()` and `exchanges().last()`
+/// beside the count. Both redden.
 #[test]
 fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
     use zaru_cli::terminal::driver::refresh_status;
@@ -654,7 +665,28 @@ fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
     let scratch = Scratch::new("status-row");
     let planted = planted_bearer("row");
     let held = holding(&scratch, &planted);
-    let context = session_carrying(&planted);
+    let mut context = session_carrying(&planted);
+    context.record(Exchange::of_turn(
+        "read it again",
+        &[format!("fs.read notes.txt -- still {planted}")],
+        "the notes still name it",
+    ));
+    let context = context;
+
+    // The staging reaches both ends, which is what the two mutants above are
+    // about. Asserted rather than assumed: an `Exchange` that dropped its tool
+    // results would leave this check walking a haystack with no needle in it.
+    let ends = [
+        context.exchanges().first().expect("layer 6 is populated"),
+        context.exchanges().last().expect("layer 6 is populated"),
+    ];
+    for end in ends {
+        assert!(
+            end.as_str().contains(&planted),
+            "the staging must put the bearer at both ends of layer 6, or a renderer showing one              of them is invisible to this check; that end was {:?}",
+            end.as_str()
+        );
+    }
 
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
     refresh_status(&mut shell, &context, None, &held);
