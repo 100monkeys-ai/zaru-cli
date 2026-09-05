@@ -340,11 +340,22 @@ fn loop_line(event: &zaru_core::iteration::Event) -> Line {
             Register::Call,
             format!("ran, exit {exit_code} · {}", seconds(*elapsed)),
         ),
+        // The outcome in ADR-0009 D2's words rather than the enum's Rust
+        // spelling. `Plain` for all three, including the failing one: ADR-0028
+        // D2 has an iteration's failure render "as a plot point ... placed as
+        // part of the work — the mechanism operating — and never in the
+        // register reserved for defects", which is `Register::Failed`.
         Event::ValidatorEvaluated {
             name,
             outcome,
             detail,
-        } => Line::new(Register::Plain, format!("{name}: {outcome:?} — {detail}")),
+        } => Line::new(
+            Register::Plain,
+            format!(
+                "{name}: {} — {detail}",
+                crate::cli::render::validator_outcome(*outcome)
+            ),
+        ),
         Event::IterationFailed { n, reason, elapsed } => Line::new(
             Register::Plain,
             format!("iteration {n} failed: {reason} · {}", seconds(*elapsed)),
@@ -369,15 +380,22 @@ fn loop_line(event: &zaru_core::iteration::Event) -> Line {
             iterations,
             reason,
             last_failure,
-        } => Line::new(
-            Register::Exhausted,
-            match last_failure {
-                Some(failure) => {
-                    format!("exhausted after {iterations} iteration(s): {reason:?} — {failure}")
-                }
-                None => format!("exhausted after {iterations} iteration(s): {reason:?}"),
-            },
-        ),
+        } => {
+            // The reason in ADR-0008 D5's "`ExhaustionReason`'s own words",
+            // through the function the binary's own exit already prints, so a
+            // run that stopped does not have one explanation on the screen and
+            // another at the exit code.
+            let why = crate::cli::render::exhaustion(*iterations, *reason);
+            Line::new(
+                Register::Exhausted,
+                match last_failure {
+                    Some(failure) => {
+                        format!("exhausted after {iterations} iteration(s): {why} — {failure}")
+                    }
+                    None => format!("exhausted after {iterations} iteration(s): {why}"),
+                },
+            )
+        }
     }
 }
 

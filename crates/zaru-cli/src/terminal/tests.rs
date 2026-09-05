@@ -971,6 +971,179 @@ fn a_refused_call_is_announced_and_a_stopped_turn_is_failed() {
     );
 }
 
+// ------------------------------------------- ADR-0008 D3's eight events, rendered
+
+/// Every one of the inner loop's events, in the order a run emits them.
+///
+/// Built once and walked by the check below, so it carries no list of its own
+/// and a ninth event has to be given a sentence here rather than falling into
+/// whatever the last arm was. Both `ExhaustionReason` variants and all three
+/// `ValidatorOutcome`s appear, because each is a separate arm of the rendering
+/// and a fixture carrying one of the three would leave two unexercised.
+fn every_loop_event() -> Vec<zaru_core::iteration::Event> {
+    use core::time::Duration;
+    use zaru_core::iteration::{Event, ExhaustionReason, ValidatorOutcome};
+
+    let took = Duration::from_millis(1_250);
+    let mut events = vec![
+        Event::IterationStarted { n: 2, of: 5 },
+        Event::CandidateGenerated {
+            tokens: 451,
+            elapsed: took,
+        },
+        Event::ExecutionCompleted {
+            exit_code: 1,
+            stdout_bytes: 42,
+            stderr_bytes: 7,
+            elapsed: took,
+        },
+    ];
+    for outcome in [
+        ValidatorOutcome::Passed,
+        ValidatorOutcome::Failed,
+        ValidatorOutcome::Skipped,
+    ] {
+        events.push(Event::ValidatorEvaluated {
+            name: "tests".to_owned(),
+            outcome,
+            detail: "2 of 3 assertions held".to_owned(),
+        });
+    }
+    events.push(Event::IterationFailed {
+        n: 2,
+        reason: "the third assertion did not hold".to_owned(),
+        elapsed: took,
+    });
+    events.push(Event::RefinementConstructed {
+        n: 2,
+        failure_excerpt: "the third assertion did not hold".to_owned(),
+    });
+    events.push(Event::LoopSucceeded {
+        iterations: 3,
+        elapsed: took,
+        total_elapsed: took,
+    });
+    for reason in [
+        ExhaustionReason::CeilingReached,
+        ExhaustionReason::ContextWindowExceeded {
+            needed: 9_000,
+            window: 8_000,
+        },
+    ] {
+        events.push(Event::LoopExhausted {
+            iterations: 3,
+            reason,
+            last_failure: Some("the third assertion did not hold".to_owned()),
+        });
+    }
+    events
+}
+
+/// The pane's line for a loop event, through the path a resumed session uses.
+fn painted_loop_line(event: &zaru_core::iteration::Event) -> zaru_tui::shell::port::Line {
+    let pane = Pane::of(&[Record::Loop(event.clone())]);
+    let mut lines = pane.lines();
+    assert_eq!(lines.len(), 1, "one record did not produce one line");
+    lines.remove(0)
+}
+
+/// The inner loop's events are sentences, and **not** a `Debug` dump of the
+/// two enums they carry.
+///
+/// The sibling of
+/// [`every_turn_event_renders_in_a_register_this_shell_defines_and_never_as_debug`],
+/// for the loop whose events [ADR-0008] D3 actually enumerates. That check
+/// found the outer loop rendering as its Rust shape; this one holds the two
+/// places the inner loop still did on 2026-09-05 — `ValidatorEvaluated`'s
+/// outcome, rendered `{outcome:?}`, and `LoopExhausted`'s reason, rendered
+/// `{reason:?}` and so printing `ContextWindowExceeded { needed: 9000, window:
+/// 8000 }` at a reader.
+///
+/// The second is the load-bearing one. ADR-0008 D3's own words for why that
+/// variant carries its two numbers are that "D7 asks for a *clear* reason and
+/// a reader cannot act on 'the window was exceeded' without knowing by how
+/// much" — and a struct dump is not a clear reason, it is the numbers with the
+/// field names of the type that holds them.
+///
+/// The identifier list is what discriminates. A rendering that carried a
+/// variant's own identifier is a `Debug` of it whatever else it also says, and
+/// no sentence composed for a reader has a reason to contain one.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+#[test]
+fn every_loop_event_renders_as_a_sentence_and_never_as_debug() {
+    let identifiers = [
+        "IterationStarted",
+        "CandidateGenerated",
+        "ExecutionCompleted",
+        "ValidatorEvaluated",
+        "IterationFailed",
+        "RefinementConstructed",
+        "LoopSucceeded",
+        "LoopExhausted",
+        "ValidatorOutcome",
+        "Passed",
+        "Failed",
+        "Skipped",
+        "ExhaustionReason",
+        "CeilingReached",
+        "ContextWindowExceeded",
+        "needed:",
+        "window:",
+    ];
+
+    for event in every_loop_event() {
+        let line = painted_loop_line(&event);
+        for identifier in identifiers {
+            assert!(
+                !line.text.contains(identifier),
+                "the line for {event:?} carries the Rust identifier {identifier:?}, so it \
+                 is a `Debug` of the event rather than a sentence: {:?}",
+                line.text
+            );
+        }
+        assert!(
+            !line.text.trim().is_empty(),
+            "{event:?} rendered as nothing at all"
+        );
+    }
+}
+
+/// The window route's line carries both of its numbers, in the words the
+/// binary already uses for them.
+///
+/// **Two callers, one wording.** [`crate::cli::render::exhaustion`] is what
+/// `zaru "<task>"` prints when an iterated turn exhausts, and it is what the
+/// pane paints; a second phrasing here would let the exit-code reader and the
+/// person watching disagree about why a run stopped. So the assertion is
+/// against that function's own output rather than against a literal this check
+/// owns — a literal would pass a renderer that had drifted from the binary.
+#[test]
+fn the_exhaustion_reason_the_pane_paints_is_the_one_the_binary_prints() {
+    use zaru_core::iteration::ExhaustionReason;
+
+    for reason in [
+        ExhaustionReason::CeilingReached,
+        ExhaustionReason::ContextWindowExceeded {
+            needed: 9_000,
+            window: 8_000,
+        },
+    ] {
+        let line = painted_loop_line(&zaru_core::iteration::Event::LoopExhausted {
+            iterations: 3,
+            reason,
+            last_failure: None,
+        });
+        let said = crate::cli::render::exhaustion(3, reason);
+        assert!(
+            line.text.contains(&said),
+            "the pane says {:?} where the binary says {said:?}, so one run has two \
+             explanations depending on where it is read",
+            line.text
+        );
+    }
+}
+
 // -------------------------------------------------------------- ADR-0011 D3
 
 /// ADR-0011 D3's question crosses to the shell with its sentence unchanged.

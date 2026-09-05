@@ -508,6 +508,66 @@ pub const ANNOUNCEMENT_MARKER: &str = "◈";
 /// reading is named rather than assumed. Truncating rather than rounding, so
 /// the abbreviation never reports more than was measured.
 ///
+/// Why the inner loop stopped, in [ADR-0008] D5's "`ExhaustionReason`'s own
+/// words".
+///
+/// # One wording, two readers
+///
+/// This sentence was inside [`crate::cli::classify`]'s `loop_exhausted` until
+/// 2026-09-05, where it was reached only by the classified failure the binary
+/// exits on. The pane reached none of it and rendered `{reason:?}` instead, so
+/// a run that stopped had one explanation at the exit code and a Rust struct
+/// dump on the screen. It is here now for the reason [`announcement`] is —
+/// this module is the one projection per datum, and both callers come through
+/// it.
+///
+/// **The words are not chosen here.** `CeilingReached` is [ADR-0008] D5's own
+/// account of what happened; the window arm is [ADR-0013] D7's, and it names
+/// both numbers because D3's own argument for the variant carrying them is
+/// that "D7 asks for a *clear* reason and a reader cannot act on 'the window
+/// was exceeded' without knowing by how much".
+///
+/// `iterations` is the count the event carries rather than the ceiling, which
+/// no event holds. On the ceiling route they are the same number by
+/// construction — the machine checks `n >= ceiling` and reports `n`.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[must_use]
+pub fn exhaustion(iterations: u32, reason: zaru_core::iteration::ExhaustionReason) -> String {
+    use zaru_core::iteration::ExhaustionReason as Why;
+    match reason {
+        Why::CeilingReached => format!("the ceiling of {iterations} iteration(s) was reached"),
+        Why::ContextWindowExceeded { needed, window } => format!(
+            "assembling the next iteration needed {needed} tokens and the window allows {window}"
+        ),
+    }
+}
+
+/// What one declared validator reported, in [ADR-0009] D2's own words.
+///
+/// Three outcomes rather than a boolean, because that record "makes `skipped`
+/// distinct from `passed` and `failed` on purpose: a validator whose
+/// prerequisite failed did not run, and reporting that as a pass is exactly
+/// the silent green that decision exists to prevent". So the third arm says
+/// the validator did not run rather than saying anything about whether it
+/// would have held.
+///
+/// The verbs are `ValidatorOutcome`'s own documentation, which is that
+/// record's text: "ran and its expectation held", "ran and its expectation did
+/// not hold", "did not run, because a validator it declared `after` failed".
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+#[must_use]
+pub const fn validator_outcome(outcome: zaru_core::iteration::ValidatorOutcome) -> &'static str {
+    use zaru_core::iteration::ValidatorOutcome as What;
+    match outcome {
+        What::Passed => "passed",
+        What::Failed => "failed",
+        What::Skipped => "did not run",
+    }
+}
+
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 #[must_use]
 pub fn thousands(tokens: u64) -> String {

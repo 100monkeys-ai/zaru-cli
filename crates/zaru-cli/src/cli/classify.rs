@@ -1295,16 +1295,11 @@ impl Surface<'_> {
         reason: zaru_core::iteration::ExhaustionReason,
         last_failure: Option<&str>,
     ) -> Classified {
-        use zaru_core::iteration::ExhaustionReason as Why;
-        let why = match reason {
-            Why::CeilingReached => {
-                format!("the ceiling of {iterations} iteration(s) was reached")
-            }
-            Why::ContextWindowExceeded { needed, window } => format!(
-                "assembling the next iteration needed {needed} tokens and the window allows \
-                 {window}"
-            ),
-        };
+        // The wording is `crate::cli::render`'s, which is where it moved on
+        // 2026-09-05 so that the pane paints the same sentence this exit code
+        // carries -- see that function for why one run may not have two
+        // explanations depending on where it is read.
+        let why = crate::cli::render::exhaustion(iterations, reason);
         // The validators' own output, carried rather than summarised: ADR-0008
         // D4 forbids paraphrase on the path into a prompt and D5 asks the
         // harness to present "what was tried", which is the same bytes.
