@@ -475,3 +475,234 @@ fn a_namespaces_verbs_are_one_list_read_by_both_the_parser_and_the_help_text() {
         }
     ));
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0016 — the class each failure this surface can raise belongs to
+// ---------------------------------------------------------------------------
+
+/// Every refusal the grammar can produce is user-correctable and carries a
+/// remedy that reaches the reader.
+///
+/// **Enumerated rather than sampled**, which is what [ADR-0016] trigger clause
+/// 3 asks for in as many words and what [Verification Lessons] §4 calls the
+/// disguise a spot check wears: a remedy that exists for most refusals and not
+/// the one a user hits is indistinguishable from having no policy.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+/// [Verification Lessons]: https://100monkeys-ai.cortex.page/zaru/p/operations/verification-lessons
+#[test]
+fn every_refusal_the_grammar_produces_is_the_users_and_says_what_to_change() {
+    let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let mut wrong = Vec::new();
+
+    for (label, words) in refusable_lines() {
+        let refusal = refuse(words);
+        let classified = surface.command(&refusal);
+        if classified.class() != crate::failure::Class::UserCorrectable {
+            wrong.push((label, format!("{:?}", classified.class())));
+            continue;
+        }
+        let presented = crate::failure::Presentation::of(&classified).to_string();
+        if presented.lines().count() < 2 {
+            wrong.push((label, "the remedy reached no line".to_owned()));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "a command line is by construction something the user typed, so every refusal of one is \
+         ADR-0016 D1 row 2 and every one carries a remedy the reader can see: {wrong:?}"
+    );
+}
+
+/// Every variant of the grammar's refusal is exercised by the list above.
+///
+/// **Asserts the staging.** Without this the check above is satisfied by a
+/// list that reaches three variants, which is [Verification Lessons] §14 —
+/// a check that can decline passes vacuously, and the decline here is a
+/// variant nobody wrote a line for.
+///
+/// [Verification Lessons]: https://100monkeys-ai.cortex.page/zaru/p/operations/verification-lessons
+#[test]
+fn the_refusal_list_reaches_every_variant_the_grammar_can_produce() {
+    let mut seen: Vec<&'static str> = refusable_lines()
+        .into_iter()
+        .map(|(_, words)| variant_of(&refuse(words)))
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+
+    let mut expected = vec![
+        "NotText",
+        "UnknownCommand",
+        "NamespaceNotBuilt",
+        "VerbMissing",
+        "UnknownVerb",
+        "UnexpectedWord",
+        "ArgumentMissing",
+        "UnknownFlag",
+        "FlagNeedsValue",
+        "FlagTakesNoValue",
+        "FlagRepeated",
+        "ResumeAndContinue",
+        "RequestFlagWithCommand",
+        "UnusableKey",
+        "UnusableSessionId",
+    ];
+    expected.sort_unstable();
+
+    assert_eq!(
+        seen, expected,
+        "the enumeration above must reach every variant `CommandRefused` has, or a variant with \
+         no remedy passes by never being built"
+    );
+}
+
+/// One line per refusal variant the grammar can produce, with a label.
+///
+/// The last is real bytes rather than a stand-in: `NotText` cannot be reached
+/// from text at all, and a list that omitted it would leave one variant with
+/// no remedy and nothing saying so.
+fn refusable_lines() -> Vec<(String, Vec<OsString>)> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut lines: Vec<(String, Vec<OsString>)> = [
+        vec!["runtim"],
+        vec!["stack"],
+        vec!["sessions"],
+        vec!["sessions", "lst"],
+        vec!["runtime", "extra"],
+        vec!["config", "explain"],
+        vec!["--runtimee", "bare"],
+        vec!["--runtime"],
+        vec!["--continue=yes"],
+        vec!["--runtime", "bare", "--runtime", "linked"],
+        vec!["--resume", "01HM2E5Y001440E1G50G1G4080", "--continue"],
+        vec!["--continue", "models"],
+        vec!["config", "explain", "runtime..tier"],
+        vec!["sessions", "rm", "not-a-ulid"],
+    ]
+    .into_iter()
+    .map(|words| (words.join(" "), typed(&words)))
+    .collect();
+
+    lines.push((
+        "an argument carrying an invalid byte".to_owned(),
+        vec![OsString::from_vec(vec![b'r', 0xFF, b'm'])],
+    ));
+    lines
+}
+
+/// Parse an argument list, expecting a refusal.
+fn refuse(words: Vec<OsString>) -> CommandRefused {
+    match parse(words) {
+        Err(refusal) => refusal,
+        Ok(line) => panic!(
+            "a line meant to be refused was accepted as {:?}",
+            line.request
+        ),
+    }
+}
+
+/// Which variant a refusal is, as a name a check can compare.
+fn variant_of(refusal: &CommandRefused) -> &'static str {
+    match refusal {
+        CommandRefused::NotText { .. } => "NotText",
+        CommandRefused::UnknownCommand { .. } => "UnknownCommand",
+        CommandRefused::NamespaceNotBuilt { .. } => "NamespaceNotBuilt",
+        CommandRefused::VerbMissing { .. } => "VerbMissing",
+        CommandRefused::UnknownVerb { .. } => "UnknownVerb",
+        CommandRefused::UnexpectedWord { .. } => "UnexpectedWord",
+        CommandRefused::ArgumentMissing { .. } => "ArgumentMissing",
+        CommandRefused::UnknownFlag { .. } => "UnknownFlag",
+        CommandRefused::FlagNeedsValue { .. } => "FlagNeedsValue",
+        CommandRefused::FlagTakesNoValue { .. } => "FlagTakesNoValue",
+        CommandRefused::FlagRepeated { .. } => "FlagRepeated",
+        CommandRefused::ResumeAndContinue => "ResumeAndContinue",
+        CommandRefused::RequestFlagWithCommand { .. } => "RequestFlagWithCommand",
+        CommandRefused::UnusableKey(_) => "UnusableKey",
+        CommandRefused::UnusableSessionId(_) => "UnusableSessionId",
+    }
+}
+
+/// A remedy that names a command names one `--help` lists.
+///
+/// The command surface is what made `Action::runnable` usable at all — before
+/// it, `failure::classify`'s every remedy was a described action, "because the
+/// command surface is ADR-0015's and does not exist". It does now, and the
+/// discipline that replaces the old refusal is that a suggested command has to
+/// be one this binary runs.
+#[test]
+fn every_command_a_remedy_suggests_is_one_the_parser_accepts() {
+    let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let mut suggested = Vec::new();
+    let mut unrunnable = Vec::new();
+
+    for (_, words) in refusable_lines() {
+        let classified = surface.command(&refuse(words));
+        let crate::failure::Classified::UserCorrectable { remedy, .. } = &classified else {
+            continue;
+        };
+        for action in remedy.actions() {
+            let Some(command) = action.command() else {
+                continue;
+            };
+            suggested.push(command.to_owned());
+            let rest: Vec<&str> = command.split_whitespace().skip(1).collect();
+            if parse(typed(&rest)).is_err() {
+                unrunnable.push(command.to_owned());
+            }
+        }
+    }
+
+    assert!(
+        !suggested.is_empty(),
+        "no remedy suggested a command at all, so this check asserted nothing"
+    );
+    assert!(
+        unrunnable.is_empty(),
+        "a remedy suggested a command this binary refuses, which is ADR-0016 D2's stack trace \
+         with better grammar: {unrunnable:?}"
+    );
+}
+
+/// A file this harness wrote and cannot read back is reported as ours.
+///
+/// The provenance reading, at the one seam where it goes the other way: every
+/// other failure the surface meets is about the user's machine, and a
+/// malformed transcript is about ours. Both arms, because a classifier that
+/// called everything a defect would satisfy the defect arm perfectly.
+#[test]
+fn a_file_this_harness_wrote_is_a_defect_and_a_missing_one_is_the_users() {
+    use crate::failure::{Class, SessionEvidence};
+    use crate::session::{ResumeFailure, TranscriptError};
+
+    let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
+
+    let absent = ResumeFailure::NoSuchDirectory {
+        path: std::path::PathBuf::from("/nowhere/01HM2E5Y001440E1G50G1G4080"),
+    };
+    assert_eq!(
+        surface
+            .resume(&absent, SessionEvidence::NoSessionExists)
+            .class(),
+        Class::UserCorrectable,
+        "a session the user named and that is not there is the user's, and the remedy is the \
+         listing"
+    );
+
+    let torn = ResumeFailure::Transcript(TranscriptError::Malformed {
+        path: std::path::PathBuf::from("/nowhere/transcript.jsonl"),
+        line: 4,
+        detail: "expected value".to_owned(),
+    });
+    assert_eq!(
+        surface
+            .resume(&torn, SessionEvidence::NoSessionExists)
+            .class(),
+        Class::Defect,
+        "this harness is the only writer of a transcript, so a complete line it cannot read back \
+         is a file it wrote wrongly -- telling the reader to check their configuration would be \
+         ADR-0016 D3's own worked mistake"
+    );
+}

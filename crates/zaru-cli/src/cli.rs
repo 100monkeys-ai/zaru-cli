@@ -51,6 +51,7 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
+pub mod classify;
 pub mod flag;
 pub mod help;
 pub mod invocation;
@@ -58,6 +59,7 @@ pub mod namespace;
 pub mod parse;
 pub mod refusal;
 
+pub use classify::Surface;
 pub use flag::Flag;
 pub use invocation::{CommandLine, Overrides, Request};
 pub use namespace::Namespace;
