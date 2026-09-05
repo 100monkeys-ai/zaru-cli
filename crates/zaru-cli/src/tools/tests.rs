@@ -31,8 +31,8 @@ use crate::tools::decision::{
 };
 use crate::tools::destructive::{Category, Shapes};
 use crate::tools::fixtures::{
-    RecordedConfirmer, RefusingOverflow, ScratchOverflow, ScratchTree, StagedAllowlist,
-    StagedDestructive, nonce,
+    FailingConfirmer, RecordedConfirmer, RefusingOverflow, ScratchOverflow, ScratchTree,
+    StagedAllowlist, StagedDestructive, nonce,
 };
 use crate::tools::mode::{Layer, Mode, ModeRefused, Tier};
 use crate::tools::name::{Effect, ToolName};
@@ -2210,5 +2210,75 @@ fn the_product_matcher_annotates_at_yolo_where_there_is_no_prompt_at_all() {
         !quiet.entry().is_destructive() && !quiet.entry().render().contains(DESTRUCTIVE_MARKING),
         "an ordinary command was annotated: {:?}",
         quiet.entry().render()
+    );
+}
+
+/// **Corpus case: an ask that could not reach the user refuses for that
+/// reason, and never as a decline.**
+///
+/// Until 2026-09-05 a confirmer whose terminal had closed had only `false` to
+/// answer with, and `false` is [`RefusedBecause::TheUserDeclined`] — a
+/// transcript entry saying the user declined when nobody was asked anything.
+/// The three refusals below must be **three different events**, and the two
+/// that are the same event must be the same one.
+///
+/// The accepting sibling is the fourth arm: a confirmer that answers `y` must
+/// grant, or an implementation that refused every call would satisfy the rest.
+///
+/// The mutant is mapping `Err` to `TheUserDeclined`, which collapses two of
+/// the four rows and reddens here.
+#[test]
+fn an_ask_that_could_not_reach_the_user_is_not_a_decline() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let invocation =
+        Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+    let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
+
+    assert_eq!(
+        decision.requirement(),
+        Requirement::Ask,
+        "staging: a write at `ask` must need a prompt, or this check asserts nothing"
+    );
+
+    let failing = FailingConfirmer::new();
+    assert_eq!(
+        decision.permit(Some(&failing)),
+        Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
+        "an ask that could not be put must refuse as an ask that did not reach the user, and \
+         never as a decline: the two are different events and a transcript that conflated them \
+         would say the user answered a question nobody put to them"
+    );
+    assert_eq!(
+        failing.asked(),
+        1,
+        "the confirmer was not actually asked, so the refusal came from somewhere else"
+    );
+
+    // The other three rows, so the assertion above is about `Err` and not
+    // about refusing generally.
+    assert_eq!(
+        decision.permit(None),
+        Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
+        "no confirmer at all is the same event and must carry the same reason"
+    );
+    assert_eq!(
+        decision.permit(Some(&RecordedConfirmer::declining())),
+        Permission::Refused(RefusedBecause::TheUserDeclined),
+        "a user who was asked and said no must refuse for that reason"
+    );
+    assert_eq!(
+        decision.permit(Some(&RecordedConfirmer::accepting())),
+        Permission::Granted,
+        "a user who said yes must grant, or every row above is satisfied by refusing everything"
+    );
+
+    // The sentence a reader gets must not claim nobody was supplied, because
+    // in the failing arm somebody was.
+    let rendered = RefusedBecause::ThereWasNobodyToAsk.to_string();
+    assert!(
+        rendered.contains("did not reach"),
+        "the refusal's own sentence must be true of both routes: {rendered:?}"
     );
 }

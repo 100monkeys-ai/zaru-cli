@@ -108,7 +108,7 @@ pub use output::{
     BudgetIsZero, Captured, ELISION_PREFIX, Excerpt, OutputBudget, Overflow, OverflowFailure,
     PresentationRefused, Presented,
 };
-pub use port::{Allowlist, Confirm, DestructiveMatch, Fetch, Question, Subprocess};
+pub use port::{Allowlist, Confirm, ConfirmFailure, DestructiveMatch, Fetch, Question, Subprocess};
 pub use seal::{NoMembrane, Verdict, Verdicts};
 pub use tree::{Placement, Target, TreeError, WorkingDirectory};
 

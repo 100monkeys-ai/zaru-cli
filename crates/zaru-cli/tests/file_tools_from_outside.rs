@@ -43,8 +43,8 @@ use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
-    Captured, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question, SessionOverflow,
-    Subprocess, WorkingDirectory,
+    Captured, ConfirmFailure, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question,
+    SessionOverflow, Subprocess, WorkingDirectory,
 };
 use zaru_core::iteration::{Clock, ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn};
 use zaru_core::redaction::{Redacted, Redactor};
@@ -254,9 +254,9 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
 /// A user who says yes, because ADR-0011 D3's `ask` prompts before any write.
 struct Accepting;
 impl zaru_cli::tools::Confirm for Accepting {
-    fn confirm(&self, question: &Question) -> bool {
+    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
         println!("  the user was asked: {}", question.statement);
-        true
+        Ok(true)
     }
 }
 

@@ -4,19 +4,24 @@
 //! The three ports the permission decision calls out through, none of them
 //! implemented here.
 //!
-//! **Nothing in this crate's product tree implements any of the three**,
-//! exactly as nothing in `zaru-core`'s implements one of the loop's five and
-//! nothing implements [`credentials`](crate::credentials)'s two. A check
-//! implements them; the product does not, and that is why this arc prompts
-//! nobody, reads no configuration and matches no command.
+//! **All three have a product implementation as of 2026-09-05**, and until
+//! then none of them did: [`allowlist::Allowed`](crate::tools::allowlist)
+//! reads ADR-0014 D1's layer 2,
+//! [`destructive::Shapes`](crate::tools::destructive) answers for the two of
+//! ADR-0011 D6's four categories whose shape the record's own words
+//! determine, and [`prompt::Prompt`](crate::tools::prompt) asks over a
+//! terminal. What each one deliberately does **not** decide is written on its
+//! own module.
 //!
-//! Two of the three are ports specifically because writing what they answer
-//! would be **authoring a security vocabulary**, which [Autonomous
+//! Two of the three were ports for as long as they were because writing what
+//! they answer is **authoring a security vocabulary**, which [Autonomous
 //! Development] puts on the human side of the boundary: "Adding a name to a
 //! capability set, to a permission taxonomy, or to anything else deciding
 //! what a model-driven action may reach **is a decision rather than the
-//! implementation of one**." An allowlist format and a destructive-command
-//! pattern list are both exactly that.
+//! implementation of one**." That constraint did not go away when the
+//! implementations arrived — it is why the allowlist matches byte for byte
+//! and never by glob, and why two of D6's four categories match nothing at
+//! all.
 //!
 //! [Autonomous Development]: https://100monkeys-ai.cortex.page/project-management/p/process/autonomous-development
 
@@ -34,10 +39,15 @@ use crate::tools::decision::Invocation;
 /// its own Neutral consequence says each record owns its own keys. Writing a
 /// format — what a rule matches, whether a path rule is a glob or a prefix,
 /// whether a command rule names a binary or a whole line — is authoring a
-/// permission taxonomy, and it would also need a parser for a file format
-/// that is not in ADR-0003 D2's dependency table. So the shape that is honest
-/// is a declared seam with no implementation, and the format stays the
-/// record's to decide.
+/// permission taxonomy, so it stayed a declared seam with no implementation
+/// until a record settled it.
+///
+/// **It was settled on 2026-09-05** by a delegated coordinator ruling under
+/// Jeshua's directive of that day, open to his veto, and
+/// [`allowlist`](crate::tools::allowlist) is the implementation. The format
+/// answers each of those questions in the direction that decides least: an
+/// entry is the line the prompt already showed, matched byte for byte, never
+/// a glob and never a prefix.
 ///
 /// # Which layer an implementation may read, and why that is narrower than D3
 ///
@@ -47,12 +57,11 @@ use crate::tools::decision::Invocation;
 /// repository buying itself fewer prompts. The two cannot both hold as
 /// written.
 ///
-/// Under a delegated coordinator ruling of 2026-09-04, **D6 wins**: an
-/// implementation of this port reads the user's own layer only, until a
-/// record admits a project layer — ADR-0015 D4's per-project admission is the
-/// obvious mechanism for admitting one and no record connects the two. The
-/// conflict and this resolution are recorded as a proposed Update on ADR-0011
-/// rather than settled by whichever layer an implementer happened to read.
+/// Under a delegated coordinator ruling of 2026-09-04, confirmed and closed on
+/// 2026-09-05, **D6 wins**: D3 is amended to "the user's allowlist", and
+/// [`allowlist::Allowed`](crate::tools::allowlist) reads the user's own layer
+/// only. ADR-0015 D4's per-project admission is the mechanism a record would
+/// use to admit a project's list one day and **it is not built**.
 ///
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub trait Allowlist {
@@ -84,6 +93,12 @@ pub trait Allowlist {
 /// The four categories are this port's documented contract. An implementation
 /// answers for them and for nothing else.
 ///
+/// **[`destructive::Shapes`](crate::tools::destructive) is that
+/// implementation as of 2026-09-05**, and it holds the constraint rather than
+/// escaping it: it transcribes the two categories whose shape D6's own words
+/// determine, and the two that name no program **match nothing**, pinned by a
+/// check so that adding one is a visible act.
+///
 /// # It never vetoes, and that is checkable from here
 ///
 /// This port returns a `bool` that reaches only the prompt's prominence and
@@ -113,9 +128,48 @@ pub struct Question {
     pub prominent: bool,
 }
 
+/// Why an ask did not reach the user.
+///
+/// Not an answer and not a refusal by the harness: the question was never
+/// put. A terminal that closed between the statement and the answer is the
+/// ordinary cause.
+///
+/// It carries a sentence rather than an error chain, for the reason
+/// [`OverflowFailure`](crate::tools::output::OverflowFailure) does: the
+/// implementations are a terminal, and one day a graphical prompt, and there
+/// is no error type the two share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmFailure {
+    detail: String,
+}
+
+impl ConfirmFailure {
+    /// Say why the user was not reached.
+    #[must_use]
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+
+    /// What went wrong, in the implementation's own words.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl core::fmt::Display for ConfirmFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for ConfirmFailure {}
+
 /// How the user answers ADR-0011 D3's prompt.
 ///
-/// # There is no implementation, and no default answer
+/// # A missing answer and a wrong answer are different things
 ///
 /// A confirmation nobody can answer is the silent default the record forbids,
 /// so a call that needs one and has no confirmer is **refused** rather than
@@ -123,10 +177,35 @@ pub struct Question {
 /// [`Decision::permit`](crate::tools::decision::Decision::permit). That is the
 /// same refusal ADR-0007 D8's apex gate makes for the same reason.
 ///
-/// Rendering the prompt is `zaru-tui`'s; the decision is not the terminal's.
+/// **The answer is a `Result` rather than a `bool`, decided 2026-09-05.**
+/// Until then an implementation whose ask failed mid-prompt had only `false`
+/// to return, and `false` is
+/// [`TheUserDeclined`](crate::tools::decision::RefusedBecause::TheUserDeclined)
+/// — a transcript entry saying the user declined when nobody was asked
+/// anything. `Err` reaches
+/// [`ThereWasNobodyToAsk`](crate::tools::decision::RefusedBecause::ThereWasNobodyToAsk)
+/// instead, which is exactly true of a question that did not reach a person,
+/// however it failed to. A delegated coordinator ruling of 2026-09-05, open
+/// to Jeshua's veto.
+///
+/// What that costs, stated rather than discovered: the
+/// [`ConfirmFailure`]'s own sentence is not carried into the refusal, because
+/// `RefusedBecause` is a closed set of *outcomes* and widening it to carry a
+/// diagnosis would make a permission outcome an error report. A caller that
+/// wants the detail has it at the call site.
+///
+/// Rendering a rich prompt is `zaru-tui`'s; the decision is not the
+/// terminal's. [`Prompt`](crate::tools::prompt::Prompt) is the plain one this
+/// crate owns, over a terminal, and it is the first implementation of this
+/// trait anywhere outside a check.
 pub trait Confirm {
     /// Ask the user, having stated what is about to happen.
-    fn confirm(&self, question: &Question) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// [`ConfirmFailure`] when the question did not reach the user at all.
+    /// **Never** for an answer of no, which is `Ok(false)`.
+    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure>;
 }
 
 /// Executes a command line. `cmd.run`.
@@ -145,10 +224,10 @@ pub trait Confirm {
 ///
 /// The product implementation is [`Spawn`](crate::process::Spawn), which is
 /// the first thing in this workspace to start a child process. It is also the
-/// tool ADR-0011 D6's four destructive categories are mostly about, and
-/// [`DestructiveMatch`] still has no implementation — so a `cmd.run` cannot
-/// yet be given the prompt prominence D6 requires, which is a gap in the
-/// prompt rather than in the act.
+/// tool ADR-0011 D6's four destructive categories are about, and since
+/// 2026-09-05 [`DestructiveMatch`] has an implementation — so a `cmd.run`
+/// matching one of the two transcribed categories is given the prompt
+/// prominence D6 requires.
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub trait Subprocess {

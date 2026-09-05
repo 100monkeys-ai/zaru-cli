@@ -50,8 +50,8 @@ use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
-    Captured, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question, SessionOverflow,
-    Subprocess, WorkingDirectory,
+    Captured, ConfirmFailure, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question,
+    SessionOverflow, Subprocess, WorkingDirectory,
 };
 use zaru_core::iteration::{
     Clock, ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn, ValidatorOutcome,
@@ -276,8 +276,8 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
 
 struct Accepting;
 impl zaru_cli::tools::Confirm for Accepting {
-    fn confirm(&self, _question: &Question) -> bool {
-        true
+    fn confirm(&self, _question: &Question) -> Result<bool, ConfirmFailure> {
+        Ok(true)
     }
 }
 

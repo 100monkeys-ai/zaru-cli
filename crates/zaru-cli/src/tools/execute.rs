@@ -164,11 +164,19 @@ pub struct Executor<'a, C, F> {
     pub working_directory: &'a WorkingDirectory,
     /// D3's mode. Governs prompting and nothing else.
     pub mode: Mode,
-    /// D3's allowlist. No product implementation.
+    /// D3's allowlist. The product implementation is
+    /// [`Allowed`](crate::tools::Allowed), reading ADR-0014 D1's layer 2.
     pub allowlist: &'a (dyn Allowlist + Sync),
-    /// D6's four categories. No product implementation.
+    /// D6's four categories. The product implementation is
+    /// [`Shapes`](crate::tools::Shapes), which answers for the two of them
+    /// whose shape D6's own words determine and matches nothing for the two
+    /// that name no program.
     pub destructive: &'a (dyn DestructiveMatch + Sync),
-    /// D3's prompt. `None` refuses any call that needed one.
+    /// D3's prompt. The product implementation is
+    /// [`Prompt`](crate::tools::prompt::Prompt), over a terminal. `None`
+    /// refuses any call that needed one — and so does a confirmer whose ask
+    /// could not reach the user, for the same reason and with the same
+    /// outcome.
     pub confirmer: Option<&'a (dyn Confirm + Sync)>,
     /// ADR-0004's membrane. No product implementation.
     pub verdicts: &'a (dyn Verdicts + Sync),

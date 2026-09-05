@@ -41,9 +41,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::tools::{
-    Allowlist, Assessment, Captured, Confirm, Decision, DestructiveMatch, Invocation, Layer, Mode,
-    ModeRefused, Overflow, OverflowFailure, Permission, Question, RefusedBecause, Requirement,
-    SessionNotice, Tier, ToolName, WorkingDirectory,
+    Allowlist, Assessment, Captured, Confirm, ConfirmFailure, Decision, DestructiveMatch,
+    Invocation, Layer, Mode, ModeRefused, Overflow, OverflowFailure, Permission, Question,
+    RefusedBecause, Requirement, SessionNotice, Tier, ToolName, WorkingDirectory,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -100,9 +100,9 @@ impl AnsweringUser {
 }
 
 impl Confirm for AnsweringUser {
-    fn confirm(&self, question: &Question) -> bool {
+    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
         self.asked.borrow_mut().push(question.statement.clone());
-        self.answer
+        Ok(self.answer)
     }
 }
 

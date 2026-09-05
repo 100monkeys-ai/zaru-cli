@@ -28,7 +28,7 @@ use crate::tools::fixtures::{ScratchTree, nonce};
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::output::{Captured, OutputBudget};
-use crate::tools::port::{Confirm, Fetch, Question, Subprocess};
+use crate::tools::port::{Confirm, ConfirmFailure, Fetch, Question, Subprocess};
 use crate::tools::seal::{NoMembrane, Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
 use zaru_core::iteration::PortFailure;
@@ -100,12 +100,12 @@ impl Answering {
 }
 
 impl Confirm for Answering {
-    fn confirm(&self, question: &Question) -> bool {
+    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
         self.asked
             .lock()
             .expect("asked poisoned")
             .push(question.statement.clone());
-        self.answer
+        Ok(self.answer)
     }
 }
 

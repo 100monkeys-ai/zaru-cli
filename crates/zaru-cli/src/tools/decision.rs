@@ -355,11 +355,22 @@ pub const DESTRUCTIVE_MARKING: &str = "matches a destructive pattern";
 /// this crate picking a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusedBecause {
-    /// A prompt was required and no confirmer was supplied.
+    /// A prompt was required and the question did not reach the user.
     ///
-    /// Refused rather than performed, because a confirmation nobody can
-    /// answer is exactly the silent default ADR-0011 D3 and ADR-0007 D8 both
-    /// forbid.
+    /// Two routes, and the variant is deliberately one for both: no confirmer
+    /// was supplied, or the one that was could not put the question. Refused
+    /// rather than performed, because a confirmation nobody can answer is
+    /// exactly the silent default ADR-0011 D3 and ADR-0007 D8 both forbid.
+    ///
+    /// **The second route arrived on 2026-09-05** with
+    /// [`Confirm::confirm`](crate::tools::port::Confirm::confirm) answering a
+    /// `Result`. Before it, a confirmer whose terminal had closed could only
+    /// answer `false`, which is [`RefusedBecause::TheUserDeclined`] — a
+    /// record saying the user declined when nobody was asked anything. The
+    /// [`ConfirmFailure`](crate::tools::port::ConfirmFailure)'s own sentence
+    /// is not carried here: this enum is a closed set of permission
+    /// *outcomes*, and widening it to hold a diagnosis would make one of
+    /// them an error report.
     ThereWasNobodyToAsk,
     /// The user was asked and said no.
     TheUserDeclined,
@@ -369,9 +380,10 @@ impl fmt::Display for RefusedBecause {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ThereWasNobodyToAsk => f.write_str(
-                "the call needed the user's confirmation and no confirmer was supplied, so it \
-                 was refused rather than performed. A confirmation nobody can answer is the \
-                 silent default ADR-0011 D3 exists to prevent",
+                "the call needed the user's confirmation and the question did not reach them — \
+                 either no confirmer was supplied, or the one that was could not ask — so it was \
+                 refused rather than performed. A confirmation nobody can answer is the silent \
+                 default ADR-0011 D3 exists to prevent",
             ),
             Self::TheUserDeclined => {
                 f.write_str("the user was asked about the call and did not permit it")
@@ -489,25 +501,28 @@ impl Decision {
 
     /// Resolve the decision, asking the user where the rule says to.
     ///
-    /// # A missing confirmer is a refusal, not a pass
+    /// # A missing confirmer is a refusal, not a pass — and so is an ask that
+    /// could not be put
     ///
     /// `None` refuses any call that needed a prompt. This is the shape
     /// ADR-0007 D8's apex gate already uses in this crate, for the reason
     /// that record gives: "Never silent, never a default."
+    ///
+    /// A confirmer that answers
+    /// [`Err`](crate::tools::port::ConfirmFailure) refuses for the **same**
+    /// reason: the question did not reach a person. Mapping it to
+    /// [`RefusedBecause::TheUserDeclined`] instead would write into the
+    /// transcript that the user said no, which is a different event and one
+    /// nobody could later distinguish from a real decline.
     #[must_use]
     pub fn permit(&self, confirmer: Option<&dyn Confirm>) -> Permission {
         let Some(question) = self.question() else {
             return Permission::Granted;
         };
-        match confirmer {
-            None => Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
-            Some(confirmer) => {
-                if confirmer.confirm(&question) {
-                    Permission::Granted
-                } else {
-                    Permission::Refused(RefusedBecause::TheUserDeclined)
-                }
-            }
+        match confirmer.map(|confirmer| confirmer.confirm(&question)) {
+            None | Some(Err(_)) => Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
+            Some(Ok(true)) => Permission::Granted,
+            Some(Ok(false)) => Permission::Refused(RefusedBecause::TheUserDeclined),
         }
     }
 }

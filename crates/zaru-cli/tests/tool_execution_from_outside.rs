@@ -25,8 +25,8 @@ use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
-    Captured, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question, SessionOverflow,
-    Subprocess, ToolName, Verdict, Verdicts, WorkingDirectory,
+    Captured, ConfirmFailure, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question,
+    SessionOverflow, Subprocess, ToolName, Verdict, Verdicts, WorkingDirectory,
 };
 use zaru_core::iteration::{
     Clock, ContextPolicy, ContextRefusal, Interruption, PortFailure, Prompt, Turn,
@@ -206,9 +206,9 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
 
 struct Declining;
 impl zaru_cli::tools::Confirm for Declining {
-    fn confirm(&self, question: &Question) -> bool {
+    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
         println!("  the user is asked: {:?} -> no", question.statement);
-        false
+        Ok(false)
     }
 }
 

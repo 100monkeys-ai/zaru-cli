@@ -246,9 +246,12 @@ impl RecordedConfirmer {
 }
 
 impl crate::tools::port::Confirm for RecordedConfirmer {
-    fn confirm(&self, question: &crate::tools::port::Question) -> bool {
+    fn confirm(
+        &self,
+        question: &crate::tools::port::Question,
+    ) -> Result<bool, crate::tools::port::ConfirmFailure> {
         self.asked.borrow_mut().push(question.clone());
-        self.answer
+        Ok(self.answer)
     }
 }
 
@@ -310,6 +313,43 @@ impl crate::tools::output::Overflow for RefusingOverflow {
     ) -> Result<std::path::PathBuf, crate::tools::output::OverflowFailure> {
         Err(crate::tools::output::OverflowFailure::new(
             "this sink preserves nothing",
+        ))
+    }
+}
+
+/// A confirmer whose ask fails, for the arm that is not a decline.
+///
+/// **Not a user who said no.** ADR-0011 D3's prompt reaches a person or it
+/// does not, and this stands for the second — a terminal that closed between
+/// the statement and the answer. It records that it *was* asked, so a check
+/// can tell a refusal that skipped the question from one that put it and
+/// could not hear back.
+pub(crate) struct FailingConfirmer {
+    asked: std::cell::Cell<usize>,
+}
+
+impl FailingConfirmer {
+    /// A confirmer that cannot reach anybody.
+    pub(crate) const fn new() -> Self {
+        Self {
+            asked: std::cell::Cell::new(0),
+        }
+    }
+
+    /// How many times it was asked.
+    pub(crate) fn asked(&self) -> usize {
+        self.asked.get()
+    }
+}
+
+impl crate::tools::port::Confirm for FailingConfirmer {
+    fn confirm(
+        &self,
+        _question: &crate::tools::port::Question,
+    ) -> Result<bool, crate::tools::port::ConfirmFailure> {
+        self.asked.set(self.asked.get() + 1);
+        Err(crate::tools::port::ConfirmFailure::new(
+            "the terminal closed between the statement and the answer",
         ))
     }
 }
