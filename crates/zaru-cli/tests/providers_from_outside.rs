@@ -27,12 +27,22 @@ use zaru_cli::config::{
     Contribution, Key, Layer, LayerSource, Resolution, Schema, Source, SourceFailure, Table, Value,
     gather,
 };
+use zaru_cli::credentials::{
+    Alias, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
+    SealingKey, Secret, ToolScope,
+};
 use zaru_cli::failure::{Class, Classified};
+use zaru_cli::providers::gemini::map::{Answered, request_from};
+use zaru_cli::providers::gemini::wire::{FunctionCall, Part};
 use zaru_cli::providers::{
     AliasNegotiation, CapabilityRefused, Inference, ModelAlias, ModelTable, NegotiationFailure,
     Placement, Provider, ProviderCapabilities, ProviderEndpoint, ProviderKind, RemoteModelId,
     ResolvedModel, TokenUsage, declare, disagreements, endpoint_of, inference_of,
 };
+use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
+use zaru_core::iteration::Prompt;
+use zaru_core::redaction::Redacted;
+use zaru_core::tool_call::{ModelRequest, ToolResult};
 
 /// One of ADR-0014 D1's layers, read through the crate's own port.
 ///
@@ -357,5 +367,246 @@ fn an_outside_caller_sees_a_disagreement_and_an_accounting() {
         usage.prompt_tokens(),
         usage.completion_tokens(),
         usage.cost()
+    );
+}
+
+// --- the security corpus, over the Gemini request body ---------------------
+//
+// Both cases are about the round-two request `gemini-read-loop` reshaped on
+// 2026-09-05. That change gave a request body a second source of text -- the
+// model's own turn, echoed back -- and moved where a tool's output sits, so
+// the two properties that held before it are asserted again on the new shape
+// rather than assumed to have survived.
+
+/// The awkward tail every planted value carries, so that an absence assertion
+/// is not satisfied by a formatter that escapes.
+const AWKWARD_TAIL: &str = "-e\u{301}\u{e9}\u{1f701}";
+
+fn nonce(label: &str) -> String {
+    format!(
+        "{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_nanos()
+    )
+}
+
+/// Everything before the first non-ASCII character: what survives `{:?}`.
+fn ascii_core(value: &str) -> &str {
+    let end = value
+        .char_indices()
+        .find(|(_, character)| !character.is_ascii())
+        .map_or(value.len(), |(at, _)| at);
+    &value[..end]
+}
+
+/// The key port, implemented outside the crate that declares it.
+struct StagedKey(SealingKey);
+
+impl KeyStore for StagedKey {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// A directory this check owns, removed when it drops.
+struct Scratch(std::path::PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A real store on a scratch root holding one bearer, and the redactor built
+/// from what it holds.
+fn store_holding(label: &str, value: &str) -> (Scratch, HeldSecrets, Alias) {
+    let base = std::fs::canonicalize(std::env::temp_dir())
+        .expect("the temporary directory resolves")
+        .join(format!("pfo-{}", nonce(label)));
+    std::fs::create_dir_all(&base).expect("staging: the scratch root");
+    let scratch = Scratch(base.clone());
+
+    let keys = StagedKey(SealingKey::mint());
+    let mut store = CredentialStore::open(base.join("zaru")).expect("the credential store opens");
+    let alias = Alias::new(label).expect("a plain name is a legal alias");
+    let entry = Entry::notes(
+        alias.clone(),
+        Description::new("the bearer this check plants").expect("one line"),
+        Secret::notes(value.to_owned()).expect("nn_mcp_ names a kind"),
+        Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
+    )
+    .expect("an nn_ value builds a Nuclear Notes entry")
+    .with_tools(ToolScope::new(["pages.read"]));
+    store.add(entry, &keys, None).expect("the entry is stored");
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
+    assert_eq!(held.len(), 1, "staging: one secret is held");
+    (scratch, held, alias)
+}
+
+/// One model turn as the API returns it.
+fn recorded_call(id: &str, name: &str, signature: &str) -> Vec<Part> {
+    vec![Part::FunctionCall {
+        function_call: FunctionCall {
+            id: Some(id.to_owned()),
+            name: name.to_owned(),
+            args: serde_json::json!({"path": "notes.txt"}),
+        },
+        thought_signature: Some(signature.to_owned()),
+    }]
+}
+
+/// **Security corpus.** A held bearer in a tool's output is redacted on the
+/// wire, and it stays redacted now that the body carries three turns instead
+/// of two.
+///
+/// ADR-0008 trigger clause 6's guarantee is held by the type — `ToolResult`
+/// carries a `Redacted` and there is no other constructor — so what this
+/// asserts is that the reshaped `request_from` puts *that value* on the wire
+/// and did not grow a second path where raw text could travel. It is driven
+/// through the crate's public door, over a real store and a real sealing key,
+/// because a check that built its own redactor would be asserting a property
+/// of its own fixture.
+#[test]
+fn corpus_a_held_secret_in_a_tool_result_is_redacted_in_the_reshaped_request_body() {
+    let planted = format!("nn_mcp_{}{AWKWARD_TAIL}", nonce("gemini-body"));
+    let (_scratch, held, alias) = store_holding("gemini-body", &planted);
+
+    let prompt = Prompt::new(Redacted::by(&held, "read the credentials file"));
+    let results = [ToolResult {
+        id: "call_1".to_owned(),
+        content: Redacted::by(
+            &held,
+            &format!("exit code: 0\nstdout:\ntoken = {planted}\nstderr:\n"),
+        ),
+        failed: false,
+    }];
+    let mut answered = Answered::default();
+    answered.record(&recorded_call("call_1", "fs.read", "an-opaque-signature"));
+
+    let body = request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &results,
+        },
+        &mut answered,
+    )
+    .expect("a round maps");
+    let wire = serde_json::to_string(&body).expect("the body serialises");
+
+    assert!(
+        !wire.contains(&planted),
+        "the held bearer reached the request body by value"
+    );
+    assert!(
+        !wire.contains(ascii_core(&planted)),
+        "the held bearer reached the request body by its ASCII core, which is what an escaping \
+         formatter would have left intact"
+    );
+    assert!(
+        wire.contains(&marker(&alias)),
+        "nothing was replaced, so the absence above could be an empty body: {wire}"
+    );
+
+    // **The accepting sibling.** The same run with a store that holds nothing
+    // carries the text through byte for byte -- so the check above is
+    // redaction rather than a mapping that drops tool output.
+    let nothing = HeldSecrets::none();
+    let carried = format!("exit code: 0\nstdout:\ntoken = {planted}\nstderr:\n");
+    let results = [ToolResult {
+        id: "call_1".to_owned(),
+        content: Redacted::by(&nothing, &carried),
+        failed: false,
+    }];
+    let prompt = Prompt::new(Redacted::by(&nothing, "read the credentials file"));
+    let mut answered = Answered::default();
+    answered.record(&recorded_call("call_1", "fs.read", "an-opaque-signature"));
+    let body = request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &results,
+        },
+        &mut answered,
+    )
+    .expect("a round maps");
+    let wire = serde_json::to_string(&body).expect("the body serialises");
+    assert!(
+        wire.contains(&planted),
+        "a store holding nothing still removed the value, so the check above is about the \
+         mapping and not about the redactor: {wire}"
+    );
+}
+
+/// **Security corpus.** A turn's model history does not reach the next turn's
+/// first request.
+///
+/// The failure this guards is a prompt carrying text ADR-0013's context policy
+/// did not assemble: a model turn is provider output that no layer of D1
+/// chose, and D7 confines assembly to turn boundaries. The boundary here is
+/// [`ModelRequest::results`] being empty, which is the only signal the port
+/// gives, and `request_from` is the only way to build a request — so this is a
+/// property of the mapping rather than of a call site.
+#[test]
+fn corpus_a_turns_model_history_does_not_reach_the_next_turns_first_request() {
+    let nothing = HeldSecrets::none();
+    let secret_of_the_first_turn = format!("first-turn-only-{}", nonce("history"));
+
+    let mut answered = Answered::default();
+    answered.record(&recorded_call(
+        "call_1",
+        "fs.read",
+        &secret_of_the_first_turn,
+    ));
+    let results = [ToolResult {
+        id: "call_1".to_owned(),
+        content: Redacted::by(&nothing, "bytes"),
+        failed: false,
+    }];
+
+    // Round two of the first turn: the history is carried, which is the
+    // accepting sibling and is asserted first so that the absence below
+    // cannot pass by nothing ever being remembered.
+    let prompt = Prompt::new(Redacted::by(&nothing, "the first task"));
+    let body = request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &results,
+        },
+        &mut answered,
+    )
+    .expect("a round maps");
+    let wire = serde_json::to_string(&body).expect("the body serialises");
+    assert!(
+        wire.contains(&secret_of_the_first_turn),
+        "the history is not carried within a turn at all: {wire}"
+    );
+
+    // The next turn's first exchange, on the same client's history.
+    let prompt = Prompt::new(Redacted::by(&nothing, "a second task entirely"));
+    let body = request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &[],
+        },
+        &mut answered,
+    )
+    .expect("a first exchange maps");
+    let wire = serde_json::to_string(&body).expect("the body serialises");
+
+    assert_eq!(
+        body.contents.len(),
+        1,
+        "a turn's first request carried a turn it is not part of: {wire}"
+    );
+    assert!(
+        !wire.contains(&secret_of_the_first_turn),
+        "a previous turn's model output reached the next turn's prompt, which is text no layer \
+         of ADR-0013 D1 assembled: {wire}"
     );
 }
