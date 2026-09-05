@@ -115,6 +115,22 @@ impl Home {
         );
         found.remove(0)
     }
+
+    /// Every session directory this home holds, which may be none.
+    ///
+    /// [`Self::one_session`]'s companion for the arm that asserts a turn
+    /// **never began**: that one refuses when the directory is missing,
+    /// which is right for a check about a session that ran and wrong for a
+    /// check about one that did not.
+    fn sessions(&self) -> Vec<PathBuf> {
+        std::fs::read_dir(self.path.join(".zaru/sessions"))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.expect("a readable directory entry").path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for Home {
@@ -587,6 +603,88 @@ fn adr_0010_d1s_session_holds_three_files_and_meta_toml_records_six_things() {
     assert!(
         !meta.contains("ended ="),
         "D1 makes an absent `ended` mean still running: {meta}"
+    );
+}
+
+/// [ADR-0010] D3: "`context.json` … **is overwritten each turn.**"
+///
+/// # What was there before, and why it looked like a session with no history
+///
+/// The checkpoint was written **once**, before turn 1, from a layer 6 that was
+/// empty because this path recorded no exchange at all — so `context.json`
+/// stayed `{"exchanges":[]}` however much the session went on to say, and a
+/// later `--resume` restored a session that had never spoken. Both documents
+/// parse and both look like a session, which is why nothing else on this path
+/// would have shown it.
+///
+/// # What discriminates, and what the sibling is
+///
+/// This path mints a session per invocation, so the assertion is that one
+/// invocation's checkpoint holds **that invocation's** turn: one exchange,
+/// carrying the words the task was. A checkpoint written before
+/// `SessionContext::record` holds zero, and so does one written only at
+/// session start — the two mutants this catches — and both leave a document
+/// that parses.
+///
+/// The accepting sibling is a run that never begins a turn at all. It asserts
+/// that no session is created, which is [ADR-0010]'s own inode consequence,
+/// so this check cannot pass against a harness that wrote an exchange into
+/// every checkpoint it ever made.
+///
+/// Read with `std::fs` and `serde_json` rather than through
+/// `zaru_cli::session::Checkpoint`, so neither arm of the comparison travels
+/// through the writer under test.
+///
+/// The mutant: writing the checkpoint before `SessionContext::record` instead
+/// of after, or not writing it per turn at all.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn adr_0010_d3s_checkpoint_is_overwritten_each_turn_and_holds_that_turn() {
+    let home = Home::new("checkpoint-per-turn");
+    let (value, _core) = nonce("checkpoint-per-turn");
+    store_a_key(&home, "gemini", &value);
+
+    // A turn that ran: the provider is unreachable, so the turn refuses at
+    // ADR-0016 D5's `3` — but it *began*, the loop emitted its events, and
+    // ADR-0013 D1's layer 6 is what the turn was about either way.
+    let ran = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "remember the word saffron"],
+    );
+    assert_eq!(ran.code, 3, "the staging is a turn that ran and could not reach a model");
+
+    let session = home.one_session();
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(session.join("context.json")).expect("context.json"))
+            .expect("the checkpoint is a JSON document");
+    let exchanges = document
+        .get("exchanges")
+        .and_then(serde_json::Value::as_array)
+        .expect("D3's checkpoint holds ADR-0013's layer 6 under `exchanges`");
+    assert_eq!(
+        exchanges.len(),
+        1,
+        "a session that has had one turn has one exchange in its checkpoint, and this holds          {} — which is what a checkpoint written before the turn's own record, or written          only at session start, leaves behind",
+        exchanges.len(),
+    );
+    let held = serde_json::to_string(exchanges).expect("the exchange renders");
+    assert!(
+        held.contains("remember the word saffron"),
+        "the checkpoint holds some other turn's layer 6: {held}"
+    );
+
+    // The accepting sibling: a session whose turn never began still has D1's
+    // third file, and it holds no exchange. Without this arm the assertion
+    // above would pass against a writer that put an exchange in every
+    // checkpoint it ever wrote.
+    let untried = Home::new("checkpoint-no-turn");
+    let ran = zaru(&untried, &[], &["remember the word saffron"]);
+    assert_eq!(ran.code, 2, "a task with no key is refused before the turn");
+    assert!(
+        untried.sessions().is_empty(),
+        "a turn that never began is not a session, which is ADR-0010's own inode consequence",
     );
 }
 

@@ -36,18 +36,24 @@
 //! A turn boundary is between turns: after one turn's exchange has been
 //! recorded and before the next turn assembles. At one, and nowhere else:
 //!
-//! 1. [`SessionContext::record`] adds the turn that just finished to layer 6.
+//! 1. [`exchange_of_turn`] renders what just happened and
+//!    [`SessionContext::record`] adds it to layer 6, then [`checkpointed`]
+//!    rewrites [ADR-0010] D3's `context.json` over it.
 //! 2. [`SessionContext::at_turn_boundary`] relieves pressure if there is any
 //!    — D2's summarise-and-replace on layer 6, then D4's attachments — and
 //!    hands back what it did, for the transcript and for the user.
 //! 3. [`SessionContext::policy`] is borrowed for the turn, and cannot compact.
 //!
-//! **Nothing here decides when a turn ends.** That is the caller's, and today
-//! there are two: `crate::compose::turn` runs exactly one turn, so its
-//! boundary call has nothing to compact and does nothing; the in-session
-//! shell, which is what makes a session hold more than one turn, is a
-//! separate arc's. This type is what both of them use, so the rule lives in
-//! one place rather than in each caller.
+//! **Nothing here decides when a turn ends.** That is the caller's, and there
+//! are two: [`crate::compose::turn::task`], which runs one turn in a session
+//! it mints, and [`crate::terminal::driver::run_a_turn`], which runs each turn
+//! a person types into a session already open. Both reach act 1 through the
+//! two functions below, so the rule lives here rather than once in each
+//! caller — which matters most for the part of it that is a *seam*: every byte
+//! of an exchange passes [ADR-0008] clause 6's `Redactor`, and two callers
+//! each doing that themselves are the two places it can be forgotten.
+//!
+//! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //!
 //! # The checkpoint is this type's, because its contents are ADR-0013's
 //!
@@ -70,12 +76,13 @@
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 
 use crate::compose::{ByteCounter, TurnContext};
+use crate::session::{Checkpoint, CheckpointError, Session};
 use core::fmt;
 use zaru_core::context::{
     Compaction, Context, ContextLimits, Exchange, StablePrefix, Summariser, Usage,
 };
 use zaru_core::iteration::PortFailure;
-use zaru_core::redaction::Redactor;
+use zaru_core::redaction::{Redacted, Redactor};
 
 /// The key `context.json` holds layer 6 under.
 ///
@@ -222,4 +229,76 @@ impl SessionContext {
         }
         Ok(Self { context })
     }
+}
+
+/// What one finished turn becomes in [ADR-0013] D1's layer 6.
+///
+/// # Three parts, and every one of them is redacted here
+///
+/// D1's layer 6 is "conversation **and tool results**", and
+/// [`Exchange::of_turn`] is `zaru-core`'s declared shape for all three: the
+/// task the user typed, the rendered line of every tool call the turn made on
+/// the way, and the answer it ended with.
+///
+/// **This is [ADR-0008] clause 6's seventh path**, and it is here rather than
+/// in either caller for the reason that clause exists: a session's next turn
+/// assembles over what this returns, so every byte of it is about to become
+/// prompt text. Two callers each building a redacted exchange would be two
+/// places the port can be forgotten, and the clause's enumerating check names
+/// this file for that reason. It was `crate::terminal::driver`'s until
+/// 2026-09-05, when `crate::compose::turn::task` became the second caller;
+/// the row moved rather than a ninth arriving, which is recorded on ADR-0008
+/// before it was changed.
+///
+/// `answer` is what the turn printed, which is [`crate::compose::Ran`]'s
+/// lines joined — the same text the user was shown, so what the next turn
+/// remembers and what the person remembers are one thing.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[must_use]
+pub fn exchange_of_turn(
+    redactor: &(dyn Redactor + Sync),
+    task: &str,
+    tool_lines: &[String],
+    answer: &str,
+) -> Exchange {
+    let redacted = |text: &str| Redacted::by(redactor, text).as_str().to_owned();
+    let results: Vec<String> = tool_lines.iter().map(|line| redacted(line)).collect();
+    Exchange::of_turn(
+        &redacted(&format!("user: {task}")),
+        &results,
+        &redacted(&format!("zaru: {answer}")),
+    )
+}
+
+/// Rewrite [ADR-0010] D3's `context.json` over what layer 6 now holds.
+///
+/// # D3 says "each turn", and until 2026-09-05 it was written once
+///
+/// D3: "`context.json` holds what the model needs to continue — the compacted
+/// conversation, per ADR-0013. **It is overwritten each turn.**" What existed
+/// was one write, in [`crate::compose::turn::task`], **before** turn 1 and
+/// never again — so a session's checkpoint was the empty document a session
+/// with no turns has, however many turns it went on to have, and a resume
+/// restored nothing. The in-session shell wrote none at all.
+///
+/// **Called after [`SessionContext::record`] and nowhere else.** Before it,
+/// the file holds the previous turn's layer 6 and a resume would come back one
+/// turn short — which is a defect nothing else on this path would show,
+/// because both documents parse and both look like a session.
+///
+/// The session-start write is **kept**: ADR-0010 clause 1 is about a session
+/// directory holding its three files, and a session whose first turn refused
+/// before this point would otherwise have two.
+///
+/// # Errors
+///
+/// [`CheckpointError`] for the render, the write, the sync or the rename. The
+/// caller classifies it; this function chooses no class, because a checkpoint
+/// that cannot be written is the same failure wherever the turn ran.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+pub fn checkpointed(context: &SessionContext, session: &Session) -> Result<(), CheckpointError> {
+    Checkpoint::at(session.checkpoint_path()).write(&context.checkpoint())
 }

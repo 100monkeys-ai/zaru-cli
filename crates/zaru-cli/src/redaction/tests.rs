@@ -397,7 +397,7 @@ const PATHS: [(&str, &str); 8] = [
         "a resumed session's interrupted call (ADR-0010 D4)",
     ),
     (
-        "zaru-cli/src/terminal/driver.rs",
+        "zaru-cli/src/compose/boundary.rs",
         "a finished turn becoming the next turn's layer 6, in a session that \
          holds a conversation (ADR-0013 D1)",
     ),

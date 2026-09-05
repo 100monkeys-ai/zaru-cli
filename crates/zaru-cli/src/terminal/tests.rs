@@ -1482,7 +1482,7 @@ fn every_announcement_of_one_compaction_reaches_the_pane() {
 fn a_turns_tool_lines_are_collected_for_layer_six_and_nothing_else_is() {
     use zaru_core::tool_call::{Event, EventSink, TurnEnding};
 
-    let mut collector = super::driver::ToolLines::default();
+    let mut collector = crate::compose::ToolLines::default();
     let elapsed = core::time::Duration::from_millis(5);
     for event in [
         Event::TurnStarted { n: 1, of: 8 },

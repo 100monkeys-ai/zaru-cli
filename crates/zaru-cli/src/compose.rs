@@ -96,7 +96,7 @@ pub use count::ByteCounter;
 pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept};
 pub use model::Classifying;
 pub use shared::Shared;
-pub use sink::Records;
+pub use sink::{Records, ToolLines};
 pub use summarise::ModelSummariser;
 pub use turn::{KINDS_WITH_A_CLIENT, Owed, Prepared, Ran};
 

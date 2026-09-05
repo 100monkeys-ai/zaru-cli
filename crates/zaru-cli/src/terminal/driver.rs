@@ -493,41 +493,6 @@ impl zaru_tui::shell::CommandVocabulary for NoVocabulary {
     }
 }
 
-/// Every tool line one turn produced, for [ADR-0013] D1's layer 6.
-///
-/// A third sink beside the pane's and the transcript's, and it exists because
-/// layer 6 is "conversation **and tool results**" and the tool results are on
-/// the event stream rather than in [`Ran`](crate::compose::Ran), which carries
-/// what the turn *printed*. Reading them off the same emission the pane and
-/// the transcript read is what keeps the three consistent — ADR-0008 clause
-/// 3's "one emission" with a third consumer rather than a second reading.
-///
-/// It keeps the lines the shell's own vocabulary puts in the call register,
-/// which is ADR-0011 D4's rendered line and the one this workspace already
-/// produces in exactly one place.
-///
-/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-#[derive(Debug, Default)]
-pub(crate) struct ToolLines {
-    lines: Vec<String>,
-}
-
-impl ToolLines {
-    /// Take what the turn produced, leaving the collector empty.
-    pub(crate) fn taken(&mut self) -> Vec<String> {
-        core::mem::take(&mut self.lines)
-    }
-}
-
-impl zaru_core::tool_call::EventSink for ToolLines {
-    fn emit(&mut self, event: &zaru_core::tool_call::Event) {
-        let line = crate::terminal::vocabulary::turn_line(event);
-        if line.register == zaru_tui::shell::port::Register::Call {
-            self.lines.push(line.text);
-        }
-    }
-}
-
 /// What the sentence a task typed during a turn is refused with says.
 ///
 /// # The ruling this obeys, and why the case only now exists
@@ -650,7 +615,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let n = turns.next;
     turns.next += 1;
 
-    let mut tools = ToolLines::default();
+    let mut tools = crate::compose::ToolLines::default();
     let raced = {
         let pane = std::sync::Mutex::new(Pane::of(shell, surface));
         let confirm = PaneConfirm::over(&pane, source, pace);
@@ -687,31 +652,33 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         Raced::SourceEnded => return Turned::SourceEnded,
     };
 
-    // ADR-0013 D1's layer 6, so the next turn assembles over this one. Every
-    // part passes the one `Redactor` the session already holds — ADR-0008
-    // clause 6's port, on every path from captured bytes into a model prompt —
-    // and this is why this file is on that clause's enumeration.
-    //
-    // **All three parts, because D1's layer 6 is "conversation *and tool
-    // results*".** This caller recorded the task and the answer until
-    // 2026-09-05; `Exchange::of_turn` is `context-summariser`'s declared shape
-    // for the type and it takes the middle as well, so what the tools returned
-    // survives into the next turn instead of ending with the turn that ran
-    // them. That matters most in exactly the case the composed rule was
-    // written for: a coding session, where the file that was read and the
-    // command that failed are the facts a later turn needs.
-    let redactor = turns.prepared.redactor();
-    let redacted = |text: &str| {
-        zaru_core::redaction::Redacted::by(redactor, text)
-            .as_str()
-            .to_owned()
-    };
-    let results: Vec<String> = tool_lines.into_iter().map(|line| redacted(&line)).collect();
-    turns.context.record(zaru_core::context::Exchange::of_turn(
-        &redacted(&format!("user: {task}")),
-        &results,
-        &redacted(&format!("zaru: {}", ran.lines.join("\n"))),
+    // ADR-0013 D1's layer 6, so the next turn assembles over this one, and
+    // then ADR-0010 D3's checkpoint over that, so the next *process* does
+    // too. Both acts are `compose::boundary`'s rather than this file's: the
+    // out-of-session turn owes exactly the same pair, and a rule with two
+    // callers lives in one place — which matters most here because building
+    // the exchange is where ADR-0008 clause 6's `Redactor` is applied, and
+    // that clause's enumeration names the file that applies it.
+    turns.context.record(crate::compose::boundary::exchange_of_turn(
+        turns.prepared.redactor(),
+        task,
+        &tool_lines,
+        &ran.lines.join("\n"),
     ));
+    if let Err(failure) = crate::compose::boundary::checkpointed(&turns.context, turns.session) {
+        // The turn happened and its answer is already painted, so this is not
+        // a refusal of the turn: it is the session losing its memory of it,
+        // and the next process would silently come back one turn short. It is
+        // said in the pane, in the register a failure belongs in, and the
+        // session stays open — ADR-0016 D2's "every error names the remedy or
+        // admits there is not one", and the remedy is the path.
+        let mut lines = lines_of(&ran);
+        lines.push(Line::new(
+            zaru_tui::shell::port::Register::Failed,
+            format!("{failure}"),
+        ));
+        return Turned::Ran(lines);
+    }
 
     // ADR-0013 clause 5 and ADR-0012 clause 6, both on ADR-0001 D2's row.
     // **After the record above**, so the number the user reads is the context

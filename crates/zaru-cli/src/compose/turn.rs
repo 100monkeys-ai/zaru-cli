@@ -949,7 +949,14 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     // reason this is an `Option` rather than a stub that answers yes.
     let confirmer = crate::tools::prompt::Prompt::from_process();
 
-    block_on(run_one(
+    // ADR-0013 D1's layer 6, read off ADR-0008 clause 3's own emission. This
+    // turn had no such sink until 2026-09-05, which is why the checkpoint it
+    // left was the empty one written above: a session created here recorded
+    // no exchange at all, so resuming it restored nothing however much had
+    // been said. See `crate::compose::ToolLines`.
+    let mut tools = crate::compose::ToolLines::default();
+
+    let ran = block_on(run_one(
         version,
         report_at,
         resolution,
@@ -960,10 +967,32 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         confirmer
             .as_ref()
             .map(|prompt| prompt as &(dyn crate::tools::Confirm + Sync)),
-        &mut [],
+        &mut [&mut tools],
         &mut owed,
         &mut context,
-    ))
+    ));
+
+    // --- ADR-0013 D1's layer 6 and ADR-0010 D3's checkpoint over it --------
+    //
+    // The same two acts `crate::terminal::driver::run_a_turn` performs, in
+    // the same order, through the same two functions. D3's "overwritten each
+    // turn" is about every turn, and this is one — a session whose only turn
+    // ran here is exactly the session a later `--resume` opens.
+    context.record(crate::compose::boundary::exchange_of_turn(
+        prepared.redactor(),
+        task,
+        &tools.taken(),
+        &ran.lines.join("\n"),
+    ));
+    if let Err(failure) = crate::compose::boundary::checkpointed(&context, &session) {
+        // The turn happened and `ran` already carries what the user is told,
+        // so this is appended rather than replacing it: reporting only the
+        // checkpoint failure would discard the answer, which is ADR-0016 D6's
+        // "partial success is reported as partial".
+        return Ran::refused_having_said(ran.lines, Surface::checkpoint(&failure, evidence));
+    }
+
+    ran
 }
 
 /// What the reader is shown, and what the process exits with.
