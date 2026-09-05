@@ -19,8 +19,17 @@
 //! inherited one layer out rather than re-established:
 //! [`SessionContext::policy`] takes `&self` and hands out a `TurnContext`, so
 //! **a caller holding a policy cannot reach
-//! [`SessionContext::at_turn_boundary`]** — the borrow checker refuses it. The
-//! mutation that would break D7 does not compile here either.
+//! [`SessionContext::at_turn_boundary`]**, which needs `&mut self`. Measured
+//! rather than asserted: the code that would do it is
+//! `error[E0502]: cannot borrow ... as mutable because it is also borrowed as
+//! immutable`, and it is quoted in
+//! `a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary`.
+//!
+//! **What that does *not* say is that the signature is unchangeable.** Giving
+//! `policy` a `&mut self` compiles today, because no call site holds a policy
+//! across a boundary call — measured, 2026-09-05, and recorded here rather
+//! than left as a claim the code does not support. The guarantee is about a
+//! caller that tries, and it arrives the moment one does.
 //!
 //! # What a turn boundary is, and what happens at one
 //!

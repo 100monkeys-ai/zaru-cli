@@ -1109,3 +1109,36 @@ fn one_turn_in_layer_six_carries_the_task_the_tool_results_and_the_answer() {
     let quiet = zaru_core::context::Exchange::of_turn("a question", &[], "an answer");
     assert_eq!(quiet.as_str(), "a question\n\nan answer");
 }
+
+/// D7, one layer out: **a turn in progress cannot compact.**
+///
+/// This is the shape of the property rather than an assertion about it. While
+/// the `TurnContext` returned by `policy(&self)` is alive, `self` is borrowed
+/// shared, so `at_turn_boundary(&mut self)` is not callable — the code below,
+/// uncommented, is `error[E0502]: cannot borrow `session` as mutable because
+/// it is also borrowed as immutable`.
+///
+/// It is left as text on purpose: a check that *ran* would have to compile,
+/// and the whole point is that it does not. The compiler is the mechanism, as
+/// it is for ADR-0013 clause 6 one layer in. Verified by uncommenting it.
+#[test]
+fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
+    // let held = HeldSecrets::none();
+    // let mut session = SessionContext::opened(context::prefix_for(), limits);
+    // let policy = session.policy(&held);
+    // futures_lite_block_on(session.at_turn_boundary(&Failing, &held));  // E0502
+    // drop(policy);
+
+    // What *is* runnable is the other half: once the policy is dropped, the
+    // boundary is reachable again, which is what makes a many-turn session
+    // possible at all rather than a context nobody can ever compact.
+    let held = HeldSecrets::none();
+    let mut session =
+        crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 1_200));
+    {
+        let policy = session.policy(&held);
+        let _ = futures_lite_block_on(policy.assemble(&Turn::Initial { task: "a task" }));
+    }
+    futures_lite_block_on(session.at_turn_boundary(&Counting::answering("x"), &held))
+        .expect("the boundary is reachable once no turn holds the context");
+}
