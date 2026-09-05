@@ -1345,3 +1345,180 @@ fn the_descriptor_says_this_client_streams_and_the_two_readings_agree() {
         "asking what a client can do performed an exchange"
     );
 }
+
+/// A client with no network behind it, for checks about what it holds.
+fn offline_client() -> super::GeminiClient {
+    let secret = Secret::provider(ProviderKind::Gemini, provider_secret_nonce())
+        .expect("a provider secret is built from a nonce");
+    super::GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model("gemini-3.6-flash"),
+        Alias::new("provider.gemini").expect("a well-formed alias"),
+        secret,
+    )
+    .expect("an HTTP client builds without touching the network")
+}
+
+// The answer reaches a watcher frame by frame, which is the whole difference
+// a stream makes to a person waiting. Driven over the recorded frames rather
+// than a socket: [Testing] forbids a check calling a provider.
+//
+// **The mutant is handing the answer on once, at the end** -- a client that
+// streams from the socket and then delivers the text in a single piece, which
+// paints exactly like the non-streamed client it replaced and which no other
+// check here would notice.
+//
+// [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
+#[test]
+fn the_answers_text_reaches_a_watcher_as_each_frame_arrives() {
+    let client = offline_client();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    client.stream_deltas_to(sender);
+
+    // Driven through the client's OWN read path -- `absorb` is what the
+    // socket reaches -- over the recorded bytes in seventeen-byte pieces, so
+    // frames land mid-read exactly as they do on a real connection. Driving
+    // `hand_on` directly instead would prove the delta builder works and
+    // prove nothing about whether the exchange uses it, which is a gap a
+    // mutation found on 2026-09-05.
+    let mut frames = stream::Frames::new();
+    let mut received = Vec::new();
+    let body = RECORDED_STREAM_TEXT.as_bytes();
+    for (at, piece) in body.chunks(17).enumerate() {
+        client
+            .absorb(&mut frames, piece, (at + 1) * 17, &mut received)
+            .expect("every recorded frame parses");
+    }
+    client
+        .absorb_last(&mut frames, body.len(), &mut received)
+        .expect("the recorded stream ends cleanly");
+    assert_eq!(received.len(), 3, "the recorded text stream is three frames");
+
+    let mut deltas = Vec::new();
+    while let Ok(delta) = receiver.try_recv() {
+        deltas.push(delta);
+    }
+
+    assert!(
+        deltas.len() > 1,
+        "the answer arrived in one piece, so nothing was streamed: {deltas:?}"
+    );
+    assert_eq!(
+        deltas.concat(),
+        "One\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight",
+        "the deltas do not reassemble into the answer"
+    );
+
+    // Strictly growing, which is what a reader watching the pane sees.
+    let mut painted = String::new();
+    let mut widths = Vec::new();
+    for delta in &deltas {
+        painted.push_str(delta);
+        widths.push(painted.len());
+    }
+    assert!(
+        widths.windows(2).all(|pair| pair[1] > pair[0]),
+        "the painted text did not grow on every delta: {widths:?}"
+    );
+}
+
+// The final frame of a streamed answer carries an empty text part beside the
+// finish reason -- measured on both recorded streams. An empty delta would
+// make a consumer repaint for no reason at the one moment the turn is about
+// to end and repaint anyway.
+#[test]
+fn a_frame_with_no_text_hands_nothing_on() {
+    let client = offline_client();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    client.stream_deltas_to(sender);
+
+    // The recorded call stream: frame 1 is a `functionCall`, frame 2 is an
+    // empty text part. Neither is text a reader could watch arrive. Driven
+    // through the same read path the socket reaches.
+    let mut frames = stream::Frames::new();
+    let mut received = Vec::new();
+    let body = RECORDED_STREAM_CALLS.as_bytes();
+    client
+        .absorb(&mut frames, body, body.len(), &mut received)
+        .expect("every recorded frame parses");
+    client
+        .absorb_last(&mut frames, body.len(), &mut received)
+        .expect("the recorded stream ends cleanly");
+
+    assert!(
+        receiver.try_recv().is_err(),
+        "a tool call or an empty text part was handed on as if it were the answer"
+    );
+}
+
+// A client nobody is watching builds no delta and sends nothing. This is
+// `zaru "<task>"`, which has no pane, and it is the ordinary case.
+#[test]
+fn a_client_with_no_watcher_hands_nothing_on_and_does_not_fail() {
+    let client = offline_client();
+    let mut frames = stream::Frames::new();
+    let mut received = Vec::new();
+    let body = RECORDED_STREAM_TEXT.as_bytes();
+    client
+        .absorb(&mut frames, body, body.len(), &mut received)
+        .expect("every recorded frame parses");
+    // Reaching here is the assertion: no panic, no channel, no delta built.
+    assert_eq!(received.len(), 3);
+}
+
+// A body that ends without a trailing blank line has still sent its last
+// frame, and that frame is the only one carrying the finish reason and the
+// final usage. `Frames::finish` is checked on its own above; this checks that
+// the client's read path actually calls it, over the recorded stream with its
+// terminator trimmed.
+//
+// **The mutant is `absorb_last` dropping the frame** -- which the recorded
+// fixtures cannot catch on their own, because both end with a terminator and
+// so never reach it. That is why this check exists rather than being covered
+// by the two above.
+#[test]
+fn a_stream_that_ends_without_a_terminator_still_delivers_its_last_frame() {
+    let client = offline_client();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    client.stream_deltas_to(sender);
+
+    let trimmed = RECORDED_STREAM_TEXT.trim_end();
+    let mut frames = stream::Frames::new();
+    let mut received = Vec::new();
+    client
+        .absorb(&mut frames, trimmed.as_bytes(), trimmed.len(), &mut received)
+        .expect("every recorded frame parses");
+    assert_eq!(
+        received.len(),
+        2,
+        "two frames were terminated; the third is waiting on the body ending"
+    );
+
+    client
+        .absorb_last(&mut frames, trimmed.len(), &mut received)
+        .expect("the trailing frame parses");
+    assert_eq!(
+        received.len(),
+        3,
+        "the frame the body ended without terminating was dropped, and it is the one carrying \
+         the finish reason and the final usage"
+    );
+
+    // The whole answer still reassembles, so the trailing frame was delivered
+    // to the watcher as well as kept for the fold.
+    let mut deltas = Vec::new();
+    while let Ok(delta) = receiver.try_recv() {
+        deltas.push(delta);
+    }
+    assert_eq!(
+        deltas.concat(),
+        "One\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight"
+    );
+
+    let folded = map::fold(&received);
+    assert_eq!(
+        folded.candidates[0].finish_reason.as_deref(),
+        Some("STOP"),
+        "the finish reason rides on the frame the terminator did not close"
+    );
+}

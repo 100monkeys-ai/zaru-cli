@@ -170,6 +170,33 @@ pub struct GeminiClient {
     alias: Alias,
     key: Secret,
     http: reqwest::Client,
+    /// Where the answer's text goes as it arrives, when anything is watching.
+    ///
+    /// # Why a channel rather than a borrowed sink
+    ///
+    /// The pane is created inside the terminal driver and the client is built
+    /// before it, in `compose::turn::prepare`, so the client **outlives**
+    /// the thing that wants to paint — a borrowed `&dyn` sink could not be
+    /// held here without infecting `Prepared` with the pane's lifetime, and
+    /// an `Arc<dyn …>` cannot own something that borrows the pane either.
+    /// A sender owns nothing of the pane's and is `Send + 'static`, so the
+    /// two lifetimes never meet.
+    ///
+    /// It also lands where the driver can already receive it: that loop is a
+    /// `select!` over the turn, the terminal and a beat, and a channel is one
+    /// more branch rather than a new mechanism.
+    ///
+    /// **`None` is the ordinary case and costs nothing.** `zaru "<task>"` has
+    /// no pane, so nothing is set, nothing is sent, and no delta is built —
+    /// which is also why this is not an unbounded queue nobody drains.
+    ///
+    /// **Unbounded, deliberately.** The alternative is a bounded channel that
+    /// drops deltas when full, and a dropped delta is text the user never
+    /// sees in a pane whose whole purpose is showing the answer arrive. The
+    /// queue is bounded in practice by one model's output for one turn, and
+    /// the receiver drains it on every beat.
+    deltas: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+
     /// What the last exchange cost, for [`Provider::usage`].
     ///
     /// Interior mutability because [`Provider::usage`] takes `&self` — the
@@ -238,7 +265,124 @@ impl GeminiClient {
             http,
             last: Mutex::new(None),
             answered: Mutex::new(map::Answered::default()),
+            deltas: Mutex::new(None),
         })
+    }
+
+    /// Send the answer's text to `sender` as each frame of it arrives.
+    ///
+    /// Called by a surface that has somewhere to paint. Until it is, and in
+    /// every surface that never calls it, the client builds no delta and
+    /// sends nothing — see [`GeminiClient::deltas`].
+    ///
+    /// `&self` rather than `&mut self` because the caller holds the client
+    /// through a shared reference by the time it has a pane: the composition
+    /// builds the client, then the driver builds the pane around it.
+    pub fn stream_deltas_to(&self, sender: tokio::sync::mpsc::UnboundedSender<String>) {
+        // A poisoned lock means a previous holder panicked while replacing an
+        // `Option`, which cannot happen; the value is set either way rather
+        // than propagating a panic into a surface that is starting up.
+        match self.deltas.lock() {
+            Ok(mut slot) => *slot = Some(sender),
+            Err(poisoned) => *poisoned.into_inner() = Some(sender),
+        }
+    }
+
+    /// Take one read from the socket into the frames received so far.
+    ///
+    /// # This is a seam so that the read path can be checked without a socket
+    ///
+    /// [Testing] forbids a check calling a provider and the CI runner has no
+    /// key, so if the only way to reach this loop were [`Self::exchange`],
+    /// the one property that distinguishes a streaming client from the
+    /// non-streaming one it replaced — that text is handed on **as each frame
+    /// arrives**, not once at the end — could not be checked at all.
+    ///
+    /// **That is not hypothetical.** An earlier version of this client's
+    /// checks drove [`Self::hand_on`] directly, and deleting the call from
+    /// the read loop left every one of them green: they proved the delta
+    /// builder worked and proved nothing about whether the exchange used it.
+    /// Driving *this* function over recorded bytes is what closes that,
+    /// because it is the same code the socket reaches.
+    ///
+    /// [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
+    fn absorb(
+        &self,
+        frames: &mut stream::Frames,
+        chunk: &[u8],
+        bytes: usize,
+        received: &mut Vec<wire::Response>,
+    ) -> Result<(), GeminiFailure> {
+        for payload in frames.feed(chunk) {
+            let frame = parse_frame(&payload, bytes)?;
+            // Handed on **here**, as the frame is read, which is the whole
+            // difference a stream makes to a person waiting. Everything after
+            // the read loop happens once the model has finished.
+            self.hand_on(&frame);
+            received.push(frame);
+        }
+        Ok(())
+    }
+
+    /// Take the frame the body ended without terminating, if there was one.
+    ///
+    /// Separate from [`Self::absorb`] because it is reached once, after the
+    /// last read, and folding it into the loop would mean calling
+    /// [`stream::Frames::finish`] on every chunk — which would end the stream
+    /// at the first read that did not fill a frame.
+    fn absorb_last(
+        &self,
+        frames: &mut stream::Frames,
+        bytes: usize,
+        received: &mut Vec<wire::Response>,
+    ) -> Result<(), GeminiFailure> {
+        if let Some(payload) = frames.finish() {
+            let frame = parse_frame(&payload, bytes)?;
+            self.hand_on(&frame);
+            received.push(frame);
+        }
+        Ok(())
+    }
+
+    /// Hand one frame's text on, if anything is watching.
+    ///
+    /// **A frame with no text sends nothing rather than an empty string.**
+    /// The last frame of a streamed answer carries a `{"text": ""}` part
+    /// beside the finish reason — measured on both recorded streams — and a
+    /// consumer that received an empty delta would repaint for no reason at
+    /// the one moment the turn is about to end and repaint anyway.
+    ///
+    /// A send that fails means the receiver is gone, which is an ordinary end
+    /// of a surface rather than a failure of an exchange: the answer is still
+    /// returned whole. So the result is deliberately discarded.
+    fn hand_on(&self, frame: &wire::Response) {
+        let text: String = frame
+            .candidates
+            .first()
+            .and_then(|candidate| candidate.content.as_ref())
+            .map(|content| {
+                content
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        wire::Part::Text { text, .. } => Some(text.as_str()),
+                        wire::Part::FunctionCall { .. }
+                        | wire::Part::FunctionResponse { .. }
+                        | wire::Part::Other(_) => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if text.is_empty() {
+            return;
+        }
+        let slot = match self.deltas.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(sender) = slot.as_ref() {
+            drop(sender.send(text));
+        }
     }
 
     /// The alias the key is stored under, which every refusal names.
@@ -346,13 +490,9 @@ impl GeminiClient {
                 })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();
-            for payload in frames.feed(&chunk) {
-                received.push(parse_frame(&payload, bytes)?);
-            }
+            self.absorb(&mut frames, &chunk, bytes, &mut received)?;
         }
-        if let Some(payload) = frames.finish() {
-            received.push(parse_frame(&payload, bytes)?);
-        }
+        self.absorb_last(&mut frames, bytes, &mut received)?;
 
         if received.is_empty() {
             return Err(GeminiFailure::Unreadable {
