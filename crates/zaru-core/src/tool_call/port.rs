@@ -402,12 +402,20 @@ pub trait ToolExecutor {
 /// turn.
 ///
 /// It is a trait rather than a direct call to
-/// [`iteration::run`](crate::iteration::run) because that function takes five
+/// [`iteration::run`](crate::iteration::run) because that function takes six
 /// ports and two limits, and threading them through this loop's signature
 /// would decide which context policy an iteration sees and which clock it
 /// reads — questions no record answers. The seam settles none of them, and it
 /// is the same dependency inversion this crate already uses inside itself for
 /// validators and the context policy.
+///
+/// **Six, not five.** This sentence said five until 2026-09-05, and it was
+/// written before ADR-0008 trigger clause 6 was decided and
+/// [`Ports::redactor`](crate::iteration::Ports) joined the bundle. A count
+/// stated in prose beside a struct that carries the real one is a second
+/// declaration of the same fact, so it is the count that moved rather than
+/// the argument: threading six is worse than threading five, which makes the
+/// case for the seam stronger rather than weaker.
 ///
 /// **Where inside a turn the inner loop is entered is not decided by any
 /// record.** ADR-0008 D1 says only that the loops are "nested". This crate

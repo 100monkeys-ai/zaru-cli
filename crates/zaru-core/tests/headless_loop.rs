@@ -10,7 +10,7 @@
 //! piece is invisible to a green suite because there is no mutant for a
 //! declaration that was never made public.
 //!
-//! So this file implements the five ports using only what `zaru-core`
+//! So this file implements the six ports using only what `zaru-core`
 //! exports, with no terminal and nothing that touches a network — which is
 //! also ADR-0008 D2's headless requirement stated as something a stranger can
 //! reproduce.
