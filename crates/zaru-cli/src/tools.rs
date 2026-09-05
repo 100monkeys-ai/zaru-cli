@@ -21,8 +21,9 @@
 //! against D4 as a path, because its boundary is the working directory it is
 //! started in. **`web.fetch` alone sits behind a port** with no implementation
 //! in this crate's product tree — see [`port`] for what it is waiting on. So
-//! does the prompt, so does the allowlist, so does the destructive matcher,
-//! and so does [`seal`]'s membrane.
+//! does the prompt, so does the destructive matcher, and so does [`seal`]'s
+//! membrane. **[`allowlist`] is the exception as of 2026-09-05**: ADR-0011
+//! D3's allowlist has a product implementation reading ADR-0014 D1's layer 2.
 //!
 //! Every call's arguments arrive as one JSON object and are read in
 //! [`arguments`], which is the only door from a request's text into a call —
@@ -36,8 +37,8 @@
 //! that page and on the record, because every input the permission decision
 //! needs is a property of the whole program rather than of any one part: the
 //! runtime tier ([ADR-0001] D2 resolves it once at session start), the
-//! permission mode ([ADR-0014]'s five configuration layers), the project
-//! allowlist (layer 3), the working directory, and the session directory
+//! permission mode ([ADR-0014]'s five configuration layers), the user's
+//! allowlist (layer 2), the working directory, and the session directory
 //! [ADR-0011] D5 writes overflow into. No other crate holds them.
 //!
 //! The tool-call loop, when it is built, reaches this through a port
@@ -76,6 +77,7 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 //! [`credentials::Confirm`]: crate::credentials::Confirm
 
+pub mod allowlist;
 pub mod arguments;
 pub mod decision;
 pub mod execute;
@@ -88,6 +90,7 @@ pub mod port;
 pub mod seal;
 pub mod tree;
 
+pub use allowlist::{Allowed, AllowlistRefused, Entry};
 pub use arguments::{ArgumentsRefused, Call, schema};
 pub use decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, InvocationRefused, Permission,

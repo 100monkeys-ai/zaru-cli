@@ -459,11 +459,11 @@ impl Files {
 
 /// Every key this binary declares.
 ///
-/// [ADR-0012]'s eleven and [ADR-0009]'s two, from those records' own `declare`,
-/// plus [ADR-0001]'s `runtime.tier` and `runtime.max_iterations` from that
-/// record's own `field`. **Nothing is spelled here**, which is [ADR-0014]'s
-/// Neutral section: "Each record owns its own keys; this one owns how they
-/// resolve."
+/// [ADR-0012]'s fifteen and [ADR-0009]'s two, from those records' own
+/// `declare`, plus [ADR-0011]'s `tools.allowlist` from its own, plus
+/// [ADR-0001]'s `runtime.tier` and `runtime.max_iterations` from that record's
+/// own `field`. **Nothing is spelled here**, which is [ADR-0014]'s Neutral
+/// section: "Each record owns its own keys; this one owns how they resolve."
 ///
 /// **The three that arrived on 2026-09-05 are what makes a real `zaru.toml`
 /// loadable at all.** Until then this binary declared sixteen keys and none of
@@ -479,6 +479,7 @@ impl Files {
 pub fn schema() -> Schema {
     let declared = crate::providers::declare(Schema::new());
     let declared = crate::manifest::declare(declared);
+    let declared = crate::tools::allowlist::declare(declared);
     declared
         .with(crate::runtime::key(), crate::runtime::field())
         .with(

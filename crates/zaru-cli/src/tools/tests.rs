@@ -20,6 +20,12 @@
 
 use crate::process::line::CommandLine;
 use crate::redaction::HeldSecrets;
+// `tools::mode::Layer` below is a re-export of `config::layer::Layer`, so
+// there is one `Layer` in this file and not two.
+use crate::config::{
+    Contribution, Field, FieldKind, ProjectPolicy, Resolution, Schema, Source, Table, Value,
+};
+use crate::tools::allowlist::{self, Allowed, AllowlistRefused, Entry};
 use crate::tools::decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
 };
@@ -33,6 +39,7 @@ use crate::tools::notice::SessionNotice;
 use crate::tools::output::{
     BudgetIsZero, Captured, ELISION_PREFIX, OutputBudget, PresentationRefused,
 };
+use crate::tools::port::Allowlist as _;
 use crate::tools::tree::{Placement, WorkingDirectory};
 use std::path::PathBuf;
 
@@ -1566,5 +1573,409 @@ fn tool_output_reaches_the_caller_byte_for_byte() {
         shown.stderr.as_str().as_bytes(),
         awkward.as_bytes(),
         "standard error did not reach the caller byte for byte"
+    );
+}
+
+/// Where an allowlist check builds its resolution from.
+///
+/// A caller's schema, declaring [`allowlist::KEY`] **free at every layer** —
+/// which is deliberately *not* what the product declares. It is the only way
+/// to reach [`Allowed::from_configuration`]'s own escalation arm at all: the
+/// product's [`allowlist::field`] makes the fold refuse a project layer
+/// first, so a resolution carrying a project allowlist cannot otherwise
+/// exist. That is the point of the two arms being independent, and it is why
+/// this helper does not call `cli::layers::schema` ([Verification lessons]
+/// §11: one arm of a comparison must not travel through the thing being
+/// checked).
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+fn permissive_schema() -> Schema {
+    Schema::new().with(allowlist::key(), Field::free(FieldKind::Array))
+}
+
+/// A resolution in which one layer set the allowlist to `entries`.
+fn allowlist_from(layer: Layer, entries: &[&str]) -> Resolution {
+    let mut document = Table::new();
+    document.insert_path(
+        &allowlist::key(),
+        Value::Array(
+            entries
+                .iter()
+                .map(|entry| Value::Text((*entry).to_owned()))
+                .collect(),
+        ),
+    );
+    Resolution::resolve(
+        &permissive_schema(),
+        [Contribution::new(
+            layer,
+            Source::named(format!("{} (staged)", layer.label())),
+            document,
+        )],
+    )
+    .expect("a permissive schema takes an array at any layer")
+}
+
+/// **ADR-0011 D3's key is declared once, holds a list, and is refused to a
+/// project.**
+///
+/// The declaration is asked of the record's own [`allowlist::field`] and the
+/// binary's own [`crate::cli::layers::schema`], so this is the key a user
+/// actually writes rather than a spelling retyped here.
+///
+/// Three mutants. Dropping `tools::allowlist::declare` from `schema()` fails
+/// the first assertion. Declaring it [`FieldKind::Text`] fails the second —
+/// and that one matters, because text would let layers 4 and 5 set a grant
+/// through a separator nobody decided. Declaring it `Free` or `LowerOnly`
+/// fails the third, which is ADR-0014 D6's sixth escalation.
+#[test]
+fn the_allowlist_key_is_declared_once_holds_a_list_and_is_refused_to_a_project() {
+    let schema = crate::cli::layers::schema();
+    let key = allowlist::key();
+
+    assert_eq!(
+        key.as_str(),
+        "tools.allowlist",
+        "the key ADR-0011 D3's allowlist is read from moved; it is user-facing and is spelled in \
+         the record"
+    );
+
+    let field = schema
+        .field(&key)
+        .expect("the binary's schema must declare ADR-0011 D3's allowlist key");
+
+    assert_eq!(
+        field.kind,
+        FieldKind::Array,
+        "the allowlist must hold a list: ADR-0014 D2 replaces a list wholesale, which is what lets \
+         a user say \"exactly these and nothing inherited\" about a permission grant"
+    );
+
+    match &field.project {
+        ProjectPolicy::Refused { reason } => assert_eq!(
+            reason,
+            allowlist::PROJECT_REFUSAL,
+            "the fold's reason and the module's reason must be one string, or a user gets two \
+             different explanations of one rule"
+        ),
+        other => panic!(
+            "ADR-0014 D6's sixth escalation must refuse the project layer outright, and the \
+             policy is {other:?}"
+        ),
+    }
+}
+
+/// **Corpus case: an approved pair approves that pair and nothing else.**
+///
+/// The approved entry is staged **third of five**, with entries on both sides
+/// — [Verification lessons] §54: "never stage that member first or last",
+/// because *the one that matters*, *the first* and *the last* are different
+/// rules that agree whenever the interesting element is at an end.
+///
+/// Four mutants, and each is a rule somebody could plausibly write.
+/// Comparing only the target passes an `fs.read` grant off as a `cmd.run`
+/// one. Comparing only the tool approves every path once one is approved.
+/// `starts_with` instead of `==` is the glob arriving without anybody calling
+/// it one, and the fixture carries a target that is a **prefix of another**
+/// so that it reddens. Taking the first or the last entry is what the middle
+/// staging kills.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn an_approved_pair_approves_that_pair_and_nothing_else() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+
+    let approved = working.classify("inside/file");
+    let sibling = working.classify("inside/other");
+    // A path whose text extends the approved one's, so a prefix match is not
+    // the same rule as an equality match.
+    let extending = working.classify("inside/file-and-more");
+
+    let entry = format!("fs.read {}", approved.resolved().display());
+    let allowed = Allowed::from_configuration(&allowlist_from(
+        Layer::User,
+        &[
+            "fs.list /somewhere/before",
+            "cmd.run true",
+            // The interesting element, third of five.
+            &entry,
+            "cmd.run false",
+            "fs.list /somewhere/after",
+        ],
+    ))
+    .expect("the staged entries are well formed");
+
+    assert_eq!(
+        allowed.len(),
+        5,
+        "staging: five entries must have been taken, or the positional argument below is not the \
+         one this check is named for"
+    );
+
+    let read_approved =
+        Invocation::on_path(ToolName::FsRead, &approved).expect("fs.read addresses a path");
+    assert!(
+        allowed.approves(&read_approved),
+        "the approved pair was not approved; every assertion below is then vacuous"
+    );
+
+    let read_sibling =
+        Invocation::on_path(ToolName::FsRead, &sibling).expect("fs.read addresses a path");
+    assert!(
+        !allowed.approves(&read_sibling),
+        "a different target was approved: {:?} was granted on the strength of {:?}",
+        sibling.resolved(),
+        approved.resolved()
+    );
+
+    let read_extending =
+        Invocation::on_path(ToolName::FsRead, &extending).expect("fs.read addresses a path");
+    assert!(
+        !allowed.approves(&read_extending),
+        "a target whose text merely extends the approved one was approved: {:?} on the strength \
+         of {:?}. ADR-0011 D3's allowlist matches byte for byte and never by prefix",
+        extending.resolved(),
+        approved.resolved()
+    );
+
+    let write_approved =
+        Invocation::on_path(ToolName::FsWrite, &approved).expect("fs.write addresses a path");
+    assert!(
+        !allowed.approves(&write_approved),
+        "a different tool was approved on the same target: approving a read of {:?} says nothing \
+         about writing it",
+        approved.resolved()
+    );
+}
+
+/// **Corpus case, the second arm — a project's allowlist is refused by the
+/// constructor even where a fold let it through.**
+///
+/// The fold is the first arm and is checked over real files in
+/// `tests/permission_from_outside.rs`. This is the arm that holds for a
+/// caller who built a resolution some other way, and it is reached here
+/// through a permissive schema for exactly that reason.
+///
+/// The accepting sibling is the same value, the same entries, from
+/// [`Layer::User`] — without it a constructor that refused every layer would
+/// pass. The mutant is flipping
+/// [`Layer::bound_by_the_escalation_ceiling`](crate::config::Layer::bound_by_the_escalation_ceiling)'s
+/// `Project` arm, or deleting the check in `from_configuration`.
+#[test]
+fn a_project_allowlist_is_refused_by_the_constructor_and_the_users_is_not() {
+    let entries = ["cmd.run cargo test"];
+
+    let refusal = Allowed::from_configuration(&allowlist_from(Layer::Project, &entries))
+        .expect_err("ADR-0014 D6: a cloned repository may not grant itself fewer prompts");
+    assert_eq!(
+        refusal,
+        AllowlistRefused::FromAClonedRepository {
+            layer: Layer::Project
+        },
+        "the project layer must be refused for being the project layer"
+    );
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains("tools.allowlist") && rendered.contains(allowlist::PROJECT_REFUSAL),
+        "ADR-0014 D6 requires the error name the key and the reason: {rendered:?}"
+    );
+
+    for granting in [Layer::BuiltIn, Layer::User] {
+        let allowed = Allowed::from_configuration(&allowlist_from(granting, &entries))
+            .unwrap_or_else(|refusal| {
+                panic!("{} is the user's own grant: {refusal}", granting.label())
+            });
+        assert_eq!(
+            allowed.len(),
+            1,
+            "{} supplied an entry and it did not survive",
+            granting.label()
+        );
+    }
+}
+
+/// **An unset key is a grant of nothing, and it is not a failure.**
+///
+/// A machine with no `~/.zaru/config.toml` has no allowlist, and ADR-0011
+/// D3's `allow` mode then prompts for everything — which is `ask`'s behaviour
+/// and is the safe direction. The mutant is returning an error for an unset
+/// key, which would make a fresh machine unable to start.
+#[test]
+fn an_unset_allowlist_is_a_grant_of_nothing_rather_than_a_refusal() {
+    let resolution =
+        Resolution::resolve(&permissive_schema(), []).expect("an empty resolution is a resolution");
+    let allowed = Allowed::from_configuration(&resolution)
+        .expect("no layer set the key, which is not an error");
+    assert!(
+        allowed.is_empty(),
+        "an unset allowlist granted {} entries",
+        allowed.len()
+    );
+
+    let line = CommandLine::split("rm -rf /").expect("a command line");
+    assert!(
+        !allowed.approves(&Invocation::running(&line)),
+        "an empty allowlist approved something"
+    );
+}
+
+/// **An entry that is not a line the prompt showed is refused, naming its
+/// position and quoting what it held.**
+///
+/// Every arm has an accepting sibling in the table, so an implementation that
+/// refused every entry cannot pass. The positions are deliberately not 1, so
+/// a refusal hard-coding the first entry reddens.
+///
+/// The mutant for the tool arm is accepting any first word; for the target
+/// arm, accepting an entry with nothing after the space.
+#[test]
+fn an_entry_that_is_not_a_line_the_prompt_showed_is_refused_naming_its_position() {
+    let good = "fs.read /tmp/x";
+    // Named rather than closured, so the table stays readable and the
+    // expected reason is a literal rather than a predicate that could agree
+    // with the implementation by construction.
+    let cases = [
+        ("", "EmptyEntry"),
+        ("fs.read", "NoTarget"),
+        ("fs.read ", "NoTarget"),
+        ("fs.grep /tmp/x", "NoSuchTool"),
+        ("FS.READ /tmp/x", "NoSuchTool"),
+    ];
+
+    let mut wrong = Vec::new();
+    for (offered, expected) in cases {
+        // The bad entry is second, so a refusal that only ever looks at the
+        // first entry reddens, and the good entry on each side is what a
+        // refuse-everything implementation fails on.
+        match Allowed::from_configuration(&allowlist_from(Layer::User, &[good, offered, good])) {
+            Ok(allowed) => wrong.push(format!(
+                "{offered:?} was accepted, giving {} entries",
+                allowed.len()
+            )),
+            Err(refusal) => {
+                let (name, position) = match &refusal {
+                    AllowlistRefused::EmptyEntry { position } => ("EmptyEntry", *position),
+                    AllowlistRefused::NoTarget { position, .. } => ("NoTarget", *position),
+                    AllowlistRefused::NoSuchTool { position, .. } => ("NoSuchTool", *position),
+                    AllowlistRefused::EntryWrongShape { position, .. } => {
+                        ("EntryWrongShape", *position)
+                    }
+                    AllowlistRefused::FromAClonedRepository { .. } => ("FromAClonedRepository", 0),
+                    AllowlistRefused::WrongShape { .. } => ("WrongShape", 0),
+                };
+                if name != expected {
+                    wrong.push(format!(
+                        "{offered:?} was refused as {name} and not {expected}"
+                    ));
+                }
+                if position != 2 {
+                    wrong.push(format!(
+                        "{offered:?} was refused at position {position} and it is the second entry"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("; "));
+
+    // The accepting arm: three good entries are three good entries.
+    let allowed = Allowed::from_configuration(&allowlist_from(Layer::User, &[good, good, good]))
+        .expect("a well-formed entry must be taken");
+    assert_eq!(allowed.len(), 3, "well-formed entries did not survive");
+}
+
+/// **An entry is the line ADR-0011 D3's prompt showed, and that is checkable
+/// rather than asserted in prose.**
+///
+/// The expected entry is built from [`Decision::question`]'s own statement by
+/// stripping the `Allow ` and the `?` the question adds — so if the prompt's
+/// wording and the allowlist's grammar ever drift apart, this reddens. It is
+/// the one place the two are compared, and the comparison's other arm is the
+/// user's own configuration string.
+///
+/// The mutant is changing either side's rendering: `Entry::parse` splitting
+/// on something other than the first space, or `question` rendering the tool
+/// and the subject in the other order.
+#[test]
+fn an_allowlist_entry_is_the_line_the_prompt_showed() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let invocation =
+        Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+
+    let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
+    let question = decision
+        .question()
+        .expect("staging: a write at `ask` must raise a question");
+
+    let shown = question
+        .statement
+        .strip_prefix("Allow ")
+        .and_then(|rest| rest.strip_suffix('?'))
+        .expect("the question is `Allow {line}?`");
+
+    let entry = Entry::parse(1, shown).unwrap_or_else(|refusal| {
+        panic!("the line the prompt showed is not an allowlist entry: {refusal}")
+    });
+    assert_eq!(entry.tool(), ToolName::FsWrite, "the tool did not survive");
+    assert_eq!(
+        entry.target(),
+        invocation.subject_text(),
+        "the target the prompt showed and the target the allowlist matches are different strings"
+    );
+    assert!(
+        entry.approves(&invocation),
+        "the entry taken from the prompt's own line does not approve the call it was shown for"
+    );
+}
+
+/// **The allowlist reaches ADR-0011 D3's `allow` mode through the rule, not
+/// past it.**
+///
+/// [Verification lessons] §25: a mechanism whose only callers are its own
+/// checks is a mechanism nobody has been shown to reach. This drives the
+/// product allowlist through [`Decision::assess`], which is the door the
+/// executor uses.
+///
+/// The mutant is `Decision::reach` ignoring `assessment.allowlisted`, which
+/// would make `allow` prompt for everything.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn the_product_allowlist_is_what_allow_mode_consults() {
+    let line = CommandLine::split("cargo test").expect("a command line");
+    let invocation = Invocation::running(&line);
+
+    let allowed = Allowed::from_configuration(&allowlist_from(
+        Layer::User,
+        &["fs.list /elsewhere", "cmd.run cargo test", "fs.list /other"],
+    ))
+    .expect("the staged entries are well formed");
+
+    let decision = Decision::assess(
+        Mode::Allow,
+        &invocation,
+        &allowed,
+        &StagedDestructive::quiet(),
+    );
+    assert_eq!(
+        decision.requirement(),
+        Requirement::Proceed,
+        "ADR-0011 D3: `allow` \"Runs the allowlist without prompting\""
+    );
+
+    let other = CommandLine::split("cargo build").expect("a command line");
+    let outside = Decision::assess(
+        Mode::Allow,
+        &Invocation::running(&other),
+        &allowed,
+        &StagedDestructive::quiet(),
+    );
+    assert_eq!(
+        outside.requirement(),
+        Requirement::Ask,
+        "ADR-0011 D3: `allow` \"prompts for anything outside it\""
     );
 }
