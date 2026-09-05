@@ -71,6 +71,7 @@
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
+pub mod cli;
 pub mod config;
 pub mod credentials;
 pub mod failure;
