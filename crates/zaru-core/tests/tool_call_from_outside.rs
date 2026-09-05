@@ -20,6 +20,7 @@ use std::sync::Mutex;
 use zaru_core::iteration::{
     Clock, ContextPolicy, ContextRefusal, Interruption, PortFailure, Prompt, Turn,
 };
+use zaru_core::redaction::{Redacted, Redactor};
 use zaru_core::tool_call::{
     Capabilities, Event, EventSink, InnerLoop, Model, ModelRequest, ModelResponse, Outcome, Ports,
     Start, TokenUsage, ToolCallCeiling, ToolCalling, ToolDecision, ToolDescriptor, ToolExecutor,
@@ -122,7 +123,7 @@ impl ContextPolicy for Policy {
             .lock()
             .expect("turns poisoned")
             .push(rendered.clone());
-        Ok(Prompt::new(rendered))
+        Ok(Prompt::new(Redacted::by(&NothingHeld, &rendered)))
     }
 }
 
@@ -459,4 +460,27 @@ fn a_model_that_cannot_call_tools_cannot_start_a_turn() {
     // `run` cannot be reached at all from here: it takes a `ToolCalling` and
     // there is no other way to make one. That is the clause's "not mid-loop"
     // as a property of what compiles.
+}
+
+/// A redactor holding nothing, which is therefore the identity.
+///
+/// Every outside caller has to supply one, because a `Prompt` can only be
+/// built from text that has passed [ADR-0008] clause 6's port — which is the
+/// whole point of that type. It is declared here rather than shared because
+/// an integration test cannot see another crate's test tree and [ADR-0003] D8
+/// forbids the dependency that would let it, the same cost `zaru-cli`'s
+/// Nuclear Notes fixture server already pays.
+///
+/// Holding nothing is also the **discriminating** arm: a check asserting that
+/// a value is absent from a prompt is worthless unless the same run with
+/// nothing held carries that value through byte for byte.
+///
+/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+struct NothingHeld;
+
+impl Redactor for NothingHeld {
+    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        std::borrow::Cow::Borrowed(text)
+    }
 }

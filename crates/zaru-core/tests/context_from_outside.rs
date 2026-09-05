@@ -28,6 +28,7 @@ use zaru_core::iteration::{
     ExhaustionReason, Generated, Generator, Limits, Outcome, PortFailure, Ports, Prompt, State,
     TruncationBudget, Turn, ValidatorOutcome, ValidatorReport, Validators, run,
 };
+use zaru_core::redaction::{Redacted, Redactor};
 
 /// A nonce no implementation could produce without carrying it.
 const NONCE: &str = "outside-caller-6b1f";
@@ -99,12 +100,10 @@ impl ContextPolicy for Policy<'_> {
                 interrupted.call()
             ),
         };
-        Ok(Prompt::new(
-            self.context
-                .assemble(self.counter, &tail)?
-                .as_str()
-                .to_owned(),
-        ))
+        Ok(Prompt::new(Redacted::by(
+            &NothingHeld,
+            self.context.assemble(self.counter, &tail)?.as_str(),
+        )))
     }
 }
 
@@ -501,4 +500,27 @@ fn the_layers_a_caller_sees_are_d1s_seven_in_d1s_order() {
         Layer::ALL[..4].to_vec(),
         "the stable prefix must be the FIRST four, or a cache has nothing to match"
     );
+}
+
+/// A redactor holding nothing, which is therefore the identity.
+///
+/// Every outside caller has to supply one, because a `Prompt` can only be
+/// built from text that has passed [ADR-0008] clause 6's port — which is the
+/// whole point of that type. It is declared here rather than shared because
+/// an integration test cannot see another crate's test tree and [ADR-0003] D8
+/// forbids the dependency that would let it, the same cost `zaru-cli`'s
+/// Nuclear Notes fixture server already pays.
+///
+/// Holding nothing is also the **discriminating** arm: a check asserting that
+/// a value is absent from a prompt is worthless unless the same run with
+/// nothing held carries that value through byte for byte.
+///
+/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+struct NothingHeld;
+
+impl Redactor for NothingHeld {
+    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        std::borrow::Cow::Borrowed(text)
+    }
 }

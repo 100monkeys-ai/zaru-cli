@@ -18,13 +18,22 @@
 //! Rendering never reads loop internals. What a consumer needs to display,
 //! the loop emits as an event (ADR-0008 D3).
 //!
+//! Every path from captured bytes into a model prompt passes one port,
+//! [`redaction::Redactor`], and the type it produces is the only thing a
+//! [`Prompt`](iteration::Prompt) or a
+//! [`ToolResult`](tool_call::ToolResult) can be built from. That is
+//! [ADR-0008]'s trigger clause 6, decided on 2026-09-05.
+//!
 //! Errors raised here are this crate's own. `zaru-cli` owns the ADR-0016
 //! taxonomy and the mapping to exit codes; this crate is deliberately not a
 //! shared-types crate for the workspace. Where a shared error type should
 //! live is an open question the skeleton left open on purpose.
+//!
+//! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 
 pub mod context;
 pub mod iteration;
+pub mod redaction;
 pub mod tool_call;
 
 /// The name of this crate, read from its `Cargo.toml` at compile time.

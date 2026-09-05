@@ -32,6 +32,8 @@ use crate::context::history::IterationRecord;
 use crate::context::item::{AttachedItem, ItemId};
 use crate::context::port::{Span, Summariser, TokenCounter};
 use crate::iteration::port::{ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn};
+use crate::redaction::Redacted;
+use crate::redaction::fixtures::NothingHeld;
 use std::sync::Mutex;
 
 /// A nonce no implementation could produce without carrying it.
@@ -181,7 +183,7 @@ impl ContextPolicy for PolicyOver<'_> {
             ),
         };
         let assembled = self.context.assemble(self.counter, &tail)?;
-        Ok(Prompt::new(assembled.as_str().to_owned()))
+        Ok(Prompt::new(Redacted::by(&NothingHeld, assembled.as_str())))
     }
 }
 

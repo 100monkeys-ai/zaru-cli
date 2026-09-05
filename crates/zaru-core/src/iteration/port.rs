@@ -23,6 +23,7 @@
 
 use crate::iteration::event::ValidatorOutcome;
 use crate::iteration::refinement::RefinementPrompt;
+use crate::redaction::Redacted;
 use core::fmt;
 use core::future::Future;
 use core::time::Duration;
@@ -59,20 +60,28 @@ impl fmt::Display for PortFailure {
 ///
 /// Assembled by the [`ContextPolicy`], never by the loop: what a model
 /// actually sees is ADR-0013's layering applied to what this crate produced.
+///
+/// # It can only be built from redacted text, and that is the mechanism
+///
+/// ADR-0008's trigger clause 6 was decided on 2026-09-05: every path from
+/// captured bytes into a model prompt passes one
+/// [`Redactor`](crate::redaction::Redactor). A constructor taking a `&str`
+/// would make that a rule somebody keeps; taking a [`Redacted`] makes a path
+/// that forgot the port fail to compile. See [`crate::redaction`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Prompt(String);
+pub struct Prompt(Redacted);
 
 impl Prompt {
-    /// Take a prompt's text.
+    /// Take a prompt's text, which has already passed the redaction port.
     #[must_use]
-    pub fn new(text: impl Into<String>) -> Self {
-        Self(text.into())
+    pub const fn new(text: Redacted) -> Self {
+        Self(text)
     }
 
     /// The prompt's text.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 

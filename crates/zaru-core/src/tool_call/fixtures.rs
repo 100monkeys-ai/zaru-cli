@@ -20,6 +20,8 @@
 
 use crate::iteration::fixtures::ManualClock;
 use crate::iteration::port::{ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn};
+use crate::redaction::Redacted;
+use crate::redaction::fixtures::NothingHeld;
 use crate::tool_call::event::{Event, EventSink};
 use crate::tool_call::port::{
     Capabilities, InnerLoop, Model, ModelRequest, ModelResponse, TokenUsage, ToolDecision,
@@ -304,7 +306,7 @@ impl ContextPolicy for RecordingContext {
             .lock()
             .expect("turns poisoned")
             .push(rendered.clone());
-        Ok(Prompt::new(rendered))
+        Ok(Prompt::new(Redacted::by(&NothingHeld, &rendered)))
     }
 }
 

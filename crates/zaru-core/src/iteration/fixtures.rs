@@ -21,6 +21,8 @@ use crate::iteration::port::{
     Clock, ContextPolicy, ContextRefusal, ExecutionOutcome, Executor, Generated, Generator,
     PortFailure, Prompt, Turn, ValidatorReport, Validators,
 };
+use crate::redaction::Redacted;
+use crate::redaction::fixtures::NothingHeld;
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
@@ -416,6 +418,6 @@ impl ContextPolicy for PassThroughContext {
                 window: STAGED_WINDOW,
             });
         }
-        Ok(Prompt::new(text))
+        Ok(Prompt::new(Redacted::by(&NothingHeld, &text)))
     }
 }

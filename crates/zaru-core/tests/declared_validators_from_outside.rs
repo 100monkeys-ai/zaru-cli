@@ -32,6 +32,7 @@ use zaru_core::iteration::{
     Generated, Generator, Limits, Outcome, PortFailure, Ports, Prompt, TruncationBudget, Turn,
     ValidatorOutcome, run,
 };
+use zaru_core::redaction::{Redacted, Redactor};
 
 /// A nonce with an embedded newline and a non-ASCII character, so that text
 /// arriving downstream can only have got there by being carried.
@@ -112,14 +113,15 @@ impl ContextPolicy for Echo {
     // context that cannot be assembled is distinguishable from a port that
     // failed. This policy refuses nothing and never returns either.
     async fn assemble(&self, turn: &Turn<'_>) -> Result<Prompt, ContextRefusal> {
-        Ok(Prompt::new(match turn {
+        let text = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
             Turn::Resumed { interrupted } => format!(
                 "the previous session was interrupted and this call never completed: {}",
                 interrupted.call()
             ),
-        }))
+        };
+        Ok(Prompt::new(Redacted::by(&NothingHeld, &text)))
     }
 }
 
@@ -359,5 +361,28 @@ impl StagedRunner {
     /// The commands this runner was asked for, in order.
     fn asked(&self) -> Vec<String> {
         self.asked.lock().expect("asked poisoned").clone()
+    }
+}
+
+/// A redactor holding nothing, which is therefore the identity.
+///
+/// Every outside caller has to supply one, because a `Prompt` can only be
+/// built from text that has passed [ADR-0008] clause 6's port — which is the
+/// whole point of that type. It is declared here rather than shared because
+/// an integration test cannot see another crate's test tree and [ADR-0003] D8
+/// forbids the dependency that would let it, the same cost `zaru-cli`'s
+/// Nuclear Notes fixture server already pays.
+///
+/// Holding nothing is also the **discriminating** arm: a check asserting that
+/// a value is absent from a prompt is worthless unless the same run with
+/// nothing held carries that value through byte for byte.
+///
+/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+struct NothingHeld;
+
+impl Redactor for NothingHeld {
+    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        std::borrow::Cow::Borrowed(text)
     }
 }
