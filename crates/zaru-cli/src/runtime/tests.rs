@@ -441,3 +441,330 @@ fn the_key_is_runtime_tier_and_the_field_refuses_the_project_layer() {
          be able to act on it: {reason}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// D3 — iteration defaults, per tier and per provider
+// ---------------------------------------------------------------------------
+
+use crate::runtime::defaults::{Inference, InferenceRefused, Placement, ceiling, iterations};
+
+/// [ADR-0001] D3's table, transcribed beside the code that answers it.
+///
+/// `(tier, inference, placement, iterations)`, where `None` is a cell the
+/// record leaves empty because that tier does not offload. Twelve rows,
+/// because the axes are three by two by two and **every cell is written out**
+/// — a table with only the eight populated rows could not tell a missing cell
+/// from an unavailable one.
+///
+/// The same limit as [`D1`] applies and for the same reason: this literal and
+/// [`iterations`] are two transcriptions of one record, so editing ADR-0001 D3
+/// reddens this only if whoever edits it also edits the literal. What it holds
+/// is that the code cannot drift from the transcription silently.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+const D3: [(Tier, Inference, Placement, Option<u32>); 12] = [
+    // | bare | 1 | 1 |
+    (Tier::Bare, Inference::Local, Placement::Local, Some(1)),
+    (Tier::Bare, Inference::Frontier, Placement::Local, Some(1)),
+    (Tier::Bare, Inference::Local, Placement::Offloaded, None),
+    (Tier::Bare, Inference::Frontier, Placement::Offloaded, None),
+    // | contained | 3 | 5 |
+    (Tier::Contained, Inference::Local, Placement::Local, Some(3)),
+    (
+        Tier::Contained,
+        Inference::Frontier,
+        Placement::Local,
+        Some(5),
+    ),
+    (
+        Tier::Contained,
+        Inference::Local,
+        Placement::Offloaded,
+        None,
+    ),
+    (
+        Tier::Contained,
+        Inference::Frontier,
+        Placement::Offloaded,
+        None,
+    ),
+    // | linked | 3 local, 8 offloaded | 5 local, 12 offloaded |
+    (Tier::Linked, Inference::Local, Placement::Local, Some(3)),
+    (
+        Tier::Linked,
+        Inference::Local,
+        Placement::Offloaded,
+        Some(8),
+    ),
+    (Tier::Linked, Inference::Frontier, Placement::Local, Some(5)),
+    (
+        Tier::Linked,
+        Inference::Frontier,
+        Placement::Offloaded,
+        Some(12),
+    ),
+];
+
+/// Every cell of D3's table, and every cell of the table is reached.
+///
+/// The population is the **cross product of the three axes**, walked from
+/// `Tier::ALL × Inference::ALL × Placement::ALL`, and each triple is looked up
+/// in [`D3`] — never the reverse. So a triple with no row is reported as
+/// missing rather than skipped ([Verification lessons] §17), and a fourth tier
+/// or a third value on either other axis is caught here as well as by the
+/// compiler.
+///
+/// The mutant: changing any number in [`iterations`].
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn every_cell_of_d3s_table_is_the_number_the_record_prints() {
+    let mut wrong: Vec<String> = Vec::new();
+    let mut reached = 0usize;
+
+    for tier in Tier::ALL {
+        for inference in Inference::ALL {
+            for placement in Placement::ALL {
+                let Some(row) = D3
+                    .iter()
+                    .find(|row| row.0 == tier && row.1 == inference && row.2 == placement)
+                else {
+                    wrong.push(format!(
+                        "({tier}, {inference}, {placement}) has no row in ADR-0001 D3's table as \
+                         transcribed here"
+                    ));
+                    continue;
+                };
+                reached += 1;
+
+                let found = iterations(tier, inference, placement);
+                if found != row.3 {
+                    wrong.push(format!(
+                        "({tier}, {inference}, {placement}): the code says {found:?} and \
+                         ADR-0001 D3 says {:?}",
+                        row.3
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{} of {reached} cells do not match ADR-0001 D3: {wrong:#?}",
+        wrong.len(),
+    );
+    assert_eq!(
+        reached,
+        D3.len(),
+        "the cross product of the three axes is not the size of D3's transcribed table, so one \
+         of them has a value the table does not cover",
+    );
+}
+
+/// The cells with no number are exactly the tiers D1's Loop column says cannot
+/// offload.
+///
+/// **Two transcriptions of two different tables in the same record, held
+/// against each other.** D1's Loop column and D3's empty cells are written
+/// independently — `Tier::engagement` and `iterations` — so neither is derived
+/// from the other and this is not a mirror ([Verification lessons] §11).
+/// Deriving one would have made the comparison a tautology.
+///
+/// The mutant: giving `contained` an offloaded ceiling in [`iterations`], or
+/// changing its Loop cell to `LocalOffloadable`. Either reddens, and that is
+/// the point — the record cannot be half-changed.
+#[test]
+fn the_cells_with_no_ceiling_are_the_tiers_d1_says_cannot_offload() {
+    for tier in Tier::ALL {
+        let offloadable = tier.engagement().r#loop == Loop::LocalOffloadable;
+
+        for inference in Inference::ALL {
+            let offloaded = iterations(tier, inference, Placement::Offloaded);
+            assert_eq!(
+                offloaded.is_some(),
+                offloadable,
+                "{tier}: D1's Loop column says {:?} and D3's offloaded cell for {inference} says \
+                 {offloaded:?}; the two tables in one record disagree",
+                tier.engagement().r#loop.as_str(),
+            );
+
+            assert!(
+                iterations(tier, inference, Placement::Local).is_some(),
+                "{tier} has no local ceiling for {inference}, and every tier runs locally",
+            );
+        }
+    }
+
+    // The absolute value, so the check is not satisfied by both sides being
+    // wrong together (Verification lessons §13).
+    assert!(
+        iterations(Tier::Linked, Inference::Local, Placement::Offloaded).is_some(),
+        "`linked` is the tier that offloads, and D3 gives it 8 and 12",
+    );
+    assert!(
+        iterations(Tier::Contained, Inference::Local, Placement::Offloaded).is_none(),
+        "nothing offloads at `contained`; D1's Loop column for it is \"local\"",
+    );
+}
+
+/// D3: "`bare` has no loop, so its iteration count is one by definition."
+///
+/// The only cell in the table with a stated derivation, so it is asserted as
+/// the record states it rather than as two more numbers in the table above.
+///
+/// The mutant: giving `bare` 2 on either column.
+#[test]
+fn bare_is_one_iteration_on_every_column_by_d3s_own_definition() {
+    for inference in Inference::ALL {
+        assert_eq!(
+            iterations(Tier::Bare, inference, Placement::Local),
+            Some(1),
+            "ADR-0001 D3: `bare` has no loop, so its iteration count is one by definition — \
+             there is no validator to refine against",
+        );
+    }
+    assert_eq!(
+        Tier::Bare.engagement().r#loop,
+        Loop::None,
+        "D3's one-by-definition argument rests on D1's Loop column, and it does not say `none`",
+    );
+}
+
+/// Every cell reaches `zaru-core` as a `Ceiling`, and none of them is the zero
+/// that boundary refuses.
+///
+/// `Ceiling::new` refuses zero, so a table cell of zero would panic at the
+/// conversion rather than being caught. This asserts the conversion succeeds
+/// for every populated cell, which is the property that makes the `expect` in
+/// [`ceiling`] honest rather than hopeful.
+///
+/// The mutant: a zero in [`iterations`], which turns this from a pass into a
+/// panic naming the cell.
+#[test]
+fn every_populated_cell_converts_to_a_ceiling_zaru_core_accepts() {
+    for tier in Tier::ALL {
+        for inference in Inference::ALL {
+            for placement in Placement::ALL {
+                match (
+                    iterations(tier, inference, placement),
+                    ceiling(tier, inference, placement),
+                ) {
+                    (Some(count), Some(taken)) => assert_eq!(
+                        taken.get(),
+                        count,
+                        "({tier}, {inference}, {placement}): the ceiling handed to zaru-core is \
+                         not the number D3 prints",
+                    ),
+                    (None, None) => {}
+                    (count, taken) => panic!(
+                        "({tier}, {inference}, {placement}): the table says {count:?} and the \
+                         ceiling says {}",
+                        if taken.is_some() { "a ceiling" } else { "none" },
+                    ),
+                }
+            }
+        }
+    }
+}
+
+/// D3's column is **read** from configuration, not guessed.
+///
+/// Under Jeshua's directive of 2026-09-05 the axis is declared per alias at
+/// `model.<alias>.inference`. The key belongs to [ADR-0012] and this module
+/// declares no `Field` for it — only the reading is ADR-0001 D3's.
+///
+/// The mutant: defaulting an unset key to `Local`, which would silently give
+/// every alias `contained`'s 3 rather than its 5.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[test]
+fn the_inference_axis_is_read_from_configuration_for_an_alias() {
+    let inference_key = crate::config::Key::new("model.default.inference").expect("a key");
+    assert_eq!(
+        Inference::key_for("default").expect("a key").as_str(),
+        inference_key.as_str(),
+        "the key this module reads is not `model.<alias>.inference`",
+    );
+
+    let with_the_key = schema().with(
+        inference_key,
+        crate::config::Field::free(crate::config::FieldKind::Text),
+    );
+
+    for planted in Inference::ALL {
+        let resolved = Resolution::resolve(
+            &with_the_key,
+            vec![at(
+                Layer::User,
+                "user config",
+                document([(
+                    "model.default.inference",
+                    Value::Text(planted.as_str().to_owned()),
+                )]),
+            )],
+        )
+        .expect("a declared key resolves");
+
+        assert_eq!(
+            Inference::resolved_for(&resolved, "default").expect("the key was set"),
+            planted,
+            "the axis read back is not the one the check planted",
+        );
+    }
+
+    // Unset is refused rather than defaulted: a default here would be this
+    // record choosing another record's configuration.
+    let empty = Resolution::resolve(&with_the_key, Vec::new()).expect("an empty fold resolves");
+    let refusal = Inference::resolved_for(&empty, "default")
+        .expect_err("no layer set the key, so there is no column to read");
+    assert!(
+        matches!(refusal, InferenceRefused::NotSet { .. }),
+        "{refusal:?}"
+    );
+    println!("{refusal}");
+
+    // And a value naming neither column is refused naming both.
+    let wrong = Resolution::resolve(
+        &with_the_key,
+        vec![at(
+            Layer::Flag,
+            "flag",
+            document([("model.default.inference", Value::Text("cloud".to_owned()))]),
+        )],
+    )
+    .expect("the fold takes any text for this key");
+    let refusal = Inference::resolved_for(&wrong, "default").expect_err("`cloud` names no column");
+    let rendered = refusal.to_string();
+    for inference in Inference::ALL {
+        assert!(
+            rendered.contains(inference.as_str()),
+            "the refusal does not offer {inference}: {rendered}",
+        );
+    }
+    println!("{rendered}");
+}
+
+/// Placement is local unless ADR-0012 D3's `aegis` kind resolved.
+///
+/// The directive of 2026-09-05 stated exactly. The one string this module
+/// spells from that record is `aegis`, and a `ProviderKind` type will convert
+/// into this rather than this growing a second list of kinds.
+///
+/// The mutant: treating any kind as offloading, which reddens on the three
+/// that are not `aegis`.
+#[test]
+fn work_is_local_unless_the_aegis_provider_kind_resolved() {
+    assert_eq!(
+        Placement::for_resolved_provider_kind("aegis"),
+        Placement::Offloaded,
+    );
+    for local in ["anthropic", "openai-compatible", "ollama", "", "AEGIS"] {
+        assert_eq!(
+            Placement::for_resolved_provider_kind(local),
+            Placement::Local,
+            "the provider kind {local:?} was read as offloading, and only `aegis` offloads",
+        );
+    }
+    assert_eq!(Placement::OFFLOADING_PROVIDER_KIND, "aegis");
+}
