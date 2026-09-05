@@ -214,3 +214,230 @@ fn having_a_membrane_is_read_off_d1s_membrane_column() {
     );
     assert!(Tier::Contained.has_membrane() && Tier::Linked.has_membrane());
 }
+
+// ---------------------------------------------------------------------------
+// D2 — the key, the resolution, and immutability for the life of a session
+// ---------------------------------------------------------------------------
+
+use crate::config::fixtures::{at, document, schema};
+use crate::config::{ConfigRefused, Layer, Resolution, Value};
+use crate::runtime::resolve::{KEY, ResolvedTier, TierRefused, key};
+
+/// One contribution setting the tier at a named layer.
+fn tier_at(layer: Layer, tier: &str) -> crate::config::Contribution {
+    at(
+        layer,
+        layer.label(),
+        document([(KEY, Value::Text(tier.to_owned()))]),
+    )
+}
+
+/// D2's tier resolves from each layer that may set it, and the resolution
+/// names which one did.
+///
+/// The four layers ADR-0014 D6 leaves to the user: built-in, user config,
+/// environment, flag. **Every expected value is a literal this check owns** —
+/// the layer it planted at and the tier it wrote — rather than one the
+/// resolver computed ([Verification lessons] §10).
+///
+/// The mutant: reading `Resolution::get` and reporting a fixed layer, which
+/// passes the value arm and reddens on every layer but one.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn the_tier_resolves_from_every_layer_a_user_may_set_it_in() {
+    let mut wrong: Vec<String> = Vec::new();
+
+    for layer in [Layer::BuiltIn, Layer::User, Layer::Environment, Layer::Flag] {
+        for planted in Tier::ALL {
+            let resolved = Resolution::resolve(&schema(), vec![tier_at(layer, planted.as_str())])
+                .expect("a tier at a layer the user owns resolves");
+            let taken = ResolvedTier::from_configuration(&resolved)
+                .expect("the tier was set, so it resolves");
+
+            if taken.tier() != planted {
+                wrong.push(format!(
+                    "{}: resolved {} where {planted} was planted",
+                    layer.label(),
+                    taken.tier(),
+                ));
+            }
+            if taken.supplied_by() != layer {
+                wrong.push(format!(
+                    "{}: reported {} as the supplying layer",
+                    layer.label(),
+                    taken.supplied_by().label(),
+                ));
+            }
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{} of 12 (layer, tier) pairs did not resolve to what was planted: {wrong:#?}",
+        wrong.len(),
+    );
+}
+
+/// The higher layer wins, which is ADR-0014 D1 reaching the tier.
+///
+/// Not redundant with the check above: that one plants one layer at a time and
+/// would pass against a resolver that ignored precedence entirely.
+///
+/// The mutant: taking the lowest layer that set the key.
+#[test]
+fn a_higher_layer_overrides_a_lower_one_for_the_tier() {
+    let resolved = Resolution::resolve(
+        &schema(),
+        vec![
+            tier_at(Layer::BuiltIn, "bare"),
+            tier_at(Layer::User, "contained"),
+            tier_at(Layer::Flag, "linked"),
+        ],
+    )
+    .expect("three layers the user owns resolve");
+
+    let taken = ResolvedTier::from_configuration(&resolved).expect("a tier was set");
+    assert_eq!(taken.tier(), Tier::Linked);
+    assert_eq!(taken.supplied_by(), Layer::Flag);
+}
+
+/// **ADR-0001 D2 against ADR-0014 D6, as D2 reads once corrected.**
+///
+/// D2 said "Config key `runtime` in `zaru.toml`" — a project file — while
+/// [ADR-0014] D6 says a project may not "move the runtime tier upward" and
+/// that record's implementation refuses the project layer the key outright.
+/// Under Jeshua's directive of 2026-09-05 D2 is corrected to read that the key
+/// is `runtime.tier`, "settable at the user, environment and flag layers and
+/// never by a project", so this check asserts the corrected sentence: **both
+/// arms, because the refusal alone is satisfied by an implementation that
+/// refuses everything** ([Verification lessons] §13, and the shape ADR-0014's
+/// own Status tracking says was measured rather than argued).
+///
+/// The mutants: making D6's refusal arm a no-op (the first arm reddens), and
+/// refusing the key at every layer (the second reddens).
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_project_may_not_set_the_tier_and_the_user_layer_may() {
+    // The arm D6 states.
+    let refusal = Resolution::resolve(
+        &schema(),
+        vec![
+            tier_at(Layer::BuiltIn, "bare"),
+            tier_at(Layer::Project, "contained"),
+        ],
+    )
+    .expect_err("ADR-0014 D6 refuses a project setting the runtime tier");
+
+    let ConfigRefused::ProjectMayNotSet { key: refused, .. } = &refusal else {
+        panic!("expected D6's escalation refusal, got {refusal:?}");
+    };
+    assert_eq!(
+        refused.as_str(),
+        KEY,
+        "the refusal names a key other than the one ADR-0001 owns",
+    );
+    println!("{refusal}");
+
+    // The arm that makes the first one mean something: the user's own layer is
+    // the grant D6 protects, and it may set the tier.
+    let resolved = Resolution::resolve(
+        &schema(),
+        vec![
+            tier_at(Layer::BuiltIn, "bare"),
+            tier_at(Layer::User, "contained"),
+        ],
+    )
+    .expect("D6 constrains the project layer and not the user's own grant");
+    let taken = ResolvedTier::from_configuration(&resolved).expect("a tier was set");
+    assert_eq!(taken.tier(), Tier::Contained);
+    assert_eq!(taken.supplied_by(), Layer::User);
+}
+
+/// An unset tier is refused, **not defaulted**.
+///
+/// ADR-0001 names no fallback tier. Choosing one here would decide which
+/// membrane a user gets when they said nothing, which is a security posture
+/// and on the human side of the autonomy boundary.
+///
+/// The mutant: returning `Tier::Bare` when no layer set the key — which would
+/// hand a user with a typo'd config the tier with no membrane at all.
+#[test]
+fn a_tier_no_layer_set_is_refused_rather_than_defaulted() {
+    let resolved = Resolution::resolve(&schema(), Vec::new()).expect("an empty fold resolves");
+    let refusal = ResolvedTier::from_configuration(&resolved)
+        .expect_err("no layer set the tier, so there is none");
+
+    assert_eq!(refusal, TierRefused::NotSet { key: key() });
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains(KEY),
+        "the refusal does not name the key: {rendered}",
+    );
+    println!("{rendered}");
+}
+
+/// A value naming no tier is refused, and the refusal names the layer that
+/// offered it and every spelling that would have worked.
+///
+/// The layer matters: D2's key is settable in four places and a reader who is
+/// not told which file to edit is in exactly the position ADR-0014 D3 exists
+/// to get them out of.
+///
+/// The mutant: dropping the layer from the refusal, or listing the tiers from
+/// a second hand-typed list rather than from `Tier::ALL`.
+#[test]
+fn a_value_naming_no_tier_is_refused_naming_the_layer_and_the_three() {
+    let resolved = Resolution::resolve(&schema(), vec![tier_at(Layer::Environment, "sandboxed")])
+        .expect("the fold takes any text for this key; naming a tier is this module's check");
+
+    let refusal = ResolvedTier::from_configuration(&resolved)
+        .expect_err("`sandboxed` names no tier ADR-0001 D1 defines");
+
+    let TierRefused::NoSuchTier { layer, offered, .. } = &refusal else {
+        panic!("expected NoSuchTier, got {refusal:?}");
+    };
+    assert_eq!(*layer, Layer::Environment);
+    assert_eq!(offered, "sandboxed");
+
+    let rendered = refusal.to_string();
+    for tier in Tier::ALL {
+        assert!(
+            rendered.contains(tier.as_str()),
+            "the refusal does not offer {tier} as one of the three: {rendered}",
+        );
+    }
+    assert!(rendered.contains("environment"), "{rendered}");
+    println!("{rendered}");
+}
+
+/// The key is declared once, and the declaration is the one ADR-0014 D6's
+/// ceiling reads.
+///
+/// The mutant: declaring the key `Free` to projects, which reddens the pin
+/// check above; or spelling `KEY` as D2's bare `runtime`, which reddens here
+/// because the fixture manifest's `[runtime]` table would then collide with a
+/// key rather than nest under one.
+#[test]
+fn the_key_is_runtime_tier_and_the_field_refuses_the_project_layer() {
+    assert_eq!(key().as_str(), KEY);
+    assert_eq!(KEY, "runtime.tier");
+
+    let field = crate::runtime::field();
+    assert!(
+        matches!(field.project, crate::config::ProjectPolicy::Refused { .. }),
+        "ADR-0014 D6 makes the tier a key the project layer may not set, and this declaration \
+         does not say so",
+    );
+
+    let crate::config::ProjectPolicy::Refused { reason } = &field.project else {
+        unreachable!("just asserted")
+    };
+    assert!(
+        reason.contains("ADR-0001 D2"),
+        "D6 requires the error name the key and the reason, and ADR-0016 D2 requires the reader \
+         be able to act on it: {reason}",
+    );
+}

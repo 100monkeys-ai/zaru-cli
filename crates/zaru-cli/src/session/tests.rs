@@ -8,6 +8,8 @@
 //! sentence is quoted in the commit that carries the check.
 
 use super::fixtures::{InMemoryMeta, ScratchRoot, StagedClock, entropy, id_at};
+use crate::config::Layer;
+use crate::runtime::{ResolvedTier, Tier};
 use crate::session::checkpoint::Checkpoint;
 use crate::session::id::{
     ALPHABET, ID_LENGTH, Millis, SessionId, SessionIdRefused, SystemWallClock,
@@ -17,7 +19,6 @@ use crate::session::record::Record;
 use crate::session::retention::RetentionWindow;
 use crate::session::store::{DIRECTORY_MODE, SessionStore};
 use crate::session::transcript::Transcript;
-use crate::tools::Tier;
 use core::time::Duration;
 use std::os::unix::fs::PermissionsExt;
 
@@ -353,13 +354,12 @@ fn nothing_in_the_product_writes_meta_toml_and_the_port_carries_what_d1_names() 
 
     let mut held = InMemoryMeta::default();
     let planted = super::fixtures::nonce("workspace");
-    let meta = Meta {
-        tier: Tier::Bare,
-        workspace: Some(planted.clone()),
-        provider: Some("a-provider".to_owned()),
-        started: Millis::new(1_700_000_000_000),
-        ended: None,
-    };
+    let meta = Meta::new(
+        ResolvedTier::supplied(Tier::Bare, Layer::BuiltIn),
+        Some(planted.clone()),
+        Some("a-provider".to_owned()),
+        Millis::new(1_700_000_000_000),
+    );
     held.write(&meta).expect("the double refused a write");
     assert_eq!(
         held.read().expect("the double lost what it was given"),

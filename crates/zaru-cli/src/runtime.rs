@@ -48,8 +48,10 @@
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
+pub mod resolve;
 pub mod tier;
 
+pub use resolve::{KEY, PROJECT_REFUSAL, ResolvedTier, TierRefused, field, key};
 pub use tier::{Cortex, Engagement, Loop, Membrane, Network, Tier};
 
 #[cfg(test)]

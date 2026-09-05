@@ -9,19 +9,23 @@
 //! The value is here; the writer and the reader are not, and the reason is a
 //! dependency rather than a preference — see [`crate::session`].
 //!
-//! # The tier is transcribed from nowhere
+//! # The tier is transcribed from nowhere, and it cannot be changed here
 //!
-//! [`Tier`] is [ADR-0001] D1's three, already declared in
-//! this crate for [ADR-0011] D2's enforcement table and re-used here.
-//! **Nothing in this module resolves a tier**; ADR-0001 D2 resolves it once
-//! at session start and this value records whatever it was handed.
+//! [`Tier`] is [ADR-0001] D1's three, declared in [`crate::runtime`] with the
+//! record that owns it. **Nothing in this module resolves a tier**; ADR-0001
+//! D2 resolves it once at session start and this value records what it was
+//! handed — as a [`ResolvedTier`], which cannot be built without naming the
+//! configuration layer it came from.
+//!
+//! The field is **private**, so D2's "immutable for the life of a session" is
+//! a property of the type rather than a rule a caller remembers. See [`Meta`].
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
+use crate::runtime::{ResolvedTier, Tier};
 use crate::session::id::Millis;
-use crate::tools::Tier;
 use core::fmt;
 
 /// What [ADR-0010] D1 says `meta.toml` records.
@@ -37,8 +41,19 @@ use core::fmt;
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
-    /// ADR-0001 D1's tier, resolved once at session start by its owner.
-    pub tier: Tier,
+    /// ADR-0001 D1's tier, resolved once at session start.
+    ///
+    /// **Private, and that is D2's immutability rather than a style.** There
+    /// is no setter, no `&mut` accessor and no way to reach this field from
+    /// outside this module, so a session's tier cannot be replaced after the
+    /// session exists. It was `pub` until 2026-09-05, which made "immutable
+    /// for the life of a session" a rule somebody had to remember rather than
+    /// a property of the type.
+    ///
+    /// A [`ResolvedTier`] rather than a bare [`Tier`], so the tier a session
+    /// records is by construction the tier that was *resolved* — that type
+    /// has no constructor that does not name where the value came from.
+    tier: ResolvedTier,
     /// The attached Nuclear Notes workspace, where there is one.
     pub workspace: Option<String>,
     /// The provider alias this session generated with, where there is one.
@@ -47,6 +62,48 @@ pub struct Meta {
     pub started: Millis,
     /// When it ended, or `None` while it is still running.
     pub ended: Option<Millis>,
+}
+
+impl Meta {
+    /// What a session records about itself when it starts.
+    ///
+    /// `ended` is `None`, because a session that is being started has not
+    /// ended; D1 makes that field's absence mean "still running".
+    #[must_use]
+    pub const fn new(
+        tier: ResolvedTier,
+        workspace: Option<String>,
+        provider: Option<String>,
+        started: Millis,
+    ) -> Self {
+        Self {
+            tier,
+            workspace,
+            provider,
+            started,
+            ended: None,
+        }
+    }
+
+    /// ADR-0001 D1's tier for this session.
+    #[must_use]
+    pub const fn tier(&self) -> Tier {
+        self.tier.tier()
+    }
+
+    /// The tier together with the configuration layer that supplied it.
+    ///
+    /// [ADR-0010] D1 asks `meta.toml` to record the tier and says nothing
+    /// about where it came from, so a writer may record the tier alone. The
+    /// layer is carried because [ADR-0014] D3's whole argument is that a user
+    /// who cannot see where a value came from cannot fix it.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    #[must_use]
+    pub const fn resolved_tier(&self) -> ResolvedTier {
+        self.tier
+    }
 }
 
 /// Reading or writing `meta.toml` failed.

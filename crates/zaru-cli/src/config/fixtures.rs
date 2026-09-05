@@ -73,14 +73,11 @@ pub(crate) fn schema() -> Schema {
         // D6's permitted direction.
         .with(key("runtime.max_iterations"), Field::ceiling())
         // D6's four escalations, each its own declaration.
-        .with(
-            key("runtime.tier"),
-            Field::refused_to_projects(
-                FieldKind::Text,
-                "the runtime tier is the membrane the user chose, and ADR-0001 D2 fixes it at \
-                 session start",
-            ),
-        )
+        // ADR-0001's key, asked for rather than transcribed. It was spelled
+        // out here and in two outside-caller checks until 2026-09-05, with two
+        // different reasons between them -- one rule in three places, which is
+        // the divergence [Verification lessons] §27 names.
+        .with(crate::runtime::key(), crate::runtime::field())
         .with(
             key("permission.mode"),
             Field::refused_to_projects(

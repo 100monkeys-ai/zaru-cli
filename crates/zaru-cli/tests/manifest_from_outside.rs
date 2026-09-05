@@ -154,11 +154,9 @@ fn schema() -> Schema {
             Key::new("project.workspace").expect("a key"),
             Field::free(FieldKind::Text),
         )
-        .with(
-            Key::new("runtime.tier").expect("a key"),
-            // ADR-0014 D6's escalation, declared by whoever owns the key.
-            Field::refused_to_projects(FieldKind::Text, "the runtime tier is the user's to choose"),
-        )
+        // ADR-0014 D6's escalation, declared by whoever owns the key --
+        // which is ADR-0001, in `zaru_cli::runtime`.
+        .with(zaru_cli::runtime::key(), zaru_cli::runtime::field())
 }
 
 /// ADR-0009 D1's three validators, with the schema path inside the tree.

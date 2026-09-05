@@ -118,13 +118,8 @@ fn schema() -> Schema {
             Key::new("runtime.max_iterations").expect("a well-formed key"),
             Field::ceiling(),
         )
-        .with(
-            Key::new("runtime.tier").expect("a well-formed key"),
-            Field::refused_to_projects(
-                FieldKind::Text,
-                "the runtime tier is the membrane the user chose",
-            ),
-        )
+        // ADR-0001 owns this key and declares it once; a caller asks.
+        .with(zaru_cli::runtime::key(), zaru_cli::runtime::field())
 }
 
 /// A tree this check owns, with a sibling that must survive its removal.
