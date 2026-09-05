@@ -291,3 +291,24 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
         })
         .collect()
 }
+
+/// What [ADR-0009] D6's `zaru init` says it did.
+///
+/// The path it wrote, so a user in a deep directory can see *which* file
+/// appeared, and the one sentence that says the template is the record's
+/// example rather than a guess about this project — which is that record's
+/// rejected Alternative 1 stated where a user will meet it.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+#[must_use]
+pub fn initialised(path: &std::path::Path) -> Vec<String> {
+    vec![
+        format!("wrote {}", path.display()),
+        String::new(),
+        "It is ADR-0009 D1's worked example, not a guess about this project: nothing here"
+            .to_owned(),
+        "infers a name, a language or a build command, because a validator set nobody can"
+            .to_owned(),
+        "read is not a contract. Edit it before running anything against it.".to_owned(),
+    ]
+}

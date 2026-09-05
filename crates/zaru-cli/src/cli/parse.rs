@@ -274,6 +274,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
     match namespace {
         Namespace::Runtime => whole(namespace, rest, Request::Runtime),
         Namespace::Models => whole(namespace, rest, Request::Models),
+        Namespace::Init => whole(namespace, rest, Request::Init),
         Namespace::Config => match verb(namespace, rest)? {
             ("explain", argument, command) => {
                 let key = argument.ok_or(CommandRefused::ArgumentMissing {

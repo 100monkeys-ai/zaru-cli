@@ -59,6 +59,7 @@
 pub mod absent;
 pub mod document;
 pub mod file;
+pub mod init;
 pub mod port;
 
 pub use absent::{MissingManifest, Recommendation};
@@ -67,6 +68,7 @@ pub use document::{
     VALIDATOR_TABLE, WORKSPACE_KEY, declare, fields,
 };
 pub use file::{ManifestFile, ManifestNotRead};
+pub use init::{InitRefused, TEMPLATE};
 pub use port::ManifestSource;
 
 #[cfg(test)]

@@ -44,11 +44,22 @@ impl Home {
         ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("a scratch home under the temporary directory");
+        std::fs::create_dir_all(path.join("project")).expect("a scratch working directory");
         Self { path }
     }
 
     fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The directory the binary is run **in**.
+    ///
+    /// Every run is given one, and that is a safety property rather than a
+    /// convenience: `zaru init` writes into the working directory, and a runner
+    /// that inherited the test process's would write a `zaru.toml` into this
+    /// repository the first time somebody ran the suite.
+    fn project(&self) -> PathBuf {
+        self.path.join("project")
     }
 }
 
@@ -77,6 +88,7 @@ fn zaru(home: &Home, arguments: &[&str]) -> Ran {
         .args(arguments)
         .env_clear()
         .env("HOME", home.path())
+        .current_dir(home.project())
         .output()
         .expect("failed to execute the built zaru binary");
 
@@ -819,5 +831,64 @@ fn the_two_halves_of_a_missing_provider_are_different_classes() {
         configured.stderr.contains("no provider client"),
         "the statement must say what is missing rather than what the reader should change: {}",
         configured.stderr
+    );
+}
+
+/// [ADR-0009] D6's `zaru init`, from the real artefact.
+///
+/// **The one thing this surface does that changes a file the user owns**, so it
+/// is the one that most needs driving end to end rather than through the
+/// crate's door. Three runs: the first writes, the second refuses at exit 2,
+/// and what is on disk after both is what the first run wrote.
+///
+/// It then reads the file back through the binary itself — `zaru config explain
+/// runtime.max_iterations` names `./zaru.toml` as the supplier — because a
+/// template that writes and does not load is the failure this whole arc found
+/// before writing any of it.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+#[test]
+fn adr_0009_d6s_init_writes_once_refuses_twice_and_what_it_wrote_folds() {
+    let home = Home::new("init");
+    let manifest = home.project().join("zaru.toml");
+    assert!(!manifest.exists(), "the scratch project has no manifest");
+
+    let first = zaru(&home, &["init"]);
+    assert_eq!(first.code, 0, "the first `zaru init` writes");
+    assert!(
+        first.stdout.contains("zaru.toml"),
+        "it says which file it wrote: {}",
+        first.stdout
+    );
+    let written = std::fs::read_to_string(&manifest).expect("the manifest is on disk");
+
+    let second = zaru(&home, &["init"]);
+    assert_eq!(
+        second.code, 2,
+        "a second `zaru init` is refused, and ADR-0016 D5 makes that user-correctable"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&manifest).expect("still on disk"),
+        written,
+        "ADR-0009 D6: the manifest is read, never written — a refused `init` changes nothing"
+    );
+
+    // The half that matters most: what it wrote is loadable by the thing that
+    // wrote it.
+    let explained = zaru(&home, &["config", "explain", "runtime.max_iterations"]);
+    assert_eq!(
+        explained.code, 0,
+        "what `zaru init` wrote must fold, or it wrote a file this binary refuses"
+    );
+    let marked: Vec<&str> = explained
+        .lines()
+        .into_iter()
+        .filter(|line| line.contains("← effective"))
+        .collect();
+    assert_eq!(marked.len(), 1, "one row is marked: {}", explained.stdout);
+    assert!(
+        marked[0].trim_start().starts_with("3 ") && marked[0].contains("zaru.toml"),
+        "the value came from the manifest `init` wrote: {}",
+        explained.stdout
     );
 }

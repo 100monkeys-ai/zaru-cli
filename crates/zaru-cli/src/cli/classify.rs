@@ -356,6 +356,50 @@ impl<'a> Surface<'a> {
         correctable(refusal, remedy)
     }
 
+    /// [ADR-0009] D6's `zaru init`, refused.
+    ///
+    /// **Both arms are the user's.** A manifest that is already there is the
+    /// clause working — D6 writes only when absent — and the remedy is to open
+    /// the file that is there rather than to ask this command again. A write
+    /// that failed is about a directory the user chose by running the command
+    /// in it, and the refusal already names the path and the operation, which
+    /// is the whole of the remedy; no mapping of I/O kinds is invented, for the
+    /// reason this module's own header gives.
+    ///
+    /// Associated rather than a method: nothing about either arm is ours.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    #[must_use]
+    pub fn init(refusal: &crate::manifest::InitRefused) -> Classified {
+        let remedy = match refusal {
+            crate::manifest::InitRefused::AlreadyThere { path } => act(format!(
+                "open {} and edit it; nothing in this harness rewrites a manifest",
+                path.display()
+            )),
+            crate::manifest::InitRefused::NotWritten { path, .. } => act(format!(
+                "check that {} is writable by this user",
+                path.parent().unwrap_or(path).display()
+            )),
+        };
+        correctable(refusal, remedy)
+    }
+
+    /// The working directory could not be established.
+    ///
+    /// The user's, because it is the directory they ran the harness in.
+    /// [ADR-0011] D4 refuses rather than guessing — a boundary whose root is a
+    /// guess is not one — and the remedy is to run the command somewhere that
+    /// exists.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    #[must_use]
+    pub fn working_directory(failure: &crate::tools::TreeError) -> Classified {
+        correctable(
+            failure,
+            act("run this command from a directory that exists and this user can read".to_owned()),
+        )
+    }
+
     /// A session id that is not a ULID.
     #[must_use]
     pub fn session_id(&self, refusal: &SessionIdRefused) -> Classified {

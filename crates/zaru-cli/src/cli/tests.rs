@@ -87,8 +87,8 @@ fn every_namespace_carries_both_of_adr_0015_d2s_spellings_and_one_pair_differs()
 fn the_namespace_set_is_closed_and_no_two_namespaces_share_a_spelling() {
     assert_eq!(
         Namespace::ALL.len(),
-        9,
-        "ADR-0015 D2's table has eight rows plus `/models`, added 2026-09-05"
+        10,
+        "ADR-0015 D2's table has eight rows plus `/models` and `/init`, both added 2026-09-05"
     );
 
     let mut slashes: Vec<&str> = Namespace::ALL.iter().map(|n| n.slash()).collect();

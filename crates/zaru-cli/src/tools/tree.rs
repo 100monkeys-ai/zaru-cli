@@ -80,6 +80,22 @@ pub enum TreeError {
     },
 }
 
+impl TreeError {
+    /// The process has no working directory this harness can name.
+    ///
+    /// A separate constructor rather than a second variant: what failed is the
+    /// same thing — the directory every path is measured against could not be
+    /// established — and the path is the one the operating system would have
+    /// given.
+    #[must_use]
+    pub fn from_current_directory(source: std::io::Error) -> Self {
+        Self::NoSuchWorkingDirectory {
+            path: PathBuf::from("."),
+            source,
+        }
+    }
+}
+
 impl fmt::Display for TreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

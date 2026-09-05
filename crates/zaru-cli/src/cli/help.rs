@@ -58,6 +58,10 @@ fn summaries(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
             "notes tokens",
             "print the stored Nuclear Notes tokens and which is the composer's",
         )],
+        Namespace::Init => &[(
+            "init",
+            "write ADR-0009 D1's manifest into this directory, once, if there is none",
+        )],
         Namespace::Stack | Namespace::Memory | Namespace::Learned | Namespace::Inbox => &[],
     }
 }
@@ -118,7 +122,10 @@ pub fn lines(version: &str) -> Vec<String> {
         "for the agent loop to ask. What runs today is the list above, which reads what is"
             .to_owned(),
     );
-    lines.push("already on this machine and changes none of it except `sessions rm`.".to_owned());
+    lines.push(
+        "already on this machine and changes none of it except `sessions rm` and `init`."
+            .to_owned(),
+    );
 
     lines
 }

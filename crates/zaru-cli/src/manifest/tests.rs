@@ -343,11 +343,23 @@ fn a_project_with_a_manifest_is_owed_no_line_at_all() {
 // --- ADR-0009 D6 -----------------------------------------------------------
 
 #[test]
-fn no_product_source_writes_a_manifest() {
-    // ADR-0009 D6: "The manifest is read, never written." The type-level half
-    // is that `ManifestSource` has one method and there is no counterpart --
-    // the forbidden act has nothing to call. This is the other half: a
-    // product source that wrote one anyway would be outside the type.
+fn no_product_source_writes_a_manifest_except_the_one_that_may() {
+    // ADR-0009 D6: "The manifest is read, never written ... and `zaru init`
+    // writes it once, on an explicit command, only when absent." The
+    // type-level half is that `ManifestSource` has one method and there is no
+    // counterpart -- the forbidden act has nothing to call. This is the other
+    // half: a product source that wrote one anyway would be outside the type.
+    //
+    // **There is exactly one exception and it is named here**, added
+    // 2026-09-05 with D6's second half. `manifest/init.rs` is the writer, and
+    // the population it is excluded from is the whole of both crates -- so a
+    // SECOND writer anywhere, including a second file inside the manifest
+    // module, reddens this. That is what makes adding one a visible act rather
+    // than a diff nobody reads.
+    //
+    // The exception is a file path rather than a flag on the walk, because a
+    // predicate that could be satisfied by more than one file is not an
+    // exception, it is a category.
     //
     // Two arms, both mechanical, both printing what they scanned. Agent
     // lessons §44 is why: when a rule is enforced by matching source text, the
@@ -386,7 +398,11 @@ fn no_product_source_writes_a_manifest() {
         sources.len()
     );
 
+    /// The one file ADR-0009 D6 permits to write a manifest.
+    const WRITER: &str = "init.rs";
+
     let mut offenders = Vec::new();
+    let mut permitted = 0usize;
     for (path, body) in &sources {
         let code: String = body
             .lines()
@@ -400,6 +416,14 @@ fn no_product_source_writes_a_manifest() {
         // store as an offender. Agent lessons §44 twice over: the matching is
         // part of the rule, and the rule was wrong in the direction that
         // reports a false offender rather than the one that goes quiet.
+        let is_the_one_writer = path
+            .components()
+            .any(|component| component.as_os_str() == "manifest")
+            && path.file_name().is_some_and(|name| name == WRITER);
+        if is_the_one_writer {
+            permitted += 1;
+            continue;
+        }
         let in_the_manifest_module = path
             .components()
             .any(|component| component.as_os_str() == "manifest")
@@ -424,10 +448,19 @@ fn no_product_source_writes_a_manifest() {
     }
     assert!(
         offenders.is_empty(),
-        "ADR-0009 D6 says the manifest is read and never written; found {} across {} file(s) and \
-         {lines} line(s): {offenders:?}",
+        "ADR-0009 D6 says the manifest is read and never written, except by `zaru init`; found {} \
+         across {} file(s) and {lines} line(s): {offenders:?}",
         offenders.len(),
         sources.len(),
+    );
+    // The exception is asserted to have been USED, not merely allowed. An
+    // exception nobody exercises is a permanent exemption dressed as a promise
+    // (Verification lessons §36), and it would also mean the walk stopped
+    // seeing the writer -- which is exactly how this check would go quiet.
+    assert_eq!(
+        permitted, 1,
+        "exactly one product file may write a manifest and it is `manifest/{WRITER}`; {permitted} \
+         were skipped, so either the writer moved or a second one arrived"
     );
 }
 
@@ -751,4 +784,152 @@ fn a_validator_missing_a_field_is_refused_naming_its_position_and_the_field() {
         "the second entry is the one with no `run`: {refusal}"
     );
     println!("refused: {refusal}");
+}
+
+// ---------------------------------------------------------------------------
+// D6's other half: `zaru init`
+// ---------------------------------------------------------------------------
+
+/// What `init` writes is a manifest this harness can read and fold.
+///
+/// **The template is transcribed from a record and the check is what stops that
+/// from being a claim.** Nothing about a `&'static str` says it parses, and the
+/// failure it prevents is the one this arc found before writing any of it:
+/// until the three keys ADR-0009 D1 sets were declared, a file in D1's own
+/// shape was refused by ADR-0014 D5 the moment layer 3 could be read — so
+/// `zaru init` would have written a file `zaru config explain` refused to fold.
+///
+/// Three arms, and the third is the one that would have caught it: the bytes
+/// parse, they become a manifest with D1's three validators, and they resolve
+/// through **the binary's own schema** as layer 3.
+///
+/// The mutant is any edit to [`TEMPLATE`] that stops it loading.
+#[test]
+fn adr_0009_d1s_worked_manifest_is_what_init_writes_and_it_folds() {
+    use crate::config::Resolution;
+    use crate::manifest::file::ManifestFile;
+    use crate::manifest::init::{self, TEMPLATE};
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+    let file = ManifestFile::in_directory(working, roomy());
+
+    let written = init::write(&file).expect("a project with no manifest gets one");
+    assert_eq!(
+        std::fs::read_to_string(&written).expect("the file is on disk"),
+        TEMPLATE,
+        "what is on disk is the record's own example, byte for byte"
+    );
+
+    let manifest = file
+        .parse()
+        .expect("what `init` wrote is a manifest this harness reads")
+        .expect("the file is there");
+    let names: Vec<&str> = manifest
+        .validators()
+        .iter()
+        .map(|validator| validator.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["build", "test", "shape"], "D1's three");
+
+    let resolution = Resolution::resolve(
+        &crate::cli::layers::schema(),
+        vec![manifest.contribution(Source::named("./zaru.toml"))],
+    )
+    .expect(
+        "what `init` writes must fold through the binary's own schema, or it wrote a file `zaru \
+         config explain` refuses",
+    );
+    for spelling in [
+        crate::manifest::NAME_KEY,
+        crate::manifest::WORKSPACE_KEY,
+        crate::runtime::MAX_ITERATIONS_KEY,
+    ] {
+        let key = Key::new(spelling).expect("a well-formed key");
+        assert!(
+            resolution.get(&key).is_some(),
+            "`{spelling}` is in the template and resolved to nothing"
+        );
+    }
+    println!("{}", std::fs::read_to_string(&written).expect("on disk"));
+}
+
+/// `init` never overwrites, and the refusal names the file that is there.
+///
+/// **The staged file is not a manifest**, which is what makes this a check
+/// about not overwriting rather than about idempotence: a second `init` that
+/// rewrote the file would destroy bytes a person put there, and the assertion
+/// is that those exact bytes survive.
+///
+/// The mutant is `fs::rename` in place of `fs::hard_link`, which takes the name
+/// from whoever holds it.
+#[test]
+fn init_writes_once_and_never_over_what_is_already_there() {
+    use crate::manifest::file::ManifestFile;
+    use crate::manifest::init::{self, InitRefused};
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+    let file = ManifestFile::in_directory(working, roomy());
+
+    let theirs = "# a manifest a person was in the middle of writing\n";
+    std::fs::write(file.path(), theirs).expect("could not stage their file");
+
+    let refusal = init::write(&file).expect_err("there is already a manifest");
+    let InitRefused::AlreadyThere { path } = &refusal else {
+        panic!("expected the already-there refusal, got {refusal:?}");
+    };
+    assert_eq!(path, file.path());
+    assert_eq!(
+        std::fs::read_to_string(file.path()).expect("their file is still there"),
+        theirs,
+        "ADR-0009 D6: configuration a tool silently rewrites is configuration the user stops \
+         trusting"
+    );
+    println!("{refusal}");
+
+    // And the sibling the write goes through does not survive a refusal, or
+    // the next `zaru config explain` in this directory would see a stray file.
+    let leftovers: Vec<String> = std::fs::read_dir(tree.project())
+        .expect("the project is readable")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.contains(crate::atomic::TEMPORARY_SUFFIX))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "the sibling temporary was left behind: {leftovers:?}"
+    );
+}
+
+/// The file `init` writes carries the mode a session's files carry.
+///
+/// The mutant is writing at the process umask.
+#[test]
+fn what_init_writes_carries_the_mode_it_was_created_at() {
+    use crate::manifest::file::ManifestFile;
+    use crate::manifest::init;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+    let file = ManifestFile::in_directory(working, roomy());
+    let written = init::write(&file).expect("written");
+
+    let mode = std::fs::metadata(&written)
+        .expect("on disk")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode,
+        crate::session::store::FILE_MODE,
+        "a hard link carries the mode the content was created at, so the file is never briefly \
+         wider than it ends up"
+    );
 }

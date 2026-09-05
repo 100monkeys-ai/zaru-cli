@@ -44,8 +44,8 @@ use core::fmt;
 
 /// One of [ADR-0015] D2's namespaces.
 ///
-/// Declared in D2's own table order, with `Models` appended as the row added
-/// on 2026-09-05.
+/// Declared in D2's own table order, with `Models` and `Init` appended as the
+/// two rows added on 2026-09-05.
 ///
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -70,14 +70,24 @@ pub enum Namespace {
     Session,
     /// D2 row 9, added 2026-09-05 — alias resolution.
     Models,
+    /// D2 row 10, added 2026-09-05 — the project manifest.
+    ///
+    /// [ADR-0009](https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators)
+    /// D6 names `zaru init` in as many words and D2's table carried no row for
+    /// it, so the shadowing rule below did not reach it — a user command called
+    /// `init` would have been a collision the rule could not see. That is the
+    /// same gap `/models` was given a row to close on 2026-09-05, and it is
+    /// closed the same way, as an accepted Update under directive 20 and open
+    /// to Jeshua's veto.
+    Init,
 }
 
 impl Namespace {
     /// Every namespace, in D2's table order.
     ///
-    /// The length is annotated, so a tenth fails to compile here as well as in
-    /// every exhaustive match below.
-    pub const ALL: [Self; 9] = [
+    /// The length is annotated, so an eleventh fails to compile here as well as
+    /// in every exhaustive match below.
+    pub const ALL: [Self; 10] = [
         Self::Runtime,
         Self::Stack,
         Self::Notes,
@@ -87,6 +97,7 @@ impl Namespace {
         Self::Inbox,
         Self::Session,
         Self::Models,
+        Self::Init,
     ];
 
     /// The spelling inside a session — D2's own first column.
@@ -102,6 +113,7 @@ impl Namespace {
             Self::Inbox => "/inbox",
             Self::Session => "/session",
             Self::Models => "/models",
+            Self::Init => "/init",
         }
     }
 
@@ -123,6 +135,7 @@ impl Namespace {
             Self::Inbox => "inbox",
             Self::Session => "sessions",
             Self::Models => "models",
+            Self::Init => "init",
         }
     }
 
@@ -139,6 +152,7 @@ impl Namespace {
             Self::Inbox => "deposits",
             Self::Session => "resume, list, remove",
             Self::Models => "alias resolution",
+            Self::Init => "the project manifest",
         }
     }
 
@@ -170,7 +184,12 @@ impl Namespace {
     #[must_use]
     pub const fn is_built(self) -> bool {
         match self {
-            Self::Runtime | Self::Notes | Self::Config | Self::Session | Self::Models => true,
+            Self::Runtime
+            | Self::Notes
+            | Self::Config
+            | Self::Session
+            | Self::Models
+            | Self::Init => true,
             Self::Stack | Self::Memory | Self::Learned | Self::Inbox => false,
         }
     }
@@ -184,7 +203,7 @@ impl Namespace {
     #[must_use]
     pub const fn verbs(self) -> &'static [&'static str] {
         match self {
-            Self::Runtime | Self::Models => &[],
+            Self::Runtime | Self::Models | Self::Init => &[],
             Self::Config => &["explain"],
             Self::Session => &["list", "rm"],
             Self::Notes => &["tokens"],

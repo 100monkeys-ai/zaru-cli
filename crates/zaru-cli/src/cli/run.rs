@@ -109,12 +109,40 @@ impl Run<'_> {
             Request::ConfigExplain { key } => {
                 self.configured(&line.overrides, |resolution| explain(resolution, key))
             }
+            Request::Init => self.init(),
             Request::SessionsList => self.sessions_list(),
             Request::SessionsRemove { id } => self.sessions_remove(id),
             Request::Resume { id } => self.resume(id, &line.overrides),
             Request::Continue => self.resume_latest(&line.overrides),
             Request::NotesTokens => self.notes_tokens(),
             Request::Task { .. } => self.no_provider(&line.overrides),
+        }
+    }
+
+    /// [ADR-0009] D6's writer, and the one thing this surface does that changes
+    /// a file the user owns.
+    ///
+    /// The working directory is this process's own, canonicalised through
+    /// [ADR-0011] D4's [`WorkingDirectory`](crate::tools::WorkingDirectory), so
+    /// the file goes where `zaru config explain` would read it from and nowhere
+    /// else. A directory that cannot be canonicalised is refused rather than
+    /// guessed at, for that record's reason: a boundary whose root is a guess is
+    /// not a boundary.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    fn init(&self) -> Outcome {
+        let here = match std::env::current_dir()
+            .map_err(crate::tools::TreeError::from_current_directory)
+            .and_then(crate::tools::WorkingDirectory::at)
+        {
+            Ok(here) => here,
+            Err(failure) => return Outcome::failed(Surface::working_directory(&failure)),
+        };
+        let file = crate::manifest::ManifestFile::in_directory(here, layers::file_ceiling());
+        match crate::manifest::init::write(&file) {
+            Ok(path) => Outcome::printed(render::initialised(&path)),
+            Err(refusal) => Outcome::failed(Surface::init(&refusal)),
         }
     }
 

@@ -98,6 +98,11 @@ pub enum Request {
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     Models,
+    /// `zaru init` — [ADR-0009] D6's writer, the one thing on this surface
+    /// that changes a file the user owns.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    Init,
     /// `zaru sessions list`.
     SessionsList,
     /// `zaru sessions rm <id>` — [ADR-0010] D6.
