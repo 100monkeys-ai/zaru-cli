@@ -1122,3 +1122,356 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
     .await;
     unreachable!("the parent kills this child while the command is still running");
 }
+
+// --------------------------------- a call interrupted while its child ran
+
+/// How many polls a condition below is given before the check refuses.
+///
+/// A bound on failure, never a wait: every condition here is satisfied in a
+/// handful of polls, and this exists so a mutant prints a sentence rather than
+/// hanging the suite ([Verification lessons] §20).
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+const CORPUS_POLL_BUDGET: usize = 200_000;
+
+/// Write a script into the project and give back the `cmd.run` text for it.
+fn scripted_child(scratch: &Scratch, name: &str, body: &str) -> String {
+    let path = scratch.project().join(name);
+    std::fs::write(&path, body).unwrap_or_else(|why| panic!("staging: {name}: {why}"));
+    format!("/bin/sh {}", path.display())
+}
+
+/// Whether a process id is still in the process table. A zombie still has an
+/// entry, so absence is the stronger property.
+fn still_running(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// **The corpus case this arc exists for: an interrupt between two tool calls
+/// in the same round, with a child in flight.**
+///
+/// [ADR-0010] D2 loses "at most the event in flight"; its Update makes "a
+/// `Started` with no matching `Completed`" the interruption; D4 says an
+/// interrupted call "is recorded as `Interrupted` and the model is told it did
+/// not complete". That record's own `## Status tracking` says what was still
+/// missing: "what it lacks is a call killed while genuinely running rather
+/// than a staged transcript".
+///
+/// **This is that, with the harness surviving.** The model asks for two
+/// commands in one round. The first is `true` and completes, leaving a matched
+/// pair. The second is a scripted child that reports its own process id and
+/// then waits for a gate that never opens; the turn's future is dropped while
+/// it is running — which is exactly what
+/// [`race`](zaru_cli::terminal::driver::race) does on a mid-turn `Ctrl-C`, and
+/// what `terminal-source` already checks from outside on the key side. Three
+/// things are then true and all three are asserted: the child is **gone from
+/// the process table**, the transcript holds the matched pair and then a lone
+/// `Started`, and the product's own `session::resume` — a second reader
+/// sharing no code path with any of this ([Verification lessons] §11) — names
+/// the command that was in flight.
+///
+/// The interrupt lands in the **middle** of the round rather than after the
+/// last call (§54), which is what makes the derivation name the right one.
+///
+/// Its accepting sibling is
+/// [`an_uninterrupted_round_leaves_a_matched_pair_for_both_calls`].
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[tokio::test]
+async fn corpus_an_interrupt_with_a_child_in_flight_ends_it_and_leaves_the_call_started() {
+    println!("== an interrupt with a child in flight ==");
+    let scratch = Scratch::new("interrupt-in-flight");
+    let session = scratch.session();
+    let directory = session.directory().to_path_buf();
+    let pidfile = scratch.project().join("child.pid");
+    let never = scratch.project().join("gate-that-never-opens");
+    let waiting = scripted_child(
+        &scratch,
+        "waits.sh",
+        &format!(
+            "echo $$ > '{}'\nn=0\nwhile [ ! -e '{}' ]; do\n  n=$((n+1))\n  if [ \"$n\" -gt 300 ]; \
+             then exit 9; fi\n  sleep 0.01\ndone\nexit 0\n",
+            pidfile.display(),
+            never.display()
+        ),
+    );
+
+    let pid = {
+        let working = WorkingDirectory::at(scratch.project()).expect("the project resolves");
+        let spawn = Spawn::new(&working, minimum(), generous());
+        let mut transcript =
+            Transcript::append_to(session.transcript_path()).expect("the transcript opens");
+        let mut overflow = SessionOverflow::in_session(&directory);
+        let unbuilt = Unbuilt;
+        let nothing = Nothing;
+        let clock = Ticking::default();
+        let policy = Policy;
+        let mut sink = Printing;
+        let redactor = HeldSecrets::none();
+        let verdicts = NoMembrane;
+        let model = Provider::scripted([
+            ModelResponse::Calls {
+                calls: vec![
+                    ToolRequest {
+                        id: String::from("c1"),
+                        name: String::from("cmd.run"),
+                        arguments: serde_json::json!({ "command": "true" }).to_string(),
+                    },
+                    ToolRequest {
+                        id: String::from("c2"),
+                        name: String::from("cmd.run"),
+                        arguments: serde_json::json!({ "command": waiting }).to_string(),
+                    },
+                ],
+                tokens: TokenUsage {
+                    prompt: 9,
+                    completion: 3,
+                },
+            },
+            ModelResponse::Text {
+                text: String::from("done"),
+                tokens: TokenUsage {
+                    prompt: 9,
+                    completion: 2,
+                },
+            },
+        ]);
+        let mut executor = Executor {
+            working_directory: &working,
+            mode: Mode::Yolo,
+            allowlist: &nothing,
+            destructive: &nothing,
+            confirmer: None,
+            verdicts: &verdicts,
+            budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
+            overflow: &mut overflow,
+            transcript: &mut transcript,
+            redactor: &redactor,
+            subprocess: &spawn,
+            fetch: &unbuilt,
+        };
+        let mut sinks: [&mut dyn EventSink; 1] = [&mut sink];
+        let running = run::<_, _, _, _, _, NeverIterates>(
+            1,
+            Start::Task("run both commands"),
+            ToolCallCeiling::new(4).expect("a usable ceiling"),
+            ToolCalling::required(&model, "outside-caller").expect("it can call tools"),
+            Ports {
+                model: &model,
+                tools: &mut executor,
+                context: &policy,
+                clock: &clock,
+                redactor: &redactor,
+            },
+            None,
+            &mut sinks,
+        );
+        tokio::pin!(running);
+
+        let mut polls = 0_usize;
+        let pid = loop {
+            tokio::select! {
+                biased;
+
+                done = &mut running => panic!(
+                    "the turn finished before the second command could be interrupted: {done:?}"
+                ),
+
+                () = tokio::task::yield_now() => {
+                    polls += 1;
+                    if let Ok(held) = std::fs::read_to_string(&pidfile)
+                        && let Ok(pid) = held.trim().parse::<u32>()
+                    {
+                        break pid;
+                    }
+                    assert!(
+                        polls < CORPUS_POLL_BUDGET,
+                        "the second command never reported its process id in \
+                         {CORPUS_POLL_BUDGET} polls, so interrupting says nothing about what an \
+                         interrupt costs"
+                    );
+                }
+            }
+        };
+        assert!(
+            still_running(pid),
+            "the staging is wrong: the child was already gone before the interrupt"
+        );
+        println!("  the child in flight is process {pid}");
+        pid
+        // The turn's future, the executor and the transcript handle are all
+        // dropped here. That is the interrupt.
+    };
+
+    let mut polls = 0_usize;
+    while still_running(pid) {
+        polls += 1;
+        assert!(
+            polls < CORPUS_POLL_BUDGET,
+            "the child {pid} is still in the process table after the turn was interrupted, so a \
+             `Ctrl-C` during `cmd.run` leaves a command running on the user's machine"
+        );
+        tokio::task::yield_now().await;
+    }
+    println!("  process {pid} left the process table");
+
+    let restored = zaru_cli::session::resume(&directory, usize::MAX).expect("the session resumes");
+    for record in &restored.tail {
+        println!("  the transcript holds: {record:?}");
+    }
+    let calls: Vec<&Record> = restored
+        .tail
+        .iter()
+        .filter(|record| matches!(record, Record::ToolCall(_)))
+        .collect();
+    assert_eq!(
+        calls.len(),
+        3,
+        "the interrupted turn left {} tool-call record(s) rather than the three it wrote: a \
+         matched pair for the first command and a lone `Started` for the second",
+        calls.len()
+    );
+    assert_eq!(
+        restored.fragment, None,
+        "the transcript ends mid-line, so a record was torn rather than merely not written"
+    );
+    let interrupted = restored
+        .interrupted
+        .expect("a `Started` with no `Completed` is the interruption, and resume found none");
+    assert_eq!(
+        interrupted.call.phase,
+        Phase::Started,
+        "an interruption is derived from a `Started` with nothing closing it"
+    );
+    assert!(
+        interrupted.call.line.contains("waits.sh"),
+        "the interruption names the wrong call — the first command completed and the second was \
+         the one in flight: {}",
+        interrupted.call.line
+    );
+    let told = interrupted.for_the_model(&HeldSecrets::none());
+    println!("  the model would be told: {}", told.call());
+    assert!(
+        told.call().contains("waits.sh"),
+        "the model is not told which call did not complete: {}",
+        told.call()
+    );
+}
+
+/// The accepting sibling: an uninterrupted round leaves a matched pair for
+/// both calls and resume finds no interruption.
+///
+/// Without it the check above would pass against a harness that killed every
+/// child on sight, or against a `resume` that reported an interruption for
+/// every session it read.
+#[tokio::test]
+async fn an_uninterrupted_round_leaves_a_matched_pair_for_both_calls() {
+    println!("== an uninterrupted round ==");
+    let scratch = Scratch::new("uninterrupted-round");
+    let session = scratch.session();
+    let directory = session.directory().to_path_buf();
+    let opens = scratch.project().join("gate-that-is-already-open");
+    std::fs::write(&opens, b"").expect("staging: the gate");
+    let finishing = scripted_child(
+        &scratch,
+        "finishes.sh",
+        &format!(
+            "n=0\nwhile [ ! -e '{}' ]; do\n  n=$((n+1))\n  if [ \"$n\" -gt 300 ]; then exit 9; \
+             fi\n  sleep 0.01\ndone\nexit 0\n",
+            opens.display()
+        ),
+    );
+
+    {
+        let working = WorkingDirectory::at(scratch.project()).expect("the project resolves");
+        let spawn = Spawn::new(&working, minimum(), generous());
+        let mut transcript =
+            Transcript::append_to(session.transcript_path()).expect("the transcript opens");
+        let mut overflow = SessionOverflow::in_session(&directory);
+        let unbuilt = Unbuilt;
+        let nothing = Nothing;
+        let clock = Ticking::default();
+        let policy = Policy;
+        let mut sink = Printing;
+        let redactor = HeldSecrets::none();
+        let verdicts = NoMembrane;
+        let model = Provider::scripted([
+            ModelResponse::Calls {
+                calls: vec![
+                    ToolRequest {
+                        id: String::from("c1"),
+                        name: String::from("cmd.run"),
+                        arguments: serde_json::json!({ "command": "true" }).to_string(),
+                    },
+                    ToolRequest {
+                        id: String::from("c2"),
+                        name: String::from("cmd.run"),
+                        arguments: serde_json::json!({ "command": finishing }).to_string(),
+                    },
+                ],
+                tokens: TokenUsage {
+                    prompt: 9,
+                    completion: 3,
+                },
+            },
+            ModelResponse::Text {
+                text: String::from("done"),
+                tokens: TokenUsage {
+                    prompt: 9,
+                    completion: 2,
+                },
+            },
+        ]);
+        let mut executor = Executor {
+            working_directory: &working,
+            mode: Mode::Yolo,
+            allowlist: &nothing,
+            destructive: &nothing,
+            confirmer: None,
+            verdicts: &verdicts,
+            budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
+            overflow: &mut overflow,
+            transcript: &mut transcript,
+            redactor: &redactor,
+            subprocess: &spawn,
+            fetch: &unbuilt,
+        };
+        run::<_, _, _, _, _, NeverIterates>(
+            1,
+            Start::Task("run both commands"),
+            ToolCallCeiling::new(4).expect("a usable ceiling"),
+            ToolCalling::required(&model, "outside-caller").expect("it can call tools"),
+            Ports {
+                model: &model,
+                tools: &mut executor,
+                context: &policy,
+                clock: &clock,
+                redactor: &redactor,
+            },
+            None,
+            &mut [&mut sink],
+        )
+        .await
+        .expect("no port failed");
+    }
+
+    let restored = zaru_cli::session::resume(&directory, usize::MAX).expect("the session resumes");
+    let calls = restored
+        .tail
+        .iter()
+        .filter(|record| matches!(record, Record::ToolCall(_)))
+        .count();
+    assert_eq!(
+        calls, 4,
+        "a round of two commands that finished left {calls} tool-call record(s) rather than four"
+    );
+    assert!(
+        restored.interrupted.is_none(),
+        "a turn that finished was reported as having a call in flight, so the check above cannot \
+         tell an interrupt from an ordinary round: {:?}",
+        restored.interrupted
+    );
+}

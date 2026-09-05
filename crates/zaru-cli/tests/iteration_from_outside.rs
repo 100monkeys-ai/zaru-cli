@@ -825,3 +825,225 @@ fn expect_iterated(outcome: &Outcome) -> LoopOutcome {
         ),
     }
 }
+
+// ------------------------------- a validator interrupted while its child ran
+
+/// A bound on failure, never a wait ([Verification lessons] §20).
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+const VALIDATOR_POLL_BUDGET: usize = 200_000;
+
+/// Whether a process id is still in the process table. A zombie still has an
+/// entry, so absence is the stronger property.
+fn still_running(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// **An interrupt while a declared validator's command is running.**
+///
+/// [ADR-0009] D3's `run` reaches the same `Spawn` [ADR-0011] D1's `cmd.run`
+/// does, so the gap that record carried — "the loop blocks for as long as a
+/// validator command runs" — was the same gap, and it closes the same way.
+/// This is the half of the corpus about the **inner** loop.
+///
+/// Two things are asserted and they are different in kind.
+///
+/// **The child ends.** The validator's command reports its own process id and
+/// then waits for a gate that never opens; the turn's future is dropped while
+/// it runs, and the process leaves the process table. That is the same
+/// property `process_from_outside.rs` holds for `cmd.run`, arriving through
+/// the port a project's declaration reaches.
+///
+/// **And the loop reports nothing, which is a finding rather than a defect
+/// this arc repairs.** The transcript's loop events are exactly
+/// `iteration_started`, `candidate_generated`, `execution_completed` — the
+/// iteration cut inside `Evaluate`, with no `validator_evaluated` for the
+/// validator that was running and none of `iteration_failed`,
+/// `refinement_constructed`, `loop_succeeded` or `loop_exhausted` after it.
+/// That is [ADR-0010] D2's "at most the event in flight", honoured. But D4's `Interrupted` is a **tool call's** marker, derived from
+/// a `Started` with no `Completed`, and the loop's events are not that shape:
+/// a validator in flight is not derivable as interrupted the way a `cmd.run`
+/// is, and nothing tells the next resume that an iteration was cut. Recorded
+/// as a question for ADR-0010's author rather than answered here, because
+/// giving a validator a started-and-completed pair would add a producer to
+/// D2's list.
+///
+/// Its accepting sibling is every check above, each of which drives the same
+/// loop to a terminal event.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_nothing() {
+    let scratch = Scratch::new("validator-interrupt");
+    let pidfile = scratch.project().join("validator.pid");
+    let never = scratch.project().join("gate-that-never-opens");
+    let script = scratch.project().join("validator-waits.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "echo $$ > '{}'\nn=0\nwhile [ ! -e '{}' ]; do\n  n=$((n+1))\n  if [ \"$n\" -gt 300 ]; \
+             then exit 9; fi\n  sleep 0.01\ndone\nexit 0\n",
+            pidfile.display(),
+            never.display()
+        ),
+    )
+    .expect("staging: the validator's script");
+    let plan = one_validator(&format!("/bin/sh {}", script.display()), "never-matches");
+    let provider = Provider::scripted([writes("out.txt", "anything"), writes("out.txt", "again")]);
+    let held = HeldSecrets::none();
+
+    let working = WorkingDirectory::at(scratch.project()).expect("the boundary resolves");
+    let store = SessionStore::open(scratch.sessions()).expect("the session store opens");
+    let id = SessionId::mint(&SystemWallClock).expect("a session id");
+    let session = store.start(id).expect("the session starts");
+    let transcript_path = session.transcript_path();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime");
+
+    let pid = runtime.block_on(async {
+        let mut transcript = Transcript::append_to(&transcript_path).expect("the transcript opens");
+        let mut overflow = SessionOverflow::in_session(session.directory());
+        let allowlist = NothingAllowed;
+        let destructive = NothingDestructive;
+        let membrane = NoMembrane;
+        let unbuilt = Unbuilt;
+        let environment = Environment::inherited_minimum().expect("a child environment");
+        let spawn = Spawn::new(
+            &working,
+            environment,
+            ProcessCeiling::new(Duration::from_secs(20)).expect("a usable ceiling"),
+        );
+        let executor = Executor {
+            working_directory: &working,
+            mode: Mode::Yolo,
+            allowlist: &allowlist,
+            destructive: &destructive,
+            confirmer: None,
+            verdicts: &membrane,
+            budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
+            overflow: &mut overflow,
+            transcript: &mut transcript,
+            redactor: &held,
+            subprocess: &spawn,
+            fetch: &unbuilt,
+        };
+        let clock = Ticking::default();
+        let policy = Policy;
+        let patterns =
+            zaru_cli::validators::Patterns::new(zaru_cli::cli::layers::pattern_ceiling());
+        let schemas =
+            zaru_cli::validators::SchemaFiles::new(&working, zaru_cli::cli::layers::file_ceiling());
+        let dispatch = Dispatch::new(&plan, &spawn, &patterns, &schemas);
+
+        let cell = tokio::sync::Mutex::new(executor);
+        let mut tools = Shared::over(&cell);
+        let generating = Generating::over(&provider);
+        let applying = Applying::through(tools);
+        let inner = Inner::over(
+            zaru_core::iteration::Ports {
+                generator: &generating,
+                executor: &applying,
+                validators: &dispatch,
+                context: &policy,
+                clock: &clock,
+                redactor: &held,
+            },
+            Limits {
+                ceiling: Ceiling::new(2).expect("a usable ceiling"),
+                budget: TruncationBudget::new(4096).expect("a usable budget"),
+            },
+            &transcript_path,
+        );
+        let witness = ToolCalling::required(&provider, "staged").expect("it calls tools");
+        let mut sink = Records::appending_to(&transcript_path).expect("a second handle");
+        let mut sinks: [&mut dyn zaru_core::tool_call::EventSink; 1] = [&mut sink];
+        let running = run(
+            1,
+            Start::Task("do the work"),
+            ToolCallCeiling::new(8).expect("a usable ceiling"),
+            witness,
+            Ports {
+                model: &provider,
+                tools: &mut tools,
+                context: &policy,
+                clock: &clock,
+                redactor: &held,
+            },
+            Some(&inner),
+            &mut sinks,
+        );
+        tokio::pin!(running);
+
+        let mut polls = 0_usize;
+        loop {
+            tokio::select! {
+                biased;
+
+                done = &mut running => panic!(
+                    "the turn finished before the validator could be interrupted: {done:?}"
+                ),
+
+                () = tokio::task::yield_now() => {
+                    polls += 1;
+                    if let Ok(held) = std::fs::read_to_string(&pidfile)
+                        && let Ok(pid) = held.trim().parse::<u32>()
+                    {
+                        break pid;
+                    }
+                    assert!(
+                        polls < VALIDATOR_POLL_BUDGET,
+                        "the validator's command never reported its process id in \
+                         {VALIDATOR_POLL_BUDGET} polls"
+                    );
+                }
+            }
+        }
+        // Everything the turn held is dropped as this block ends. That is the
+        // interrupt.
+    });
+
+    let mut polls = 0_usize;
+    while still_running(pid) {
+        polls += 1;
+        assert!(
+            polls < VALIDATOR_POLL_BUDGET,
+            "the validator's child {pid} is still in the process table after the turn was \
+             interrupted, so a `Ctrl-C` during an iteration leaves a project's command running"
+        );
+        std::thread::yield_now();
+    }
+    println!("  the validator's child {pid} left the process table");
+
+    let written = std::fs::read_to_string(&transcript_path).expect("the transcript was written");
+    let events = loop_events(&written);
+    println!("  the loop's events are {events:?}");
+    assert_eq!(
+        events,
+        vec![
+            String::from("iteration_started"),
+            String::from("candidate_generated"),
+            String::from("execution_completed"),
+        ],
+        "the loop's events are not the three an iteration cut inside `Evaluate` leaves, so this \
+         check is not looking at an interrupted validator at all"
+    );
+    for terminal in [
+        "validator_evaluated",
+        "iteration_failed",
+        "refinement_constructed",
+        "loop_succeeded",
+        "loop_exhausted",
+    ] {
+        assert!(
+            !events.iter().any(|name| name == terminal),
+            "the loop emitted `{terminal}` for an iteration that was interrupted, so the \
+             transcript claims an outcome the loop never reached"
+        );
+    }
+}
