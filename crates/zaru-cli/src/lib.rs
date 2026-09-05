@@ -61,9 +61,10 @@
 //! [`session::MetaFile`] — the four that read a file all over one
 //! [`config::TomlFile`], because two parsers would be two readings that can
 //! disagree about what a file says.
-//! **Nothing in this workspace can reach a provider at all**, and nothing
-//! contains a child process — ADR-0011 D2: "the harness is not a sandbox and
-//! says so."
+//! **One of ADR-0012 D3's five provider kinds can be reached**, `gemini`,
+//! through [`providers::gemini::GeminiClient`] since 2026-09-05; the other
+//! four have no client. And nothing contains a child process — ADR-0011 D2:
+//! "the harness is not a sandbox and says so."
 //!
 //! **Seven of the ten are reachable from the `zaru` binary as of 2026-09-05**,
 //! and the sentence that said none of them was is gone with the argument
@@ -92,9 +93,10 @@
 //! either, and [`providers`] is here under a delegated coordinator ruling of
 //! 2026-09-05, recorded on that page and on ADR-0012, for the same reason: an
 //! alias resolves through ADR-0014's five layers, which are this crate's, and
-//! nothing else in the workspace can see them. **No provider is called from
-//! anywhere in this workspace** and the provider trait has no implementation
-//! in any product tree.
+//! nothing else in the workspace can see them. **The provider trait has one
+//! implementation** as of 2026-09-05, [`providers::gemini::GeminiClient`],
+//! which implements ADR-0012's `Provider` and `zaru-core`'s `Model` from one
+//! statement of what it can do.
 //!
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
