@@ -73,23 +73,37 @@ performed — and prints what the model answered and what the turn cost in
 tokens. At `bare` tier it says, once, that it is not a sandbox, because it is
 not.
 
-**Two things it will refuse.** Four of ADR-0012 D3's five provider kinds have
-no client, so a task against one is refused naming the kind that does. And a
-project whose `zaru.toml` declares validators is refused rather than run,
-because the iteration loop those validators are for does not exist yet and
-running the tool-call loop instead would report work as done that nothing
-checked.
+**One thing it will refuse.** Four of ADR-0012 D3's five provider kinds have
+no client, so a task against one is refused naming the kind that does.
+
+**And one thing it will now do instead of refusing.** A project whose
+`zaru.toml` declares validators runs the **iteration loop**, which is the
+thing this whole harness is for: the model proposes a change, the change is
+applied through the same tools a turn uses, the declared validators are run
+against it, and their failure output — verbatim, never paraphrased — becomes
+the next attempt's prompt. It stops when the validators are satisfied, or at
+the iteration ceiling, and a ceiling reached is reported as itself rather than
+as a success or an error. `runtime.max_iterations` sets the ceiling and a
+project may only lower it; where nothing sets it, ADR-0001's per-tier default
+applies, which at `bare` is one.
 
 Eleven pieces exist behind that binary and the command surface reaches eight of
 them. The iteration loop and the tool-call loop are in `zaru-core`, headless,
-driven through ports that nothing in any product tree implements — except the
-three a declared validator calls out through, which all have one in `zaru-cli`
-as of 2026-09-05. A validator's command runs as a real child process; a
-`matches` pattern is compiled by an engine that cannot backtrack, so a pattern
-from a repository you cloned cannot cost exponential time; and a `json_schema`
-validator reads its schema inside the working directory and resolves no `$ref`
-out of it. **No command this binary runs declares a validator or runs one**, so
-none of that is reachable from the terminal yet.
+and **as of 2026-09-05 every port either loop needs has a product
+implementation in `zaru-cli`**. A validator's command runs as a real child
+process; a `matches` pattern is compiled by an engine that cannot backtrack,
+so a pattern from a repository you cloned cannot cost exponential time; and a
+`json_schema` validator reads its schema inside the working directory and
+resolves no `$ref` out of it.
+
+The two loops stay two loops. One provider client implements both the outer
+loop's model port and the inner loop's generator, but nothing was widened to
+do it: a candidate is whatever the one exchange returned, through the
+provider's own function-calling contract and with no prompt wording invented
+anywhere. And **a candidate cannot do what a turn cannot** — there is one tool
+surface per session and both loops hold the same one, so a candidate's write
+meets the same working-directory boundary, the same permission prompt and the
+same transcript a turn's does.
 
 The terminal is in `zaru-tui` as of 2026-09-05, and it is what every other
 piece has been waiting on. A status line, a transcript pane and the composer,
