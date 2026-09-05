@@ -35,22 +35,27 @@
 //! afterwards, because a rename carries the source's mode: measured
 //! 2026-09-04, a `0600` temporary renamed over a live file leaves `0600`.
 //!
+//! **The discipline itself now lives in [`crate::atomic`]**, because the
+//! credential store needs exactly the same one and two copies of it would be a
+//! rule in two places. What stays here is why a checkpoint wants it.
+//!
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 
 use crate::session::store::FILE_MODE;
 use core::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The suffix the sibling temporary file carries.
 ///
-/// A session directory has one writer, so one name is enough. A leftover
-/// temporary from a killed process is never mistaken for the checkpoint,
-/// because it is not called `context.json`, and the next write truncates it.
-pub const TEMPORARY_SUFFIX: &str = ".rewriting";
+/// Re-exported from [`crate::atomic`] rather than declared again: the
+/// credential store replaces its own file through the same discipline, and a
+/// suffix declared in two places is a suffix that diverges. A session
+/// directory has one writer, so one name is enough, and a leftover temporary
+/// from a killed process is never mistaken for the checkpoint because it is
+/// not called `context.json`.
+pub use crate::atomic::TEMPORARY_SUFFIX;
 
 /// The checkpoint could not be rewritten or read.
 ///
@@ -126,9 +131,7 @@ impl Checkpoint {
     /// The sibling the rewrite goes through.
     #[must_use]
     pub fn temporary_path(&self) -> PathBuf {
-        let mut name = self.path.as_os_str().to_os_string();
-        name.push(TEMPORARY_SUFFIX);
-        PathBuf::from(name)
+        crate::atomic::temporary_path(&self.path)
     }
 
     /// Rewrite the checkpoint, atomically.
@@ -146,39 +149,12 @@ impl Checkpoint {
             path: self.path.clone(),
             detail: error.to_string(),
         })?;
-        let temporary = self.temporary_path();
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(FILE_MODE)
-            .open(&temporary)
-            .map_err(|source| CheckpointError::Io {
-                action: "open the checkpoint's sibling for writing",
-                path: temporary.clone(),
-                source,
-            })?;
-        file.write_all(&rendered)
-            .map_err(|source| CheckpointError::Io {
-                action: "write the checkpoint's sibling",
-                path: temporary.clone(),
-                source,
-            })?;
-        // Sync before the rename, not after: a rename that reached the
-        // directory before the bytes reached the file is a live checkpoint
-        // pointing at a hole.
-        file.sync_all().map_err(|source| CheckpointError::Io {
-            action: "sync the checkpoint's sibling",
-            path: temporary.clone(),
-            source,
-        })?;
-        drop(file);
-
-        fs::rename(&temporary, &self.path).map_err(|source| CheckpointError::Io {
-            action: "rename the checkpoint's sibling over the checkpoint",
-            path: self.path.clone(),
-            source,
+        crate::atomic::write(&self.path, &rendered, FILE_MODE).map_err(|failure| {
+            CheckpointError::Io {
+                action: failure.action,
+                path: failure.path,
+                source: failure.source,
+            }
         })
     }
 

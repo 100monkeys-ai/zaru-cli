@@ -108,6 +108,7 @@ pub fn composition() -> [(&'static str, &'static str); 5] {
     ]
 }
 
+pub mod atomic;
 pub mod cli;
 pub mod config;
 pub mod credentials;
