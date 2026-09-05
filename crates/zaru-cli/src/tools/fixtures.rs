@@ -144,10 +144,12 @@ impl Drop for ScratchTree {
 /// asked.
 ///
 /// **A test double, and not evidence about ADR-0011 D3's allowlist**, which
-/// has no format and no implementation — [Verification lessons] §24: "A test
-/// double answering more simply than the real thing is where a defect becomes
-/// invisible." What a check may conclude from this is what the *rule* does
-/// with an answer, and nothing about how an answer would be arrived at.
+/// has had a product implementation since 2026-09-05 —
+/// [`Allowed`](crate::tools::Allowed) — and is checked as itself.
+/// [Verification lessons] §24: "A test double answering more simply than the
+/// real thing is where a defect becomes invisible." What a check may conclude
+/// from this is what the *rule* does with an answer, and nothing about how an
+/// answer would be arrived at; a check about the answer drives `Allowed`.
 ///
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 pub(crate) struct StagedAllowlist {
@@ -191,9 +193,12 @@ impl crate::tools::port::Allowlist for StagedAllowlist {
 
 /// A destructive-pattern matcher that answers as it was built to.
 ///
-/// **Not evidence about ADR-0011 D6's pattern list**, which is deliberately
-/// unwritten: naming the patterns is authoring a security vocabulary. What a
-/// check may conclude is what the rule does with a match.
+/// **Not evidence about ADR-0011 D6's categories**, which have had a product
+/// matcher since 2026-09-05 — [`Shapes`](crate::tools::Shapes) — and are
+/// checked as themselves. What a check may conclude from this double is what
+/// the rule does with a match, and nothing about which commands match; two of
+/// D6's four categories still match nothing, because naming a program for
+/// them is authoring a security vocabulary.
 pub(crate) struct StagedDestructive {
     answer: bool,
 }
@@ -217,6 +222,11 @@ impl crate::tools::port::DestructiveMatch for StagedDestructive {
 }
 
 /// A confirmer that answers as it was built to, and records every question.
+///
+/// **Not evidence about [`Prompt`](crate::tools::prompt::Prompt)**, which
+/// asks over a terminal and cannot be driven by a check at all. What a check
+/// concludes from this is what [`Decision::permit`](crate::tools::Decision)
+/// does with each of the three answers a confirmer can give.
 pub(crate) struct RecordedConfirmer {
     answer: bool,
     asked: std::cell::RefCell<Vec<crate::tools::port::Question>>,

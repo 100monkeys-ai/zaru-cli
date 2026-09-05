@@ -70,15 +70,29 @@ line. The two that read files are the two that waited on a TOML parser, and a
 file that does not parse is refused naming the file, the line and the column
 and never the line's contents: the parser's own message renders the offending
 source line, and a refusal that quoted it would publish whatever was on it. The local tool surface is in `zaru-cli` too: the seven built-in
-tool names, the working-directory boundary, and the permission model. **Three
-of the seven act**: `fs.read` and `fs.list` through `std::fs` inside that
-boundary, and `cmd.run` as a real child process, started at the boundary's root
+tool names, the working-directory boundary, and the permission model. **Six
+of the seven act**: `fs.read`, `fs.list`, `fs.write`, `fs.edit` and `fs.search`
+through `std::fs` inside that boundary — the two that replace a file doing so
+whole, at the file's own mode, and the one that searches never following a
+link — and `cmd.run` as a real child process, started at the boundary's root
 with a cleared environment and a wall-clock ceiling the caller supplies. A
 command is not measured against the boundary as though it were a path — its
 boundary is the directory it starts in — and **nothing contains that child**:
 at `bare` tier the harness is not a sandbox and the decision record says so.
-The other four sit behind ports with no implementation, as does the permission
-prompt itself.
+Every call's arguments arrive as one JSON object, read before the permission
+decision because a path that has not been extracted is not yet a target.
+`web.fetch` alone sits behind a port with no implementation. **The permission model
+itself is now whole**: what the user pre-approved is read from
+`~/.zaru/config.toml` as a list of the exact lines the prompt shows, matched
+byte for byte and never by glob, and refused to a cloned repository; the
+destructive-command categories the record names are recognised for the two of
+the four whose shape its own words determine, with the two that name no
+program matching nothing rather than a list nobody chose; and the prompt
+itself is one line over the terminal, `y/N` with `N` the default, which
+refuses the call rather than defaulting it when there is no terminal to ask.
+**Nothing a user runs reaches any of that yet**, because no command reaches
+the tool surface — `zaru config explain tools.allowlist` is what a person can
+see of it today.
 
 The Nuclear Notes client is in `zaru-notes`: a session over MCP with the
 workspace named on every read, a bearer value the type system will not render,
