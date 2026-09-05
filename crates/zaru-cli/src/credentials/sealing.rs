@@ -85,6 +85,19 @@ pub use key::{
     CREDENTIAL_KEY_VARIABLE, FromKeyring, HarnessKeys, KeyStore, Keyring, OsKeyring, SealingKey,
 };
 
+/// The store's own hexadecimal, for a check asserting a value is **not** in a
+/// file this module wrote.
+///
+/// `pub(crate)` and `cfg(test)`: the credential store's absence assertions have
+/// to be able to look for the encoding this module writes, and a second
+/// hand-written encoder beside them would be an encoder that disagrees with
+/// this one — at which point the assertion would pass for the wrong reason,
+/// which is the whole failure it exists to catch.
+#[cfg(test)]
+pub(crate) fn hex_for_checks(bytes: &[u8]) -> String {
+    hex::encode(bytes)
+}
+
 #[cfg(test)]
 pub(crate) mod fixtures;
 #[cfg(test)]

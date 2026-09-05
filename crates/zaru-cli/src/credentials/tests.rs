@@ -136,12 +136,27 @@ fn a_secrets_debug_carries_the_redaction_and_not_the_value() {
 /// Asserts that a rendering published neither a value nor anything that
 /// identifies it, and says which arm caught it.
 ///
-/// Two arms, because one of them is blind. `{:?}` on a `String` escapes a
+/// **Three arms, because each of the first two is blind to what the next one
+/// catches, and each was added because a mutation survived the ones before
+/// it.**
+///
+/// The first arm is the value as typed. `{:?}` on a `String` escapes a
 /// combining mark to `\u{301}`, so a rendering that published every byte of a
 /// nonce does not `contain` that nonce — the mutation that put a bearer value
-/// into a refusal through `{:?}` survived a check with only the first arm.
-/// The ASCII core survives every escaping scheme and identifies the value on
-/// its own.
+/// into a refusal through `{:?}` survived a check with only that arm, on
+/// 2026-09-04, and it is recorded on ADR-0007's Status tracking.
+///
+/// The second arm is the **ASCII core**, which no escaping scheme alters.
+///
+/// The third arm is the value **hexadecimal-encoded**, and it is this arc's
+/// own surviving mutation, 2026-09-05. A cipher mutated to copy its plaintext
+/// into the blob left both arms above green, because the blob is rendered as
+/// hexadecimal and `nn_mcp_…` reaches the file as `6e6e5f6d63705f…`. That is
+/// the 2026-09-04 finding exactly — an *encoding* hides a published value from
+/// an assertion written against the value — arriving through a different
+/// encoding a year's worth of reading would not have predicted. Whenever the
+/// store's own on-disk representation gains another encoding, this function
+/// gains another arm.
 fn assert_absent(rendered: &str, value: &str, what: &str) {
     assert!(
         !rendered.contains(value),
@@ -156,6 +171,12 @@ fn assert_absent(rendered: &str, value: &str, what: &str) {
         !rendered.contains(core),
         "{what} published the bearer value in an escaped form; its ASCII core {core:?} is in \
          {rendered}"
+    );
+    let hexadecimal = crate::credentials::sealing::hex_for_checks(core.as_bytes());
+    assert!(
+        !rendered.contains(&hexadecimal),
+        "{what} published the bearer value hexadecimal-encoded, which is how the sealed blob is \
+         written; its ASCII core renders as {hexadecimal} and that is in {rendered}"
     );
 }
 
