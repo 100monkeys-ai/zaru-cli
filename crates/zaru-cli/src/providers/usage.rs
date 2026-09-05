@@ -30,14 +30,24 @@
 //! [ADR-0010]'s session lifecycle carries no provider request, because there
 //! is no provider. That half of D7 waits rather than being approximated.
 //!
-//! # What is missing, and where it is
+//! # Why this is a datum and not a rendering
 //!
-//! D7 wants these in the status line. **There is no status line**: `zaru-tui`
-//! renders nothing and depends only on `zaru-core`, so it cannot see this
-//! type. That is the same shape [ADR-0013] D6's context usage and [ADR-0016]
-//! D1's presentation are both in, and it is why this is a datum rather than a
-//! rendering.
+//! D7 wants these in the status line, and **since 2026-09-05 there is one**:
+//! `zaru_tui::shell::Status` is [ADR-0001] D2's row and it carries this
+//! type's numbers as of the `status-line` arc. What has not changed is the
+//! reason this file renders nothing — `zaru-tui` depends only on `zaru-core`,
+//! so it cannot see this type, and the words are composed by
+//! `cli::render::usage` and handed across as text. The row's segment **is**
+//! that function's output rather than a second spelling of it, so what a user
+//! reads on the row and what the session prints on exit cannot disagree.
 //!
+//! **This paragraph read "There is no status line" until 2026-09-05.** The
+//! first half stopped being true when the `tui-shell` arc landed a shell and
+//! the second half was always about the crate boundary; they were one
+//! sentence, so the true half kept the false half alive. [ADR-0016] D1's
+//! presentation is still in the shape this described.
+//!
+//! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
