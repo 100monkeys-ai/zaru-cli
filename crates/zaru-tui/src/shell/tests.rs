@@ -473,6 +473,108 @@ fn both_ways_of_leaving_exit_zero() {
     }
 }
 
+/// `leaves` and `Shell::key` are one rule, asserted over a keyboard rather
+/// than over the one key the rule is about.
+///
+/// A host reads keystrokes while a turn is running, when the shell is not what
+/// the turn is waiting on, and it asks this function rather than spelling
+/// `ctrl` and `c` a second time. So the two have to agree on **every** input,
+/// not only on the interrupt — a `leaves` that answered `Some` for `Ctrl-D`
+/// would make a host leave on a key the shell hands the composer.
+///
+/// # Why the expectation is spelled out here rather than compared
+///
+/// **The first form of this check was a tautology and a mutation said so.**
+/// It asserted only that `leaves` and `Shell::key` agree, and they agree by
+/// construction because the second calls the first — library verification
+/// lessons §11, both arms travelling through the thing being checked. Its
+/// staging assertion counted how many combinations left, which is *four*
+/// whether the rule reads `ctrl` or `alt`, so the count was ordinary on the
+/// axis the mutant moved (§51). Swapping `ctrl` for `alt` left the check
+/// green.
+///
+/// So one arm is now the check's own literal statement of the rule — `ctrl`
+/// set, `alt` clear, the code `c` — written here and derived from nothing.
+/// The agreement between `leaves` and `Shell::key` is still asserted, because
+/// it is what catches `Shell::key` growing a second spelling, but it is no
+/// longer what holds the rule.
+#[test]
+fn the_leave_rule_has_one_spelling_and_the_shell_uses_it() {
+    // A keyboard, not a key: every combination of the three modifiers over a
+    // handful of codes, so `c` sits in the middle of the run rather than at
+    // either end of it (library verification-lessons §54).
+    let codes = [
+        Key::Char('a'),
+        Key::Enter,
+        Key::Char('c'),
+        Key::Esc,
+        Key::Char('d'),
+        Key::Backspace,
+    ];
+    let mut interrupts = 0;
+    let mut walked = 0;
+    for code in codes {
+        for ctrl in [false, true] {
+            for alt in [false, true] {
+                for shift in [false, true] {
+                    walked += 1;
+                    let input = Input {
+                        key: code,
+                        ctrl,
+                        alt,
+                        shift,
+                    };
+
+                    // The independent arm: what the rule is, said here rather
+                    // than read back from the thing under test. `alt` and
+                    // `shift` are free, which is what the branch this replaced
+                    // already did — a terminal reports the chord several ways
+                    // and no record narrows it, so widening or narrowing it
+                    // here would be a behaviour decision wearing a check's
+                    // clothes.
+                    let expected = (ctrl && code == Key::Char('c')).then_some(Leaving::Interrupt);
+                    let ruled = crate::shell::leaves(&input);
+                    assert_eq!(
+                        ruled, expected,
+                        "`leaves` answered {ruled:?} for {code:?} with ctrl={ctrl} alt={alt} \
+                         shift={shift}; the rule is ctrl set and the code `c`, with alt and \
+                         shift free, so it should have answered {expected:?}"
+                    );
+
+                    let mut shell = shell();
+                    let acted = shell.key(input, NOW, &TrieOf::new(0), &StagedVocabulary);
+                    let acted_leave = match acted {
+                        Action::Leave(leaving) => Some(leaving),
+                        Action::Idle | Action::Run(_) | Action::Task(_) => None,
+                    };
+                    assert_eq!(
+                        ruled, acted_leave,
+                        "`leaves` and `Shell::key` disagree about {code:?} with ctrl={ctrl} \
+                         alt={alt} shift={shift}: the rule says {ruled:?} and the shell did \
+                         {acted_leave:?}, so the shell has a second spelling of this rule"
+                    );
+                    if ruled.is_some() {
+                        interrupts += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Assert the staging as well: a walk that reached no interrupt at all
+    // would satisfy every comparison above.
+    assert_eq!(
+        walked,
+        codes.len() * 8,
+        "the walk covered {walked} combinations rather than {}",
+        codes.len() * 8
+    );
+    assert_eq!(
+        interrupts, 4,
+        "the keyboard walked {walked} combinations and {interrupts} of them left; `Ctrl-C` is one \
+         code with ctrl set and alt and shift free, which is four"
+    );
+}
+
 /// `Ctrl-C` leaves from mid-line, not only from an empty prompt.
 #[test]
 fn an_interrupt_leaves_from_the_middle_of_a_line() {

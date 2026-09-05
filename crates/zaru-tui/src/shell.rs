@@ -201,6 +201,33 @@ impl Status {
     }
 }
 
+/// Which keystroke leaves, if this one does.
+///
+/// # One key, one meaning, declared in one place
+///
+/// [`Shell::key`] calls this, and so does a host that reads a keystroke while
+/// a turn is running — where the shell is not the thing deciding what to do
+/// with the key, because the shell is not what the turn is waiting on. Both
+/// need the same answer, and `ctrl` plus `c` spelled at two call sites is the
+/// rule-in-two-places that nothing keeps agreeing.
+///
+/// **A mid-turn `Ctrl-C` therefore leaves, exactly as one at the prompt
+/// does.** [ADR-0015]'s ruling of 2026-09-05 gives this key one meaning and
+/// [ADR-0016] D5's `0` for both; what makes it also an *interruption* is what
+/// the host does with the turn it was running, which is
+/// [ADR-0010](https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript)
+/// D2's business and not this crate's.
+///
+/// [`LEAVE`] is the other way out and is not here: it is a *line*, read by
+/// [`command::read`] after `Enter`, and a word is not a keystroke.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[must_use]
+pub fn leaves(input: &Input) -> Option<Leaving> {
+    (input.ctrl && input.key == Key::Char('c')).then_some(Leaving::Interrupt)
+}
+
 /// A terminal session.
 ///
 /// Synchronous and clockless in the same way [`Composer`] is: every method
@@ -334,10 +361,11 @@ impl Shell {
             return Action::Idle;
         }
 
-        // Ctrl-C leaves from anywhere, including mid-line. A terminal user
-        // reaches for it before reading anything.
-        if input.ctrl && input.key == Key::Char('c') {
-            return Action::Leave(Leaving::Interrupt);
+        // Ctrl-C leaves from anywhere, including mid-line and mid-turn. The
+        // rule is `leaves`, so this is its one caller inside the shell rather
+        // than a second spelling of it.
+        if let Some(leaving) = leaves(&input) {
+            return Action::Leave(leaving);
         }
 
         if input.key != Key::Enter {
