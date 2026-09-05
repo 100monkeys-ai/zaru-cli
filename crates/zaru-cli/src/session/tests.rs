@@ -824,10 +824,23 @@ fn wait_until_the_transcript_holds(path: &std::path::Path, wanted: usize, round:
 ///
 /// Two properties, and they catch different mutations.
 ///
-/// **No torn line.** Every byte before the last newline parses as a record,
-/// and there is nothing after the last newline. This is what a `BufWriter`
-/// breaks: it flushes on its own 8 KiB boundary, which falls inside whichever
-/// line crosses it.
+/// **A fragment is the event in flight, and is never counted as a record.**
+/// D2 promises "a crash loses at most the event in flight", so a trailing
+/// fragment is exactly what it permits — the check asserts that the fragment
+/// is *tolerated*, not that it never happens. What must hold is that it was
+/// not counted: the number of records equals the number of newlines in the
+/// raw file, and the reported fragment is exactly the tail after the last one.
+/// Both are read straight off the bytes, so neither arm of the comparison
+/// travels through `Transcript::read` ([Verification lessons] §11).
+///
+/// **This arm asserted `rounds_with_a_fragment.is_empty()` until 2026-09-05,
+/// which is stronger than D2 promises and is false.** `write_all` loops over
+/// `write`, so a `SIGKILL` landing between two syscalls tears a line —
+/// measured by the `tool-call-loop` arc at round 6 with 214 trailing bytes.
+/// The product was right throughout: `Reading` reports the fragment and never
+/// counts it, and the durability arm stayed green. The check was wrong, and so
+/// was the sentence on ADR-0010's Status tracking that said a `SIGKILL` cannot
+/// split an unbuffered `write_all`; both are corrected.
 ///
 /// **Nothing the writer promised is missing.** The child reports the sequence
 /// of every record whose `record()` call returned — after the write, the
@@ -838,16 +851,23 @@ fn wait_until_the_transcript_holds(path: &std::path::Path, wanted: usize, round:
 /// The kill is `SIGKILL`, which is what `Child::kill` sends on Unix, so the
 /// child gets no chance to flush anything.
 ///
-/// **What this cannot see.** A `SIGKILL` cannot split a single unbuffered
-/// `write_all` to a regular file, so this stays green with `sync_data`
-/// removed. The sync is what survives the *machine* losing power, and no
-/// check on this machine exercises it. Recorded rather than glossed.
+/// **What this cannot see.** Removing `sync_data` leaves this green, because a
+/// `SIGKILL` does not discard the page cache — a killed process's written
+/// bytes are already the kernel's. The sync is what survives the *machine*
+/// losing power, and nothing on this machine can cut power to a process, so no
+/// check here exercises it. Recorded rather than glossed. (The reason given
+/// for this until 2026-09-05 was that a `SIGKILL` cannot split a `write_all`,
+/// which is false — see above. The conclusion was right for the wrong reason.)
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 #[test]
 fn a_killed_process_loses_at_most_the_event_in_flight() {
     let scratch = ScratchRoot::new();
     let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
 
     let mut rounds_with_a_fragment = Vec::new();
+    let mut rounds_counting_a_fragment = Vec::new();
+    let mut rounds_misreporting_a_fragment = Vec::new();
     let mut rounds_missing_a_durable_record = Vec::new();
     let mut most_records_seen = 0usize;
     let mut most_durable_seen = 0u64;
@@ -904,6 +924,23 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
         most_records_seen = most_records_seen.max(on_disk.len());
         most_durable_seen = most_durable_seen.max(u64::try_from(promised.len()).unwrap_or(0));
 
+        // The independent reader: the raw bytes, counted by this check rather
+        // than parsed by the product. A fragment is permitted; being counted
+        // as a record is not.
+        let raw = std::fs::read(&path).unwrap_or_else(|error| {
+            panic!("round {round}: the transcript could not be read as bytes: {error}")
+        });
+        let newlines = raw.iter().filter(|byte| **byte == b'\n').count();
+        if reading.records.len() != newlines {
+            rounds_counting_a_fragment.push((round, reading.records.len(), newlines));
+        }
+        let tail = raw
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(raw.len(), |last| raw.len() - last - 1);
+        if reading.fragment.unwrap_or(0) != tail {
+            rounds_misreporting_a_fragment.push((round, reading.fragment, tail));
+        }
         if let Some(bytes) = reading.fragment {
             rounds_with_a_fragment.push((round, bytes));
         }
@@ -931,10 +968,29 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
     );
 
     assert!(
-        rounds_with_a_fragment.is_empty(),
-        "{} of {ROUNDS} kills left a torn line — (round, trailing bytes): {:?}. ADR-0010 D2 says \
-         a crash loses at most the event in flight, and a partial line is an event nobody can \
-         read at all",
+        rounds_counting_a_fragment.is_empty(),
+        "{} of {ROUNDS} kills had a trailing fragment counted as a record — (round, records \
+         reported, newlines in the file): {:?}. ADR-0010 D2 loses at most the event in flight, \
+         and a half-written event read back as a whole one loses nothing and invents something",
+        rounds_counting_a_fragment.len(),
+        rounds_counting_a_fragment,
+    );
+    assert!(
+        rounds_misreporting_a_fragment.is_empty(),
+        "{} of {ROUNDS} kills reported a fragment that is not the tail after the last newline — \
+         (round, reported, bytes actually after the last newline): {:?}. A reader that cannot \
+         say how much was lost cannot say that at most one event was",
+        rounds_misreporting_a_fragment.len(),
+        rounds_misreporting_a_fragment,
+    );
+
+    // Reported rather than asserted on. A torn line is what D2 permits, and
+    // how often it happens is a property of the machine rather than of the
+    // harness -- an assertion here would be a wall-clock race wearing a
+    // different costume.
+    println!(
+        "{} of {ROUNDS} kills left a trailing fragment, which ADR-0010 D2 permits — (round, \
+         trailing bytes): {:?}",
         rounds_with_a_fragment.len(),
         rounds_with_a_fragment,
     );
@@ -946,6 +1002,91 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
          find the line on disk",
         rounds_missing_a_durable_record.len(),
         rounds_missing_a_durable_record,
+    );
+}
+
+/// D2's "at most the event in flight", held on a fragment this check plants.
+///
+/// **Planted rather than waited for.** The kill check above holds the same
+/// property on the real path, but the tear that produces a fragment there is
+/// rare: `tool-call-loop` measured one at round 6 with 214 trailing bytes, and
+/// this arc saw none in 96 kills under a saturated host on 2026-09-05. A check
+/// whose trigger fires once in a hundred runs is a check nobody has seen work
+/// ([Verification lessons] §7), so the half-written line is written here.
+///
+/// What D2 promises is that a crash costs **at most the event in flight** —
+/// so a fragment is permitted, and what must not happen is that it is counted.
+/// A fragment read back as a record would lose nothing and invent something,
+/// which is worse than the loss the clause allows.
+///
+/// The mutant: parsing the tail after the last newline as a record too, which
+/// is what a reader written to "not lose anything" does.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_trailing_fragment_is_the_event_in_flight_and_is_never_counted_as_a_record() {
+    use std::io::Write as _;
+
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 9))
+        .expect("could not start a session");
+    let path = session.transcript_path();
+
+    let mut transcript = Transcript::append_to(&path).expect("the transcript opened");
+    for seq in 0..3u64 {
+        transcript
+            .record(&Record::Loop(super::fixtures::sequenced_event(seq, 8)))
+            .expect("could not append");
+    }
+
+    // The event in flight: a line that begins and does not end. Serialised
+    // through the same path a whole record takes and then cut, so it is a
+    // genuine half-written record rather than arbitrary bytes.
+    let whole = serde_json::to_string(&Record::Loop(super::fixtures::sequenced_event(3, 8)))
+        .expect("a record serialises");
+    let half = &whole[..whole.len() / 2];
+    let mut raw = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("the transcript is appendable");
+    raw.write_all(half.as_bytes())
+        .expect("could not tear a line");
+    raw.flush().expect("could not flush the tear");
+
+    let reading = Transcript::read(&path).expect("a torn tail is not a read failure");
+
+    assert_eq!(
+        reading.fragment,
+        Some(half.len()),
+        "the reader does not report the tail after the last newline as the event in flight",
+    );
+    assert_eq!(
+        reading.records.len(),
+        3,
+        "the half-written line was counted as a record",
+    );
+    let sequences: Vec<u64> = reading
+        .records
+        .iter()
+        .filter_map(super::fixtures::sequence_of)
+        .collect();
+    assert_eq!(
+        sequences,
+        vec![0, 1, 2],
+        "the records before the tear are not the gapless prefix, so more than the event in \
+         flight was lost",
+    );
+
+    // The independent reader: the raw bytes, counted here rather than parsed
+    // by the product ([Verification lessons] §11).
+    let bytes = std::fs::read(&path).expect("the file is readable");
+    assert_eq!(
+        reading.records.len(),
+        bytes.iter().filter(|byte| **byte == b'\n').count(),
+        "the number of records and the number of newlines disagree, so something after the last \
+         newline was counted",
     );
 }
 
