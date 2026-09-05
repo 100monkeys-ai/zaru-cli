@@ -849,15 +849,17 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         .expect("the checkpoint is written");
 
     let reopened = resumed(&directory);
-    let restored = SessionContext::restored(
-        zaru_cli::compose::prefix_for(),
-        limits,
-        reopened
-            .checkpoint
-            .as_ref()
-            .expect("the session checkpointed, so a resume carries one"),
-    )
-    .expect("a checkpoint this harness wrote reads back");
+    assert!(
+        reopened.checkpoint.is_some(),
+        "the session checkpointed, so a resume carries one and the staging holds"
+    );
+    // **Through the product's own door**, which is what `terminal::open` calls
+    // before it takes the terminal — not `SessionContext::restored` directly.
+    // A check that called the constructor would prove the mechanism and say
+    // nothing about whether anything reaches it
+    // (library verification-lessons §25).
+    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
+        .expect("a checkpoint this harness wrote reads back");
     let held_texts: Vec<&str> = restored
         .exchanges()
         .iter()
@@ -897,12 +899,8 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         .expect("the compaction is recorded");
 
     let reopened = resumed(&directory);
-    let restored = SessionContext::restored(
-        zaru_cli::compose::prefix_for(),
-        limits,
-        reopened.checkpoint.as_ref().expect("a checkpoint"),
-    )
-    .expect("the compacted checkpoint reads back");
+    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
+        .expect("the compacted checkpoint reads back");
     let rendered: String = restored
         .exchanges()
         .iter()
@@ -943,6 +941,26 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         reopened.turns, 0,
         "and it has had no turns, so its next turn is turn one",
     );
+    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
+        .expect("an absent checkpoint is not a failure");
+    assert!(
+        restored.exchanges().is_empty(),
+        "a session that never checkpointed opens with an empty layer 6, and this one did not",
+    );
+    let _ = limits;
+}
+
+/// The classifier the binary builds, so a check reads the same class it does.
+fn classifier() -> zaru_cli::cli::classify::Surface<'static> {
+    zaru_cli::cli::classify::Surface::new(
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_REPOSITORY"),
+    )
+}
+
+/// The evidence a resumed session carries into a classification.
+fn evidence() -> zaru_cli::failure::SessionEvidence {
+    zaru_cli::failure::SessionEvidence::NoSessionExists
 }
 
 /// A checkpoint this harness did not write is refused, and its contents reach
@@ -1014,15 +1032,16 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         reopened.checkpoint.as_ref().expect("a checkpoint is on disk"),
     )
     .expect_err("a document this type did not write is refused, not read as an empty session");
+    // And the door refuses it too, rather than only the constructor.
+    let refused = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
+        .expect_err("the shell refuses to open over a checkpoint it cannot read");
 
-    let classify = zaru_cli::cli::classify::Surface::new(
-        env!("CARGO_PKG_VERSION"),
-        env!("CARGO_PKG_REPOSITORY"),
-    );
-    let classified = classify.checkpoint_contents(
-        &error,
-        zaru_cli::failure::SessionEvidence::NoSessionExists,
-    );
+    let classified = match *refused {
+        zaru_cli::failure::Exit::Failed(classified) => classified,
+        zaru_cli::failure::Exit::Succeeded => {
+            panic!("the shell opened over a checkpoint it could not read")
+        }
+    };
     assert!(
         matches!(classified, zaru_cli::failure::Classified::Defect(_)),
         "ADR-0016 D1 makes a file only this harness writes and cannot read back a defect, and \
@@ -1071,12 +1090,8 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         .write(&said.checkpoint())
         .expect("the document is written");
     let reopened = resumed(&directory);
-    let restored = SessionContext::restored(
-        zaru_cli::compose::prefix_for(),
-        limits,
-        reopened.checkpoint.as_ref().expect("a checkpoint is on disk"),
-    )
-    .expect("a checkpoint this harness wrote reads back");
+    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
+        .expect("a checkpoint this harness wrote reads back");
     assert_eq!(
         restored.exchanges().len(),
         1,
