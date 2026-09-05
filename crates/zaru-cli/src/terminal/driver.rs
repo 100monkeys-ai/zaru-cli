@@ -359,6 +359,88 @@ impl<S: Surface + Send> zaru_core::tool_call::EventSink for PaneSink<'_, '_, S> 
     }
 }
 
+/// [ADR-0028] D3's subscriber: the **inner** loop's narrative, in the pane.
+///
+/// # What this is for, and why it is not [`PaneSink`]
+///
+/// [ADR-0028] D1 has iteration state changes "surface as plain-English events
+/// inline in the conversation: what was tried, what failed, what changed, what
+/// succeeded", and D3 has the harness render "the loop's typed events per
+/// [ADR-0008] D3". Those are the **eight** events of
+/// [`zaru_core::iteration`], and until 2026-09-05 nothing subscribed to them:
+/// [`crate::compose::Inner`] handed `iteration::run` the transcript writer
+/// alone, so the whole narrative was reachable only by `zaru --resume <id>`
+/// after the fact. What a person watched while a run was being paid was its
+/// first line and its last.
+///
+/// It is a second type rather than a second `impl` on [`PaneSink`] because
+/// the two are borrowed differently and at the same time. `PaneSink` rides
+/// `compose::turn::run_one`'s `extra` slice as `&mut`, for the whole turn;
+/// this rides [`crate::compose::Narrator`] as `&`, inside that same turn.
+/// One value cannot be both. They are two handles on one
+/// [`std::sync::Mutex`], which is the shape [`crate::compose::sink`] already
+/// documents for the transcript's two writers, and the pane they paint into
+/// is the same pane.
+///
+/// # The wording is [`crate::terminal::vocabulary::loop_line`]'s
+///
+/// The same function the **resumed** pane renders a `Record::Loop` through, so
+/// what a user watches while a run happens and what they read back on
+/// `--resume` cannot disagree about a word. That is the rule [`PaneSink`]
+/// already follows for the outer loop, and the reason is [ADR-0008] D3's:
+/// "**Rendering never reads loop internals.** If the terminal needs something
+/// to display, the loop emits it."
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+pub struct PaneNarrator<'m, 'a, S: Surface + Send> {
+    pane: &'m std::sync::Mutex<Pane<'a, S>>,
+    contended: std::sync::atomic::AtomicUsize,
+}
+
+impl<S: Surface + Send> core::fmt::Debug for PaneNarrator<'_, '_, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PaneNarrator")
+            .field("contended", &self.contended())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'m, 'a, S: Surface + Send> PaneNarrator<'m, 'a, S> {
+    /// A narrator over a borrowed pane.
+    pub const fn over(pane: &'m std::sync::Mutex<Pane<'a, S>>) -> Self {
+        Self {
+            pane,
+            contended: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// How many events the lock refused.
+    ///
+    /// Zero by construction — the whole turn is polled on one thread by
+    /// [`crate::compose::turn`]'s current-thread runtime, so nothing else can
+    /// hold the pane while an event arrives — and counted rather than assumed,
+    /// so a check can assert the zero instead of the argument for it. Atomic
+    /// because [`crate::compose::Narrator`] takes `&self`; see that trait for
+    /// why it must.
+    #[must_use]
+    pub fn contended(&self) -> usize {
+        self.contended.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
+    fn narrate(&self, event: &zaru_core::iteration::Event) {
+        match self.pane.try_lock() {
+            Ok(mut pane) => pane.note(crate::terminal::vocabulary::loop_line(event)),
+            Err(_) => {
+                self.contended
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+}
+
 /// [ADR-0011] D3's question, asked and answered in the pane.
 ///
 /// # It is a `Confirm`, so the shell owns no prompt of its own
@@ -621,6 +703,11 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
         let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
+        // ADR-0028 D3's subscriber for the inner loop. A second handle on the
+        // same `Mutex`, because `extra` above holds `sink` as `&mut` for the
+        // whole turn and this is reached by shared reference inside it -- see
+        // `PaneNarrator`.
+        let narrator = PaneNarrator::over(&pane);
 
         race(
             &pane,
@@ -638,6 +725,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
                 task,
                 Some(&confirm as &(dyn crate::tools::Confirm + Sync)),
                 &mut extra,
+                Some(&narrator as &dyn crate::compose::Narrator),
                 &mut turns.owed,
                 &mut turns.context,
             ),

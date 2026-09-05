@@ -304,6 +304,17 @@ struct Run_<'a> {
 /// over ADR-0011 D4's boundary and D3's permission decision, `zaru-core`'s
 /// `Dispatch`, and `Spawn` running each validator as a real child process.
 fn drive<P: ContextPolicy + Sync>(staged: &Run_<'_>, policy: &P) -> (Outcome, String) {
+    drive_narrating(staged, policy, None)
+}
+
+/// The same, with [ADR-0028] D3's subscriber attached.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+fn drive_narrating<P: ContextPolicy + Sync>(
+    staged: &Run_<'_>,
+    policy: &P,
+    narrator: Option<&dyn zaru_cli::compose::Narrator>,
+) -> (Outcome, String) {
     let working = WorkingDirectory::at(staged.scratch.project()).expect("the boundary resolves");
     let store = SessionStore::open(staged.scratch.sessions()).expect("the session store opens");
     let id = SessionId::mint(&SystemWallClock).expect("a session id");
@@ -364,6 +375,7 @@ fn drive<P: ContextPolicy + Sync>(staged: &Run_<'_>, policy: &P) -> (Outcome, St
                 budget: TruncationBudget::new(4096).expect("a usable budget"),
             },
             &transcript_path,
+            narrator,
         );
         let witness = ToolCalling::required(staged.provider, "staged").expect("it calls tools");
         let mut sink = Records::appending_to(&transcript_path).expect("a second handle");
@@ -990,6 +1002,7 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
                     budget: TruncationBudget::new(4096).expect("a usable budget"),
                 },
                 &transcript_path,
+                None,
             );
             let witness = ToolCalling::required(&provider, "staged").expect("it calls tools");
             let mut sink = Records::appending_to(&transcript_path).expect("a second handle");
@@ -1232,4 +1245,137 @@ fn a_turn_with_no_declared_validators_is_not_told_an_iteration_is_one_exchange()
          and it was in the prompt anyway:\n{}",
         prompts[0]
     );
+}
+
+/// One emission of the **inner** loop's stream reaches the transcript and a
+/// subscriber — [ADR-0008] clause 3, for the loop D3 enumerates.
+///
+/// # Why this is a second check and not a re-run of the outer loop's
+///
+/// Clause 3 was claimed on 2026-09-05 with the outer loop's stream: `PaneSink`
+/// beside `compose::Records` on one `tool_call::run` slice. But D3's own list
+/// is the **eight** iteration events — `IterationStarted`,
+/// `CandidateGenerated`, `ValidatorEvaluated`, `RefinementConstructed` — and
+/// on that stream there was no second consumer at all. `compose::Inner` passed
+/// `iteration::run` the transcript writer alone, so the narrative
+/// [ADR-0028] D1 is about existed only on disk.
+///
+/// This drives the product's own ports to a real outcome with a subscriber
+/// attached and compares what it saw against what the file holds, line for
+/// line and in order. The two lists are built from one `emit`, so a
+/// disagreement between them is the loop handing two consumers different
+/// values — which its own contract forbids: it "constructs each event once and
+/// hands the same value to every registered sink in turn".
+///
+/// Watched red by dropping the narrator from the slice in `compose::iterate`,
+/// which is what the code did until 2026-09-05; it printed *"the subscriber
+/// saw 0 event(s) and the transcript holds 12"*.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn one_emission_of_the_inner_loops_stream_reaches_the_transcript_and_a_subscriber() {
+    /// Every event handed to the subscriber, in the order it arrived.
+    #[derive(Default)]
+    struct Watching(std::sync::Mutex<Vec<zaru_core::iteration::Event>>);
+
+    impl zaru_cli::compose::Narrator for Watching {
+        fn narrate(&self, event: &zaru_core::iteration::Event) {
+            self.0
+                .lock()
+                .expect("the subscriber's lock is uncontended")
+                .push(event.clone());
+        }
+    }
+
+    let scratch = Scratch::new("one-emission");
+    let plan = one_validator("cat report.txt", "TOTAL: 3");
+    let held = HeldSecrets::none();
+    // Two iterations against a validator that never passes, so the run reaches
+    // an exhaustion and the stream carries a failure and a refinement rather
+    // than only a start and a success.
+    let provider = Provider::scripted([
+        writes_all(&[("report.txt", "TOTAL: 1")]),
+        writes_all(&[("report.txt", "TOTAL: 2")]),
+    ]);
+    let watching = Watching::default();
+
+    let (_outcome, transcript) = drive_narrating(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 2,
+            mode: Mode::Yolo,
+            confirmer: None,
+            held: &held,
+            with_inner: true,
+        },
+        &Policy,
+        Some(&watching),
+    );
+
+    let seen = watching
+        .0
+        .lock()
+        .expect("the subscriber's lock is uncontended")
+        .clone();
+
+    // The file, read back with `std::fs`' own bytes rather than through any
+    // sink, so neither side of the comparison came from the other.
+    let recorded: Vec<zaru_core::iteration::Event> = transcript
+        .lines()
+        .filter_map(
+            |line| match serde_json::from_str::<zaru_cli::session::Record>(line).ok()? {
+                zaru_cli::session::Record::Loop(event) => Some(event),
+                _ => None,
+            },
+        )
+        .collect();
+
+    assert!(
+        !recorded.is_empty(),
+        "the run wrote no iteration event at all, so this check compared two empty lists"
+    );
+    assert_eq!(
+        seen.len(),
+        recorded.len(),
+        "the subscriber saw {} event(s) and the transcript holds {}",
+        seen.len(),
+        recorded.len()
+    );
+    assert_eq!(
+        seen, recorded,
+        "the subscriber and the transcript disagree about what the loop did, so they \
+         were not handed the same values from one emission"
+    );
+
+    // The narrative is actually a narrative, rather than a start and a stop.
+    let kinds: Vec<&str> = seen
+        .iter()
+        .map(|event| match event {
+            zaru_core::iteration::Event::IterationStarted { .. } => "started",
+            zaru_core::iteration::Event::CandidateGenerated { .. } => "generated",
+            zaru_core::iteration::Event::ExecutionCompleted { .. } => "executed",
+            zaru_core::iteration::Event::ValidatorEvaluated { .. } => "evaluated",
+            zaru_core::iteration::Event::IterationFailed { .. } => "failed",
+            zaru_core::iteration::Event::RefinementConstructed { .. } => "refined",
+            zaru_core::iteration::Event::LoopSucceeded { .. } => "succeeded",
+            zaru_core::iteration::Event::LoopExhausted { .. } => "exhausted",
+        })
+        .collect();
+    for wanted in [
+        "started",
+        "generated",
+        "executed",
+        "evaluated",
+        "failed",
+        "refined",
+    ] {
+        assert!(
+            kinds.contains(&wanted),
+            "the subscriber never saw a {wanted:?} event; ADR-0028 D1 asks for what was \
+             tried, what failed and what changed, and this stream carried {kinds:?}"
+        );
+    }
 }

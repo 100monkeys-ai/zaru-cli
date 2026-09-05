@@ -647,6 +647,7 @@ pub async fn run_one(
     task: &str,
     confirmer: Option<&(dyn crate::tools::Confirm + Sync)>,
     extra: &mut [&mut dyn zaru_core::tool_call::EventSink],
+    narrator: Option<&dyn crate::compose::Narrator>,
     owed: &mut Owed,
     context: &mut SessionContext,
 ) -> Ran {
@@ -815,6 +816,10 @@ pub async fn run_one(
                     .expect("ADR-0011 D5's budget is refused at zero by its own constructor"),
             },
             &transcript_path,
+            // ADR-0028 D3's subscriber, when there is a terminal to subscribe.
+            // `None` is `zaru "<task>"`, which writes the transcript and
+            // prints an outcome and has no pane to paint.
+            narrator,
         );
 
         // ADR-0008 clause 3's slice. The transcript writer first, so that the
@@ -968,6 +973,10 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
             .as_ref()
             .map(|prompt| prompt as &(dyn crate::tools::Confirm + Sync)),
         &mut [&mut tools],
+        // ADR-0028 D3's subscriber, and there is no pane here: `zaru "<task>"`
+        // writes the transcript and prints an outcome. The narrative is on
+        // disk and `--resume` renders it; nothing paints it as it happens.
+        None,
         &mut owed,
         &mut context,
     ));

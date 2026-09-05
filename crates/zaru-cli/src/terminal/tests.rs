@@ -1144,6 +1144,181 @@ fn the_exhaustion_reason_the_pane_paints_is_the_one_the_binary_prints() {
     }
 }
 
+/// As much of a line as a 72-column pane can show.
+///
+/// The pane truncates to its width, so a check that looked for the whole
+/// sentence would fail on every line longer than the frame and would be
+/// asserting the terminal's width rather than the renderer's output.
+fn as_far_as_the_frame_shows(text: &str) -> String {
+    text.trim().chars().take(40).collect()
+}
+
+/// The inner loop's narrative is painted as it arrives, and it is on the
+/// frame — [ADR-0028] D1 and D3.
+///
+/// D1: iteration state changes "surface as plain-English events inline in the
+/// conversation: what was tried, what failed, what changed, what succeeded".
+/// D3: the harness "renders the loop's typed events per [ADR-0008] D3" and
+/// "**neither reconstructs the narrative from inference**".
+///
+/// Until 2026-09-05 nothing subscribed to that stream at all:
+/// `compose::Inner` handed `iteration::run` the transcript writer alone, so
+/// every one of these lines existed only in `transcript.jsonl` and was
+/// reachable only by `zaru --resume <id>` afterwards. A person watching a run
+/// saw the turn start and the turn end.
+///
+/// **Read off `TestBackend`, not off the shell.** `Recording` collects the
+/// rows of each painted frame out of the backend's buffer, so this asserts
+/// what a terminal would actually show rather than what the shell was told —
+/// and it paints once per event, which is what "as the work proceeds" means.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn the_inner_loops_narrative_is_painted_on_the_frame_as_it_arrives() {
+    use crate::compose::Narrator;
+    use crate::terminal::driver::PaneNarrator;
+
+    let events = every_loop_event();
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+
+    let narrator = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let narrator = PaneNarrator::over(&pane);
+        for event in &events {
+            narrator.narrate(event);
+        }
+        narrator.contended()
+    };
+    assert_eq!(
+        narrator, 0,
+        "the pane's lock was contended, which a single-threaded run cannot do; \
+         the narrator dropped {narrator} event(s)"
+    );
+
+    assert_eq!(
+        surface.frames.len(),
+        events.len(),
+        "the pane painted {} frame(s) for {} event(s); the narrative is supposed \
+         to arrive as the work proceeds rather than in one repaint at the end",
+        surface.frames.len(),
+        events.len()
+    );
+
+    // Each line on the frame painted at the moment its event arrived, rather
+    // than all of them on the last one. The pane shows the tail -- ADR-0010
+    // D4's "re-renders the last" -- so a long enough run scrolls its own
+    // opening off, and looking only at the end would assert the pane's height.
+    // This is also the stronger claim: it is what "as the work proceeds" means.
+    for (index, event) in events.iter().enumerate() {
+        let line = crate::terminal::vocabulary::loop_line(event);
+        let wanted = as_far_as_the_frame_shows(&line.text);
+        let frame = surface.frames[index].join("\n");
+        assert!(
+            frame.contains(&wanted),
+            "the frame painted when {event:?} arrived does not carry its line: \
+             expected {wanted:?} in\n{frame}"
+        );
+    }
+}
+
+/// Exhaustion, success and failure are three glyphs on the frame, not one.
+///
+/// [ADR-0008] D5 makes exhaustion "not an error and … not a success", and its
+/// trigger clause 4 asks for a test that asserts the distinction. That clause
+/// is already satisfied off the binary's exit code; this holds the same
+/// property one layer out, where a person reads it — the three registers reach
+/// the painted buffer as three different opening glyphs.
+///
+/// The glyphs themselves are not asserted, because `Register::glyph`'s own
+/// documentation says three of the six are drafted and open to Jeshua's veto.
+/// What is asserted is that no two of the three are the same, which is what
+/// D5 actually requires and what survives a change of characters.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+#[test]
+fn success_exhaustion_and_failure_reach_the_frame_as_three_different_glyphs() {
+    use crate::compose::Narrator;
+    use crate::terminal::driver::PaneNarrator;
+
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+
+    // All three through the sinks a real turn uses, so this asserts the
+    // production paths rather than a register handed straight to the pane.
+    // Success and exhaustion are the inner loop's own terminal events; the
+    // error register has no iteration event by design -- ADR-0028 D2 keeps an
+    // iteration's failure out of it -- so it comes from the outer loop's
+    // `TurnEnding::Stopped`, which is what that register is for.
+    let succeeded = zaru_core::iteration::Event::LoopSucceeded {
+        iterations: 2,
+        elapsed: core::time::Duration::from_millis(500),
+        total_elapsed: core::time::Duration::from_millis(900),
+    };
+    let exhausted = zaru_core::iteration::Event::LoopExhausted {
+        iterations: 3,
+        reason: zaru_core::iteration::ExhaustionReason::CeilingReached,
+        last_failure: None,
+    };
+    let stopped = zaru_core::tool_call::Event::TurnEnded {
+        n: 1,
+        ending: zaru_core::tool_call::TurnEnding::Stopped,
+        rounds: 1,
+        elapsed: core::time::Duration::from_millis(500),
+    };
+
+    {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let narrator = PaneNarrator::over(&pane);
+        narrator.narrate(&succeeded);
+        narrator.narrate(&exhausted);
+        let mut sink = PaneSink::over(&pane);
+        zaru_core::tool_call::EventSink::emit(&mut sink, &stopped);
+    }
+
+    let wanted = [
+        crate::terminal::vocabulary::loop_line(&succeeded).text,
+        crate::terminal::vocabulary::loop_line(&exhausted).text,
+        crate::terminal::vocabulary::turn_line(&stopped).text,
+    ];
+    let frame = surface.frames.last().expect("a frame was painted");
+    let opening: Vec<char> = wanted
+        .iter()
+        .map(|text| {
+            let wanted = as_far_as_the_frame_shows(text);
+            let row = frame
+                .iter()
+                .find(|row| row.contains(&wanted))
+                .unwrap_or_else(|| panic!("the frame has no row for {wanted:?}: {frame:?}"));
+            row.trim_start()
+                .chars()
+                .next()
+                .unwrap_or_else(|| panic!("the row for {text:?} opens with nothing"))
+        })
+        .collect();
+
+    assert_ne!(
+        opening[0], opening[1],
+        "success and exhaustion open with the same glyph {:?}, so a reader \
+         cannot tell a loop that finished from one that ran out",
+        opening[0]
+    );
+    assert_ne!(
+        opening[1], opening[2],
+        "exhaustion and a defect open with the same glyph {:?}; ADR-0008 D5 \
+         says exhaustion is not an error",
+        opening[1]
+    );
+    assert_ne!(
+        opening[0], opening[2],
+        "success and a defect open with the same glyph {:?}",
+        opening[0]
+    );
+}
+
 // -------------------------------------------------------------- ADR-0011 D3
 
 /// ADR-0011 D3's question crosses to the shell with its sentence unchanged.

@@ -317,13 +317,21 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
 
 /// One of [ADR-0008] D3's eight events, as a sentence.
 ///
+/// # One function, two callers
+///
+/// [`crate::terminal::driver::PaneNarrator`] paints a run as it happens and this
+/// module's [`Transcript`] paints a `Record::Loop` back on `--resume`, and
+/// both come through here — so what a user watches while a run is being paid
+/// and what they read afterwards cannot disagree about a word. That is the
+/// rule [`turn_line`] already follows for the outer loop.
+///
 /// The elapsed times are D6's — "each iteration renders its own elapsed time
 /// as it completes... The loop trades wall-clock for correctness and that
 /// trade must be visible while it is being paid" — and they are read off the
 /// fields that record's Update put there for exactly this.
 ///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-fn loop_line(event: &zaru_core::iteration::Event) -> Line {
+pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
     use zaru_core::iteration::Event;
 
     match event {

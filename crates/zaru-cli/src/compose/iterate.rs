@@ -367,6 +367,53 @@ pub struct Kept {
     pub written: usize,
 }
 
+/// A consumer of the inner loop's stream, reached through a shared reference.
+///
+/// [ADR-0028] D3: "The harness renders the loop's typed events per [ADR-0008]
+/// D3 … **Neither reconstructs the narrative from inference**." This is the
+/// seam that consumer arrives on.
+///
+/// # Why a port and not a second `EventSink` on a slice
+///
+/// The outer loop takes its extra consumers as `&mut [&mut dyn EventSink]`,
+/// which [`crate::compose::turn::run_one`] fills from the terminal. The inner
+/// loop cannot: [`InnerLoop::iterate`] takes `&self`, so a caller holding an
+/// `&mut` to a sink for the length of a turn has nothing to hand it. Widening
+/// `iterate` to `&mut self` is a `zaru-core` change, and [ADR-0008] D2 keeps
+/// that crate headless — the seam belongs on this side.
+///
+/// So the sink is reached by shared reference and the adapter that makes it an
+/// [`EventSink`](zaru_core::iteration::EventSink) is built **inside** the run,
+/// where the `&mut` it needs lives for exactly as long as the slice does. An
+/// implementation is therefore responsible for its own interior mutability;
+/// [`crate::terminal::driver::PaneNarrator`] holds a `Mutex` it already shared with
+/// the pane's other consumers.
+///
+/// `Sync` because [`iterate`](InnerLoop::iterate) declares
+/// `impl Future<…> + Send` and this reference is held across every await point
+/// in the run — the same bound, for the same reason, that
+/// [`EventSink`](zaru_core::iteration::EventSink) carries.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+pub trait Narrator: Sync {
+    /// Receive one event. Called once per event, in emission order.
+    fn narrate(&self, event: &zaru_core::iteration::Event);
+}
+
+/// A [`Narrator`] as the slice's [`EventSink`](zaru_core::iteration::EventSink).
+///
+/// One field and no state of its own, so nothing here can hold a lock guard
+/// across an await: `narrate` takes `&self`, returns before the next line, and
+/// whatever it locked is released inside it.
+struct Narrating<'a>(&'a dyn Narrator);
+
+impl zaru_core::iteration::EventSink for Narrating<'_> {
+    fn emit(&mut self, event: &zaru_core::iteration::Event) {
+        self.0.narrate(event);
+    }
+}
+
 /// [ADR-0009] D4's inner loop, as the outer loop reaches it.
 ///
 /// # The typed error is kept rather than widened
@@ -385,26 +432,49 @@ pub struct Kept {
 ///
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-#[derive(Debug)]
 pub struct Inner<'a, G, X, V, P, K, R: ?Sized> {
     ports: Ports<'a, G, X, V, P, K, R>,
     limits: Limits,
     transcript: &'a std::path::Path,
+    narrator: Option<&'a dyn Narrator>,
     kept: std::sync::Mutex<Kept>,
+}
+
+/// Written rather than derived, because `Narrator` is a trait object and a
+/// derived `Debug` would either require every implementation to be `Debug` or
+/// bound this impl on six type parameters that have no reason to be. What a
+/// reader wants from it is the limits and whether anything is subscribed.
+impl<G, X, V, P, K, R: ?Sized> core::fmt::Debug for Inner<'_, G, X, V, P, K, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Inner")
+            .field("limits", &self.limits)
+            .field("transcript", &self.transcript)
+            .field("narrating", &self.narrator.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a, G, X, V, P, K, R: ?Sized> Inner<'a, G, X, V, P, K, R> {
     /// Run the iteration loop over these ports, under these limits.
+    ///
+    /// `narrator` is [ADR-0028] D3's subscriber, and `None` is the composition
+    /// with no terminal — `zaru "<task>"` writing its transcript and printing
+    /// an outcome. See [`Narrator`] for why it is a port taking `&self` rather
+    /// than a second `EventSink` on a slice.
+    ///
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     #[must_use]
     pub fn over(
         ports: Ports<'a, G, X, V, P, K, R>,
         limits: Limits,
         transcript: &'a std::path::Path,
+        narrator: Option<&'a dyn Narrator>,
     ) -> Self {
         Self {
             ports,
             limits,
             transcript,
+            narrator,
             kept: std::sync::Mutex::new(Kept::default()),
         }
     }
@@ -442,6 +512,17 @@ where
         let mut events = Iterations::appending_to(self.transcript)
             .map_err(|failure| PortFailure::new(failure.to_string()))?;
 
+        // ADR-0008 clause 3's slice, for the loop whose eight events D3
+        // actually enumerates. The transcript writer first, for the reason
+        // `compose::turn` gives on the outer loop's slice: a renderer that
+        // painted an event the file does not hold would be showing the user
+        // something a resume could not reproduce.
+        let mut narrating = self.narrator.map(Narrating);
+        let mut sinks: Vec<&mut dyn zaru_core::iteration::EventSink> = vec![&mut events];
+        if let Some(narrating) = narrating.as_mut() {
+            sinks.push(narrating);
+        }
+
         let outcome = zaru_core::iteration::run(
             task,
             self.limits,
@@ -453,9 +534,11 @@ where
                 clock: self.ports.clock,
                 redactor: self.ports.redactor,
             },
-            &mut [&mut events],
+            &mut sinks,
         )
         .await;
+        drop(sinks);
+        drop(narrating);
 
         let (written, transcript) = events.into_report();
         let mut kept = self
