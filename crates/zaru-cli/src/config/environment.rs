@@ -128,25 +128,15 @@ pub fn from_process(schema: &Schema) -> Result<Table, ConfigRefused> {
 
 /// The declared variable name nearest to one nothing declares.
 ///
-/// The same edit distance and the same lexical tie-break
-/// [`Schema::nearest`](crate::config::schema::Schema::nearest) uses, over the
-/// variable names rather than the keys — because the vocabulary a person is
-/// reading here is variable names, and suggesting a dotted key for a mistyped
-/// variable is a remedy they cannot apply.
+/// The same metric [`Schema::nearest`](crate::config::schema::Schema::nearest)
+/// uses, over the variable names rather than the keys — because the vocabulary
+/// a person is reading here is variable names, and suggesting a dotted key for
+/// a mistyped variable is a remedy they cannot apply.
+///
+/// Until 2026-09-05 this built a throwaway [`Schema`] out of the names in
+/// order to reach that metric, which meant a name `Key::new` refused was a
+/// candidate silently dropped. It calls the metric directly now — see
+/// [`crate::config::nearest`].
 fn nearest_variable(names: &BTreeMap<String, &Key>, offered: &str) -> Option<String> {
-    let mut schema = Schema::new();
-    // The names are keys' worth of text and are re-validated here rather than
-    // assumed: `Key::new` refuses nothing a variable name can contain, so the
-    // conversion cannot lose a candidate silently.
-    let mut candidates: Vec<&String> = names.keys().collect();
-    candidates.sort();
-    for name in candidates {
-        if let Ok(key) = Key::new(name) {
-            schema = schema.with(
-                key,
-                crate::config::schema::Field::free(crate::config::schema::FieldKind::Text),
-            );
-        }
-    }
-    schema.nearest(offered).map(|key| key.as_str().to_owned())
+    crate::config::nearest::nearest(names.keys().map(String::as_str), offered).map(str::to_owned)
 }

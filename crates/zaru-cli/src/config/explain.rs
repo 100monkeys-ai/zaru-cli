@@ -128,10 +128,17 @@ fn render(value: &Value) -> String {
 }
 
 /// What D3 prints where a layer set nothing.
-const NOT_SET: &str = "(not set)";
+///
+/// `pub(crate)` since 2026-09-05: [ADR-0012](https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction)'s
+/// own documentation says `zaru models` renders an unresolved alias "the way
+/// ADR-0014 D3's block renders `(not set)`", so the two surfaces must use one
+/// spelling rather than two that agree today.
+pub(crate) const NOT_SET: &str = "(not set)";
 
 /// What D3 puts beside the layer the value came from.
-const EFFECTIVE_MARKER: &str = "← effective";
+///
+/// `pub(crate)` for the reason [`NOT_SET`] is.
+pub(crate) const EFFECTIVE_MARKER: &str = "← effective";
 
 impl fmt::Display for Explanation {
     /// D3's block, exactly.

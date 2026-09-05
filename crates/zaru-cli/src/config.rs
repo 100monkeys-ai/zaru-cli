@@ -63,6 +63,7 @@ pub mod explain;
 pub mod home;
 pub mod key;
 pub mod layer;
+pub(crate) mod nearest;
 pub mod port;
 pub mod refusal;
 pub mod resolve;

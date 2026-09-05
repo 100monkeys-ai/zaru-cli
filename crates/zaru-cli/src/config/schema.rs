@@ -257,46 +257,17 @@ impl Schema {
 
     /// The declared key nearest to one that is not declared.
     ///
-    /// Levenshtein edit distance over characters, **ties broken lexically**:
-    /// [`Schema::keys`] iterates a `BTreeMap` in lexical order and the
-    /// comparison is strictly-less-than, so the first of several equally near
-    /// keys is the lexically smallest and the answer does not depend on
-    /// insertion order.
+    /// The metric is `config::nearest::nearest`, which this crate's three
+    /// vocabularies share — see that module for why it is one function.
+    /// **Ties are broken lexically**: [`Schema::keys`] iterates a `BTreeMap`
+    /// in lexical order and that function takes the first of several equally
+    /// near candidates, so the answer does not depend on insertion order.
     ///
     /// Returns `None` only for an empty schema. D5 names no distance
     /// threshold, so a key resembling nothing still gets the nearest one.
     #[must_use]
     pub fn nearest(&self, offered: &str) -> Option<&Key> {
-        let mut best: Option<(usize, &Key)> = None;
-        for candidate in self.keys() {
-            let distance = edit_distance(offered, candidate.as_str());
-            if best.is_none_or(|(shortest, _)| distance < shortest) {
-                best = Some((distance, candidate));
-            }
-        }
-        best.map(|(_, key)| key)
+        let found = crate::config::nearest::nearest(self.keys().map(Key::as_str), offered)?;
+        self.fields.keys().find(|key| key.as_str() == found)
     }
-}
-
-/// Levenshtein edit distance between two strings, over characters.
-///
-/// Two rows rather than a full matrix; the strings here are configuration
-/// keys, so the cost is irrelevant and the shorter code is the readable one.
-fn edit_distance(left: &str, right: &str) -> usize {
-    let right: Vec<char> = right.chars().collect();
-    let mut previous: Vec<usize> = (0..=right.len()).collect();
-    let mut current = vec![0usize; right.len() + 1];
-
-    for (row, left_char) in left.chars().enumerate() {
-        current[0] = row + 1;
-        for (column, right_char) in right.iter().enumerate() {
-            let substitution = usize::from(left_char != *right_char);
-            current[column + 1] = (previous[column] + substitution)
-                .min(previous[column + 1] + 1)
-                .min(current[column] + 1);
-        }
-        core::mem::swap(&mut previous, &mut current);
-    }
-
-    previous[right.len()]
 }
