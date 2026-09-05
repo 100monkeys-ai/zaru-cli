@@ -388,3 +388,36 @@ pub fn provider_keys(store: &crate::credentials::CredentialStore) -> Vec<String>
         })
         .collect()
 }
+
+/// [ADR-0012] D7's "per session on exit".
+///
+/// D7: "Every request records prompt tokens, completion tokens, and — where
+/// the provider publishes pricing — cost. Per turn in the status line, per
+/// session on exit." This is the second half. The first is the status line,
+/// which is `zaru-tui`'s.
+///
+/// **Nothing here computes a cost.** `TokenUsage` carries one only when a
+/// provider reported it, and `providers::usage` refuses to invent a rate: "no
+/// rate, no currency, no rounding". So a run against a provider that publishes
+/// no pricing prints two numbers and their sum, and says nothing about money.
+///
+/// The total is [`TokenUsage`]'s own, not this function's arithmetic: the
+/// `gemini` client's mapping makes it equal the provider's own
+/// `totalTokenCount`, including the thinking tokens D7 knows nothing about,
+/// and a sum computed here would be a second answer that could disagree.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [`TokenUsage`]: crate::providers::TokenUsage
+#[must_use]
+pub fn usage(usage: &crate::providers::TokenUsage) -> String {
+    let mut line = format!(
+        "tokens: {} prompt + {} completion = {}",
+        usage.prompt_tokens(),
+        usage.completion_tokens(),
+        usage.prompt_tokens() + usage.completion_tokens(),
+    );
+    if let Some(cost) = usage.cost() {
+        line.push_str(&format!(" · {cost}"));
+    }
+    line
+}

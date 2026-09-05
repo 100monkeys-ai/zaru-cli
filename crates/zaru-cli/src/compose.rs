@@ -70,12 +70,41 @@ pub mod fetch;
 pub mod model;
 pub mod prose;
 pub mod sink;
+pub mod turn;
 
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
 pub use fetch::NoFetch;
 pub use model::Classifying;
 pub use sink::Records;
+pub use turn::{KINDS_WITH_A_CLIENT, Ran};
+
+/// The inner loop this composition never supplies.
+///
+/// [ADR-0009] D4's branch takes an `Option<&I>` and `I` still has to be a
+/// type. This is the type: **uninhabited**, so there is no value of it to
+/// pass and `None` is the only thing the branch can be given. A struct with a
+/// panicking body would be a stub that could be constructed by mistake; an
+/// empty enum cannot.
+///
+/// See the module documentation for why the branch is `None`: `iteration::run`
+/// needs a `Generator` and an `Executor`, and both are questions ADR-0012 and
+/// [ADR-0008] reserve to themselves.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+#[derive(Debug)]
+pub enum NoInnerLoop {}
+
+impl zaru_core::tool_call::InnerLoop for NoInnerLoop {
+    /// Unreachable: there is no value of `Self` to have called it on.
+    async fn iterate(
+        &self,
+        _task: &str,
+    ) -> Result<zaru_core::iteration::Outcome, zaru_core::iteration::PortFailure> {
+        match *self {}
+    }
+}
 
 #[cfg(test)]
 mod tests;

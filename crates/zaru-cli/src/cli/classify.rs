@@ -301,6 +301,42 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// A model resolved and this machine holds no provider key at all.
+    ///
+    /// **User-correctable, and the remedy is a command this binary runs.**
+    /// They configured a model, which is half of what a turn needs; the other
+    /// half is [ADR-0007]'s store, and `zaru providers keys add <kind>` is the
+    /// surface that fills it. It names the kinds this build can actually
+    /// reach rather than all five of [ADR-0012] D3's, because a remedy naming
+    /// a kind with no client is a remedy whose reader cannot act.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    #[must_use]
+    pub fn no_key_for(kinds: &[ProviderKind], model: &ModelId) -> Classified {
+        let named: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(format!(
+                "the alias `{alias}` resolves to {model:?} and this machine holds no provider \
+                 key, so there is nothing to authenticate the request with. The key is never in \
+                 configuration -- ADR-0014 D4 -- and never in an argument, because an argument is \
+                 in the shell's history and in `ps`",
+                alias = ModelAlias::Default,
+                model = model.as_str(),
+            )),
+            remedy: run(
+                &format!(
+                    "store one for the kind this build can reach ({})",
+                    named.join(", ")
+                ),
+                &format!(
+                    "providers keys add {}",
+                    kinds.first().map_or("gemini", |kind| kind.as_str())
+                ),
+            ),
+        }
+    }
+
     /// A model resolved and this build carries no client that can reach it.
     ///
     /// See [`crate::cli::run::Run`]'s own documentation for why this is D1's
@@ -319,6 +355,41 @@ impl<'a> Surface<'a> {
                 model = model.as_str(),
                 gemini = ProviderKind::Gemini,
                 remaining = ProviderKind::ALL.len() - 1,
+                total = ProviderKind::ALL.len(),
+            )),
+            offered_by: crate::runtime::Tier::Bare,
+        }
+    }
+
+    /// This machine holds provider keys, and none is for a kind with a client.
+    ///
+    /// The sibling of [`Surface::no_key_for`], and the two are different
+    /// classes because what the reader can do differs: a machine with no key
+    /// has one to add, and a machine holding a key for `anthropic` has
+    /// configured something correctly that this build does not carry. Naming
+    /// which keys are held is what tells the two apart for the reader as well.
+    #[must_use]
+    pub fn no_client_for_the_kinds_held(
+        &self,
+        model: &ModelId,
+        held: &[ProviderKind],
+    ) -> Classified {
+        let named: Vec<&str> = held.iter().map(|kind| kind.as_str()).collect();
+        let reachable: Vec<&str> = crate::compose::KINDS_WITH_A_CLIENT
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
+        Classified::Capability {
+            statement: Statement::sanitised(format!(
+                "the alias `{alias}` resolves to {model:?}, and the {count} provider key(s) this \
+                 machine holds ({names}) are for kinds this build carries no client for. It \
+                 carries {reachable}, of ADR-0012 D3's {total}. Nothing you can configure changes \
+                 that: the client has to be written",
+                alias = ModelAlias::Default,
+                model = model.as_str(),
+                count = held.len(),
+                names = named.join(", "),
+                reachable = reachable.join(", "),
                 total = ProviderKind::ALL.len(),
             )),
             offered_by: crate::runtime::Tier::Bare,
@@ -694,4 +765,389 @@ impl<'a> Surface<'a> {
             }
         }
     }
+}
+
+// --- What a turn is refused with, and what it ends as ----------------------
+//
+// Everything below is raised by [`crate::compose::turn`] rather than by the
+// parser, and it is here for the reason the rest of this module is: the
+// provenance is known at the surface, and `failure::classify` maps only the
+// enums whose class a record states outright. **`failure::classify` is not
+// edited**, and neither are the four enums that record deliberately leaves
+// unmapped.
+
+impl Surface<'_> {
+    /// A `./zaru.toml` this harness could not read.
+    ///
+    /// **User-correctable**, by the reading [ADR-0014]'s Update settled for the
+    /// two configuration files: this harness is not the writer of a manifest
+    /// except through `zaru init`, which writes a constant a check parses, so a
+    /// file that does not read back is a file a person edited. The refusal
+    /// carries the reader's own words, which name the path and the position
+    /// and never the line's contents.
+    ///
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    #[must_use]
+    pub fn manifest(refusal: &crate::manifest::ManifestNotRead) -> Classified {
+        correctable(
+            refusal,
+            act(
+                "open the file at the position named and fix it, or delete it: a project with no \
+                 manifest runs the tool-call loop"
+                    .to_owned(),
+            ),
+        )
+    }
+
+    /// A project declared validators and this build has no iteration loop.
+    ///
+    /// # Why this refuses rather than running the outer loop alone
+    ///
+    /// [ADR-0009] D4 branches on the manifest: a project with validators runs
+    /// the iteration loop, and one without runs the tool-call loop only.
+    /// Running the tool-call loop over a project that **declared** validators
+    /// would be reporting work as done that nothing checked — D2's silent
+    /// green arriving one layer up, in the one place that record exists to
+    /// prevent it.
+    ///
+    /// # Why the capability class, and where the misfit is recorded
+    ///
+    /// It is not the user's: they wrote a manifest the harness itself tells
+    /// them to write, and no edit of theirs short of deleting their validators
+    /// fixes it. It is not environmental and it is not a bug. So it is D1's
+    /// capability class at exit 4, which is the same reading — and the same
+    /// misfit — [ADR-0016]'s open question already records for a missing
+    /// provider: `Classified::Capability` carries a `Tier` and no tier is what
+    /// is wrong. **D1 still has no row for "not built yet"**, and this is its
+    /// second instance rather than a new question.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn no_inner_loop(declared: usize) -> Classified {
+        Classified::Capability {
+            statement: Statement::sanitised(format!(
+                "this project declares {declared} validator(s), and ADR-0009 D4 says a project \
+                 that declares them runs the iteration loop. This build has no iteration loop to \
+                 run: ADR-0008's `Generator` and `Executor` have no implementation, and what an \
+                 execution is when a candidate is an edit rather than a script is a decision no \
+                 record has made. Running the tool-call loop instead would report work as done \
+                 that nothing checked, which is what declaring a validator exists to prevent"
+            )),
+            offered_by: crate::runtime::Tier::Bare,
+        }
+    }
+
+    /// A project set an endpoint this harness cannot use.
+    #[must_use]
+    pub fn endpoint(kind: ProviderKind, refusal: &crate::providers::EndpointRefused) -> Classified {
+        correctable(
+            refusal,
+            act(format!(
+                "set `{}` to an origin, or unset it and the built-in one is used",
+                kind.endpoint_key()
+            )),
+        )
+    }
+
+    /// The provider client could not be built at all.
+    ///
+    /// Environmental and never the user's: the only way
+    /// [`GeminiClient::new`](crate::providers::GeminiClient::new) fails is a
+    /// machine with no usable TLS backend, which is what that constructor's
+    /// own documentation says. Nothing the reader types fixes it, so the wait
+    /// says so.
+    #[must_use]
+    pub fn provider(failure: &crate::providers::GeminiFailure) -> Classified {
+        Classified::Environmental {
+            statement: Statement::sanitised(failure.to_string()),
+            wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                "this is about the machine rather than about the provider, so waiting changes \
+                 nothing"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// The model says it cannot call tools.
+    ///
+    /// [ADR-0012] clause 3's configuration-time half, met on the real path for
+    /// the first time: the refusal is raised **before** the loop starts,
+    /// because `ToolCalling::required` is what produces the value `run` needs
+    /// and there is no way to start a turn without it.
+    ///
+    /// User-correctable, and deliberately not D1's capability class, for the
+    /// reason `providers::capability` already gives: "no tier is what is
+    /// wrong, since every tier can reach a provider that calls tools, so
+    /// naming one would be a lie the type would force".
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    #[must_use]
+    pub fn model_cannot_call_tools(
+        refusal: &zaru_core::tool_call::ModelCannotCallTools,
+    ) -> Classified {
+        correctable(
+            refusal,
+            act(format!(
+                "set `{}` to a model whose provider calls tools",
+                ModelAlias::Default.key()
+            )),
+        )
+    }
+
+    /// A session id could not be minted.
+    ///
+    /// Environmental: [`SessionId::mint`](crate::session::SessionId::mint)
+    /// fails when the machine's entropy source cannot be read, which is
+    /// neither the reader's doing nor the harness's.
+    #[must_use]
+    pub fn session_not_started(failure: &crate::session::MintFailure) -> Classified {
+        Classified::Environmental {
+            statement: Statement::sanitised(format!("a session could not be started: {failure}")),
+            wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                "an entropy source that cannot be read does not begin answering on its own"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// `meta.toml` could not be written.
+    ///
+    /// **A defect, and this is the reading [ADR-0010]'s Status tracking took
+    /// for exactly this file**: "its only writer is this harness, so a
+    /// malformed one stays a defect — the argument [ADR-0016]'s Update already
+    /// applies to `StoreError::Malformed`. The two are told apart by which
+    /// port failed, never by anything on the value."
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn meta(failure: &crate::session::MetaFailure, session: SessionEvidence) -> Classified {
+        let _ = failure;
+        undecided(self_version(), self_report_at(), session, line!())
+    }
+
+    /// The checkpoint could not be written.
+    ///
+    /// A defect for the same reason `meta.toml` is: [ADR-0010] D3's
+    /// `context.json` has exactly one writer and it is this harness.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    #[must_use]
+    pub fn checkpoint(
+        failure: &crate::session::CheckpointError,
+        session: SessionEvidence,
+    ) -> Classified {
+        let _ = failure;
+        undecided(self_version(), self_report_at(), session, line!())
+    }
+
+    /// The transcript could not be opened or appended to.
+    ///
+    /// A defect, and the class is load-bearing rather than a fallback: this
+    /// harness is the transcript's only writer, [ADR-0010] D2 makes it the
+    /// replayable record, and a turn whose record is incomplete has not
+    /// recorded what happened however the turn itself ended.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    #[must_use]
+    pub fn transcript(
+        failure: &crate::session::TranscriptError,
+        session: SessionEvidence,
+    ) -> Classified {
+        let _ = failure;
+        undecided(self_version(), self_report_at(), session, line!())
+    }
+
+    /// A child's environment could not be built from this process's own.
+    ///
+    /// A defect: `Environment::inherited_minimum` reads five names this
+    /// harness names itself and refuses a value carrying a NUL, and a `PATH`
+    /// with a NUL in it is a process this harness was started with rather than
+    /// anything a reader typed at it. Carried rather than unwrapped so that the
+    /// day it fires, a maintainer gets a report rather than a panic.
+    #[must_use]
+    pub fn child_environment(refusal: &crate::process::NotForAChild) -> Classified {
+        let _ = refusal;
+        undecided(
+            self_version(),
+            self_report_at(),
+            SessionEvidence::NoSessionExists,
+            line!(),
+        )
+    }
+
+    /// The allowlist a user's configuration set could not be read.
+    #[must_use]
+    pub fn allowlist(refusal: &crate::tools::AllowlistRefused) -> Classified {
+        correctable(
+            refusal,
+            run(
+                "read what the harness has for that key",
+                &format!("config explain {}", crate::tools::allowlist::KEY),
+            ),
+        )
+    }
+
+    /// A turn that ended in a port failure.
+    ///
+    /// # This is where ADR-0016's own missing clause is answered
+    ///
+    /// That record's Update: "**A port failure's class belongs to the port's
+    /// implementation, not to the value it hands back.**" `PortFailure` carries
+    /// a sentence and no discriminant, so the class cannot be read off the
+    /// error. It does not have to be: the port kind on
+    /// [`ToolCallError`](zaru_core::tool_call::ToolCallError) says *which*
+    /// implementation failed, and for the model the composition kept the typed
+    /// [`GeminiFailure`](crate::providers::GeminiFailure) that produced it.
+    ///
+    /// So the model's failures are classified by provenance, exactly as that
+    /// record's own table for this client states — a rejected key is the
+    /// user's, a refused request shape and an unreadable body are ours, a 5xx
+    /// or an unopened socket is neither's — and every other port's failure is
+    /// carried as a **defect**, which is the recorded state rather than a
+    /// gap: `PortFailure`, `SourceFailure` and `OverflowFailure` "each carry a
+    /// `String` by design, and that, rather than the absence of an
+    /// implementation, is what will keep them unmapped".
+    #[must_use]
+    pub fn turn(
+        &self,
+        error: &zaru_core::tool_call::ToolCallError,
+        provider: Option<&crate::providers::GeminiFailure>,
+        session: SessionEvidence,
+    ) -> Classified {
+        use zaru_core::tool_call::{PortKind, ToolCallError};
+
+        let ToolCallError::Port { port, .. } = error;
+        match (port, provider) {
+            (PortKind::Model, Some(failure)) => self.provider_failure(failure, session),
+            // A model failure with no typed value kept is unreachable: the
+            // adapter stores one on every `Err`. Carried as a defect rather
+            // than unwrapped, because the day it is reachable the adapter has
+            // stopped keeping them and that is a bug in this crate.
+            (PortKind::Model, None)
+            | (PortKind::Tools | PortKind::ContextPolicy | PortKind::InnerLoop, _) => {
+                undecided(self.version, self.report_at, session, line!())
+            }
+        }
+    }
+
+    /// One provider failure, in the class [ADR-0016]'s own table gives it.
+    ///
+    /// The table is that record's Status tracking of 2026-09-05, written when
+    /// the client landed and measured against the live endpoint. This is a
+    /// wildcard-free match over the five, so a sixth shape fails to compile
+    /// here rather than taking a neighbouring class.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn provider_failure(
+        &self,
+        failure: &crate::providers::GeminiFailure,
+        session: SessionEvidence,
+    ) -> Classified {
+        use crate::providers::GeminiFailure as F;
+        match failure {
+            // "the API rejected the key -- user-correctable: they can replace
+            // it, and the remedy names the alias and the kind".
+            F::CredentialRejected { kind, .. } => correctable(
+                failure,
+                run("replace the key", &format!("providers keys add {kind}")),
+            ),
+            // "5xx, or the socket never opened -- environmental: nothing the
+            // reader typed caused it and nothing they type fixes it."
+            //
+            // **No retry policy is stated and none is invented.** ADR-0016 D4
+            // has environmental failures retry with backoff; no record gives
+            // the numbers, `providers::gemini` takes none, and clause 5's own
+            // account says both "arrive from the caller and neither has a
+            // default". So the wait says waiting may help and names no policy,
+            // rather than this module choosing one.
+            F::Unavailable { .. } => Classified::Environmental {
+                statement: Statement::sanitised(failure.to_string()),
+                wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                    "this harness has no retry policy: ADR-0016 D4 says an environmental failure \
+                     retries with backoff and no record states the numbers, so it stops here and \
+                     says so rather than retrying on a policy nobody chose. Running the same \
+                     command again is the retry"
+                        .to_owned(),
+                )),
+            },
+            // "the API refused the request's shape -- defect: this harness
+            // built the request"; "a response body the client cannot read --
+            // defect: the mapping is ours"; "a tool descriptor whose schema is
+            // not JSON -- defect: the harness supplied the descriptor".
+            F::RequestRefused { .. } | F::Unreadable { .. } | F::ToolSchemaUnreadable { .. } => {
+                undecided(self.version, self.report_at, session, line!())
+            }
+        }
+    }
+
+    /// A turn the model stopped without answering.
+    ///
+    /// [ADR-0016] D5's `1`, "the work failed", and D1 row 1's "not an error --
+    /// this is the loop working". Both are true and the mapping says so where
+    /// it is written: the mechanism operated, and the outcome is what a
+    /// wrapping CI job needs.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn turn_stopped(reason: &str, rounds: u32) -> Classified {
+        Classified::Expected(crate::failure::Expected::new(Statement::sanitised(
+            format!(
+                "the model stopped after {rounds} exchange(s) without answering: {reason}. That \
+                 is the provider's own word for why, carried through rather than interpreted"
+            ),
+        )))
+    }
+
+    /// A turn that reached its ceiling with the model still asking for tools.
+    ///
+    /// [ADR-0008] D5: exhaustion "is not an error and is not a success … the
+    /// harness presents what was tried and where it stopped rather than either
+    /// claiming completion or reporting a generic failure". So it names both
+    /// numbers and the ceiling it hit.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    #[must_use]
+    pub fn turn_exhausted(rounds: u32, calls: u32) -> Classified {
+        Classified::Expected(crate::failure::Expected::new(Statement::sanitised(
+            format!(
+                "the turn reached its ceiling of {rounds} exchange(s) with the model still asking \
+                 for tools, having run {calls} tool call(s). Nothing failed and nothing \
+                 completed: this is where it stopped"
+            ),
+        )))
+    }
+
+    /// A turn whose body was an iteration.
+    ///
+    /// Unreachable: this composition supplies no inner loop, so no turn can
+    /// end this way, and a project that declared validators was refused before
+    /// the session was created. Reported as a defect rather than unwrapped, so
+    /// that the day an inner loop exists this arm is what a reader lands on.
+    #[must_use]
+    pub fn turn_iterated() -> Classified {
+        undecided(
+            self_version(),
+            self_report_at(),
+            SessionEvidence::NoSessionExists,
+            line!(),
+        )
+    }
+}
+
+/// This binary's version, for the associated functions that have no `self`.
+///
+/// The methods above take the version off `Surface`, which is where a binary's
+/// own package metadata arrives. Four of the functions here are associated
+/// rather than methods because nothing about the failure they report is the
+/// surface's, and they read the same metadata this crate is built from.
+const fn self_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// Where a defect is reported. See [`self_version`].
+const fn self_report_at() -> &'static str {
+    env!("CARGO_PKG_REPOSITORY")
 }
