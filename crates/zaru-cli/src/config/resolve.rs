@@ -254,8 +254,17 @@ fn validate(schema: &Schema, layer: Layer, document: Table) -> Result<Table, Con
 /// are wrong together.
 ///
 /// A ceiling the layers below never granted is not raised by being set: there
-/// is nothing to exceed. In practice layer 1 always carries a default, per
-/// [ADR-0001] D3.
+/// is nothing to exceed.
+///
+/// **This said "in practice layer 1 always carries a default, per ADR-0001
+/// D3" until 2026-09-05, and it never did.** D3's cell is a function of the
+/// resolved tier, the inference axis and the placement, all three of which
+/// *this* fold produces, so a built-in row would need the fold's answer before
+/// the fold ran. The cell is applied after the fold instead — see
+/// [`crate::runtime::ceiling_for`], which also records why a layer-1 row would
+/// refuse `zaru init`'s own template. So the sentence above is the whole rule:
+/// a project may lower what the layers granted, and where none granted
+/// anything there is nothing to exceed.
 ///
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers

@@ -27,8 +27,8 @@
 //!
 //! **What is not here is a transport.** [`session::Endpoint`] is a port with
 //! no implementation in this crate's product tree, exactly as `zaru-core`
-//! declares five ports it does not implement and `zaru-cli` declares sealing
-//! as a sixth. The streamable HTTP transport [ADR-0103] names waits for an arc
+//! declares ports it does not implement and `zaru-cli` declares sealing as
+//! another. The streamable HTTP transport [ADR-0103] names waits for an arc
 //! that holds a token and can prove it works; it reaches this crate through
 //! `rmcp`'s own `transport-streamable-http-client-reqwest` feature and needs no
 //! new row in [ADR-0003] D2's table, because `reqwest` is already in it.

@@ -81,8 +81,9 @@
 //! until 2026-09-05 the two could not both be satisfied and **no inhabited
 //! implementation of `InnerLoop` could exist**. It went unnoticed because
 //! none did: `tool_call::run` is awaited straight from `block_on` with no
-//! `Send` bound on the path, and `NoInnerLoop` satisfied the bound vacuously
-//! by being uninhabited.
+//! `Send` bound on the path, and the uninhabited stand-in this composition
+//! passed at that branch satisfied the bound vacuously — it is deleted now
+//! that there is something to pass instead.
 //!
 //! [`EventSink`](zaru_core::iteration::EventSink) now carries `Send`. Every
 //! implementation in both crates already did — the whole workspace compiled

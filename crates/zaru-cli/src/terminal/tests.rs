@@ -192,6 +192,29 @@ impl zaru_core::redaction::Redactor for Nothing {
 /// `std::fs` and the pane's lines are read off the shell — and both are
 /// compared against the events, so an implementation that painted the file
 /// rather than the emission could not satisfy it.
+/// An inner loop nothing supplies, for the turns these checks drive.
+///
+/// `zaru-cli` carried one of these in its **product** tree until 2026-09-05,
+/// when [ADR-0009] D4's branch got a real implementation and the uninhabited
+/// stand-in was deleted with the refusal it stood beside. A check that drives
+/// `tool_call::run` over a turn with no validators still has to name a type
+/// for the `None`, and an empty enum is the one that cannot be constructed by
+/// mistake — which is why it is here, in the test tree, rather than back in
+/// the product one.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+enum NoInner {}
+
+impl zaru_core::tool_call::InnerLoop for NoInner {
+    /// Unreachable: there is no value of `Self` to have called it on.
+    async fn iterate(
+        &self,
+        _task: &str,
+    ) -> Result<zaru_core::iteration::Outcome, zaru_core::iteration::PortFailure> {
+        match *self {}
+    }
+}
+
 #[test]
 fn one_emission_reaches_the_transcript_and_the_pane() {
     use zaru_core::tool_call::{Ports, Start, ToolCalling};
@@ -228,7 +251,7 @@ fn one_emission_reaches_the_transcript_and_the_pane() {
                 clock: &clock,
                 redactor: &Nothing,
             },
-            Option::<&crate::compose::NoInnerLoop>::None,
+            Option::<&NoInner>::None,
             &mut sinks,
         ));
         assert_eq!(

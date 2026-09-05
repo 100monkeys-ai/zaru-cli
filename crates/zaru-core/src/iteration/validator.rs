@@ -20,7 +20,7 @@
 //! through [`ValidatorRunner`], and the two `expect` kinds that need a crate
 //! [ADR-0003] D2's table does not name leave through [`PatternMatch`] and
 //! [`SchemaValidate`]. **Nothing in this crate's product tree implements any
-//! of the three**, exactly as nothing implements the loop's five ports.
+//! of the three**, exactly as nothing here implements the loop's own ports.
 //!
 //! # Three vocabularies that are not this one
 //!

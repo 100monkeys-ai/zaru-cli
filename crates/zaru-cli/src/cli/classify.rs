@@ -820,42 +820,52 @@ impl Surface<'_> {
         )
     }
 
-    /// A project declared validators and this build has no iteration loop.
+    /// A project's declared validators do not form a plan.
     ///
-    /// # Why this refuses rather than running the outer loop alone
+    /// A cycle, an unknown prerequisite, or two validators with one name —
+    /// all of them [ADR-0009] D2's `after` being wrong in a file the user can
+    /// open and edit, which is [ADR-0016] D1 row 2 exactly.
     ///
-    /// [ADR-0009] D4 branches on the manifest: a project with validators runs
-    /// the iteration loop, and one without runs the tool-call loop only.
-    /// Running the tool-call loop over a project that **declared** validators
-    /// would be reporting work as done that nothing checked — D2's silent
-    /// green arriving one layer up, in the one place that record exists to
-    /// prevent it.
-    ///
-    /// # Why the capability class, and where the misfit is recorded
-    ///
-    /// It is not the user's: they wrote a manifest the harness itself tells
-    /// them to write, and no edit of theirs short of deleting their validators
-    /// fixes it. It is not environmental and it is not a bug. So it is D1's
-    /// capability class at exit 4, which is the same reading — and the same
-    /// misfit — [ADR-0016]'s open question already records for a missing
-    /// provider: `Classified::Capability` carries a `Tier` and no tier is what
-    /// is wrong. **D1 still has no row for "not built yet"**, and this is its
-    /// second instance rather than a new question.
+    /// **This replaces `Surface::no_inner_loop`**, deleted 2026-09-05 when the
+    /// iteration loop was wired. That refusal said "this build has no
+    /// iteration loop to run"; it has one, so the sentence went with the
+    /// condition rather than being left to become false.
     ///
     /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     #[must_use]
-    pub fn no_inner_loop(declared: usize) -> Classified {
-        Classified::Capability {
-            statement: Statement::sanitised(format!(
-                "this project declares {declared} validator(s), and ADR-0009 D4 says a project \
-                 that declares them runs the iteration loop. This build has no iteration loop to \
-                 run: ADR-0008's `Generator` and `Executor` have no implementation, and what an \
-                 execution is when a candidate is an edit rather than a script is a decision no \
-                 record has made. Running the tool-call loop instead would report work as done \
-                 that nothing checked, which is what declaring a validator exists to prevent"
-            )),
-            offered_by: crate::runtime::Tier::Bare,
+    pub fn validator_plan(refusal: &zaru_core::iteration::validator::PlanRefused) -> Classified {
+        correctable(
+            refusal,
+            act("open `./zaru.toml` and fix the `after` list it names".to_owned()),
+        )
+    }
+
+    /// No iteration ceiling could be resolved.
+    ///
+    /// Two classes, and which one is the difference between a value the reader
+    /// set and a row [ADR-0001] D3 does not have. A number they typed is
+    /// theirs to change; a tier that offers no loop for their placement is
+    /// [ADR-0016] D1 row 4's capability, and the remedy names the key that
+    /// overrides it.
+    ///
+    /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn iteration_ceiling(refusal: &crate::runtime::CeilingRefused) -> Classified {
+        match refusal {
+            crate::runtime::CeilingRefused::NotACount { key, .. }
+            | crate::runtime::CeilingRefused::WrongShape { key, .. } => correctable(
+                refusal,
+                run(
+                    "see every layer's value for it",
+                    &format!("config explain {key}"),
+                ),
+            ),
+            crate::runtime::CeilingRefused::NoCell { tier, .. } => Classified::Capability {
+                statement: Statement::sanitised(refusal.to_string()),
+                offered_by: *tier,
+            },
         }
     }
 
@@ -1071,6 +1081,12 @@ impl Surface<'_> {
             // adapter stores one on every `Err`. Carried as a defect rather
             // than unwrapped, because the day it is reachable the adapter has
             // stopped keeping them and that is a bug in this crate.
+            // A model failure with no typed value kept is unreachable, and so
+            // is an inner-loop failure reaching here: `compose::turn` reads
+            // the typed `IterationError` off `Inner` first and classifies by
+            // the port that actually failed. Both are carried as defects
+            // because the day either is reachable, this crate has stopped
+            // keeping what it said it keeps.
             (PortKind::Model, None)
             | (PortKind::Tools | PortKind::ContextPolicy | PortKind::InnerLoop, _) => {
                 undecided(self.version, self.report_at, session, line!())
@@ -1166,20 +1182,85 @@ impl Surface<'_> {
         )))
     }
 
-    /// A turn whose body was an iteration.
+    /// A turn whose body was an iteration that did not succeed.
     ///
-    /// Unreachable: this composition supplies no inner loop, so no turn can
-    /// end this way, and a project that declared validators was refused before
-    /// the session was created. Reported as a defect rather than unwrapped, so
-    /// that the day an inner loop exists this arm is what a reader lands on.
+    /// [ADR-0008] D5: exhaustion "is not an error and is not a success … the
+    /// harness presents what was tried and where it stopped rather than either
+    /// claiming completion or reporting a generic failure". So it is
+    /// [ADR-0016] D1 row 1's expected register at D5's `1`, never the error
+    /// register, and it names the iterations, the reason in
+    /// `ExhaustionReason`'s own words, and the last failure the validators
+    /// actually printed.
+    ///
+    /// **This replaces the defect arm**, deleted 2026-09-05: that arm said
+    /// this outcome was "unreachable: this composition supplies no inner
+    /// loop", and it does now.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     #[must_use]
-    pub fn turn_iterated() -> Classified {
-        undecided(
-            self_version(),
-            self_report_at(),
-            SessionEvidence::NoSessionExists,
-            line!(),
-        )
+    pub fn loop_exhausted(
+        iterations: u32,
+        reason: zaru_core::iteration::ExhaustionReason,
+        last_failure: Option<&str>,
+    ) -> Classified {
+        use zaru_core::iteration::ExhaustionReason as Why;
+        let why = match reason {
+            Why::CeilingReached => {
+                format!("the ceiling of {iterations} iteration(s) was reached")
+            }
+            Why::ContextWindowExceeded { needed, window } => format!(
+                "assembling the next iteration needed {needed} tokens and the window allows \
+                 {window}"
+            ),
+        };
+        // The validators' own output, carried rather than summarised: ADR-0008
+        // D4 forbids paraphrase on the path into a prompt and D5 asks the
+        // harness to present "what was tried", which is the same bytes.
+        let tried = last_failure.map_or_else(
+            || " No iteration reached an evaluation.".to_owned(),
+            |failure| format!(" What the validators last said:\n{failure}"),
+        );
+        Classified::Expected(crate::failure::Expected::new(Statement::sanitised(
+            format!(
+                "the iteration loop ran {iterations} iteration(s) and the declared validators \
+                 were never all satisfied: {why}.{tried}"
+            ),
+        )))
+    }
+
+    /// The inner loop's own port failed.
+    ///
+    /// The class is the **inner** port's rather than the branch's, read off
+    /// the typed [`IterationError`](zaru_core::iteration::IterationError) the
+    /// composition kept — see [`crate::compose::Inner`] for why it is kept
+    /// rather than carried through the port.
+    ///
+    /// A generator failure is a provider failure and is classified exactly as
+    /// a turn's is, off the same recorded `GeminiFailure`. A validators
+    /// failure is the project's file: an unusable `matches` pattern, a schema
+    /// that cannot be read, a `run` that is not a command line. The other four
+    /// are the harness's.
+    #[must_use]
+    pub fn inner_loop(
+        &self,
+        error: &zaru_core::iteration::IterationError,
+        provider: Option<&crate::providers::GeminiFailure>,
+        session: SessionEvidence,
+    ) -> Classified {
+        use zaru_core::iteration::{IterationError, PortKind};
+
+        let IterationError::Port { port, failure, .. } = error;
+        match (port, provider) {
+            (PortKind::Generator, Some(failure)) => self.provider_failure(failure, session),
+            (PortKind::Validators, _) => correctable(
+                failure,
+                act("open `./zaru.toml` and fix the validator it names".to_owned()),
+            ),
+            (PortKind::Generator, None) | (PortKind::Executor | PortKind::ContextPolicy, _) => {
+                undecided(self.version, self.report_at, session, line!())
+            }
+        }
     }
 }
 

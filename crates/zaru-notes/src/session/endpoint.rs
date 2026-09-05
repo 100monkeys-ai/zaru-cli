@@ -19,8 +19,8 @@
 //! [ADR-0003]'s own trigger clause 7 wants each dependency present "with a
 //! caller that uses it", and a transport nothing constructs is not that. So
 //! the shape that is honest is a declared seam with no implementation, exactly
-//! as `zaru-core` declares five ports it does not implement and `zaru-cli`
-//! declares sealing as a sixth.
+//! as `zaru-core` declares ports it does not implement and `zaru-cli`
+//! declares sealing as another.
 //!
 //! What that buys is not merely deferral. Because there is no transport in this
 //! crate's product tree, **nothing here can reach a network**, and that is a

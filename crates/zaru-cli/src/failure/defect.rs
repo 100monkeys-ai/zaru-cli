@@ -14,7 +14,7 @@
 //! is minted anywhere in this workspace, and no directory is created. So the
 //! session's identity is a **seam** — [`SessionEvidence`], with no product
 //! implementation supplying its first variant — exactly as ADR-0011's identity
-//! seam, ADR-0007's sealing and `zaru-core`'s five ports are.
+//! seam, ADR-0007's sealing and `zaru-core`'s unimplemented ports are.
 //!
 //! **[`SessionEvidence::NoSessionExists`] is the point of the type.** D3 says
 //! the message says the transcript is on disk. With no session there is no

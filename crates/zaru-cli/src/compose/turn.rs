@@ -199,6 +199,13 @@ pub fn kinds_held(store: &CredentialStore) -> Vec<ProviderKind> {
 #[derive(Debug)]
 pub struct Prepared {
     tier: ResolvedTier,
+    /// ADR-0009 D2's declared validators in dependency order. Empty where the
+    /// project declared none, which is legal and is what `iterating` reads.
+    plan: zaru_core::iteration::validator::Plan,
+    /// ADR-0009 D4's branch, decided once for the session.
+    iterating: bool,
+    /// ADR-0001 D3's iteration ceiling for this run.
+    ceiling: zaru_core::iteration::Ceiling,
     mode: Mode,
     model: crate::providers::ModelId,
     here: WorkingDirectory,
@@ -409,13 +416,20 @@ pub fn prepare(
         Ok(manifest) => manifest,
         Err(refusal) => return Err(Box::new(Ran::refused(Surface::manifest(&refusal)))),
     };
-    if let Some(declared) = manifest.as_ref()
-        && !declared.validators().is_empty()
-    {
-        return Err(Box::new(Ran::refused(Surface::no_inner_loop(
-            declared.validators().len(),
-        ))));
-    }
+    // ADR-0009 D2's dependency order, derived once and here, so a project
+    // whose `after` list does not resolve is refused before a session
+    // directory exists. `Plan::from_declared` refuses a cycle, an unknown
+    // prerequisite and a duplicate name, all of which are the project's file
+    // being wrong.
+    let declared: Vec<_> = manifest
+        .as_ref()
+        .map(|manifest| manifest.validators().to_vec())
+        .unwrap_or_default();
+    let iterating = !declared.is_empty();
+    let plan = match zaru_core::iteration::validator::Plan::from_declared(declared) {
+        Ok(plan) => plan,
+        Err(refusal) => return Err(Box::new(Ran::refused(Surface::validator_plan(&refusal)))),
+    };
 
     // --- ADR-0007's store, and which kind this machine can reach -----------
     let store_root = match CredentialStore::default_root() {
@@ -455,6 +469,28 @@ pub fn prepare(
             return Err(Box::new(Ran::refused(
                 surface.no_client_for_the_kinds_held(&model, &held_kinds),
             )));
+        }
+    };
+
+    // --- ADR-0001 D3's ceiling, and ADR-0014 D3's key over it --------------
+    //
+    // Resolved here, before a session directory exists, because a ceiling
+    // nobody can use is the project's or the user's configuration being wrong
+    // and ADR-0010's own inode consequence is that a turn that never began is
+    // not a session.
+    let inference = match crate::providers::inference_of(resolution, ModelAlias::Default, kind) {
+        Ok(inference) => inference,
+        Err(refusal) => return Err(Box::new(Ran::refused(Classified::from(refusal)))),
+    };
+    let ceiling = match crate::runtime::ceiling_for(
+        resolution,
+        tier.tier(),
+        inference,
+        crate::providers::Placement::of(kind),
+    ) {
+        Ok(ceiling) => ceiling,
+        Err(refusal) => {
+            return Err(Box::new(Ran::refused(Surface::iteration_ceiling(&refusal))));
         }
     };
 
@@ -519,6 +555,9 @@ pub fn prepare(
 
     Ok(Prepared {
         tier,
+        plan,
+        iterating,
+        ceiling,
         mode,
         model,
         here,
@@ -597,6 +636,7 @@ pub fn run_one(
     let evidence = session.evidence();
     let provider = Classifying::over(&prepared.client);
 
+    let transcript_path = session.transcript_path();
     let mut transcript = match Transcript::append_to(session.transcript_path()) {
         Ok(transcript) => transcript,
         Err(failure) => return Ran::refused(Surface::transcript(&failure, evidence)),
@@ -669,21 +709,61 @@ pub fn run_one(
     let clock = SystemClock::started_now();
     let outcome = {
         let policy = TurnContext::over(context, &prepared.held);
-        // ADR-0008 clause 3's slice. The transcript writer first, so that the
-        // record on disk is written before anything renders it -- a renderer
-        // that painted an event the file does not hold would be showing the
-        // user something a resume could not reproduce.
         // ADR-0008's execution, decided 2026-09-05: one tool surface, reached
         // by both loops. See `crate::compose::shared` for why it is a lock and
         // why sharing the value rather than building a second one is what
         // makes "a candidate cannot do what a turn cannot" a property.
         let tool_surface = tokio::sync::Mutex::new(executor);
         let mut tools = crate::compose::Shared::over(&tool_surface);
+
+        // --- ADR-0009 D4's inner loop, over the same surface ---------------
+        //
+        // Built whichever way the branch goes, because `tool_call::run` takes
+        // one `I` and two arms with two types would not compile. Only the
+        // `Some` arm ever runs it: an empty plan reports nothing, and a loop
+        // whose validators report nothing succeeds on its first iteration
+        // having checked nothing, which is ADR-0009 D2's silent green.
+        let patterns = crate::validators::Patterns::new(layers::pattern_ceiling());
+        let schemas = crate::validators::SchemaFiles::new(&prepared.here, layers::file_ceiling());
+        let dispatch = zaru_core::iteration::validator::Dispatch::new(
+            &prepared.plan,
+            &spawn,
+            &patterns,
+            &schemas,
+        );
+        let generating = crate::compose::Generating::over(&provider);
+        let applying = crate::compose::Applying::through(tools);
+        let inner = crate::compose::Inner::over(
+            zaru_core::iteration::Ports {
+                generator: &generating,
+                executor: &applying,
+                validators: &dispatch,
+                context: &policy,
+                clock: &clock,
+                redactor: &prepared.held,
+            },
+            zaru_core::iteration::Limits {
+                ceiling: prepared.ceiling,
+                // ADR-0008 D4's head-and-tail budget. **ADR-0011 D5's budget
+                // and not a second number**, ruled 2026-09-05 under directive
+                // 20: one budget bounds captured bytes on their way into a
+                // prompt, and a second constant here would be a second answer
+                // to one question.
+                budget: zaru_core::iteration::TruncationBudget::new(layers::output_budget().get())
+                    .expect("ADR-0011 D5's budget is refused at zero by its own constructor"),
+            },
+            &transcript_path,
+        );
+
+        // ADR-0008 clause 3's slice. The transcript writer first, so that the
+        // record on disk is written before anything renders it -- a renderer
+        // that painted an event the file does not hold would be showing the
+        // user something a resume could not reproduce.
         let mut sinks: Vec<&mut dyn zaru_core::tool_call::EventSink> = vec![&mut events];
         for sink in extra.iter_mut() {
             sinks.push(&mut **sink);
         }
-        block_on(tool_call::run(
+        let ran = block_on(tool_call::run(
             n,
             Start::Task(task),
             layers::tool_call_ceiling(),
@@ -695,27 +775,38 @@ pub fn run_one(
                 clock: &clock,
                 redactor: &prepared.held,
             },
-            // ADR-0009 D4's branch. `None` always: see the module
-            // documentation and `Surface::no_inner_loop`, which is what a
-            // project that declared validators was refused with in `prepare`.
-            Option::<&crate::compose::NoInnerLoop>::None,
+            // ADR-0009 D4's branch: "A project with no `zaru.toml` runs the
+            // tool-call loop only."
+            prepared.iterating.then_some(&inner),
             &mut sinks,
-        ))
+        ));
+        (ran, inner.kept())
     };
+    let (outcome, kept) = outcome;
 
     // A transcript that lost an event has not recorded what happened, whatever
     // the loop returned, and ADR-0010 D2 makes this file the replayable record.
+    // Both sinks are read, because an iteration's events go through the
+    // inner loop's own handle on the same file.
     if let Some(failure) = events.first_failure() {
+        return Ran::refused_having_said(lines, Surface::transcript(failure, evidence));
+    }
+    if let Some(failure) = kept.transcript.as_ref() {
         return Ran::refused_having_said(lines, Surface::transcript(failure, evidence));
     }
 
     let mut ran = match outcome {
         Ok(outcome) => rendered(&provider, &outcome, &mut lines),
         Err(error) => {
-            return Ran::refused_having_said(
-                lines,
-                surface.turn(&error, provider.taken().as_ref(), evidence),
-            );
+            // The class of an inner-loop failure is the **inner** port's, off
+            // the typed error `Inner` kept -- see `crate::compose::iterate`
+            // for why it is kept rather than carried through a port that has
+            // nowhere to put it.
+            let classified = match kept.error.as_ref() {
+                Some(inner) => surface.inner_loop(inner, provider.taken().as_ref(), evidence),
+                None => surface.turn(&error, provider.taken().as_ref(), evidence),
+            };
+            return Ran::refused_having_said(lines, classified);
         }
     };
 
@@ -831,10 +922,25 @@ fn rendered(provider: &Classifying<'_>, outcome: &TurnOutcome, lines: &mut Vec<S
         TurnOutcome::Exhausted { rounds, calls, .. } => {
             Exit::Failed(Surface::turn_exhausted(*rounds, *calls))
         }
-        // Unreachable: the inner loop is `None`, so no turn's body is an
-        // iteration. Reported rather than unwrapped, because the day it
-        // becomes reachable this arm is what a reader lands on.
-        TurnOutcome::Iterated(_) => Exit::Failed(Surface::turn_iterated()),
+        // ADR-0009 D4's branch was taken: this turn's body was an iteration.
+        // ADR-0008 D5 puts exhaustion in a register of its own, so a loop that
+        // ran and did not satisfy the validators is `Expected` at ADR-0016
+        // D5's `1` and never the error register.
+        TurnOutcome::Iterated(zaru_core::iteration::Outcome::Succeeded { iterations, .. }) => {
+            lines.push(format!(
+                "the declared validators are satisfied after {iterations} iteration(s)"
+            ));
+            Exit::Succeeded
+        }
+        TurnOutcome::Iterated(zaru_core::iteration::Outcome::Exhausted {
+            iterations,
+            reason,
+            last_failure,
+        }) => Exit::Failed(Surface::loop_exhausted(
+            *iterations,
+            *reason,
+            last_failure.as_deref(),
+        )),
     };
     if let Some(usage) = provider.client().usage() {
         lines.push(String::new());

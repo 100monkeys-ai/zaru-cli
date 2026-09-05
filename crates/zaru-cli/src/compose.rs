@@ -37,16 +37,13 @@
 //!
 //! # What a turn does not have, stated here rather than discovered
 //!
-//! **No inner loop.** [ADR-0009] D4's branch is `Option<&I>` and this
-//! composition passes `None` always, because `iteration::run` needs a
-//! `Generator` and an `Executor` and neither can be written: ADR-0012's Status
-//! tracking reserves "whether one provider implementation satisfies both
-//! traits" to that record, and [ADR-0008]'s reserves "what an execution *is*,
-//! when a candidate is an edit rather than a script" to whoever implements the
-//! executor port. So a task in a project whose manifest **declares validators**
-//! is refused naming the missing wiring, and is never run as a bare tool-call
-//! turn — running one over a project that asked for validation is ADR-0009 D2's
-//! silent green arriving a layer up.
+//! **The inner loop, since 2026-09-05.** [ADR-0009] D4's branch is
+//! `Option<&I>` and this composition supplies `Some` where a project declares
+//! validators. The two questions that held it — ADR-0012's "whether one
+//! provider implementation satisfies both traits" and [ADR-0008]'s "what an
+//! execution *is*" — were decided under directive 20 and are built in
+//! [`iterate`]: one client through one exchange, and an execution that is a
+//! candidate applied through the same tool surface a turn uses.
 //!
 //! **No summariser, and therefore no compaction.** [`ContextPolicy::assemble`]
 //! takes `&self` and `Context::compact` takes `&mut self`, so a policy cannot
@@ -87,33 +84,6 @@ pub use model::Classifying;
 pub use shared::Shared;
 pub use sink::Records;
 pub use turn::{KINDS_WITH_A_CLIENT, Owed, Prepared, Ran};
-
-/// The inner loop this composition never supplies.
-///
-/// [ADR-0009] D4's branch takes an `Option<&I>` and `I` still has to be a
-/// type. This is the type: **uninhabited**, so there is no value of it to
-/// pass and `None` is the only thing the branch can be given. A struct with a
-/// panicking body would be a stub that could be constructed by mistake; an
-/// empty enum cannot.
-///
-/// See the module documentation for why the branch is `None`: `iteration::run`
-/// needs a `Generator` and an `Executor`, and both are questions ADR-0012 and
-/// [ADR-0008] reserve to themselves.
-///
-/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
-#[derive(Debug)]
-pub enum NoInnerLoop {}
-
-impl zaru_core::tool_call::InnerLoop for NoInnerLoop {
-    /// Unreachable: there is no value of `Self` to have called it on.
-    async fn iterate(
-        &self,
-        _task: &str,
-    ) -> Result<zaru_core::iteration::Outcome, zaru_core::iteration::PortFailure> {
-        match *self {}
-    }
-}
 
 #[cfg(test)]
 pub(crate) mod tests;

@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Staged implementations of the five ports, and two sinks.
+//! Staged implementations of the loop's ports, and three sinks.
 //!
 //! These are the test tree. Nothing here has a counterpart in the product
 //! tree, and nothing here reaches a network or a process.

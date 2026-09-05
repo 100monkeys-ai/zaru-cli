@@ -196,11 +196,12 @@ pub enum Event {
 /// `dyn zaru_core::iteration::EventSink` … `[&mut events]` … has type
 /// `[&mut dyn EventSink; 1]` which is not `Send`"*.
 ///
-/// It went unnoticed because nothing implemented `InnerLoop`.
-/// `zaru-cli`'s `NoInnerLoop` satisfied the bound **vacuously**, by being
-/// uninhabited: its body is `match *self {}`, so there was no future to be
-/// `Send` or not. The first inhabited implementation was the first to meet
-/// it.
+/// It went unnoticed because nothing implemented `InnerLoop`. The stand-in
+/// `zaru-cli` passed at that branch until 2026-09-05 satisfied the bound
+/// **vacuously**, by being an uninhabited enum whose body was `match *self
+/// {}` — so there was no future to be `Send` or not. The first inhabited
+/// implementation was the first to meet it, and it is deleted now that one
+/// exists.
 ///
 /// Every implementation in both crates already satisfied it — none holds an
 /// `Rc` or a `RefCell` — so the bound records what was already true rather

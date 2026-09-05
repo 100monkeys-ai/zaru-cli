@@ -59,8 +59,10 @@
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use crate::config::{Field, FieldKind, Key, Layer, Resolution};
+use crate::providers::{Inference, Placement};
 use crate::runtime::tier::Tier;
 use core::fmt;
+use zaru_core::iteration::Ceiling;
 
 /// The configuration key ADR-0001 D2 puts the tier at.
 ///
@@ -342,5 +344,146 @@ impl ResolvedTier {
 impl fmt::Display for ResolvedTier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} (from {})", self.tier, self.supplied_by.label())
+    }
+}
+
+/// Why an iteration ceiling could not be resolved.
+///
+/// Both variants name what the reader can change, which is [ADR-0016] D1
+/// row 2's requirement and the reason neither carries a bare number.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CeilingRefused {
+    /// A layer set the key to something that is not a usable count.
+    NotACount {
+        /// The key.
+        key: Key,
+        /// What was set. An integer a user typed, never a secret.
+        found: i64,
+    },
+    /// A layer set the key to something that is not an integer at all.
+    WrongShape {
+        /// The key.
+        key: Key,
+        /// What shape it held. **Never the value.**
+        found: &'static str,
+    },
+    /// [ADR-0001] D3's table has no cell for this combination.
+    ///
+    /// Four of its twelve: nothing offloads below `linked`. It is a capability
+    /// rather than a mistake — the reader configured something this tier does
+    /// not offer.
+    ///
+    /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+    NoCell {
+        /// The tier that was resolved.
+        tier: Tier,
+        /// The inference axis, per ADR-0001 D3 as directive 20 declared it.
+        inference: Inference,
+        /// Where inference runs.
+        placement: Placement,
+    },
+}
+
+impl fmt::Display for CeilingRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotACount { key, found } => write!(
+                f,
+                "`{key}` is {found}, and an iteration ceiling is a count of at least one: a loop \
+                 that runs no iterations still has to report something, and the only honest thing \
+                 it could report is indistinguishable from a ceiling that was reached"
+            ),
+            Self::WrongShape { key, found } => write!(
+                f,
+                "`{key}` holds {found} and an iteration ceiling is a whole number"
+            ),
+            Self::NoCell {
+                tier,
+                inference,
+                placement,
+            } => write!(
+                f,
+                "ADR-0001 D3's table has no iteration ceiling for {tier} with {inference} \
+                 inference placed {placement}: nothing offloads below `linked`. Set \
+                 `{MAX_ITERATIONS_KEY}` to choose one, or run a tier whose row covers it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CeilingRefused {}
+
+/// The iteration ceiling this run is bounded by.
+///
+/// # The configured value where there is one, and D3's cell where there is not
+///
+/// [ADR-0014] D3's own worked example explains `runtime.max_iterations`
+/// through five layers, and [ADR-0014] D6's `LowerOnly` binds a project to
+/// what the layers below granted. [ADR-0001] D3's twelve cells are the
+/// **default**, applied after the fold rather than as layer 1 — and that is a
+/// decision rather than an omission.
+///
+/// **A layer-1 row is not possible and would not be wanted.** D3's cell is a
+/// function of the resolved tier, the inference axis and the placement, all
+/// three of which the *same* fold produces, so a built-in row would need the
+/// fold's answer before the fold ran. And it would refuse
+/// [`crate::manifest::init`]'s own template: that file writes
+/// `max_iterations = 3` while `bare`'s cell is `1`, so a project would be
+/// raising a ceiling it was told to write. `config/resolve.rs` says "in
+/// practice layer 1 always carries a default, per ADR-0001 D3"; it does not,
+/// and that sentence is corrected there.
+///
+/// What a project may do is therefore unchanged and is exactly D6: it may
+/// lower what layers 1, 2, 4 and 5 granted, and where none granted anything
+/// there is nothing to exceed. **Decided 2026-09-05 under directive 20** as an
+/// accepted Update on ADR-0001 D3, open to Jeshua's veto.
+///
+/// # `bare` is one, and ADR-0009 D4 is why that is not the end of it
+///
+/// D3 gives `bare` a ceiling of one "by definition — there is no validator to
+/// refine against". [ADR-0009] D4 says a project that declares validators runs
+/// the iteration loop, at every tier, so at `bare` there *is* one and D3's
+/// reason stops holding. The loop still runs: one iteration, and any failure
+/// is exhaustion with no refinement, which is honest. A user who wants more
+/// raises `{MAX_ITERATIONS_KEY}` at their own layer, which is D3's own next
+/// sentence — "a user who wants more raises it explicitly and accepts the
+/// wait". Recorded on both records under directive 20.
+///
+/// # Errors
+///
+/// [`CeilingRefused`].
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+pub fn ceiling_for(
+    resolution: &Resolution,
+    tier: Tier,
+    inference: Inference,
+    placement: Placement,
+) -> Result<Ceiling, CeilingRefused> {
+    let key = max_iterations_key();
+    match resolution.get(&key) {
+        None => crate::runtime::defaults::ceiling(tier, inference, placement).ok_or(
+            CeilingRefused::NoCell {
+                tier,
+                inference,
+                placement,
+            },
+        ),
+        Some(value) => {
+            let Some(count) = value.as_integer() else {
+                return Err(CeilingRefused::WrongShape {
+                    key,
+                    found: value.shape(),
+                });
+            };
+            u32::try_from(count)
+                .ok()
+                .and_then(|count| Ceiling::new(count).ok())
+                .ok_or(CeilingRefused::NotACount { key, found: count })
+        }
     }
 }

@@ -29,8 +29,8 @@
 //! implementation and a keyring binding — are not in ADR-0003 D2's dependency
 //! table, and adding one is an amendment to that record rather than an
 //! import. So sealing is a port declared beside this module with no implementation in
-//! this crate's product tree, exactly as `zaru-core` declares five ports it
-//! does not implement.
+//! this crate's product tree, exactly as `zaru-core` declares ports it does
+//! not implement.
 //!
 //! The consequence is load-bearing rather than incidental: the type that is
 //! written to disk has **no field a secret could go in**. That is the same argument ADR-0014 D4 makes about configuration —
