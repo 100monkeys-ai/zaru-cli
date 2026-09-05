@@ -9,20 +9,40 @@
 //!
 //! # A producer is a variant, never a string
 //!
-//! Eight producers are named above and **four exist in this workspace**:
-//! `zaru-core`'s [`Event`], [ADR-0011] D4's transcript entry, and
-//! [ADR-0016] D1's five classes. Each is a variant of [`Record`], so a fourth
+//! Eight producers are named above and **five exist in this workspace**:
+//! `zaru-core`'s [`Event`], its outer-loop [`TurnEvent`], [ADR-0011] D4's
+//! transcript entry, [ADR-0016] D1's five classes, and — since 2026-09-05 —
+//! [ADR-0013] D2's compaction. Each is a variant of [`Record`], so a sixth
 //! producer is a variant and every match over the enum fails to compile
 //! rather than a `kind` string being invented at a call site — the same
 //! closed-enum discipline [`Class`](crate::failure::Class),
 //! [`Layer`](crate::config::Layer) and [`ToolName`](crate::tools::ToolName)
 //! already carry in this crate.
 //!
-//! **The five producers that do not exist get no variant at all.** User
-//! messages, SEAL verdicts, attachments and learning announcements belong to
-//! records that are unbuilt, and a variant whose condition nothing can
-//! satisfy is a permanent exemption dressed as a promise
-//! ([Verification lessons] §7). Absence is what makes the gap findable.
+//! **The producers that do not exist get no variant at all.** User messages,
+//! SEAL verdicts and attachments belong to records that are unbuilt, and a
+//! variant whose condition nothing can satisfy is a permanent exemption
+//! dressed as a promise ([Verification lessons] §7). Absence is what makes the
+//! gap findable — which is exactly how the compaction variant arrived: it was
+//! absent while nothing compacted, and it is here because something does.
+//!
+//! # The compaction record is what makes D2's "history is preserved" true
+//!
+//! [ADR-0013] D2: "the oldest span of layer 6 is replaced by a generated
+//! summary, and **the raw span stays in the transcript**. History is
+//! preserved on disk; only the model's view is compacted." That sentence is a
+//! claim about this file and nothing else, so [`Record::Compacted`] carries
+//! the span **verbatim and unredacted** — the same rule that keeps every other
+//! line here raw, stated once more because a span is the one place a reader
+//! might expect the model's view rather than the session's.
+//!
+//! It carries the announcements too. D3 emits one "once, with what it cost",
+//! and D2 of this record makes the transcript replayable — "re-rendering it
+//! reproduces what the user saw" — so a line the user was shown that the file
+//! does not hold would break replay for the one event whose whole purpose is
+//! that the user not be left wondering what happened.
+//!
+//! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 //!
 //! # The tool call is stored as its rendered line, and that is D2's own claim
 //!
@@ -61,6 +81,7 @@
 use crate::failure::{Classified, Presentation};
 use crate::tools::TranscriptEntry;
 use serde::{Deserialize, Serialize};
+use zaru_core::context::Compaction;
 use zaru_core::iteration::Event;
 use zaru_core::tool_call::Event as TurnEvent;
 
@@ -209,6 +230,14 @@ pub enum Record {
     TurnLoop(TurnEvent),
     /// ADR-0016 D1's classified failure, as it was presented.
     Failure(FailureLine),
+    /// ADR-0013 D2's compaction: the raw span it replaced and what the user
+    /// was told about it.
+    ///
+    /// A fifth producer, written by whoever owns the turn boundary rather
+    /// than by either loop — a compaction is not a state transition of
+    /// anything and appears on neither event stream, which is why it is a
+    /// variant here and not an `Event`.
+    Compacted(Compaction),
 }
 
 impl Record {
@@ -223,6 +252,7 @@ impl Record {
             Self::TurnLoop(_) => "turn_loop",
             Self::ToolCall(_) => "tool_call",
             Self::Failure(_) => "failure",
+            Self::Compacted(_) => "compacted",
         }
     }
 }

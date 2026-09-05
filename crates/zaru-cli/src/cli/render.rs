@@ -421,3 +421,90 @@ pub fn usage(usage: &crate::providers::TokenUsage) -> String {
     }
     line
 }
+
+/// [ADR-0013] D3's and D4's lines, **without** the leading marker.
+///
+/// # Both lines are the record's own, transcribed rather than composed
+///
+/// D3: `◈ compacted 34 earlier turns · 18.2k → 2.1k tokens · full history in
+/// transcript`. D4: `◈ dropped attachment: adrs/0117-aegis-edge-mode ·
+/// re-attach with [[`. Every word, both separators and the arrow are quoted
+/// from those two examples; nothing here is worded by this arc.
+///
+/// **The marker is deliberately not here.** `zaru-tui`'s
+/// [`Register::Announced`](zaru_tui::shell::Register) already owns `◈` and its
+/// contract is that "the text is the producer's… The shell chooses the glyph
+/// and nothing else", so a producer emitting the glyph would put it on the
+/// line twice inside the pane. The out-of-session path, which has no
+/// register, prepends [`ANNOUNCEMENT_MARKER`].
+///
+/// # The one reading, named rather than slipped in
+///
+/// D3 renders `18.2k` and `2.1k` and states no rule for the abbreviation.
+/// [`thousands`] is that rule read off those two examples: below a thousand
+/// the integer, at or above it one decimal place and `k`. Accepted under
+/// directive 20 of 2026-09-05 and recorded on ADR-0013 D3, open to Jeshua's
+/// veto — it is the only thing on either line this arc chose.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[must_use]
+pub fn announcement(announcement: &zaru_core::context::Announcement) -> String {
+    use zaru_core::context::Announcement;
+    match announcement {
+        Announcement::Compacted {
+            turns,
+            before,
+            after,
+        } => format!(
+            "compacted {turns} earlier turns · {} → {} tokens · full history in transcript",
+            thousands(*before),
+            thousands(*after),
+        ),
+        // The workspace is rendered with the path and is not decoration:
+        // `ItemId`'s own documentation is that "two workspaces may each hold
+        // `architecture/bounded-contexts` and they are different pages", so a
+        // line naming the path alone would name two attachments identically.
+        // D4's own example, `adrs/0117-aegis-edge-mode`, reads as exactly this
+        // pair on the instance that holds an `adrs` workspace.
+        Announcement::AttachmentDropped {
+            identity,
+            how_to_reattach,
+        } => format!(
+            "dropped attachment: {}/{} · {how_to_reattach}",
+            identity.workspace(),
+            identity.path(),
+        ),
+    }
+}
+
+/// The marker [ADR-0013] D3 and D4 open both announcement lines with.
+///
+/// Used only where there is no register to carry it — the out-of-session
+/// turn, which prints to standard output. Inside the shell the pane's
+/// `Register::Announced` supplies the same character, and this constant is
+/// **not** what it reads: two spellings of one glyph would be a rule in two
+/// places, and the one that renders in the pane is `zaru-tui`'s because that
+/// is where ADR-0008 D3 puts rendering.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub const ANNOUNCEMENT_MARKER: &str = "◈";
+
+/// A token count as [ADR-0013] D3's line abbreviates one.
+///
+/// Below a thousand the integer; at or above it, one decimal place and `k`.
+/// Read off D3's own `18.2k` and `2.1k` — see [`announcement`] for why that
+/// reading is named rather than assumed. Truncating rather than rounding, so
+/// the abbreviation never reports more than was measured.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[must_use]
+pub fn thousands(tokens: u64) -> String {
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    // Integer arithmetic throughout: a `u64` past 2^53 is not representable
+    // as an `f64`, and a context window is a number a provider chooses.
+    let whole = tokens / 1_000;
+    let tenth = (tokens % 1_000) / 100;
+    format!("{whole}.{tenth}k")
+}

@@ -36,7 +36,7 @@
 //! [Verification Lessons]: https://100monkeys-ai.cortex.page/zaru/p/operations/verification-lessons
 
 use core::fmt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// An attached item was offered that could not be announced if it were
 /// dropped.
@@ -111,6 +111,44 @@ impl ItemId {
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
+    }
+}
+
+/// The two fields as they sit on disk, with no guard applied.
+///
+/// Private, and it exists only so the real implementation below can read the
+/// shape before deciding whether it is a value. `deny_unknown_fields` because
+/// a stored identity carrying a third field is a file written by something
+/// that disagreed with this type, and accepting it silently is how two
+/// readings of one record start.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredId {
+    workspace: String,
+    path: String,
+}
+
+impl<'de> Deserialize<'de> for ItemId {
+    /// Read a stored identity **through [`ItemId::new`]**.
+    ///
+    /// # Why this is written out rather than derived
+    ///
+    /// A derived implementation constructs the struct field by field and
+    /// never calls the constructor, so it can produce an `ItemId` with an
+    /// empty workspace — a value [`ItemId::new`] refuses, because "an
+    /// identifier read without its workspace comes back as a missing page
+    /// rather than as a refusal". [Operating Principles] calls anything read
+    /// off disk a boundary; this is the boundary, and the guard is the point
+    /// of it.
+    ///
+    /// The failure is a deserialisation error carrying [`ItemRefused`]'s own
+    /// sentence, so a caller reading a transcript learns which requirement
+    /// the stored line failed rather than that "the line did not parse".
+    ///
+    /// [Operating Principles]: https://100monkeys-ai.cortex.page/zaru/p/operations/operating-principles
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let stored = StoredId::deserialize(deserializer)?;
+        Self::new(stored.workspace, stored.path).map_err(serde::de::Error::custom)
     }
 }
 

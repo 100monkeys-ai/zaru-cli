@@ -82,7 +82,7 @@ impl Transcript {
     #[must_use]
     pub fn of(records: &[Record]) -> Self {
         Self {
-            lines: records.iter().map(line_for).collect(),
+            lines: records.iter().flat_map(lines_for).collect(),
         }
     }
 
@@ -112,13 +112,26 @@ impl TranscriptSource for Transcript {
 
 /// Which register one record belongs in, and what it says.
 ///
-/// **No wildcard arm anywhere**, so a fifth `Record` variant has to be given a
+/// **No wildcard arm anywhere**, so a sixth `Record` variant has to be given a
 /// register rather than falling into the plain one — which is how a new
 /// producer would otherwise render as narration and be read as narration.
-fn line_for(record: &Record) -> Line {
+///
+/// # It returns many lines, because one record is not always one line
+///
+/// [ADR-0013] D2's compaction can announce more than once: a layer-6 summary
+/// and then one line per attachment D4 had to drop, all from the single
+/// `compact` call that caused them. A one-record-one-line signature would
+/// have had to choose which of those to show, and the choice would have been
+/// made silently at the moment the pane rendered — dropping exactly the lines
+/// D4 exists to guarantee ("Removing their choice without telling them is
+/// worse than running out"). Every other arm returns one line, and says so by
+/// returning a one-element vector rather than by a comment.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+fn lines_for(record: &Record) -> Vec<Line> {
     match record {
-        Record::Loop(event) => loop_line(event),
-        Record::TurnLoop(event) => turn_line(event),
+        Record::Loop(event) => vec![loop_line(event)],
+        Record::TurnLoop(event) => vec![turn_line(event)],
         Record::ToolCall(call) => {
             let register = match call.phase {
                 Phase::Started | Phase::Completed => Register::Call,
@@ -127,9 +140,25 @@ fn line_for(record: &Record) -> Line {
                 // is not an ordinary call either, so it is announced.
                 Phase::Refused => Register::Announced,
             };
-            Line::new(register, call.line.clone())
+            vec![Line::new(register, call.line.clone())]
         }
-        Record::Failure(failure) => Line::new(Register::Failed, failure.headline.clone()),
+        Record::Failure(failure) => {
+            vec![Line::new(Register::Failed, failure.headline.clone())]
+        }
+        // ADR-0002 D3's interrupt channel: a compaction "writes into the live
+        // session", because it reports on a turn the user's own message
+        // caused. The text is `crate::cli::render`'s and the glyph is the
+        // register's, which is ADR-0008 D3's split.
+        Record::Compacted(compaction) => compaction
+            .announcements
+            .iter()
+            .map(|announced| {
+                Line::new(
+                    Register::Announced,
+                    crate::cli::render::announcement(announced),
+                )
+            })
+            .collect(),
     }
 }
 

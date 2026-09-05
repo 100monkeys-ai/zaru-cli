@@ -1750,3 +1750,140 @@ fn no_network_call_can_originate_from_session_storage() {
          machine: {offences:?}",
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0013 D2 — the raw span stays in the transcript, and can be read back
+// ---------------------------------------------------------------------------
+
+/// A compaction's span and its announcement, staged as `zaru-core` produces
+/// them.
+fn staged_compaction() -> zaru_core::context::Compaction {
+    use zaru_core::context::{Announcement, Exchange, ItemId, Span};
+    zaru_core::context::Compaction {
+        announcements: vec![
+            Announcement::Compacted {
+                turns: 34,
+                before: 18_200,
+                after: 2_100,
+            },
+            Announcement::AttachmentDropped {
+                identity: ItemId::new("adrs", "0117-aegis-edge-mode")
+                    .expect("both parts are named"),
+                how_to_reattach: "re-attach with [[".to_owned(),
+            },
+        ],
+        raw: Some(Span::new(vec![
+            Exchange::verbatim("the first thing that was said"),
+            Exchange::verbatim("the second thing that was said"),
+        ])),
+    }
+}
+
+/// ADR-0013 D2: "the raw span stays in the transcript. History is preserved
+/// on disk; only the model's view is compacted." ADR-0010 D2 makes that file
+/// replayable, so what was written has to come back as what it was.
+///
+/// The mutant: deriving `Deserialize` on `Announcement` without giving
+/// `ItemId` one, which does not compile; and, runnably, dropping the `raw`
+/// field from the written record, which reddens the span comparison.
+#[test]
+fn a_compaction_record_round_trips_through_the_transcript() {
+    let root = ScratchRoot::new();
+    let path = root.base().join("transcript.jsonl");
+    let staged = staged_compaction();
+
+    let mut transcript = Transcript::append_to(path.clone()).expect("the file opens");
+    transcript
+        .record(&Record::Compacted(staged.clone()))
+        .expect("the line is written");
+    drop(transcript);
+
+    let read = Transcript::read(&path).expect("the file parses");
+    assert_eq!(
+        read.records.len(),
+        1,
+        "one record was written, so one should come back; got {}",
+        read.records.len()
+    );
+    match &read.records[0] {
+        Record::Compacted(back) => assert_eq!(
+            back, &staged,
+            "a compaction written to ADR-0010 D2's transcript must come back as what it was, \
+             because that record's replayability claim is that re-rendering reproduces what the \
+             user saw"
+        ),
+        other => panic!(
+            "the line came back as a {} record rather than a compaction",
+            other.producer()
+        ),
+    }
+}
+
+/// The span on disk is the session's own bytes, unredacted.
+///
+/// ADR-0008 clause 6's Update: "**The transcript is untouched.**" The
+/// accepting side of every absence assertion in this workspace — a value
+/// planted in a compacted exchange is asserted **present** in the file, so
+/// that a future redaction on this path reddens here rather than passing
+/// quietly.
+///
+/// The mutant: redacting on the way to the transcript.
+#[test]
+fn the_raw_span_reaches_the_transcript_unredacted() {
+    use zaru_core::context::{Exchange, Span};
+
+    // Shaped like a bearer value the store could hold, so that a redactor
+    // wired onto this path would find it.
+    let planted = "nn_mcp_transcript_keeps_this_0195";
+    let root = ScratchRoot::new();
+    let path = root.base().join("transcript.jsonl");
+
+    let mut transcript = Transcript::append_to(path.clone()).expect("the file opens");
+    transcript
+        .record(&Record::Compacted(zaru_core::context::Compaction {
+            announcements: Vec::new(),
+            raw: Some(Span::new(vec![Exchange::verbatim(format!(
+                "the model was told {planted} and then asked a question"
+            ))])),
+        }))
+        .expect("the line is written");
+    drop(transcript);
+
+    let bytes = std::fs::read_to_string(&path).expect("the file reads");
+    assert!(
+        bytes.contains(planted),
+        "ADR-0010 D2's transcript holds what the session contained and ADR-0008 clause 6's \
+         decision says in as many words that \"the transcript is untouched\"; the planted value \
+         is not in the {} byte(s) written, so something is redacting the record",
+        bytes.len()
+    );
+}
+
+/// A stored identity that names no workspace is a deserialisation *error*,
+/// not a value nobody could have constructed.
+///
+/// `ItemId::new` refuses an empty workspace because "an identifier read
+/// without its workspace comes back as a missing page rather than as a
+/// refusal", and [`crate::session::record`]'s round trip is what would
+/// otherwise put one back into the program from disk.
+///
+/// The mutant: deriving `Deserialize` on `ItemId` instead of writing it
+/// through the constructor, which makes this line parse.
+#[test]
+fn a_stored_attachment_identity_with_no_workspace_is_refused_on_the_way_back_in() {
+    let line = r#"{"compacted":{"announcements":[{"attachment_dropped":{"identity":{"workspace":"","path":"adrs/0117"},"how_to_reattach":"re-attach with [["}}],"raw":null}}"#;
+    let refusal = serde_json::from_str::<Record>(line)
+        .expect_err("an identity naming no workspace must not deserialise");
+    let said = refusal.to_string();
+    assert!(
+        said.contains("workspace"),
+        "the refusal should say which requirement the stored line failed, so a reader learns more \
+         than \"the line did not parse\"; it said {said:?}"
+    );
+
+    // The accepting sibling: the same line with a workspace parses, so the
+    // refusal above is about the guard rather than about the shape.
+    let sound = line.replace(r#""workspace":"""#, r#""workspace":"adrs""#);
+    serde_json::from_str::<Record>(&sound)
+        .expect("the same record with a workspace named is a value the constructor accepts");
+}

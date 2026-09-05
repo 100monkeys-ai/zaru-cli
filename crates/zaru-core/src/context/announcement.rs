@@ -34,10 +34,19 @@
 //! [`Context::compact`]: crate::context::Context::compact
 
 use crate::context::item::ItemId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Something the user is told, because something was taken away.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// # It round-trips, and the guard travels with it
+///
+/// `Deserialize` is derived here and **hand-written on [`ItemId`]**, which is
+/// the only guarded thing this enum carries. So a stored announcement is read
+/// back through that guard: a line whose identity names no workspace is a
+/// deserialisation error rather than a value nobody could have constructed.
+/// See [`crate::context`] for the question this answers and why ADR-0010 D2's
+/// transcript is what forced it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Announcement {
     /// ADR-0013 D3. A span of layer 6 was replaced by a summary.

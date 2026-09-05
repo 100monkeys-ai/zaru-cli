@@ -65,20 +65,36 @@
 //! that crate, for the reason [`crate::iteration::event`] gives about
 //! ADR-0008 D3's stream: a rule that exists in two places diverges.
 //!
-//! **[`ItemId`], [`AttachedItem`] and [`Announcement`] derive `Serialize` and
-//! not `Deserialize`.** Each carries an invariant its constructor refuses to
-//! build without — an identity with no workspace resolves nowhere, and an
+//! Three types here guard an invariant their constructor refuses to build
+//! without — an identity with no workspace resolves nowhere, and an
 //! attachment with no re-attachment instruction cannot satisfy D4's
-//! announcement — and a derived `Deserialize` would put a value that never
-//! passed those guards straight back into the program from disk. [Operating
-//! Principles] calls anything read off disk a boundary, and how a guarded
-//! type is rehydrated through its own constructor is ADR-0010's question
-//! rather than a derive's.
+//! announcement — so a *derived* `Deserialize` on any of them would put a
+//! value that never passed those guards straight back into the program from
+//! disk. [Operating Principles] calls anything read off disk a boundary, and
+//! when this module was written it recorded **how a guarded type is
+//! rehydrated through its own constructor** as ADR-0010's question rather
+//! than a derive's.
 //!
-//! Nothing reads or writes any of this yet: the transcript writer and the
-//! checkpoint are `zaru-cli`'s, no check here exercises a round trip, and
-//! `zaru-core` carries no format crate to do one with. Added under a
-//! delegated coordinator ruling of 2026-09-04, open to Jeshua's veto.
+//! **That question is answered as of 2026-09-05, and the answer is: through
+//! the constructor.** [`ItemId`] implements `Deserialize` by hand — it reads
+//! the two fields and then calls [`ItemId::new`], so a stored identity with an
+//! empty workspace is a deserialisation *error* naming which requirement
+//! failed rather than a value nobody could have built. [`Announcement`] then
+//! derives `Deserialize` safely, because the only guarded thing it carries is
+//! that identity and the guard now travels with it.
+//!
+//! The reason it had to be answered here is that ADR-0013 D2's raw span and
+//! D3's announcement now reach ADR-0010 D2's transcript, which is a file
+//! something reads back: `zaru-cli`'s resume path parses every line and
+//! treats one it cannot parse as a defect. A record that could be written and
+//! not read would make that path report a defect in the harness for a line
+//! the harness itself wrote. Decided under directive 20 of 2026-09-05 by the
+//! `context-summariser` arc, open to Jeshua's veto, and recorded on ADR-0010.
+//!
+//! **[`AttachedItem`] still derives `Serialize` alone**, and that is the
+//! unanswered half rather than an oversight: layer 5 has no producer, so
+//! nothing writes one and nothing could read one back. It gains the same
+//! treatment on the day something attaches.
 //!
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts

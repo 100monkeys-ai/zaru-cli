@@ -1308,3 +1308,139 @@ fn what_the_strip_renders_is_what_the_trie_holds_byte_for_byte() {
          truncation, case folding — moves this comparison. The composer rows were {strip:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0013 D3 and D4 — the two announcement lines, in the pane
+// ---------------------------------------------------------------------------
+
+/// D3's line, transcribed: `◈ compacted 34 earlier turns · 18.2k → 2.1k
+/// tokens · full history in transcript`.
+///
+/// The marker is asserted to come from the **register** rather than from the
+/// text, which is ADR-0008 D3's split — "the loop emits it; the terminal does
+/// not reach in" — read from the other side.
+///
+/// The mutant: emitting `◈` in `render::announcement` as well, which doubles
+/// it on the rendered line.
+#[test]
+fn a_compaction_announces_itself_in_the_panes_announcement_register() {
+    use zaru_core::context::{Announcement, Compaction};
+    use zaru_tui::shell::port::Register;
+
+    let transcript =
+        crate::terminal::vocabulary::Transcript::of(&[crate::session::Record::Compacted(
+            Compaction {
+                announcements: vec![Announcement::Compacted {
+                    turns: 34,
+                    before: 18_200,
+                    after: 2_100,
+                }],
+                raw: None,
+            },
+        )]);
+    let lines = zaru_tui::shell::port::TranscriptSource::lines(&transcript);
+
+    assert_eq!(
+        lines.len(),
+        1,
+        "one announcement is one line; got {lines:?}"
+    );
+    assert_eq!(
+        lines[0].register,
+        Register::Announced,
+        "ADR-0002 D3 puts a compaction on the interrupt channel and ADR-0013 D3 opens its line \
+         with the announcement marker, so it belongs in the announcement register"
+    );
+    assert_eq!(
+        lines[0].text,
+        "compacted 34 earlier turns · 18.2k → 2.1k tokens · full history in transcript",
+        "ADR-0013 D3 spells this line and every word of it is the record's"
+    );
+    assert!(
+        !lines[0].text.contains('◈'),
+        "the glyph is the register's -- `zaru-tui`'s own contract is that the shell \"chooses the \
+         glyph and nothing else\" -- so a producer that emitted one would put it on the line twice"
+    );
+}
+
+/// D4's line, transcribed: `◈ dropped attachment: adrs/0117-aegis-edge-mode ·
+/// re-attach with [[`.
+///
+/// Both parts of the identity are asserted present, because `ItemId`'s own
+/// documentation is that "two workspaces may each hold
+/// `architecture/bounded-contexts` and they are different pages".
+///
+/// The mutant: rendering `identity.path()` alone, which reddens the workspace
+/// assertion.
+#[test]
+fn a_dropped_attachment_names_its_workspace_its_path_and_how_to_get_it_back() {
+    use zaru_core::context::{Announcement, Compaction, ItemId};
+
+    let transcript =
+        crate::terminal::vocabulary::Transcript::of(&[crate::session::Record::Compacted(
+            Compaction {
+                announcements: vec![Announcement::AttachmentDropped {
+                    identity: ItemId::new("adrs", "0117-aegis-edge-mode")
+                        .expect("both parts are named"),
+                    how_to_reattach: "re-attach with [[".to_owned(),
+                }],
+                raw: None,
+            },
+        )]);
+    let lines = zaru_tui::shell::port::TranscriptSource::lines(&transcript);
+
+    assert_eq!(
+        lines[0].text, "dropped attachment: adrs/0117-aegis-edge-mode · re-attach with [[",
+        "ADR-0013 D4 spells this line, and the workspace is part of the identity rather than \
+         decoration"
+    );
+}
+
+/// One `compact` call can announce several times — a layer-6 summary and then
+/// one line per attachment D4 had to drop — and the pane shows all of them.
+///
+/// This is why `lines_for` returns many. D4: "Removing their choice without
+/// telling them is worse than running out", so a renderer that showed the
+/// first announcement and dropped the rest would drop exactly the lines that
+/// clause exists to guarantee.
+///
+/// The mutant: taking `announcements.first()` instead of mapping them all.
+#[test]
+fn every_announcement_of_one_compaction_reaches_the_pane() {
+    use zaru_core::context::{Announcement, Compaction, ItemId};
+
+    let dropped = |path: &str| Announcement::AttachmentDropped {
+        identity: ItemId::new("adrs", path).expect("both parts are named"),
+        how_to_reattach: "re-attach with [[".to_owned(),
+    };
+    let transcript =
+        crate::terminal::vocabulary::Transcript::of(&[crate::session::Record::Compacted(
+            Compaction {
+                announcements: vec![
+                    Announcement::Compacted {
+                        turns: 2,
+                        before: 900,
+                        after: 40,
+                    },
+                    dropped("0117-aegis-edge-mode"),
+                    dropped("0118-something-else"),
+                ],
+                raw: None,
+            },
+        )]);
+    let lines = zaru_tui::shell::port::TranscriptSource::lines(&transcript);
+
+    assert_eq!(
+        lines.len(),
+        3,
+        "three announcements came out of one compaction and all three are lines the user is owed; \
+         the pane rendered {}: {lines:?}",
+        lines.len()
+    );
+    assert!(
+        lines[2].text.contains("0118-something-else"),
+        "the last announcement is the one a one-line-per-record renderer would lose; the pane \
+         showed {:?}",
+        lines[2].text
+    );
+}

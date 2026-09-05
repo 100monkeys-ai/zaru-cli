@@ -66,6 +66,7 @@ use crate::context::usage::Usage;
 use crate::iteration::port::{ContextRefusal, PortFailure};
 use crate::redaction::{Redacted, Redactor};
 use core::fmt;
+use serde::{Deserialize, Serialize};
 
 /// What the model will see, and what it costs.
 ///
@@ -137,7 +138,17 @@ impl From<Exceeded> for ContextRefusal {
 }
 
 /// What one compaction did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// # Both directions, because ADR-0010 D2's transcript is read back
+///
+/// This is the whole of what a compaction produced, and D2 makes the
+/// transcript a **replayable** record — so the line that records one has to
+/// be readable by the same program that wrote it. Both halves round-trip
+/// already: [`Span`] holds [`Exchange`]es, which carry no invariant, and
+/// [`Announcement`]'s only guarded part is an
+/// [`ItemId`](crate::context::ItemId) whose `Deserialize` goes through its
+/// own constructor. See [`crate::context`] for that decision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compaction {
     /// What the user is told, in the order it happened. Empty when the
     /// context was already under the threshold and nothing was taken.
