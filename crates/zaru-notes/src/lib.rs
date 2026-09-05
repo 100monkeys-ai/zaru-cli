@@ -38,6 +38,7 @@
 //! [ADR-0103]: https://cortex.page/adrs/p/0103-mcp-server-transport-mount
 
 pub mod session;
+pub mod trie;
 
 /// The name of this crate, read from its `Cargo.toml` at compile time.
 pub const NAME: &str = env!("CARGO_PKG_NAME");
