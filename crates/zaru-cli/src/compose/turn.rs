@@ -12,7 +12,7 @@
 //! key           ADR-0007's sealed store, opened for reading
 //! manifest      ADR-0009 D1; declared validators refuse, see below
 //! session       ADR-0010 D1's directory, its three files, meta.toml
-//! notice        ADR-0011 D2's line, once, at bare tier only
+//! notice        ADR-0011 D2's line, once per session, at bare tier only
 //! witness       ADR-0012 clause 3: the model is asked before the loop starts
 //! turn          ADR-0008 D1's outer loop, with ADR-0009 D4's branch at None
 //! line          ADR-0009 D4's recommendation, at the end of the first turn
@@ -69,6 +69,14 @@
 //! once ever": with one turn per process those were the same as once per call,
 //! and in a session that holds a conversation they are not. So the two
 //! take-once carriers are the **session's** and are handed to each turn.
+//!
+//! **And a session outlives the process it was opened in, since 2026-09-05.**
+//! `Owed` is still built when a process opens, because a take-once value
+//! cannot span one; what spans it is the transcript. Each line's emission
+//! below appends a `crate::session::Record::Said`, [ADR-0010] D2's sixth
+//! producer, and [`Owed::of`] takes the session's own reading of that as its
+//! second argument. The counter is nowhere else: not in `context.json`, not
+//! in `meta.toml`, not in a file of its own.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
@@ -294,12 +302,20 @@ impl Prepared {
     }
 }
 
-/// The two lines a **session** owes once, whatever its turns do.
+/// The two lines a **session** owes once, whatever its turns or its processes
+/// do.
 ///
 /// [ADR-0011] D2's notice is "stated once at session start" and [ADR-0002]
 /// D8's event-anchored recommendation "fires at most once ever". Both are
 /// take-once values, and holding them here rather than building them inside a
-/// turn is what makes the scope the session's rather than the process's.
+/// turn is what makes the scope the session's rather than the turn's.
+///
+/// **This value is still built when a process opens, and that is why it is
+/// built from the transcript.** A take-once value cannot span a process, so
+/// what spans it is [ADR-0010] D2's own record stream: each line's emission
+/// appends a `crate::session::Record::Said`, and [`Owed::of`] starts the
+/// carrier already spent when the session's transcript holds one. There is no
+/// second store and nothing in the checkpoint.
 ///
 /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
@@ -310,15 +326,37 @@ pub struct Owed {
 }
 
 impl Owed {
-    /// What this session owes, from what it resolved.
+    /// What this session owes, from what it resolved and from what it has
+    /// already said.
+    ///
+    /// # This function decides nothing, and that is the point
+    ///
+    /// `said` is [`AlreadySaid`](crate::session::AlreadySaid), read off this
+    /// session's own transcript by `crate::session::resume`. It is handed to
+    /// the two constructors and **not consulted here**: each line's rule lives
+    /// beside its carrier, because what "already said" means differs for them
+    /// and so does what re-checks the condition each process. Deciding both
+    /// here by one test is the shape [ADR-0002]'s Status tracking names as
+    /// "two rules in one place", and it would be wrong for whichever line's
+    /// own condition changed between two processes.
+    ///
+    /// A session being minted passes `AlreadySaid::none()`, which is a fact
+    /// about a directory that has just been created rather than a default.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
     #[must_use]
-    pub fn of(prepared: &Prepared) -> Self {
+    pub fn of(prepared: &Prepared, said: &crate::session::AlreadySaid) -> Self {
         Self {
-            notice: SessionNotice::for_tier(prepared.tier.tier(), prose::NOT_A_SANDBOX),
-            recommendation: crate::manifest::MissingManifest::for_manifest(
+            notice: SessionNotice::for_tier_in_session(
+                prepared.tier.tier(),
+                prose::NOT_A_SANDBOX,
+                said,
+            ),
+            recommendation: crate::manifest::MissingManifest::for_manifest_in_session(
                 prepared.manifest.as_ref(),
                 crate::failure::Statement::sanitised(prose::NO_VALIDATORS),
                 crate::failure::Statement::sanitised(prose::DECLARE_ONE),
+                said,
             ),
         }
     }
@@ -672,11 +710,26 @@ pub async fn run_one(
     // The notice is the **session's** now. "Stated once at session start" was
     // the same as once per call while one invocation was one session; it is
     // not once a session holds a conversation.
+    //
+    // **And a session outlives its process, since 2026-09-05.** The line is
+    // pushed to the reader first and recorded second: a transcript that will
+    // not take the record must not silence a statement about a missing
+    // membrane, and ADR-0010 D2's "a crash loses at most the event in flight"
+    // is what bounds the other order's cost. The failure ends the turn with
+    // the line already said, exactly as the compaction record below it does.
     if let Some(notice) = owed.notice.as_mut()
         && let Some(sentence) = notice.state_once()
     {
-        lines.push(sentence);
+        lines.push(sentence.clone());
         lines.push(String::new());
+        if let Err(failure) =
+            transcript.record(&crate::session::Record::Said(crate::session::Said {
+                line: crate::session::SaidOnce::Notice,
+                text: sentence,
+            }))
+        {
+            return Ran::refused_having_said(lines, Surface::transcript(&failure, evidence));
+        }
     }
 
     // --- ADR-0013 D2's turn boundary, before this turn assembles -----------
@@ -885,11 +938,25 @@ pub async fn run_one(
     // because "a manifest is absent before the user does anything" and a line
     // at session start would be a timer wearing a costume by D8's own test.
     // It is the session's take-once value, so a second turn does not repeat it.
+    // It is recorded here too, for the same reason and in the same order: the
+    // line reaches the reader first, and ADR-0010 D2's sixth producer is what
+    // makes "at most once ever" outlive this process. `transcript`'s borrow by
+    // the executor ended with the block above, so the handle is this scope's
+    // again and the file still has exactly one writer.
     if let Some(recommendation) = owed.recommendation.as_mut()
         && let Some(recommendation) = recommendation.state_once()
     {
+        let line = recommendation.to_string();
         ran.lines.push(String::new());
-        ran.lines.push(recommendation.to_string());
+        ran.lines.push(line.clone());
+        if let Err(failure) =
+            transcript.record(&crate::session::Record::Said(crate::session::Said {
+                line: crate::session::SaidOnce::Recommendation,
+                text: line,
+            }))
+        {
+            return Ran::refused_having_said(ran.lines, Surface::transcript(&failure, evidence));
+        }
     }
 
     ran
@@ -910,7 +977,9 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         Ok(prepared) => prepared,
         Err(refused) => return *refused,
     };
-    let mut owed = Owed::of(&prepared);
+    // A session this call is about to mint has said nothing, and that is a
+    // fact about a directory that does not exist yet rather than a default.
+    let mut owed = Owed::of(&prepared, &crate::session::AlreadySaid::none());
 
     // --- ADR-0010 D1's session, and the first `meta.toml` a product writes --
     let session_store = match SessionStore::open(prepared.store_root.clone()) {

@@ -298,3 +298,148 @@ fn an_outside_caller_can_mint_an_id_from_the_machine() {
         SessionId::mint(&clock).expect("the machine has a clock and /dev/urandom"),
     );
 }
+
+/// **The security corpus: what a session has already said, over a real
+/// session directory, read from the transcript and never from the
+/// checkpoint.**
+///
+/// ADR-0011 D2's notice and ADR-0002 D8's recommendation are each said once
+/// and each rebuilt when a process opens, so what makes "once" span processes
+/// is what a later process reads. This drives the whole chain an outside
+/// caller can reach — a real directory, real records through `Transcript`,
+/// `session::resume`, and then the two rules that decide the two lines — and
+/// holds the three mutants that matter.
+///
+/// **The counter is ignored at open**: a session whose transcript says it said
+/// both owes neither, with the accepting sibling below it.
+///
+/// **The two lines decided by one rule**: a session that said the notice and
+/// not the recommendation, and its mirror.
+///
+/// **The decision read from the checkpoint instead of the transcript**, which
+/// is the arm worth its cost because it would pass on today's data: both
+/// sentences genuinely reach `context.json`, as part of a turn's answer. So
+/// one session here has the sentences in its checkpoint and **no** `said`
+/// record, and must be owed both.
+#[test]
+fn corpus_what_a_session_has_said_is_read_from_its_transcript_and_not_its_checkpoint() {
+    use zaru_cli::manifest::MissingManifest;
+    use zaru_cli::session::{Said, SaidOnce};
+    use zaru_cli::tools::{SessionNotice, Tier};
+
+    let scratch = Scratch::new();
+    let store = SessionStore::open(scratch.home()).expect("the store opened");
+
+    // A statement nothing else in this process produces, so an assertion about
+    // it is about this staging.
+    let notice_text = nonce("notice");
+    let recommendation_text = nonce("recommendation");
+
+    /// The two decisions, taken exactly as the composition takes them.
+    fn owed(said: &zaru_cli::session::AlreadySaid) -> (bool, bool) {
+        (
+            SessionNotice::for_tier_in_session(Tier::Bare, "the sentence", said).is_some(),
+            MissingManifest::for_manifest_in_session(
+                None,
+                zaru_cli::failure::Statement::new("unavailable").expect("a statement"),
+                zaru_cli::failure::Statement::new("how to get it").expect("a statement"),
+                said,
+            )
+            .is_some(),
+        )
+    }
+
+    // 1 — a session that said both. Neither is owed again.
+    let both = store
+        .start(SessionId::mint(&SystemWallClock).expect("an id"))
+        .expect("a session started");
+    let mut transcript = Transcript::append_to(both.transcript_path()).expect("the transcript");
+    for (line, text) in [
+        (SaidOnce::Notice, notice_text.clone()),
+        (SaidOnce::Recommendation, recommendation_text.clone()),
+    ] {
+        transcript
+            .record(&Record::Said(Said { line, text }))
+            .expect("could not append");
+    }
+    let resumed = resume(both.directory(), usize::MAX).expect("it resumed");
+    assert_eq!(
+        owed(&resumed.said),
+        (false, false),
+        "this session's transcript says it said both lines, and both records say once",
+    );
+
+    // 2 — the accepting sibling: a session that has said nothing owes both, so
+    // a rule that refused everything could not pass both halves.
+    let neither = store
+        .start(SessionId::mint(&SystemWallClock).expect("an id"))
+        .expect("a session started");
+    let resumed = resume(neither.directory(), usize::MAX).expect("it resumed");
+    assert_eq!(
+        owed(&resumed.said),
+        (true, true),
+        "a session that has said nothing is owed both lines",
+    );
+
+    // 3 — the arm that tells the two rules apart: one line said, not the other.
+    let only_notice = store
+        .start(SessionId::mint(&SystemWallClock).expect("an id"))
+        .expect("a session started");
+    Transcript::append_to(only_notice.transcript_path())
+        .expect("the transcript")
+        .record(&Record::Said(Said {
+            line: SaidOnce::Notice,
+            text: notice_text.clone(),
+        }))
+        .expect("could not append");
+    let resumed = resume(only_notice.directory(), usize::MAX).expect("it resumed");
+    assert_eq!(
+        owed(&resumed.said),
+        (false, true),
+        "a session told it is not in a sandbox has not been told its project declares no \
+         validators; one rule for two lines cannot answer this and its mirror below",
+    );
+
+    let only_recommendation = store
+        .start(SessionId::mint(&SystemWallClock).expect("an id"))
+        .expect("a session started");
+    Transcript::append_to(only_recommendation.transcript_path())
+        .expect("the transcript")
+        .record(&Record::Said(Said {
+            line: SaidOnce::Recommendation,
+            text: recommendation_text.clone(),
+        }))
+        .expect("could not append");
+    let resumed = resume(only_recommendation.directory(), usize::MAX).expect("it resumed");
+    assert_eq!(owed(&resumed.said), (true, false), "and the mirror of it",);
+
+    // 4 — the checkpoint arm. Both sentences are in `context.json`, as they
+    // genuinely are on a real turn, and NO `said` record is on the transcript.
+    // Both lines must still be owed.
+    let checkpointed = store
+        .start(SessionId::mint(&SystemWallClock).expect("an id"))
+        .expect("a session started");
+    Checkpoint::at(checkpointed.checkpoint_path())
+        .write(&serde_json::json!({
+            "exchanges": [{
+                "task": "say hello",
+                "tool_results": [],
+                "answer": format!("{notice_text}\n\nhello\n\n{recommendation_text}"),
+            }],
+        }))
+        .expect("the checkpoint was written");
+    let resumed = resume(checkpointed.directory(), usize::MAX).expect("it resumed");
+    // The staging is asserted rather than assumed: without the sentences in
+    // the checkpoint this arm holds nothing.
+    let stored = std::fs::read_to_string(checkpointed.checkpoint_path()).expect("it is readable");
+    assert!(
+        stored.contains(&notice_text) && stored.contains(&recommendation_text),
+        "the checkpoint must carry both sentences for this arm to discriminate: {stored}",
+    );
+    assert_eq!(
+        owed(&resumed.said),
+        (true, true),
+        "the counter is the transcript's; a decision read from the checkpoint would find both \
+         sentences in layer 6 and silence two lines this session never showed",
+    );
+}

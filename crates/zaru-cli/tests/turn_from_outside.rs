@@ -805,10 +805,20 @@ fn the_turns_events_reach_the_transcript_as_they_occur() {
     );
     // The turn began, and the record says which turn of the session and what
     // its ceiling was -- the two fields a consumer renders "1 of 8" from.
+    //
+    // **The turn loop's first record rather than the file's**, since
+    // 2026-09-05: ADR-0011 D2's notice is stated at session *start*, before
+    // the loop begins, and since it became ADR-0010 D2's sixth producer it is
+    // on disk ahead of the turn it precedes. The subject here is clause 3's
+    // emission order within the loop's own stream, and reading the file's
+    // first line was a proxy for it that a second producer made false.
+    let first_of_the_loop = lines
+        .iter()
+        .find(|line| line.starts_with("{\"turn_loop\":"))
+        .expect("the turn started, so its stream is on disk");
     assert!(
-        lines[0].contains("\"turn_started\"") && lines[0].contains("\"of\":8"),
-        "the first record is not the turn starting at this binary's ceiling: {}",
-        lines[0]
+        first_of_the_loop.contains("\"turn_started\"") && first_of_the_loop.contains("\"of\":8"),
+        "the turn loop's first record is not the turn starting at this binary's ceiling:          {first_of_the_loop}",
     );
     // Every line is one JSON object naming its producer, which is what makes
     // the file readable by anything rather than only by this harness.
@@ -1078,5 +1088,80 @@ fn a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it() {
         raised.stderr.contains('8') && raised.stderr.contains('5'),
         "the refusal names both numbers so a reader can see which the user's layer had: {}",
         raised.stderr
+    );
+}
+
+/// [ADR-0011] D2's line is a record in the transcript, so a later process
+/// knows it was said.
+///
+/// D2's "once at session start" and [ADR-0002] D8's "at most once ever" were
+/// once-per-process until 2026-09-05, because the carriers are rebuilt when a
+/// process opens and nothing on disk said either had been said. What spans a
+/// process is [ADR-0010] D2's own record stream: `Record::Said` is its sixth
+/// producer.
+///
+/// **The mutant this catches is the record not being written at all**, which
+/// leaves every unit check green — they drive the two rules over a witness a
+/// check staged — and leaves the artefact stating the line on every process,
+/// which is exactly what `session-restore` measured on `8553a6e`.
+///
+/// The turn here fails at a closed socket, which is the point: the notice is
+/// owed by a session that started, and the record has to be on disk by then.
+/// The text on the record must be the text the reader was shown, so a
+/// re-rendering on `--resume` reproduces it, which is D2's replayability claim.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn the_not_a_sandbox_line_is_recorded_in_the_transcript_that_said_it() {
+    let home = Home::new("said-notice");
+    let (value, _core) = nonce("said-notice");
+    store_a_key(&home, "gemini", &value);
+
+    let ran = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "say", "hello"],
+    );
+    // The staging is asserted: a run that never said the line could not have
+    // recorded it either, and would satisfy an absence vacuously.
+    let shown = ran
+        .stdout
+        .lines()
+        .find(|line| line.contains("not a sandbox"))
+        .expect("the session started, so its own line is on standard output");
+
+    let transcript = transcript_of(&home);
+    let records: Vec<&str> = transcript
+        .lines()
+        .filter(|line| line.starts_with("{\"said\":"))
+        .collect();
+    assert_eq!(
+        records.len(),
+        1,
+        "a session that said D2's line once must hold one record of having said it, so a later \
+         process of the same session does not say it again: {transcript}",
+    );
+    assert!(
+        records[0].contains("\"line\":\"notice\""),
+        "the record has to name which of the two once-ever lines it was, because the two are \
+         decided by two rules: {}",
+        records[0],
+    );
+    let stored: serde_json::Value =
+        serde_json::from_str(records[0]).expect("the record is one JSON object");
+    assert_eq!(
+        stored["said"]["text"].as_str(),
+        Some(shown),
+        "the record must carry the sentence the reader was shown; a transcript that held a \
+         different one could not reproduce what the user saw",
+    );
+    // ADR-0002 D8's line is not owed by a turn that never ended, so this
+    // session must hold no record of it either.
+    assert!(
+        !transcript.contains("\"line\":\"recommendation\""),
+        "this turn failed at its provider and never reached the end of a turn, so D8's \
+         event-anchored line was neither shown nor recorded: {transcript}",
     );
 }

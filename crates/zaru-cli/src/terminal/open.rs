@@ -236,7 +236,10 @@ pub fn open(
             resolution: &resolution,
             prepared,
             session: &session,
-            owed: crate::compose::Owed::of(prepared),
+            // ADR-0011 D2's notice and ADR-0002 D8's recommendation, each
+            // already spent if this session's transcript says it said it.
+            // The same source as `next` below, read once by `session::resume`.
+            owed: crate::compose::Owed::of(prepared, &resumed.said),
             // ADR-0013 D1's layers, restored from ADR-0010 D3's checkpoint
             // rather than opened empty. Layer 6 is what this session said
             // before the process it said it in ended, and it is what every
