@@ -316,21 +316,34 @@ fn an_unnameable_name_or_value_is_refused() {
 fn the_inherited_minimum_is_the_named_five_and_nothing_else() {
     let environment = Environment::inherited_minimum().expect("the harness's own values pass on");
 
+    // The five are written here as literals rather than read back out of
+    // `MINIMUM`. [Verification lessons] §11: at least one arm of a comparison
+    // must not travel through the thing being checked, and a sixth name added
+    // to the product's own list would otherwise appear on both sides at once
+    // and agree with itself. That mutation survived until this was written
+    // this way.
+    let five = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"];
+    assert_eq!(
+        MINIMUM.to_vec(),
+        five.to_vec(),
+        "ADR-0011 D2's Update names these five and no others"
+    );
+
     let carried: Vec<&str> = environment.pairs().map(|(name, _)| name).collect();
     let outside: Vec<&&str> = carried
         .iter()
-        .filter(|name| !MINIMUM.contains(*name))
+        .filter(|name| !five.contains(*name))
         .collect();
     assert!(
         outside.is_empty(),
         "the inherited minimum carried {outside:?}, which ADR-0011 D2's five do not name; the \
-         five are {MINIMUM:?}"
+         five are {five:?}"
     );
 
-    // Compared as sets: an `Environment` is ordered by name and `MINIMUM` is
+    // Compared as sets: an `Environment` is ordered by name and the five are
     // in the ruling's own order, so comparing the two sequences would assert
     // the sort rather than the membership.
-    let mut expected: Vec<&str> = MINIMUM
+    let mut expected: Vec<&str> = five
         .into_iter()
         .filter(|name| std::env::var_os(name).is_some())
         .collect();
