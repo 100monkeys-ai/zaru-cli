@@ -712,9 +712,23 @@ fn the_kill_checks_child_appends_until_it_is_killed() {
         );
     };
 
+    use std::io::Write as _;
+
     let mut transcript =
         Transcript::append_to(path).expect("the child could not open a transcript");
     let mut out = std::io::stdout();
+
+    // One newline before the first promise, and it is load-bearing. libtest
+    // prints `test <name> ... ` with **no** terminating newline and completes
+    // that line when the test ends -- which never happens here, because the
+    // parent kills this process mid-loop. Without this line the first promise
+    // is glued onto libtest's progress line, so the parent's line-prefix
+    // filter cannot see it and the writer is held to every promise except the
+    // first. Measured on 2026-09-05: 114 promises written, 113 free-standing,
+    // and the missing one is always `DURABLE 0` -- which is exactly the record
+    // a buffering bug loses most visibly.
+    writeln!(out).expect("the child could not report");
+
     // Bounded rather than unbounded: the parent kills this long before the
     // ceiling, and a loop with an end is one clippy will let past. Reaching it
     // is a failure the child says out loud rather than a silent stop.
@@ -728,8 +742,80 @@ fn the_kill_checks_child_appends_until_it_is_killed() {
         // Only after `record` returned, which is after the write, the flush
         // and the sync. This line is the writer's promise that the record is
         // on disk, and the parent holds it to that promise.
-        use std::io::Write as _;
         writeln!(out, "DURABLE {seq}").expect("the child could not report");
+    }
+}
+
+/// How many records must be on disk before the parent kills the child.
+///
+/// **Derived from the staging assertion rather than chosen.** That assertion
+/// needs two records on disk *and* two promises the child reported durable.
+/// The child writes `record(n)` and only then `DURABLE n`, so a transcript
+/// holding `k` complete records proves the child returned from `record(k - 1)`
+/// and therefore already wrote `DURABLE 0` through `DURABLE k - 2` — `k - 1`
+/// promises. Both halves hold from `k = 3`. The kill happens after the
+/// observation rather than instead of it, so three is a floor and the rounds
+/// in practice clear it.
+const RECORDS_BEFORE_THE_KILL: usize = 3;
+
+/// How long the parent waits for that condition before refusing by name.
+///
+/// Generous on purpose. Nothing here is a latency assertion, and a machine
+/// under load is the case this check exists to survive rather than the case it
+/// should fail on.
+const KILL_CONDITION_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Wait until the child's transcript holds [`RECORDS_BEFORE_THE_KILL`]
+/// records, or refuse naming what was being waited for.
+///
+/// [Verification lessons] §20 — **wait on the condition, never on a count.**
+/// What this replaced was `sleep(20 + round * 5)` milliseconds followed by the
+/// kill, which is a different experiment on a busy machine than on an idle
+/// one. Measured on 2026-09-05 at `9b70ce5` with no change in the tree: the
+/// check refused on one run in three under a parallel `cargo doc` and on none
+/// of twelve runs on an idle machine, so what it reported was the load rather
+/// than the harness.
+///
+/// The refusal says whether the count was still **moving** when the deadline
+/// expired, because a plateau and a slow arrival are different findings and a
+/// timeout that cannot tell them apart should not be quoted.
+///
+/// A read that fails while the child is mid-append is treated as *not yet*
+/// rather than as an error: the authoritative read is the one after the kill,
+/// which panics rather than tolerating anything. The child cannot stall on its
+/// own pipe before this returns — it blocks on `stdout` only once roughly six
+/// thousand promises are undrained, and by then the transcript is thousands of
+/// records past the floor.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+fn wait_until_the_transcript_holds(path: &std::path::Path, wanted: usize, round: u64) {
+    let started = std::time::Instant::now();
+    let mut a_moment_ago = (0usize, std::time::Instant::now());
+
+    loop {
+        let seen = Transcript::read(path).map_or(0, |reading| reading.records.len());
+        if seen >= wanted {
+            return;
+        }
+
+        let waited = started.elapsed();
+        assert!(
+            waited < KILL_CONDITION_DEADLINE,
+            "round {round}: the child never got {wanted} records onto disk. It reached {seen} in \
+             {waited:?}, and over the last {:?} of that wait the count {}. This check kills a \
+             live writer, so a child that never wrote cannot say anything about what a kill costs",
+            a_moment_ago.1.elapsed(),
+            if seen > a_moment_ago.0 {
+                "was still moving"
+            } else {
+                "did not move"
+            },
+        );
+
+        if a_moment_ago.1.elapsed() >= Duration::from_secs(1) {
+            a_moment_ago = (seen, std::time::Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -789,7 +875,9 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
         .spawn()
         .expect("could not spawn this crate's own test binary");
 
-        std::thread::sleep(std::time::Duration::from_millis(20 + round * 5));
+        // Wait on the condition, not on a clock. See
+        // `wait_until_the_transcript_holds`.
+        wait_until_the_transcript_holds(&path, RECORDS_BEFORE_THE_KILL, round);
         child.kill().expect("could not kill the child");
         let mut reported = String::new();
         if let Some(mut out) = child.stdout.take() {
