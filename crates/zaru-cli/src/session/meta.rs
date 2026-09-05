@@ -109,8 +109,7 @@ impl Meta {
 /// Reading or writing `meta.toml` failed.
 ///
 /// Carries the implementation's own wording, exactly as
-/// [`SealFailure`](crate::credentials::SealFailure) and
-/// [`SourceFailure`](crate::config::SourceFailure) do. **An implementation
+/// [`SourceFailure`](crate::config::SourceFailure) does. **An implementation
 /// must not put a session's workspace or provider in it**: a refusal is the
 /// text that gets pasted into a bug report.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,7 +140,7 @@ impl std::error::Error for MetaFailure {}
 ///
 /// **Nothing in this crate's product tree implements this**, exactly as
 /// nothing implements the credential store's
-/// [`SecretStore`](crate::credentials::SecretStore), configuration's
+/// [`Confirm`](crate::credentials::Confirm), configuration's
 /// [`LayerSource`](crate::config::LayerSource), or any of `zaru-core`'s five
 /// loop ports. A check implements it; the product does not, which is why no
 /// `meta.toml` is written anywhere and a session directory holds two files

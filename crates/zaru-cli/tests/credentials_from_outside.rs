@@ -25,14 +25,13 @@
 //!
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zaru_cli::credentials::{
-    Alias, Confirm, CredentialStore, Description, Entry, Instance, Reach, SealFailure, Secret,
-    SecretStore, ToolScope,
+    Alias, Confirm, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
+    SealingKey, Secret, ToolScope,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -49,31 +48,25 @@ fn nonce(label: &str) -> String {
     format!("{label}-{}-{nanos}-{seq}", std::process::id())
 }
 
-/// The sealing port, implemented outside the crate that declares it.
+/// The key port, implemented outside the crate that declares it.
 ///
-/// That it can be implemented from out here is itself part of what this check
-/// establishes: `SecretStore` is the seam the sealing arc will fill, and a
-/// trait that could only be implemented from inside would not be one.
-#[derive(Default)]
-struct HeldInMemory {
-    held: BTreeMap<String, String>,
+/// That it can be implemented from out here is part of what this check
+/// establishes: `KeyStore` is the seam a machine's own keyring sits behind, and
+/// a trait that could only be implemented from inside would not be one. The key
+/// is kept so this check can open what the store sealed **without going back
+/// through the store**, which is the arm of the comparison that must not travel
+/// through the code under test.
+struct StagedKey(SealingKey);
+
+impl StagedKey {
+    fn minted() -> Self {
+        Self(SealingKey::mint())
+    }
 }
 
-impl SecretStore for HeldInMemory {
-    fn seal(&mut self, alias: &Alias, secret: &Secret) -> Result<(), SealFailure> {
-        self.held.insert(
-            alias.as_str().to_owned(),
-            secret.expose_for_dispatch().to_owned(),
-        );
-        Ok(())
-    }
-
-    fn unseal(&self, alias: &Alias) -> Result<Secret, SealFailure> {
-        let held = self
-            .held
-            .get(alias.as_str())
-            .ok_or_else(|| SealFailure::new(format!("nothing sealed under \"{alias}\"")))?;
-        Secret::new(held.clone()).map_err(|refusal| SealFailure::new(refusal.to_string()))
+impl KeyStore for StagedKey {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -93,7 +86,7 @@ fn scratch_root() -> PathBuf {
 fn a_caller_outside_this_crate_can_store_grant_and_project() {
     let base = scratch_root();
     let root = base.join("zaru");
-    let mut sealer = HeldInMemory::default();
+    let keys = StagedKey::minted();
 
     let mut store = CredentialStore::open(&root).expect("a fresh root opens");
 
@@ -110,7 +103,7 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
             )
             .with_tools(ToolScope::new(["pages.read", "search.global"]))
             .with_workspace("zaru"),
-            &mut sealer,
+            &keys,
             None,
         )
         .expect("the composer's token is stored");
@@ -127,7 +120,7 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
                 Reach::Apex,
             )
             .with_tools(ToolScope::new(["pages.read", "pages.apply_patch"])),
-            &mut sealer,
+            &keys,
             Some(&AlwaysConfirms),
         )
         .expect("a confirmed apex token is stored");
@@ -173,7 +166,7 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
 
     // The secret comes back only through the port.
     let recovered = store
-        .secret(&agent_alias, &sealer)
+        .secret(&agent_alias, &keys)
         .expect("the port holds it");
     assert_eq!(recovered.expose_for_dispatch(), agent_secret);
 

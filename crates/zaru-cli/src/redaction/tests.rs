@@ -12,9 +12,9 @@
 use crate::credentials::alias::Alias;
 use crate::credentials::entry::{Description, Entry, Instance, Reach, ToolScope};
 use crate::credentials::fixtures::{
-    InMemorySecrets, ScratchRoot, app_secret_nonce, ascii_core as fixture_ascii_core, nonce,
-    personal_secret_nonce,
+    ScratchRoot, app_secret_nonce, ascii_core as fixture_ascii_core, nonce, personal_secret_nonce,
 };
+use crate::credentials::sealing::fixtures::StagedKey;
 use crate::credentials::secret::Secret;
 use crate::credentials::store::CredentialStore;
 use crate::redaction::{HeldSecrets, ascii_core, held_secrets_for_redaction, marker};
@@ -24,13 +24,13 @@ use zaru_core::redaction::{Redacted, Redactor};
 
 /// A store on its own scratch root holding one entry per supplied value.
 ///
-/// Returns the store, the sealer it was sealed through, and the aliases in
+/// Returns the store, the key store it was sealed under, and the aliases in
 /// the order the values were given.
 fn store_holding(
     scratch: &ScratchRoot,
     values: &[String],
-) -> (CredentialStore, InMemorySecrets, Vec<Alias>) {
-    let mut sealer = InMemorySecrets::default();
+) -> (CredentialStore, StagedKey, Vec<Alias>) {
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
     let mut aliases = Vec::new();
     for (index, value) in values.iter().enumerate() {
@@ -48,12 +48,10 @@ fn store_holding(
             Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
         )
         .with_tools(ToolScope::new(["pages.read"]));
-        store
-            .add(entry, &mut sealer, None)
-            .expect("an entry is added");
+        store.add(entry, &keys, None).expect("an entry is added");
         aliases.push(alias);
     }
-    (store, sealer, aliases)
+    (store, keys, aliases)
 }
 
 #[test]
@@ -67,8 +65,8 @@ fn a_held_value_and_its_ascii_core_are_replaced_by_a_marker_naming_the_alias() {
          the escaped-form arm of this check asserts nothing: {value:?}"
     );
 
-    let (store, sealer, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
     assert_eq!(held.len(), 1, "one entry is one held value");
 
     // The expected marker is composed here from the alias, not read back out
@@ -124,8 +122,8 @@ fn the_marker_names_the_alias_and_carries_nothing_of_the_value() {
     // reason: a marker is exactly the text that gets pasted into a report.
     let scratch = ScratchRoot::new();
     let value = personal_secret_nonce();
-    let (store, sealer, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
 
     let redacted = Redacted::by(&held, &format!("here it is: {value}"));
     let written = marker(&aliases[0]);
@@ -162,8 +160,8 @@ fn a_secret_that_is_a_prefix_of_another_cannot_leave_its_tail_behind() {
     let scratch = ScratchRoot::new();
     let short = personal_secret_nonce();
     let long = format!("{short}-and-more");
-    let (store, sealer, _) = store_holding(&scratch, &[short.clone(), long.clone()]);
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secrets");
+    let (store, keys, _) = store_holding(&scratch, &[short.clone(), long.clone()]);
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secrets");
     assert_eq!(held.len(), 2);
 
     let redacted = Redacted::by(&held, &format!("the token is {long} exactly"));
@@ -182,8 +180,8 @@ fn a_harness_holding_nothing_carries_every_byte_through() {
     // The arm that discriminates every absence assertion in this crate and in
     // `zaru-core`. Without it a redactor that erased its input passes them all.
     let scratch = ScratchRoot::new();
-    let (store, sealer, _) = store_holding(&scratch, &[]);
-    let held = held_secrets_for_redaction(&store, &sealer).expect("an empty store yields nothing");
+    let (store, keys, _) = store_holding(&scratch, &[]);
+    let held = held_secrets_for_redaction(&store, &keys).expect("an empty store yields nothing");
     assert!(held.is_empty());
 
     let text = format!(
@@ -203,8 +201,8 @@ fn the_debug_of_held_secrets_carries_a_count_and_never_a_value() {
     // in the program. `Secret`'s own `Debug` carries the same sentence.
     let scratch = ScratchRoot::new();
     let value = personal_secret_nonce();
-    let (store, sealer, _) = store_holding(&scratch, std::slice::from_ref(&value));
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, _) = store_holding(&scratch, std::slice::from_ref(&value));
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
 
     let rendered = format!("{held:?}");
     assert!(
@@ -233,8 +231,8 @@ fn nothing_here_matches_a_pattern_and_an_unheld_secret_is_carried_through() {
     let scratch = ScratchRoot::new();
     let held_value = personal_secret_nonce();
     let unheld = app_secret_nonce();
-    let (store, sealer, _) = store_holding(&scratch, std::slice::from_ref(&held_value));
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, _) = store_holding(&scratch, std::slice::from_ref(&held_value));
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
 
     let text = format!("held {held_value} and unheld {unheld}");
     let redacted = Redacted::by(&held, &text);
@@ -264,8 +262,8 @@ fn a_held_value_across_a_tools_elision_boundary_leaves_no_fragment() {
     let scratch = ScratchRoot::new();
     let value = personal_secret_nonce();
     let core = ascii_core(&value);
-    let (store, sealer, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
 
     // A budget whose kept head ends **inside** the value: the head keeps
     // `budget / 2` rounded up, so the value must start before that and end

@@ -29,8 +29,8 @@
 use core::time::Duration;
 use std::sync::Mutex;
 use zaru_cli::credentials::{
-    Alias, CredentialStore, Description, Entry, Instance, Reach, SealFailure, Secret, SecretStore,
-    ToolScope,
+    Alias, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
+    SealingKey, Secret, ToolScope,
 };
 use zaru_cli::process::{Environment, ProcessCeiling, Spawn};
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
@@ -640,8 +640,8 @@ async fn a_secret_in_a_command_line_is_redacted_for_the_model_and_kept_in_the_se
     println!("== a planted bearer in a command line ==");
     let scratch = Scratch::new("secret");
     let value = format!("nn_mcp_{}", nonce("bearer"));
-    let (store, sealer, alias) = store_holding(&scratch, "planted", &value);
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, alias) = store_holding(&scratch, "planted", &value);
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
     assert_eq!(held.len(), 1, "the store held nothing to redact");
 
     let command = format!("printf '%s' '{value}'");
@@ -887,31 +887,19 @@ async fn a_shell_construct_is_told_to_the_model_and_writes_no_record() {
 
 // ------------------------------------------------------- credential staging
 
-/// Sealing, supplied from outside because no product tree implements it.
+/// The sealing key, supplied from outside.
 ///
-/// **This says nothing about ADR-0007 D3's encryption at rest.** It is a map
-/// of strings, and what a check may conclude from it is that the store hands
-/// a secret to the port and takes it back.
-#[derive(Default)]
-struct HeldInMemory {
-    held: std::collections::BTreeMap<String, String>,
-}
+/// **This says nothing about where a real key comes from.** ADR-0007 D3 reads
+/// it from the OS keyring or from `ZARU_CREDENTIAL_KEY`, and a check that
+/// reached either would be a check that changes state it does not own. What a
+/// check may conclude from this is that the store seals under the key it is
+/// given and opens under the same one; the encryption itself is real, and is
+/// checked from outside in `tests/sealing_from_outside.rs`.
+struct StagedKey(SealingKey);
 
-impl SecretStore for HeldInMemory {
-    fn seal(&mut self, alias: &Alias, secret: &Secret) -> Result<(), SealFailure> {
-        self.held.insert(
-            alias.as_str().to_owned(),
-            secret.expose_for_dispatch().to_owned(),
-        );
-        Ok(())
-    }
-
-    fn unseal(&self, alias: &Alias) -> Result<Secret, SealFailure> {
-        let held = self
-            .held
-            .get(alias.as_str())
-            .ok_or_else(|| SealFailure::new(format!("nothing sealed under \"{alias}\"")))?;
-        Secret::new(held.clone()).map_err(|refusal| SealFailure::new(refusal.to_string()))
+impl KeyStore for StagedKey {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -920,8 +908,8 @@ fn store_holding(
     scratch: &Scratch,
     alias: &str,
     value: &str,
-) -> (CredentialStore, HeldInMemory, Alias) {
-    let mut sealer = HeldInMemory::default();
+) -> (CredentialStore, StagedKey, Alias) {
+    let keys = StagedKey(SealingKey::mint());
     let mut store =
         CredentialStore::open(scratch.base.join("zaru")).expect("the credential store opens");
     let alias = Alias::new(alias).expect("a plain name is a legal alias");
@@ -932,10 +920,8 @@ fn store_holding(
         Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
     )
     .with_tools(ToolScope::new(["pages.read"]));
-    store
-        .add(entry, &mut sealer, None)
-        .expect("the entry is stored");
-    (store, sealer, alias)
+    store.add(entry, &keys, None).expect("the entry is stored");
+    (store, keys, alias)
 }
 
 // ------------------------------------------------ a call interrupted for real

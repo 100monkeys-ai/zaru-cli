@@ -5,7 +5,7 @@
 //!
 //! **Nothing in this crate's product tree implements [`Provider`]**, exactly
 //! as nothing implements [`LayerSource`](crate::config::LayerSource), the
-//! credential store's [`SecretStore`](crate::credentials::SecretStore),
+//! credential store's [`Confirm`](crate::credentials::Confirm),
 //! [`ManifestSource`](crate::manifest::ManifestSource) or any of `zaru-core`'s
 //! loop ports. A check implements it; the product does not, and that is why
 //! **no code in this workspace can reach a provider at all**.

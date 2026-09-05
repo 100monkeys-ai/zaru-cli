@@ -262,7 +262,11 @@ fn a_description_that_is_not_one_renderable_line_is_refused() {
 // ---------------------------------------------------------------------------
 
 use crate::credentials::entry::{Entry, Instance, Reach, ToolScope};
-use crate::credentials::fixtures::{InMemorySecrets, ScratchRoot, StagedConfirmer};
+use crate::credentials::fixtures::{ScratchRoot, StagedConfirmer};
+use crate::credentials::sealing::blob::Sealed;
+use crate::credentials::sealing::fixtures::{NoKeyAnywhere, StagedKey};
+use crate::credentials::sealing::key::CREDENTIAL_KEY_VARIABLE;
+use crate::credentials::sealing::key::SealingKey;
 use crate::credentials::store::{CredentialStore, DIRECTORY_MODE, FILE_MODE, STORE_FILE};
 use std::os::unix::fs::PermissionsExt;
 
@@ -288,12 +292,10 @@ fn staged_entry(label: &str) -> (Entry, String) {
 #[test]
 fn the_file_on_disk_carries_0600_and_its_directory_0700() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
     let (entry, _) = staged_entry("modes");
-    store
-        .add(entry, &mut sealer, None)
-        .expect("an entry is added");
+    store.add(entry, &keys, None).expect("an entry is added");
 
     let directory = std::fs::metadata(store.root())
         .expect("the root exists")
@@ -328,13 +330,11 @@ fn the_file_on_disk_carries_0600_and_its_directory_0700() {
 #[test]
 fn a_stored_secret_is_absent_from_the_bytes_the_store_wrote() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
     let (entry, secret_value) = staged_entry("ondisk");
     let alias = entry.alias().clone();
-    store
-        .add(entry, &mut sealer, None)
-        .expect("an entry is added");
+    store.add(entry, &keys, None).expect("an entry is added");
 
     let raw = std::fs::read(store.path()).expect("the store wrote a file");
     let text = String::from_utf8(raw).expect("the store wrote UTF-8");
@@ -347,6 +347,199 @@ fn a_stored_secret_is_absent_from_the_bytes_the_store_wrote() {
     assert_absent(&text, &secret_value, "the file on disk");
 }
 
+// ADR-0007 clause 4's at-rest half, at the unit level: the file carries a
+// sealed value, and it is the value that was put in.
+//
+// **Both arms matter and the second is the one that is new.** Absence alone was
+// all this check could assert while sealing was a port with no implementation:
+// a store that wrote nothing satisfied it perfectly. Now the ciphertext is
+// there to be opened, so the check opens it -- with the key it staged, through
+// `Sealed::open` rather than through `CredentialStore::secret`, so the arm that
+// says "the right value is in there" does not travel back through the store
+// whose file is under test (Verification lessons §11).
+//
+// The whole-file evidence, read by a caller that is not the store at all, is
+// `tests/sealing_from_outside.rs`.
+#[test]
+fn what_the_file_carries_is_the_sealed_value_and_it_opens_to_what_was_put_in() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (entry, secret_value) = staged_entry("sealed");
+    let alias = entry.alias().clone();
+    store.add(entry, &keys, None).expect("an entry is added");
+
+    let record = store.record(&alias).expect("the record is there");
+    let opened = record
+        .sealed
+        .open(keys.key(), &alias)
+        .expect("the blob opens under the key it was sealed with");
+    assert_eq!(
+        opened.expose_for_dispatch(),
+        secret_value,
+        "the blob on disk does not open to the value that was stored"
+    );
+
+    // And the file itself carries that same blob rather than a second copy of
+    // it kept only in memory.
+    let text = std::fs::read_to_string(store.path()).expect("the store wrote a file");
+    assert!(
+        text.contains(&record.sealed.as_hex()),
+        "the sealed value the store holds is not in the file it wrote: {text}"
+    );
+}
+
+// A store file written before `sealed` existed does not parse, and says which
+// file.
+//
+// The harness is pre-alpha and carries no migration, so this is the behaviour
+// rather than a gap in it: a record with no sealed value is a record with no
+// secret, and reading one as though it were complete would be worse than
+// refusing. `deny_unknown_fields` already refuses the other direction.
+#[test]
+fn a_store_file_from_before_sealing_is_refused_naming_the_file() {
+    let scratch = ScratchRoot::new();
+    let root = scratch.store_root();
+    std::fs::create_dir_all(&root).expect("the root is made");
+    let path = root.join(STORE_FILE);
+    std::fs::write(
+        &path,
+        r#"{"entries":{"work":{"description":"a token","kind":"personal",
+           "reach":{"instance_locked":"cortex.page"},"role":null,"tools":[],"workspace":null}}}"#,
+    )
+    .expect("the staged file is written");
+
+    let refusal = CredentialStore::open(&root)
+        .expect_err("a record with no sealed value was read as though it had one");
+    let said = refusal.to_string();
+    assert!(
+        said.contains(&path.display().to_string()),
+        "the refusal does not name the file, so the reader cannot find it: {said}"
+    );
+    assert!(
+        said.contains("sealed"),
+        "the refusal does not name the missing field: {said}"
+    );
+}
+
+// The store's file is replaced whole or not at all.
+//
+// This matters more here than it did for the checkpoint this discipline was
+// lifted from. A torn checkpoint costs a turn; a torn credential store is every
+// credential the user has, because the file is now the only copy of every
+// sealed value. Until 2026-09-05 `save` truncated the live file and then filled
+// it, so a reader landing between the two saw an empty file.
+//
+// The shape is the session arc's `no_reader_ever_sees_a_partly_rewritten_
+// checkpoint`, deliberately: one reader thread, many rewrites, and the reader's
+// own count asserted first so the check cannot pass vacuously (Verification
+// lessons §4).
+#[test]
+fn no_reader_ever_sees_a_partly_written_credential_store() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    // Long enough that a truncate-then-fill has a window a reader can land in.
+    for index in 0..40 {
+        let (entry, _) = staged_entry(&format!("bulk-{index}"));
+        let entry = entry.with_tools(ToolScope::new(
+            (0..40).map(|tool| format!("pages.read.{index}.{tool}")),
+        ));
+        store.add(entry, &keys, None).expect("an entry is added");
+    }
+    let path = store.path();
+    let staged = std::fs::metadata(&path)
+        .expect("the store wrote a file")
+        .len();
+    assert!(
+        staged > 40_000,
+        "the staged store is only {staged} bytes, which may be one write on this filesystem, so \
+         a reader could not land inside a rewrite even if one were torn"
+    );
+
+    const REWRITES: u32 = 200;
+    let reading_path = path.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let readers_flag = std::sync::Arc::clone(&done);
+    let reader = std::thread::spawn(move || {
+        let mut reads = 0u64;
+        let mut torn = Vec::new();
+        while !readers_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            match std::fs::read(&reading_path) {
+                Ok(bytes) => {
+                    reads += 1;
+                    if serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
+                        torn.push(bytes.len());
+                        if torn.len() > 8 {
+                            break;
+                        }
+                    }
+                }
+                Err(error) => torn.push(usize::MAX - error.raw_os_error().unwrap_or(0) as usize),
+            }
+        }
+        (reads, torn)
+    });
+
+    for _ in 0..REWRITES {
+        store.save().expect("the store rewrites");
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (reads, torn) = reader.join().expect("the reader thread panicked");
+
+    assert!(
+        reads > 10,
+        "the reader only completed {reads} reads, so this check asserted nothing about the \
+         {REWRITES} rewrites beside it"
+    );
+    assert!(
+        torn.is_empty(),
+        "a reader saw {} credential store(s) that were not whole documents, at these byte \
+         lengths: {torn:?}. The file is replaced through a renamed sibling precisely so that a \
+         reader sees the whole previous store or the whole new one",
+        torn.len()
+    );
+    assert!(
+        !crate::atomic::temporary_path(&path).exists(),
+        "the sibling temporary was left behind, so a later reader could mistake it for state"
+    );
+}
+
+// A machine with no key anywhere refuses the add, and writes nothing.
+//
+// The refusal is the whole of what ADR-0007 D3 offers such a machine, so it has
+// to name both sources -- and the store must not be left with an entry whose
+// secret was never sealed.
+#[test]
+fn an_add_with_no_key_anywhere_is_refused_and_writes_no_entry() {
+    let scratch = ScratchRoot::new();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (entry, _) = staged_entry("nokey");
+    let alias = entry.alias().clone();
+
+    let refusal = store
+        .add(entry, &NoKeyAnywhere, None)
+        .expect_err("a token was stored on a machine with no sealing key");
+    let said = refusal.to_string();
+    assert!(
+        said.contains(CREDENTIAL_KEY_VARIABLE),
+        "the refusal does not name the environment variable: {said}"
+    );
+    assert!(
+        said.contains("keyring"),
+        "the refusal does not name the OS keyring: {said}"
+    );
+    assert!(
+        store.record(&alias).is_none(),
+        "the entry was kept even though its secret was never sealed"
+    );
+    assert!(
+        !store.path().exists(),
+        "the store wrote a file for an entry it refused"
+    );
+}
+
 // The scratch root, and the control that makes its absence mean something.
 //
 // Three readers, and a sibling that must survive all three. A checker that
@@ -355,12 +548,10 @@ fn a_stored_secret_is_absent_from_the_bytes_the_store_wrote() {
 #[test]
 fn a_scratch_root_is_gone_after_removal_and_a_control_beside_it_survives() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
     let (entry, _) = staged_entry("removal");
-    store
-        .add(entry, &mut sealer, None)
-        .expect("an entry is added");
+    store.add(entry, &keys, None).expect("an entry is added");
 
     let root = store.root().to_path_buf();
     let file = store.path();
@@ -409,7 +600,7 @@ fn a_scratch_root_is_gone_after_removal_and_a_control_beside_it_survives() {
 #[test]
 fn an_apex_token_offered_with_no_confirmer_is_refused() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
     let (entry, _) = staged_entry("apex");
     let entry = Entry::new(
@@ -420,7 +611,7 @@ fn an_apex_token_offered_with_no_confirmer_is_refused() {
     );
 
     let refusal = store
-        .add(entry, &mut sealer, None)
+        .add(entry, &keys, None)
         .expect_err("an apex token with no confirmer is refused");
     let message = refusal.to_string();
     assert!(
@@ -433,7 +624,7 @@ fn an_apex_token_offered_with_no_confirmer_is_refused() {
 #[test]
 fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
 
     let (base, _) = staged_entry("declined");
@@ -445,7 +636,7 @@ fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
         Reach::Apex,
     );
     store
-        .add(entry, &mut sealer, Some(&declining))
+        .add(entry, &keys, Some(&declining))
         .expect_err("a declined apex token is not stored");
     assert!(store.is_empty(), "a declined apex token was stored");
     assert_eq!(
@@ -464,7 +655,7 @@ fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
         Reach::Apex,
     );
     store
-        .add(entry, &mut sealer, Some(&accepting))
+        .add(entry, &keys, Some(&accepting))
         .expect("a confirmed apex token is stored");
     assert_eq!(store.len(), 1);
     assert_eq!(
@@ -483,7 +674,7 @@ fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
 #[test]
 fn a_duplicate_alias_is_refused() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
     let (first, _) = staged_entry("duplicate");
     let alias = first.alias().clone();
@@ -493,11 +684,9 @@ fn a_duplicate_alias_is_refused() {
         first.secret().clone(),
         first.reach().clone(),
     );
+    store.add(first, &keys, None).expect("the first is added");
     store
-        .add(first, &mut sealer, None)
-        .expect("the first is added");
-    store
-        .add(second, &mut sealer, None)
+        .add(second, &keys, None)
         .expect_err("the second is refused");
     assert_eq!(store.len(), 1);
 }
@@ -526,16 +715,14 @@ fn a_key_nothing_reads_is_refused_at_load_rather_than_ignored() {
 #[test]
 fn what_the_store_wrote_is_what_it_reads_back() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let (entry, secret_value) = staged_entry("roundtrip");
     let alias = entry.alias().clone();
     let description = entry.description().as_str().to_owned();
 
     {
         let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
-        store
-            .add(entry, &mut sealer, None)
-            .expect("an entry is added");
+        store.add(entry, &keys, None).expect("an entry is added");
     }
 
     let store = CredentialStore::open(scratch.store_root()).expect("the written root reopens");
@@ -549,7 +736,7 @@ fn what_the_store_wrote_is_what_it_reads_back() {
     assert_eq!(record.role, None);
 
     // The secret came back through the port, which is the only path it has.
-    let recovered = store.secret(&alias, &sealer).expect("the port holds it");
+    let recovered = store.secret(&alias, &keys).expect("the port holds it");
     assert_eq!(recovered.expose_for_dispatch(), secret_value);
 }
 
@@ -562,9 +749,9 @@ use crate::credentials::projection::{NAMESPACE_PREFIX, Namespace};
 use crate::credentials::store::StoreError;
 
 /// Stages a store holding one composer-scoped token and one agent token.
-fn staged_pair() -> (ScratchRoot, InMemorySecrets, CredentialStore, Alias, Alias) {
+fn staged_pair() -> (ScratchRoot, StagedKey, CredentialStore, Alias, Alias) {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
 
     let (composer, _) = staged_entry("composer");
@@ -580,15 +767,13 @@ fn staged_pair() -> (ScratchRoot, InMemorySecrets, CredentialStore, Alias, Alias
     let (agent, _) = staged_entry("agent");
     let agent_alias = agent.alias().clone();
 
-    store
-        .add(composer, &mut sealer, None)
-        .expect("composer added");
-    store.add(agent, &mut sealer, None).expect("agent added");
+    store.add(composer, &keys, None).expect("composer added");
+    store.add(agent, &keys, None).expect("agent added");
     store
         .grant_composer_role(&composer_alias)
         .expect("a read-only scope may hold the role");
 
-    (scratch, sealer, store, composer_alias, agent_alias)
+    (scratch, keys, store, composer_alias, agent_alias)
 }
 
 // The corpus case: a token that escapes its context.
@@ -601,7 +786,7 @@ fn staged_pair() -> (ScratchRoot, InMemorySecrets, CredentialStore, Alias, Alias
 // The mutant: drop the `filter` in `agent_namespaces`.
 #[test]
 fn a_composer_role_token_never_appears_in_the_agents_namespace_list() {
-    let (_scratch, _sealer, store, composer_alias, agent_alias) = staged_pair();
+    let (_scratch, _keys, store, composer_alias, agent_alias) = staged_pair();
 
     let namespaces = store.agent_namespaces();
     let names: Vec<&str> = namespaces.iter().map(|ns| ns.name.as_str()).collect();
@@ -633,7 +818,7 @@ fn a_composer_role_token_never_appears_in_the_agents_namespace_list() {
 // which is the same signal the composer's exhaustive `Scope` match uses.
 #[test]
 fn what_the_agent_sees_is_three_fields_and_a_fourth_would_not_compile() {
-    let (_scratch, _sealer, store, _composer_alias, _agent_alias) = staged_pair();
+    let (_scratch, _keys, store, _composer_alias, _agent_alias) = staged_pair();
     let namespaces = store.agent_namespaces();
     let projected = namespaces.first().expect("one agent token is projected");
 
@@ -657,7 +842,7 @@ fn what_the_agent_sees_is_three_fields_and_a_fourth_would_not_compile() {
 // The mutant: drop the `composer()` lookup from `grant_composer_role`.
 #[test]
 fn a_second_composer_role_is_refused_naming_both_aliases() {
-    let (_scratch, _sealer, mut store, composer_alias, agent_alias) = staged_pair();
+    let (_scratch, _keys, mut store, composer_alias, agent_alias) = staged_pair();
 
     let refusal = store
         .grant_composer_role(&agent_alias)
@@ -696,7 +881,7 @@ fn a_second_composer_role_is_refused_naming_both_aliases() {
 #[test]
 fn the_composer_role_is_refused_when_the_cached_scope_leaves_adr_0006_d4s_set() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
 
     let (base, _) = staged_entry("writer");
@@ -712,7 +897,7 @@ fn the_composer_role_is_refused_when_the_cached_scope_leaves_adr_0006_d4s_set() 
         "search.global",
         "pages.apply_patch",
     ]));
-    store.add(entry, &mut sealer, None).expect("it is stored");
+    store.add(entry, &keys, None).expect("it is stored");
 
     let refusal = store
         .grant_composer_role(&alias)
@@ -741,7 +926,7 @@ fn the_composer_role_is_refused_when_the_cached_scope_leaves_adr_0006_d4s_set() 
 #[test]
 fn every_tool_adr_0006_d4_names_may_hold_the_composer_role() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
 
     let (base, _) = staged_entry("readonly");
@@ -755,7 +940,7 @@ fn every_tool_adr_0006_d4_names_may_hold_the_composer_role() {
     .with_tools(ToolScope::new(
         crate::credentials::entry::COMPOSER_SCOPE.iter().copied(),
     ));
-    store.add(entry, &mut sealer, None).expect("it is stored");
+    store.add(entry, &keys, None).expect("it is stored");
     store
         .grant_composer_role(&alias)
         .expect("D4's own set may hold the role");
@@ -767,7 +952,7 @@ fn every_tool_adr_0006_d4_names_may_hold_the_composer_role() {
 #[test]
 fn an_apex_token_is_marked_in_the_description_the_agent_reads() {
     let scratch = ScratchRoot::new();
-    let mut sealer = InMemorySecrets::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
 
     let (base, _) = staged_entry("apexmark");
@@ -779,7 +964,7 @@ fn an_apex_token_is_marked_in_the_description_the_agent_reads() {
     );
     let confirmer = StagedConfirmer::accepting();
     store
-        .add(entry, &mut sealer, Some(&confirmer))
+        .add(entry, &keys, Some(&confirmer))
         .expect("a confirmed apex token is stored");
 
     let namespaces = store.agent_namespaces();
@@ -791,7 +976,7 @@ fn an_apex_token_is_marked_in_the_description_the_agent_reads() {
     );
     // And an instance-locked one is not marked, so the marking means something.
     let (locked, _) = staged_entry("lockedmark");
-    store.add(locked, &mut sealer, None).expect("it is stored");
+    store.add(locked, &keys, None).expect("it is stored");
     let unmarked = store
         .agent_namespaces()
         .into_iter()
@@ -858,9 +1043,10 @@ fn the_ttl_backstop_uses_the_window_the_store_validated_and_nothing_else() {
 // clock started, so it is meaningless in any other process and must never be
 // written to a file that outlives the run that took it.
 //
-// This destructures exhaustively rather than counting, so a seventh field on
+// This destructures exhaustively rather than counting, so an eighth field on
 // `Record` -- an `at`, a `cached_at`, an `age` -- stops this check compiling
-// rather than travelling to disk. Same signal as
+// rather than travelling to disk. It did exactly that when the sealing arc
+// added the seventh: "error[E0027]: pattern does not mention field `sealed`". Same signal as
 // `what_the_agent_sees_is_three_fields_and_a_fourth_would_not_compile`.
 #[test]
 fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
@@ -871,6 +1057,12 @@ fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
         role: None,
         tools: vec!["pages.read".to_owned()],
         workspace: None,
+        sealed: Sealed::seal(
+            &SealingKey::mint(),
+            &Alias::new("fields").expect("a well-formed alias"),
+            &Secret::new(personal_secret_nonce()).expect("the fixture value has a kind"),
+        )
+        .expect("a bearer value seals"),
     };
 
     let Record {
@@ -880,6 +1072,7 @@ fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
         role,
         tools,
         workspace,
+        sealed,
     } = record;
 
     assert!(!description.is_empty());
@@ -888,6 +1081,12 @@ fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
     assert_eq!(role, None);
     assert_eq!(tools, vec!["pages.read".to_owned()]);
     assert_eq!(workspace, None);
+    // The seventh field is the one this arc added, and it is not optional: a
+    // record without a sealed value does not exist as a type.
+    assert!(
+        sealed.len() > 28,
+        "a sealed value shorter than a version, a nonce and a tag is not one"
+    );
 }
 
 // D6's write-through is what makes D5 and D6 one read rather than two: the
@@ -899,7 +1098,7 @@ fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
 // The mutant: make `replace_tools` return `self.save()` without assigning.
 #[test]
 fn a_replaced_scope_reaches_the_agents_namespace_projection_in_the_same_read() {
-    let (scratch, _sealer, mut store, _composer_alias, agent_alias) = staged_pair();
+    let (scratch, _keys, mut store, _composer_alias, agent_alias) = staged_pair();
 
     let before: Vec<String> = store
         .record(&agent_alias)
@@ -949,7 +1148,7 @@ fn a_replaced_scope_reaches_the_agents_namespace_projection_in_the_same_read() {
 
 #[test]
 fn a_scope_offered_for_an_unknown_alias_is_refused_rather_than_creating_one() {
-    let (_scratch, _sealer, mut store, _composer_alias, _agent_alias) = staged_pair();
+    let (_scratch, _keys, mut store, _composer_alias, _agent_alias) = staged_pair();
     let stranger = Alias::new("stranger").expect("an ordinary alias");
     let before = store.len();
 

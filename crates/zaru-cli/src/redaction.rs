@@ -91,7 +91,7 @@
 //! [`credentials::REDACTED`]: crate::credentials::REDACTED
 
 use crate::credentials::alias::Alias;
-use crate::credentials::port::SecretStore;
+use crate::credentials::sealing::key::KeyStore;
 use crate::credentials::store::{CredentialStore, StoreError};
 use core::fmt;
 use std::borrow::Cow;
@@ -219,20 +219,21 @@ impl Redactor for HeldSecrets {
 /// # Errors
 ///
 /// [`StoreError`] when a secret cannot be taken out of the store — an unknown
-/// alias, or a sealing implementation that refused. It is carried out rather
-/// than skipped: a redactor built from *some* of the harness's secrets would
-/// be a redactor that silently does not cover the rest.
+/// alias, or a sealed value that will not open. It is carried out rather than
+/// skipped: a redactor built from *some* of the harness's secrets would be a
+/// redactor that silently does not cover the rest, and on this boundary a
+/// partial redactor is worse than none, because it reads as complete.
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 /// [`bearer_for_dispatch`]: crate::credentials::bearer_for_dispatch
 pub fn held_secrets_for_redaction(
     store: &CredentialStore,
-    sealer: &dyn SecretStore,
+    keys: &dyn KeyStore,
 ) -> Result<HeldSecrets, StoreError> {
     let aliases: Vec<Alias> = store.records().map(|(alias, _)| alias.clone()).collect();
     let mut held = Vec::with_capacity(aliases.len());
     for alias in aliases {
-        let secret = store.secret(&alias, sealer)?;
+        let secret = store.secret(&alias, keys)?;
         let value = secret.expose_for_dispatch().to_owned();
         held.push(Held {
             core: ascii_core(&value).to_owned(),

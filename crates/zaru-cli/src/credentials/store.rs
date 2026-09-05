@@ -15,12 +15,29 @@
 //! ("Windows support strategy") and belongs there rather than in a `cfg`
 //! branch invented here.
 //!
-//! # There is no secret on disk, and no field one could go in
+//! # There is a secret on disk now, and it is sealed
 //!
-//! [`Record`] is what is serialised. It has no `secret`. The bearer value
-//! goes to [`SecretStore`], which this crate declares and does not implement,
-//! so this arc writes no secret anywhere at all. That is the same argument
-//! ADR-0014 D4 makes about configuration files, applied one layer down.
+//! [`Record`] is what is serialised, and since 2026-09-05 it carries exactly
+//! one field a bearer value is inside: [`Record::sealed`], AES-256-GCM
+//! ciphertext under a key from the OS keyring. Until then it had no such field
+//! at all, because sealing was a port with no implementation and a store that
+//! wrote a secret in plaintext until the sealing arc arrived would have been
+//! the "for now" this harness forbids.
+//!
+//! What replaced that argument is a narrower one of the same shape. The field's
+//! type is [`Sealed`], which **has no constructor that takes a plaintext** —
+//! [`Sealed::seal`] needs a key and an alias, and deserialisation validates a
+//! version byte and a length before it yields anything. So "the file carries no
+//! plaintext secret" is still a property of the type rather than a claim about
+//! a code path. It is also not optional: a [`Record`] without a sealed value
+//! does not exist, so "every entry's secret is sealed" needs no check either.
+//!
+//! # The file is replaced atomically, and that became load-bearing here
+//!
+//! [`CredentialStore::save`] goes through [`crate::atomic::write`]. Until this
+//! file carried secrets it truncated and rewrote in place, which was survivable
+//! for metadata; it is not survivable for the only copy of every credential the
+//! user has.
 //!
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
@@ -34,13 +51,16 @@ compile_error!(
 
 use crate::credentials::alias::Alias;
 use crate::credentials::entry::{Entry, Reach, Role, ToolScope};
-use crate::credentials::port::{Confirm, SealFailure, SecretStore};
+use crate::credentials::port::Confirm;
+use crate::credentials::sealing::blob::Sealed;
+use crate::credentials::sealing::failure::SealingError;
+use crate::credentials::sealing::key::KeyStore;
 use crate::credentials::secret::Secret;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// The directory the harness keeps its own files in.
@@ -118,7 +138,13 @@ pub enum StoreError {
         tool: String,
     },
     /// Sealing or unsealing failed.
-    Seal(SealFailure),
+    ///
+    /// Carries a closed [`SealingError`] rather than an implementation's own
+    /// wording, which is what makes [ADR-0016]'s taxonomy able to read it —
+    /// see [`crate::credentials::sealing::failure`].
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    Sealing(SealingError),
 }
 
 impl fmt::Display for StoreError {
@@ -175,7 +201,7 @@ impl fmt::Display for StoreError {
                  says it could do more. What the server actually granted is ADR-0135's three \
                  gates to enforce and not the harness's to verify"
             ),
-            Self::Seal(failure) => write!(f, "the secret could not be sealed: {failure}"),
+            Self::Sealing(failure) => write!(f, "{failure}"),
         }
     }
 }
@@ -184,7 +210,7 @@ impl std::error::Error for StoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::Seal(failure) => Some(failure),
+            Self::Sealing(failure) => Some(failure),
             _ => None,
         }
     }
@@ -200,7 +226,13 @@ pub enum StoredReach {
     Apex,
 }
 
-/// One token as the store keeps it. **No secret, and no field for one.**
+/// One token as the store keeps it.
+///
+/// Seven fields. Six are [ADR-0007] D2's metadata and the seventh is the
+/// bearer value, sealed — see the module documentation for why it is not
+/// optional and why its type cannot be built from a plaintext.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
@@ -218,6 +250,11 @@ pub struct Record {
     pub tools: Vec<String>,
     /// D2's `workspace`, "informational only".
     pub workspace: Option<String>,
+    /// D2's `secret`, at rest.
+    ///
+    /// The only field in this crate a bearer value is inside, and the only one
+    /// whose type refuses to be built from one.
+    pub sealed: Sealed,
 }
 
 /// The file's whole shape.
@@ -313,8 +350,9 @@ impl CredentialStore {
     /// mistake, and [ADR-0007] D7's listing is what tells them so.
     ///
     /// **A caller that is going to write calls [`open`].** Nothing in this
-    /// harness can: `add` needs a [`SecretStore`] and a [`Confirm`], and
-    /// neither has an implementation in any product tree.
+    /// harness can: `add` needs a [`KeyStore`] and, for an apex token, a
+    /// [`Confirm`] — and while a `KeyStore` now has a product implementation,
+    /// nothing reaches one, because no command adds a token.
     ///
     /// # Errors
     ///
@@ -402,12 +440,12 @@ impl CredentialStore {
     /// # Errors
     ///
     /// [`StoreError::DuplicateAlias`], [`StoreError::ApexNeedsConfirmation`],
-    /// [`StoreError::ApexDeclined`], [`StoreError::Seal`] and
+    /// [`StoreError::ApexDeclined`], [`StoreError::Sealing`] and
     /// [`StoreError::Io`].
     pub fn add(
         &mut self,
         entry: Entry,
-        sealer: &mut dyn SecretStore,
+        keys: &dyn KeyStore,
         confirmer: Option<&dyn Confirm>,
     ) -> Result<(), StoreError> {
         let alias = entry.alias().clone();
@@ -426,9 +464,10 @@ impl CredentialStore {
             }
         }
 
-        sealer
-            .seal(&alias, entry.secret())
-            .map_err(StoreError::Seal)?;
+        // The key is asked for **after** the apex gate, so a token the user
+        // declined never causes a key to be minted into their keyring.
+        let key = keys.key().map_err(StoreError::Sealing)?;
+        let sealed = Sealed::seal(&key, &alias, entry.secret()).map_err(StoreError::Sealing)?;
 
         let record = Record {
             description: entry.description().as_str().to_owned(),
@@ -442,6 +481,7 @@ impl CredentialStore {
             role: None,
             tools: entry.tools().names().to_vec(),
             workspace: entry.workspace().map(str::to_owned),
+            sealed,
         };
         self.entries.insert(alias, record);
         self.save()
@@ -451,14 +491,16 @@ impl CredentialStore {
     ///
     /// # Errors
     ///
-    /// [`StoreError::UnknownAlias`] and [`StoreError::Seal`].
-    pub fn secret(&self, alias: &Alias, sealer: &dyn SecretStore) -> Result<Secret, StoreError> {
-        if !self.entries.contains_key(alias) {
-            return Err(StoreError::UnknownAlias {
+    /// [`StoreError::UnknownAlias`] and [`StoreError::Sealing`].
+    pub fn secret(&self, alias: &Alias, keys: &dyn KeyStore) -> Result<Secret, StoreError> {
+        let record = self
+            .entries
+            .get(alias)
+            .ok_or_else(|| StoreError::UnknownAlias {
                 alias: alias.clone(),
-            });
-        }
-        sealer.unseal(alias).map_err(StoreError::Seal)
+            })?;
+        let key = keys.key().map_err(StoreError::Sealing)?;
+        record.sealed.open(&key, alias).map_err(StoreError::Sealing)
     }
 
     /// Give one token ADR-0007 D4's composer role, taking it from no other.
@@ -548,7 +590,12 @@ impl CredentialStore {
         self.save()
     }
 
-    /// Write the store to disk at [`FILE_MODE`].
+    /// Write the store to disk at [`FILE_MODE`], atomically.
+    ///
+    /// Through [`crate::atomic::write`], so a reader — or a crash — sees the
+    /// whole previous file or the whole new one. That mattered less when this
+    /// file carried only metadata and matters a great deal now that it carries
+    /// every sealed secret the store holds.
     ///
     /// # Errors
     ///
@@ -571,27 +618,19 @@ impl CredentialStore {
                 detail: error.to_string(),
             })?;
 
-        // `mode` applies only when this call creates the file, so the
-        // permissions are set again below for a file that already existed
-        // with the wrong ones.
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(FILE_MODE)
-            .open(&path)
-            .map_err(|source| StoreError::Io {
-                action: "open the credential store for writing",
-                path: path.clone(),
-                source,
-            })?;
-        drop(file);
-
-        fs::write(&path, text).map_err(|source| StoreError::Io {
-            action: "write the credential store",
-            path: path.clone(),
-            source,
+        crate::atomic::write(&path, text.as_bytes(), FILE_MODE).map_err(|failure| {
+            StoreError::Io {
+                action: failure.action,
+                path: failure.path,
+                source: failure.source,
+            }
         })?;
+
+        // The mode is re-asserted on the live file as well as set on the
+        // temporary, because a file that already existed at a wider mode is a
+        // defect whoever created it and a call that noticed and did nothing
+        // would be a comment rather than a mechanism. The modes check reads
+        // both back off the filesystem rather than from what was asked for.
         fs::set_permissions(&path, fs::Permissions::from_mode(FILE_MODE)).map_err(|source| {
             StoreError::Io {
                 action: "set 0600 on the credential store",

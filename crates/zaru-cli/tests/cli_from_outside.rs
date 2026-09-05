@@ -593,40 +593,31 @@ fn continue_takes_the_most_recent_session_by_the_ulids_own_order() {
     );
 }
 
-/// The sealing port, implemented from outside the crate that declares it.
+/// The key port, implemented from outside the crate that declares it.
 ///
-/// The product has no implementation and cannot get one until ADR-0007 D3's
-/// `aes-gcm` and `keyring` have a caller, so a check that wants a *populated*
-/// store has to supply one. That is why `zaru notes tokens` prints an empty
-/// listing on every real machine today, and why this check has to build the
-/// store it then asks the binary to read.
-#[derive(Default)]
-struct HeldInMemory {
-    held: std::collections::BTreeMap<String, String>,
+/// The store now seals what it holds, so a check that wants a *populated* store
+/// supplies the key it seals under. Until 2026-09-05 this stood in for sealing
+/// itself, because ADR-0007 D3's `aes-gcm` and `keyring` had no caller; they do
+/// now, and what a check has to supply is a key rather than a cipher.
+///
+/// A real machine reaches its own keyring through
+/// `zaru_cli::credentials::OsKeyring`, which this deliberately does not use:
+/// `zaru notes tokens` is being driven here as a binary, and a check that
+/// wrote to the developer's own keyring to do it would be a check that changes
+/// shared state it does not own.
+struct StagedKey(zaru_cli::credentials::SealingKey);
+
+impl StagedKey {
+    fn minted() -> Self {
+        Self(zaru_cli::credentials::SealingKey::mint())
+    }
 }
 
-impl zaru_cli::credentials::SecretStore for HeldInMemory {
-    fn seal(
-        &mut self,
-        alias: &zaru_cli::credentials::Alias,
-        secret: &zaru_cli::credentials::Secret,
-    ) -> Result<(), zaru_cli::credentials::SealFailure> {
-        self.held.insert(
-            alias.as_str().to_owned(),
-            secret.expose_for_dispatch().to_owned(),
-        );
-        Ok(())
-    }
-
-    fn unseal(
+impl zaru_cli::credentials::KeyStore for StagedKey {
+    fn key(
         &self,
-        alias: &zaru_cli::credentials::Alias,
-    ) -> Result<zaru_cli::credentials::Secret, zaru_cli::credentials::SealFailure> {
-        let held = self.held.get(alias.as_str()).ok_or_else(|| {
-            zaru_cli::credentials::SealFailure::new(format!("nothing sealed under \"{alias}\""))
-        })?;
-        zaru_cli::credentials::Secret::new(held.clone())
-            .map_err(|refusal| zaru_cli::credentials::SealFailure::new(refusal.to_string()))
+    ) -> Result<zaru_cli::credentials::SealingKey, zaru_cli::credentials::SealingError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -643,7 +634,7 @@ impl zaru_cli::credentials::Confirm for AlwaysConfirms {
 /// **This is the clause moving, and only one of five surfaces.** That record's
 /// clause 10 wants all five and says "no binary reaches the credential store";
 /// one does now. `add`, `describe`, `rm` and `use` are not built: `add` needs a
-/// server, a sealer and a confirmer; the store's public door has no `describe`
+/// server, a key and a confirmer; the store's public door has no `describe`
 /// and no `rm`; and `use` could only ever refuse, because nothing can put a
 /// token in the store for the role to move to.
 ///
@@ -658,7 +649,7 @@ fn adr_0007_d7s_listing_shows_the_composer_role_and_marks_an_apex_token() {
     };
 
     let home = Home::new("notes-tokens");
-    let mut sealer = HeldInMemory::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(home.path().join(".zaru")).expect("a scratch store");
 
     // A nonce with a combining mark, so that an escaping renderer cannot make
@@ -683,7 +674,7 @@ fn adr_0007_d7s_listing_shows_the_composer_role_and_marks_an_apex_token() {
             )
             .with_tools(ToolScope::new(["pages.read", "search.global"]))
             .with_workspace("zaru"),
-            &mut sealer,
+            &keys,
             None,
         )
         .expect("the token is stored");
@@ -696,7 +687,7 @@ fn adr_0007_d7s_listing_shows_the_composer_role_and_marks_an_apex_token() {
                 Reach::Apex,
             )
             .with_tools(ToolScope::new(["pages.read"])),
-            &mut sealer,
+            &keys,
             Some(&AlwaysConfirms),
         )
         .expect("a confirmed apex token is stored");

@@ -30,15 +30,30 @@
 //!
 //! **A port failure's class belongs to the port's implementation, not to the
 //! value it hands back.** `zaru-core`'s `PortFailure`,
-//! [`SourceFailure`](crate::config::SourceFailure),
-//! [`SealFailure`](crate::credentials::SealFailure) and
+//! [`SourceFailure`](crate::config::SourceFailure) and
 //! [`OverflowFailure`](crate::tools::OverflowFailure) each carry an
 //! implementation's own wording and nothing else, by design. `zaru-core`'s own
 //! port module says why that settles nothing: "a provider outage is
 //! environmental, a missing credential is user-correctable, and neither is the
 //! loop failing" — both are one `PortFailure`, and D1 puts them in different
-//! rows. No port has a product implementation anywhere in this workspace, so
-//! no such statement exists to read.
+//! rows. None of those three has a product implementation, so no such statement
+//! exists to read.
+//!
+//! **The credential store's sealing was a fourth of that shape until
+//! 2026-09-05, and it is the one that stopped being one.** [ADR-0007] D3's
+//! at-rest half is built, and because the implementation raises a *closed*
+//! [`SealingError`](crate::credentials::SealingError) rather than an opaque
+//! string, its classes can be stated — which is what the paragraph above says
+//! is impossible for a string. It is mapped whole, in
+//! [`crate::cli::classify`], where `StoreError` is classified: a missing key is
+//! user-correctable naming `ZARU_CREDENTIAL_KEY`, a keyring that is present and
+//! refusing is environmental, and a blob that will not open is read by its
+//! **version byte** — a version this harness writes means the key changed and
+//! is user-correctable, a version it has never written means the bytes are not
+//! ours and is a defect. So the rule this module states is unchanged and its
+//! example list is one shorter.
+//!
+//! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 //!
 //! **A refusal of a caller-passed number takes its class from where the number
 //! came from.** `zaru-core`'s `ConfigurationError`,

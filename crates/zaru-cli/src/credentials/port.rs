@@ -1,87 +1,34 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The two ports the store calls out through, neither implemented here.
+//! The one port the store still calls out through, and it is not implemented
+//! here.
 //!
-//! **Nothing in this crate's product tree implements either**, exactly as
-//! nothing in `zaru-core`'s implements one of the loop's five. A test
-//! implements them; the product does not, and that is why this arc writes no
-//! secret to disk and prompts nobody.
+//! # There were two, and sealing stopped being one of them
+//!
+//! Until 2026-09-05 this module also declared a `SecretStore` port for
+//! [ADR-0007] D3's at-rest half, with no product implementation, because
+//! [ADR-0003] D2's table named neither an AEAD nor a keyring binding. Both are
+//! rows in that table now, and the port went with the amendment rather than
+//! surviving it.
+//!
+//! It went because it had the wrong shape once there was something real to put
+//! behind it: its `seal` returned `()`, so a ciphertext had nowhere to go,
+//! while D3 puts the ciphertext in the store's own file and only the *key* in
+//! the keyring. What replaced it is [`crate::credentials::sealing`], where the
+//! cipher is ordinary code — D3 names AES-256-GCM and there is nothing to vary
+//! — and the seam is around the key, which is the thing that genuinely differs
+//! between a laptop and a runner. The harness is pre-alpha, so the old shape is
+//! removed rather than kept beside the new one.
+//!
+//! [`Confirm`] is untouched. **Nothing in this crate's product tree implements
+//! it**, exactly as nothing in `zaru-core`'s implements one of the loop's five,
+//! so the store still prompts nobody.
+//!
+//! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+//! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 
 use crate::credentials::alias::Alias;
-use crate::credentials::secret::Secret;
-use core::fmt;
-
-/// Sealing or unsealing failed.
-///
-/// Carries a detail string the implementation writes. **An implementation
-/// must not put a bearer value in it** — the whole point of the type it
-/// handles is that the value does not travel — and the store's own checks
-/// assert that no refusal it can raise carries one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SealFailure {
-    /// What the implementation said went wrong, in its own words.
-    pub detail: String,
-}
-
-impl SealFailure {
-    /// Report a failure with the implementation's own wording.
-    #[must_use]
-    pub fn new(detail: impl Into<String>) -> Self {
-        Self {
-            detail: detail.into(),
-        }
-    }
-}
-
-impl fmt::Display for SealFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.detail)
-    }
-}
-
-impl std::error::Error for SealFailure {}
-
-/// Where a bearer value rests when the harness is not running.
-///
-/// ADR-0007 D3: "encrypted at rest with AES-256-GCM, key from the OS keyring
-/// where available, environment variable as the CI fallback", mirroring
-/// [ADR-093]'s `~/.aegis/auth.json`.
-///
-/// # Why this is a port and not code
-///
-/// An AEAD implementation and an OS keyring binding are two dependencies, and
-/// [ADR-0003] D2's table names neither. Adding one is an amendment to that
-/// record rather than an import — its own Trigger clause 7 treats the table
-/// as closed in the other direction too, removing an unneeded entry "by
-/// amendment rather than left standing unused". Two proposed amendments are
-/// drafted on that record; until one is accepted, the shape that is honest is
-/// a declared seam with no implementation.
-///
-/// What that buys is not merely deferral. Because the sealed half does not
-/// exist, [`Record`](super::store::Record) has no field a secret
-/// could occupy, so "the file on disk carries no secret" is a property of the
-/// type rather than a claim about a code path.
-///
-/// [ADR-093]: https://100monkeys-ai.cortex.page/aegis-architecture/p/adrs/093-aegis-cli-authentication-flow
-/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
-pub trait SecretStore {
-    /// Put a bearer value at rest under an alias.
-    ///
-    /// # Errors
-    ///
-    /// [`SealFailure`] when the implementation cannot seal, carrying its own
-    /// wording and never the value.
-    fn seal(&mut self, alias: &Alias, secret: &Secret) -> Result<(), SealFailure>;
-
-    /// Take a bearer value back out.
-    ///
-    /// # Errors
-    ///
-    /// [`SealFailure`] when there is nothing under that alias or the
-    /// implementation cannot unseal.
-    fn unseal(&self, alias: &Alias) -> Result<Secret, SealFailure>;
-}
 
 /// How the user answers ADR-0007 D8's confirmation.
 ///

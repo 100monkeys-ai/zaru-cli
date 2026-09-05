@@ -58,12 +58,17 @@ use core::fmt;
 /// The orchestrator could not be asked what it resolves an alias to.
 ///
 /// Carries the implementation's own wording and nothing else, exactly as
-/// [`SourceFailure`](crate::config::SourceFailure) and
-/// [`SealFailure`](crate::credentials::SealFailure) do. Its class belongs to
+/// [`SourceFailure`](crate::config::SourceFailure) does. Its class belongs to
 /// the implementation rather than to this value — an orchestrator that is down
 /// is environmental and one that refuses a credential is the user's — and no
 /// implementation exists to state it, which is why it is not mapped into
 /// [ADR-0016]'s taxonomy.
+///
+/// The credential store's sealing failure was the other example here until
+/// 2026-09-05, when it gained an implementation and became a closed enum that
+/// **is** mapped. What that shows is the way out of this shape rather than an
+/// exception to it: a port whose implementations are known can raise something
+/// with a discriminant, and a `String` never has one.
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[derive(Debug, Clone, PartialEq, Eq)]

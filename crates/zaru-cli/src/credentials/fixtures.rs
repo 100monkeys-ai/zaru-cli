@@ -140,49 +140,6 @@ impl Drop for ScratchRoot {
     }
 }
 
-/// Where a bearer value goes when there is nothing to seal it with.
-///
-/// **This is a test double and it is not evidence about ADR-0007 D3.** D3
-/// requires AES-256-GCM under a key from the OS keyring; this holds strings
-/// in a map. [Verification lessons] §24 is the warning it answers: "A test
-/// double answering more simply than the real thing is where a defect becomes
-/// invisible." What a check may conclude from this double is that the store
-/// hands the secret to the port and keeps none of it — nothing whatever about
-/// encryption, which is not built.
-///
-/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-#[derive(Debug, Default)]
-pub(crate) struct InMemorySecrets {
-    held: std::collections::BTreeMap<String, String>,
-}
-
-impl crate::credentials::port::SecretStore for InMemorySecrets {
-    fn seal(
-        &mut self,
-        alias: &crate::credentials::alias::Alias,
-        secret: &crate::credentials::secret::Secret,
-    ) -> Result<(), crate::credentials::port::SealFailure> {
-        self.held.insert(
-            alias.as_str().to_owned(),
-            secret.expose_for_dispatch().to_owned(),
-        );
-        Ok(())
-    }
-
-    fn unseal(
-        &self,
-        alias: &crate::credentials::alias::Alias,
-    ) -> Result<crate::credentials::secret::Secret, crate::credentials::port::SealFailure> {
-        let held = self.held.get(alias.as_str()).ok_or_else(|| {
-            crate::credentials::port::SealFailure::new(format!(
-                "nothing sealed under the alias {alias:?}"
-            ))
-        })?;
-        crate::credentials::secret::Secret::new(held.clone())
-            .map_err(|refusal| crate::credentials::port::SealFailure::new(refusal.to_string()))
-    }
-}
-
 /// A confirmer that answers as it was built to, and records what it was told.
 pub(crate) struct StagedConfirmer {
     answer: bool,

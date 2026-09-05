@@ -6,7 +6,7 @@
 //!
 //! **Nothing in this crate's product tree implements [`LayerSource`]**,
 //! exactly as nothing implements the credential store's
-//! [`SecretStore`](crate::credentials::SecretStore) or any of `zaru-core`'s
+//! [`Confirm`](crate::credentials::Confirm) or any of `zaru-core`'s
 //! five loop ports. A check implements it; the product does not.
 //!
 //! # Which layers, and why each one stops here

@@ -41,7 +41,6 @@
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,8 +59,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::sync::mpsc;
 
 use zaru_cli::credentials::{
-    Alias, CredentialStore, Description, Entry, Instance as TokenInstance, Reach, SealFailure,
-    Secret, SecretStore, ToolScope, Ttl, bearer_for_dispatch,
+    Alias, CredentialStore, Description, Entry, Instance as TokenInstance, KeyStore, Reach,
+    SealingError, SealingKey, Secret, ToolScope, Ttl, bearer_for_dispatch,
 };
 use zaru_core::iteration::Clock;
 use zaru_notes::session::{
@@ -142,26 +141,25 @@ impl Clock for ManualClock {
 
 // -- the sealing port, implemented outside the crate that declares it --------
 
-#[derive(Default)]
-struct HeldInMemory {
-    held: BTreeMap<String, String>,
+/// The key port, implemented outside the crate that declares it.
+///
+/// That it can be implemented from out here is part of what this check
+/// establishes: `KeyStore` is the seam a machine's own keyring sits behind, and
+/// a trait that could only be implemented from inside would not be one. The key
+/// is kept so this check can open what the store sealed **without going back
+/// through the store**, which is the arm of the comparison that must not travel
+/// through the code under test.
+struct StagedKey(SealingKey);
+
+impl StagedKey {
+    fn minted() -> Self {
+        Self(SealingKey::mint())
+    }
 }
 
-impl SecretStore for HeldInMemory {
-    fn seal(&mut self, alias: &Alias, secret: &Secret) -> Result<(), SealFailure> {
-        self.held.insert(
-            alias.as_str().to_owned(),
-            secret.expose_for_dispatch().to_owned(),
-        );
-        Ok(())
-    }
-
-    fn unseal(&self, alias: &Alias) -> Result<Secret, SealFailure> {
-        let held = self
-            .held
-            .get(alias.as_str())
-            .ok_or_else(|| SealFailure::new(format!("nothing sealed under \"{alias}\"")))?;
-        Secret::new(held.clone()).map_err(|refusal| SealFailure::new(refusal.to_string()))
+impl KeyStore for StagedKey {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -427,7 +425,7 @@ impl Drop for Wired {
 async fn wire() -> Wired {
     let base = std::env::temp_dir().join(nonce("ncw-outside"));
     let root = base.join("zaru");
-    let mut sealer = HeldInMemory::default();
+    let keys = StagedKey::minted();
     let mut store = CredentialStore::open(&root).expect("a fresh root opens");
 
     let alias = Alias::new(&nonce("agent")).expect("a nonce is a legal alias");
@@ -442,14 +440,14 @@ async fn wire() -> Wired {
             )
             .with_tools(ToolScope::new(STALE_SCOPE))
             .with_workspace("zaru"),
-            &mut sealer,
+            &keys,
             None,
         )
         .expect("the token is stored");
 
     // The bearer comes back through the sealing port, which is its only path,
     // and crosses into `zaru-notes` through the one named door.
-    let secret = store.secret(&alias, &sealer).expect("the port holds it");
+    let secret = store.secret(&alias, &keys).expect("the port holds it");
     let bearer = bearer_for_dispatch(&secret);
 
     let server = FakeNotes::new();

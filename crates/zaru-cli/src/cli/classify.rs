@@ -65,9 +65,9 @@
 use crate::cli::layers::LoadFailure;
 use crate::cli::refusal::CommandRefused;
 use crate::config::{Key, Schema};
-use crate::credentials::StoreError;
+use crate::credentials::{CREDENTIAL_KEY_VARIABLE, SealingError, SealingKey, StoreError};
 use crate::failure::{
-    Action, Classified, DefectReport, Location, Remedy, SessionEvidence, Statement,
+    Action, Classified, DefectReport, Location, Remedy, SessionEvidence, Statement, Wait,
 };
 use crate::providers::{ModelAlias, ModelId};
 use crate::runtime::TierRefused;
@@ -455,18 +455,96 @@ impl<'a> Surface<'a> {
                     path.display()
                 )),
             ),
+            StoreError::Sealing(failure) => self.sealing(failure, session),
             StoreError::DuplicateAlias { .. }
             | StoreError::UnknownAlias { .. }
             | StoreError::ApexNeedsConfirmation { .. }
             | StoreError::ApexDeclined { .. }
             | StoreError::SecondComposerRole { .. }
             | StoreError::ComposerScopeExceeded { .. }
-            // Nothing this harness runs can add, seal or re-role a stored
-            // token, so a store failure of one of these shapes reaching a user
-            // is this harness in a state it has no path to. `Seal` is a port
-            // failure besides, whose class ADR-0016's Update gives to the
-            // port's implementation, of which there is none.
-            | StoreError::Seal(_) => {
+            // Nothing this harness runs can add or re-role a stored token, so
+            // a store failure of one of these shapes reaching a user is this
+            // harness in a state it has no path to.
+            => undecided(self.version, self.report_at, session, line!()),
+        }
+    }
+
+    /// [ADR-0007] D3's sealing, classified by which side of it went wrong.
+    ///
+    /// # This is the mapping ADR-0016's Update said could not be written
+    ///
+    /// That record leaves a port failure's class to the port's
+    /// *implementation*, and `crate::failure::classify` records the
+    /// consequence: no port had one, so no statement existed to read and the
+    /// credential store's sealing failure stayed unmapped. **Sealing now has an
+    /// implementation**, and because that implementation raises a closed
+    /// [`SealingError`] rather than an opaque string, its classes can be
+    /// stated. Every arm below is named; there is no wildcard, so a new
+    /// variant fails to compile here.
+    ///
+    /// # The version byte is what tells a defect from a key that changed
+    ///
+    /// A blob that will not open has two causes belonging to two different
+    /// people, and only the format version separates them. A version this
+    /// harness writes means the bytes are ours and the **key** is what changed
+    /// — user-correctable, and the remedy says how. A version it has never
+    /// written means the bytes are not ours, in a file this harness alone
+    /// writes, which is a defect.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    #[must_use]
+    fn sealing(&self, failure: &SealingError, session: SessionEvidence) -> Classified {
+        match failure {
+            // The ordinary state of a headless machine, and the remedy is the
+            // whole of what D3 offers such a machine.
+            SealingError::NoKey => correctable(
+                failure,
+                act(format!(
+                    "set {CREDENTIAL_KEY_VARIABLE} to {} lower-case hexadecimal characters, or                      run where an OS keyring is reachable; that variable holds the key and never                      a credential",
+                    SealingKey::HEX_CHARACTERS
+                )),
+            ),
+            // Named the same way and with the same remedy: a value that is not
+            // a key is a value the user set.
+            SealingError::KeyNotHex => correctable(
+                failure,
+                act(format!(
+                    "set {CREDENTIAL_KEY_VARIABLE} to exactly {} lower-case hexadecimal                      characters; its current value is not, and neither it nor its length is                      quoted anywhere",
+                    SealingKey::HEX_CHARACTERS
+                )),
+            ),
+            // The bytes are ours, so the key is what moved.
+            SealingError::WillNotOpen => correctable(
+                failure,
+                act(
+                    "restore the OS keyring entry this store's key was in, or set                      ZARU_CREDENTIAL_KEY back to the key these credentials were sealed under; if                      neither is recoverable, remove the store and add the tokens again"
+                        .to_owned(),
+                ),
+            ),
+            // The file, which only this harness writes, has been edited.
+            SealingError::TooShort { .. } | SealingError::NotHex => correctable(
+                failure,
+                act(
+                    "the only writer of the credential store is this harness; if it was edited                      by hand, restore it from a backup or remove it and add the tokens again"
+                        .to_owned(),
+                ),
+            ),
+            // D1's environmental row: the substrate is unwell and the harness
+            // is not. Waiting genuinely will not help -- a keyring that is
+            // refusing does not start answering on its own -- so the class
+            // says so rather than offering a retry that cannot work.
+            SealingError::KeyringFailed { .. } => Classified::Environmental {
+                statement: Statement::sanitised(failure.to_string()),
+                wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                    "a keyring that refuses does not begin answering on its own; unlock it, or                      start the session's secret service, and run this again"
+                        .to_owned(),
+                )),
+            },
+            // Ours, both of them. Only this harness writes to its own keyring
+            // entry, and only this harness writes a version byte.
+            SealingError::KeyringHeldNonsense
+            | SealingError::UnknownVersion { .. }
+            | SealingError::WillNotSeal => {
                 undecided(self.version, self.report_at, session, line!())
             }
         }

@@ -14,11 +14,11 @@
 //! [`Entry`] carries a [`Secret`] and is *consumed* by
 //! [`CredentialStore::add`](super::store::CredentialStore::add). What the
 //! store then holds and lists is
-//! [`Record`](super::store::Record), which has **no field a secret could go
-//! in** — the value goes to the [`SecretStore`](super::port::SecretStore)
-//! port instead. D2's eight fields are all present across the pair: `secret`
-//! is the one that lives behind the port, and `kind` is derived rather than
-//! stored.
+//! [`Record`](super::store::Record), whose one field a secret is inside is
+//! [`Record::sealed`](super::store::Record::sealed) — **and that field's type
+//! has no constructor that takes a plaintext**. D2's eight fields are all
+//! present across the pair: `secret` is the one that is sealed, and `kind` is
+//! derived rather than stored.
 //!
 //! `role` is on the record and not here, because ADR-0007 D4 is an invariant
 //! over the whole store — "Exactly one token is flagged `composer`" — and an

@@ -12,7 +12,7 @@
 //! `tests/sealing_from_outside.rs` is for.
 
 use crate::credentials::sealing::failure::SealingError;
-use crate::credentials::sealing::key::{FromKeyring, Keyring, SealingKey};
+use crate::credentials::sealing::key::{FromKeyring, KeyStore, Keyring, SealingKey};
 use std::cell::RefCell;
 
 /// A keyring staged into one of [`FromKeyring`]'s four states.
@@ -94,6 +94,44 @@ impl Keyring for StagedKeyring {
         // nowhere.
         *self.answer.borrow_mut() = FromKeyring::Held(held);
         Ok(())
+    }
+}
+
+/// A key store that hands back one key and asks nothing of any machine.
+///
+/// What most checks want: [`StagedKeyring`] exercises the precedence, and
+/// everything else only needs *a* key. It exposes that key so a check can be
+/// the reader that is not the store — opening a blob itself rather than asking
+/// the code under test to open it, which is [Verification lessons] §11.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+pub(crate) struct StagedKey(SealingKey);
+
+impl StagedKey {
+    /// A store over a freshly minted key.
+    pub(crate) fn minted() -> Self {
+        Self(SealingKey::mint())
+    }
+
+    /// The key, so a check can open what the store sealed without going back
+    /// through the store.
+    pub(crate) const fn key(&self) -> &SealingKey {
+        &self.0
+    }
+}
+
+impl KeyStore for StagedKey {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// A key store with nothing in it, so a caller's refusal path can be driven.
+pub(crate) struct NoKeyAnywhere;
+
+impl KeyStore for NoKeyAnywhere {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Err(SealingError::NoKey)
     }
 }
 

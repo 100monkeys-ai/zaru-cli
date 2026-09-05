@@ -5,9 +5,13 @@
 //!
 //! **Nothing in this crate's product tree implements [`ManifestSource`]**,
 //! exactly as nothing implements [`LayerSource`](crate::config::LayerSource),
-//! [`SecretStore`](crate::credentials::SecretStore), any of `zaru-core`'s five
-//! loop ports or any of its three validator ports. A check implements it; the
-//! product does not.
+//! the credential store's [`Confirm`](crate::credentials::Confirm), any of
+//! `zaru-core`'s five loop ports or any of its three validator ports. A check
+//! implements it; the product does not.
+//!
+//! The credential store's *sealing* used to be on that list and no longer is:
+//! [`KeyStore`](crate::credentials::KeyStore) has a product implementation as
+//! of 2026-09-05, over the OS keyring and an environment variable.
 //!
 //! # Why it stops here
 //!

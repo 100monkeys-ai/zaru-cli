@@ -66,7 +66,7 @@ pub use entry::{
     TtlRefused,
 };
 pub use notes::{Cached, Refreshed, ScopeError, bearer_for_dispatch};
-pub use port::{Confirm, SealFailure, SecretStore};
+pub use port::Confirm;
 pub use projection::{NAMESPACE_PREFIX, Namespace};
 pub use sealing::{
     CREDENTIAL_KEY_VARIABLE, FromKeyring, HarnessKeys, KeyStore, Keyring, OsKeyring, Sealed,

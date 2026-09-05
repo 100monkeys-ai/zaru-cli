@@ -43,8 +43,8 @@
 use core::time::Duration;
 use std::sync::Mutex;
 use zaru_cli::credentials::{
-    Alias, CredentialStore, Description, Entry, Instance, Reach, SealFailure, Secret, SecretStore,
-    ToolScope,
+    Alias, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
+    SealingKey, Secret, ToolScope,
 };
 use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
@@ -94,26 +94,25 @@ fn ascii_core(value: &str) -> &str {
 /// **This says nothing whatever about ADR-0007 D3's encryption at rest.** It
 /// is a map of strings, and what a check may conclude from it is that the
 /// store hands a secret to the port and takes it back.
-#[derive(Default)]
-struct HeldInMemory {
-    held: std::collections::BTreeMap<String, String>,
+/// The key port, implemented outside the crate that declares it.
+///
+/// That it can be implemented from out here is part of what this check
+/// establishes: `KeyStore` is the seam a machine's own keyring sits behind, and
+/// a trait that could only be implemented from inside would not be one. The key
+/// is kept so this check can open what the store sealed **without going back
+/// through the store**, which is the arm of the comparison that must not travel
+/// through the code under test.
+struct StagedKey(SealingKey);
+
+impl StagedKey {
+    fn minted() -> Self {
+        Self(SealingKey::mint())
+    }
 }
 
-impl SecretStore for HeldInMemory {
-    fn seal(&mut self, alias: &Alias, secret: &Secret) -> Result<(), SealFailure> {
-        self.held.insert(
-            alias.as_str().to_owned(),
-            secret.expose_for_dispatch().to_owned(),
-        );
-        Ok(())
-    }
-
-    fn unseal(&self, alias: &Alias) -> Result<Secret, SealFailure> {
-        let held = self
-            .held
-            .get(alias.as_str())
-            .ok_or_else(|| SealFailure::new(format!("nothing sealed under \"{alias}\"")))?;
-        Secret::new(held.clone()).map_err(|refusal| SealFailure::new(refusal.to_string()))
+impl KeyStore for StagedKey {
+    fn key(&self) -> Result<SealingKey, SealingError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -155,8 +154,8 @@ fn store_holding(
     scratch: &Scratch,
     alias: &str,
     value: &str,
-) -> (CredentialStore, HeldInMemory, Alias) {
-    let mut sealer = HeldInMemory::default();
+) -> (CredentialStore, StagedKey, Alias) {
+    let keys = StagedKey::minted();
     let mut store =
         CredentialStore::open(scratch.base.join("zaru")).expect("the credential store opens");
     let alias = Alias::new(alias).expect("a plain name is a legal alias");
@@ -167,10 +166,8 @@ fn store_holding(
         Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
     )
     .with_tools(ToolScope::new(["pages.read"]));
-    store
-        .add(entry, &mut sealer, None)
-        .expect("the entry is stored");
-    (store, sealer, alias)
+    store.add(entry, &keys, None).expect("the entry is stored");
+    (store, keys, alias)
 }
 
 #[derive(Debug, Default)]
@@ -405,8 +402,8 @@ async fn a_held_bearer_in_a_file_never_reaches_the_model() {
     let scratch = Scratch::new("tool");
     let value = planted_bearer("tool");
     let core = ascii_core(&value);
-    let (store, sealer, alias) = store_holding(&scratch, "work", &value);
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, alias) = store_holding(&scratch, "work", &value);
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
     assert_eq!(held.len(), 1);
 
     let run = read_a_file_carrying(&scratch, &value, &held, 4096).await;
@@ -472,8 +469,8 @@ async fn the_session_keeps_the_bytes_the_model_was_not_given() {
     let scratch = Scratch::new("record");
     let value = planted_bearer("record");
     let core = ascii_core(&value);
-    let (store, sealer, alias) = store_holding(&scratch, "work", &value);
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, alias) = store_holding(&scratch, "work", &value);
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
 
     let run = read_a_file_carrying(&scratch, &value, &held, 24).await;
     let given = &run.given_to_the_model[0];
@@ -517,8 +514,8 @@ async fn a_held_bearer_in_validator_output_never_reaches_the_refinement_prompt()
     let scratch = Scratch::new("loop");
     let value = planted_bearer("loop");
     let core = ascii_core(&value);
-    let (store, sealer, alias) = store_holding(&scratch, "work", &value);
-    let held = held_secrets_for_redaction(&store, &sealer).expect("the store yields its secret");
+    let (store, keys, alias) = store_holding(&scratch, "work", &value);
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
 
     for (holding, expect_present) in [
         (&held as &(dyn Redactor + Sync), false),
