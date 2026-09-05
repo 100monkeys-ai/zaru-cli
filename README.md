@@ -64,10 +64,12 @@ either one, and that is named as a gap rather than invented.
 `Ctrl-C` during a turn leaves, exactly as it does at the prompt, and leaving
 is what interrupts the turn: whatever the turn had already written is in the
 transcript and nothing after it is, so resuming that session tells the model
-which call did not complete. **One thing is still not interruptible**, said
-rather than left to be discovered: while a `cmd.run` or a declared validator's
-command is running, the harness is inside a blocking wait, so nothing repaints
-and nothing is read until that child exits.
+which call did not complete. **That holds while a child process is running
+too**, since 2026-09-05: a `cmd.run` or a declared validator's command is a
+future rather than a blocking wait, so the pane keeps painting and the
+keystroke is still read while a build runs — and leaving **ends the child**,
+with the same signal the wall-clock ceiling already sends, rather than leaving
+it running with nothing left to stop it.
 
 Outside a session, `zaru "<task>"` runs one turn and exits:
 
@@ -162,9 +164,11 @@ of the seven act**: `fs.read`, `fs.list`, `fs.write`, `fs.edit` and `fs.search`
 through `std::fs` inside that boundary — the two that replace a file doing so
 whole, at the file's own mode, and the one that searches never following a
 link — and `cmd.run` as a real child process, started at the boundary's root
-with a cleared environment and a wall-clock ceiling the caller supplies. A
-command is not measured against the boundary as though it were a path — its
-boundary is the directory it starts in — and **nothing contains that child**:
+with a cleared environment and a wall-clock ceiling the caller supplies. The
+child's wait and both its pipes are futures on the session's own runtime, so
+running one costs no thread and never blocks the shell. A command is not
+measured against the boundary as though it were a path — its boundary is the
+directory it starts in — and **nothing contains that child**:
 at `bare` tier the harness is not a sandbox and the decision record says so.
 Every call's arguments arrive as one JSON object, read before the permission
 decision because a path that has not been extracted is not yet a target.
