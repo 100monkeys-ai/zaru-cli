@@ -10,7 +10,7 @@
 //! record's own Negative consequence names the cost in as many words:
 //! "Summarisation costs a model call at the moment the session is already
 //! under pressure". `zaru-core` declares
-//! [`Summariser`](zaru_core::context::Summariser) for it and implements it
+//! [`Summariser`] for it and implements it
 //! nowhere, because a model call is [ADR-0012]'s. This module is the product
 //! implementation, and it is the whole of what was missing.
 //!
@@ -66,7 +66,7 @@
 //! what the check's own message demands.
 //!
 //! The seam needs no widening: [`Prompt::new`] takes a
-//! [`Redacted`](zaru_core::redaction::Redacted) and `Redacted` has one
+//! [`Redacted`] and `Redacted` has one
 //! constructor, so a version of this module that forgot the port would not
 //! compile.
 //!

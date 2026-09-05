@@ -83,9 +83,9 @@ impl Exchange {
     /// and that already holds each of them in its own record, at full
     /// fidelity, written as it happened.
     ///
-    /// The separator is [`SEPARATOR`](crate::context::prefix::SEPARATOR),
-    /// which is what every other join in this module uses, so a reader of an
-    /// assembled context meets one convention rather than two. An empty part
+    /// The separator is the blank line every other join in this crate's
+    /// context module uses, so a reader of an assembled context meets one
+    /// convention rather than two. An empty part
     /// contributes nothing rather than a blank stretch — a turn with no tool
     /// calls is the ordinary case, not a turn with an empty tool section.
     ///

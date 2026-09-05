@@ -10,7 +10,7 @@
 //! and [`Context::compact`](zaru_core::context::Context::compact) takes `&mut
 //! self`, so — in that module's own words — "a `ContextPolicy` implementation
 //! holding a `Context` behind the shared borrow `assemble` gives it therefore
-//! *cannot* compact". [`TurnContext`](crate::compose::TurnContext) is that
+//! *cannot* compact". [`TurnContext`] is that
 //! implementation and it holds the context by shared borrow, which is what
 //! makes D7 structural rather than remembered.
 //!
