@@ -382,9 +382,14 @@ impl<S: Surface + Send> zaru_core::tool_call::EventSink for PaneSink<'_, '_, S> 
 /// documents for the transcript's two writers, and the pane they paint into
 /// is the same pane.
 ///
-/// # The wording is [`crate::terminal::vocabulary::loop_line`]'s
+/// # The wording is `vocabulary::loop_line`'s
 ///
-/// The same function the **resumed** pane renders a `Record::Loop` through, so
+/// Named in prose rather than linked, because it is `pub(crate)` and
+/// rustdoc's `private_intra_doc_links` is right to refuse a public page
+/// pointing at something a reader of that page cannot open — the same reason
+/// `Vocabulary` names `config::nearest` in prose.
+///
+/// It is the same function the **resumed** pane renders a `Record::Loop` through, so
 /// what a user watches while a run happens and what they read back on
 /// `--resume` cannot disagree about a word. That is the rule [`PaneSink`]
 /// already follows for the outer loop, and the reason is [ADR-0008] D3's:

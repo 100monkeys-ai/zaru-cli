@@ -383,7 +383,7 @@ pub struct Kept {
 /// that crate headless — the seam belongs on this side.
 ///
 /// So the sink is reached by shared reference and the adapter that makes it an
-/// [`EventSink`](zaru_core::iteration::EventSink) is built **inside** the run,
+/// [`EventSink`] is built **inside** the run,
 /// where the `&mut` it needs lives for exactly as long as the slice does. An
 /// implementation is therefore responsible for its own interior mutability;
 /// [`crate::terminal::driver::PaneNarrator`] holds a `Mutex` it already shared with
@@ -392,7 +392,7 @@ pub struct Kept {
 /// `Sync` because [`iterate`](InnerLoop::iterate) declares
 /// `impl Future<…> + Send` and this reference is held across every await point
 /// in the run — the same bound, for the same reason, that
-/// [`EventSink`](zaru_core::iteration::EventSink) carries.
+/// [`EventSink`] carries.
 ///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
@@ -401,7 +401,7 @@ pub trait Narrator: Sync {
     fn narrate(&self, event: &zaru_core::iteration::Event);
 }
 
-/// A [`Narrator`] as the slice's [`EventSink`](zaru_core::iteration::EventSink).
+/// A [`Narrator`] as the slice's [`EventSink`].
 ///
 /// One field and no state of its own, so nothing here can hold a lock guard
 /// across an await: `narrate` takes `&self`, returns before the next line, and
@@ -537,8 +537,6 @@ where
             &mut sinks,
         )
         .await;
-        drop(sinks);
-        drop(narrating);
 
         let (written, transcript) = events.into_report();
         let mut kept = self
