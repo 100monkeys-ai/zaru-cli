@@ -72,28 +72,23 @@
 //! otherwise, with the two non-zero cases distinguished by their streams and
 //! never by the number.
 //!
-//! # Nothing here runs yet, and the reason is a `zaru-core` bound
+//! # One `zaru-core` bound had to be stated for any of this to run
 //!
 //! [ADR-0009] D4's branch is
 //! [`InnerLoop`](zaru_core::tool_call::InnerLoop), whose `iterate` declares
 //! `impl Future<…> + Send`. [`iteration::run`](zaru_core::iteration::run)
-//! takes `sinks: &mut [&mut dyn EventSink]`, and
-//! [`EventSink`](zaru_core::iteration::EventSink) carries no `Send` bound —
-//! so the slice is `!Send`, it is alive across the run's await points, and
-//! **the future can never satisfy the bound**. The compiler's own words:
-//! "the trait `Send` is not implemented for `dyn zaru_core::iteration::EventSink`
-//! … `[&mut events]` … has type `[&mut dyn EventSink; 1]` which is not `Send`".
+//! holds `sinks: &mut [&mut dyn EventSink]` across every await point, so
+//! until 2026-09-05 the two could not both be satisfied and **no inhabited
+//! implementation of `InnerLoop` could exist**. It went unnoticed because
+//! none did: `tool_call::run` is awaited straight from `block_on` with no
+//! `Send` bound on the path, and `NoInnerLoop` satisfied the bound vacuously
+//! by being uninhabited.
 //!
-//! It has never bitten because nothing implemented `InnerLoop`:
-//! `tool_call::run` is awaited straight from `block_on` with no `Send` bound
-//! anywhere, and `compose::NoInnerLoop` satisfies the bound vacuously by being
-//! uninhabited. **A transcript is not optional** — ADR-0010 D2 makes it the
-//! replayable record and ADR-0008 D3 makes the event stream the contract — so
-//! a run with no sink is not the way out.
-//!
-//! Closing it is a change to a `zaru-core` port, which is a decision rather
-//! than an import, so this module carries the three implementations D4 needs
-//! and stops at the seam. See the arc report.
+//! [`EventSink`](zaru_core::iteration::EventSink) now carries `Send`. Every
+//! implementation in both crates already did — the whole workspace compiled
+//! with the bound added and nothing else changed — so it records what was
+//! already true. Decided under directive 20 and on that trait's own
+//! documentation.
 //!
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
@@ -106,10 +101,12 @@ use crate::compose::Shared;
 use crate::session::{Record, Transcript, TranscriptError};
 use crate::tools::{Fetch, Subprocess};
 use zaru_core::iteration::{
-    Event, EventSink, ExecutionOutcome, Executor, Generated, Generator, PortFailure, Prompt,
+    Clock, ContextPolicy, Event, EventSink, ExecutionOutcome, Executor, Generated, Generator,
+    IterationError, Limits, Outcome, PortFailure, Ports, Prompt, Validators,
 };
+use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::{
-    Model, ModelRequest, ModelResponse, ToolExecutor, ToolOutcome, ToolRequest,
+    InnerLoop, Model, ModelRequest, ModelResponse, ToolExecutor, ToolOutcome, ToolRequest,
 };
 
 /// What a generator produced, as this harness expresses it.
@@ -352,6 +349,125 @@ impl EventSink for Iterations {
                 if self.first_failure.is_none() {
                     self.first_failure = Some(failure);
                 }
+            }
+        }
+    }
+}
+
+/// What an iteration left behind for the composition to classify.
+#[derive(Debug, Default)]
+pub struct Kept {
+    /// The typed error, where a port failed.
+    pub error: Option<IterationError>,
+    /// The first transcript write that failed, where one did.
+    pub transcript: Option<TranscriptError>,
+    /// How many iteration events reached the file.
+    pub written: usize,
+}
+
+/// [ADR-0009] D4's inner loop, as the outer loop reaches it.
+///
+/// # The typed error is kept rather than widened
+///
+/// [`InnerLoop::iterate`] returns `Result<Outcome, PortFailure>`, so the
+/// [`IterationError`]'s own `PortKind` — which of the six ports failed, and on
+/// which iteration — is flattened away before the composition sees it. A
+/// provider outage and an unusable `matches` pattern are different classes
+/// under [ADR-0016] D1 and a `String` cannot tell them apart.
+///
+/// So the typed value is kept here and read back afterwards, which is the
+/// shape [`Classifying`](crate::compose::Classifying) already uses for a
+/// `GeminiFailure` and for the same reason. **No port was widened**: the
+/// alternative was a second error type on `InnerLoop`, which would decide for
+/// `zaru-core` that the outer loop knows about the inner loop's ports.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[derive(Debug)]
+pub struct Inner<'a, G, X, V, P, K, R: ?Sized> {
+    ports: Ports<'a, G, X, V, P, K, R>,
+    limits: Limits,
+    transcript: &'a std::path::Path,
+    kept: std::sync::Mutex<Kept>,
+}
+
+impl<'a, G, X, V, P, K, R: ?Sized> Inner<'a, G, X, V, P, K, R> {
+    /// Run the iteration loop over these ports, under these limits.
+    #[must_use]
+    pub fn over(
+        ports: Ports<'a, G, X, V, P, K, R>,
+        limits: Limits,
+        transcript: &'a std::path::Path,
+    ) -> Self {
+        Self {
+            ports,
+            limits,
+            transcript,
+            kept: std::sync::Mutex::new(Kept::default()),
+        }
+    }
+
+    /// What the run left behind, read after it.
+    ///
+    /// A poisoned lock means a previous holder panicked while moving three
+    /// small values, which cannot happen; the value is taken either way rather
+    /// than propagating a panic out of a run that finished.
+    #[must_use]
+    pub fn kept(&self) -> Kept {
+        let mut slot = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        core::mem::take(&mut *slot)
+    }
+}
+
+impl<G, X, V, P, K, R> InnerLoop for Inner<'_, G, X, V, P, K, R>
+where
+    G: Generator + Sync,
+    G::Candidate: Send,
+    X: Executor<Candidate = G::Candidate> + Sync,
+    V: Validators + Sync,
+    P: ContextPolicy + Sync,
+    K: Clock + Sync,
+    R: Redactor + Sync + ?Sized,
+{
+    async fn iterate(&self, task: &str) -> Result<Outcome, PortFailure> {
+        // The sink is opened here rather than held, so that no lock guard is
+        // alive across the run's await points -- `iterate` takes `&self` and a
+        // `std::sync::MutexGuard` held across an await would make this future
+        // `!Send`, which the port declares it is not.
+        let mut events = Iterations::appending_to(self.transcript)
+            .map_err(|failure| PortFailure::new(failure.to_string()))?;
+
+        let outcome = zaru_core::iteration::run(
+            task,
+            self.limits,
+            Ports {
+                generator: self.ports.generator,
+                executor: self.ports.executor,
+                validators: self.ports.validators,
+                context: self.ports.context,
+                clock: self.ports.clock,
+                redactor: self.ports.redactor,
+            },
+            &mut [&mut events],
+        )
+        .await;
+
+        let (written, transcript) = events.into_report();
+        let mut kept = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        kept.written = written;
+        kept.transcript = transcript;
+        match outcome {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
+                let said = error.to_string();
+                kept.error = Some(error);
+                Err(PortFailure::new(said))
             }
         }
     }

@@ -185,7 +185,35 @@ pub enum Event {
 /// The loop constructs each event once and hands the same value to every
 /// registered sink in turn, so two consumers cannot disagree about what
 /// happened.
-pub trait EventSink {
+/// # `Send`, and it is the bound that makes [ADR-0009] D4's branch possible
+///
+/// [`InnerLoop::iterate`](crate::tool_call::InnerLoop) declares
+/// `impl Future<…> + Send`, and [`run`](crate::iteration::run) holds
+/// `sinks: &mut [&mut dyn EventSink]` across every await point in a run.
+/// Without this bound the slice is `!Send`, that future can never be, and
+/// **no inhabited implementation of `InnerLoop` can exist** — which the
+/// compiler says in as many words: *"the trait `Send` is not implemented for
+/// `dyn zaru_core::iteration::EventSink` … `[&mut events]` … has type
+/// `[&mut dyn EventSink; 1]` which is not `Send`"*.
+///
+/// It went unnoticed because nothing implemented `InnerLoop`.
+/// `zaru-cli`'s `NoInnerLoop` satisfied the bound **vacuously**, by being
+/// uninhabited: its body is `match *self {}`, so there was no future to be
+/// `Send` or not. The first inhabited implementation was the first to meet
+/// it.
+///
+/// Every implementation in both crates already satisfied it — none holds an
+/// `Rc` or a `RefCell` — so the bound records what was already true rather
+/// than asking anything of anybody. What it does promise is that a sink may
+/// not be thread-local, and that promise is made deliberately: it is what
+/// makes the two loops' sink contracts one contract.
+///
+/// **Added 2026-09-05 under directive 20**, as an accepted Update on
+/// [ADR-0008], open to Jeshua's veto there.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+pub trait EventSink: Send {
     /// Receive one event. Called once per event, in emission order.
     fn emit(&mut self, event: &Event);
 }

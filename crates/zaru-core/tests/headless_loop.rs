@@ -121,13 +121,30 @@ impl EventSink for Collect {
     }
 }
 
+/// Take a future only if it is `Send`.
+///
+/// This is the whole instrument for `EventSink`'s `Send` bound, and it is a
+/// **compile-time** one: if the bound is removed, `run`'s future stops being
+/// `Send` because it holds `&mut [&mut dyn EventSink]` across every await,
+/// this file stops compiling, and the message names the trait and the slice.
+/// There is no runtime assertion that could say it instead — a future either
+/// is `Send` or the program does not build.
+///
+/// It is here rather than in the crate's own tests because
+/// [`InnerLoop`](zaru_core::tool_call::InnerLoop) is what needs it, and an
+/// outside caller is the only thing in this workspace that can be a stand-in
+/// for one without depending on `zaru-cli`.
+fn only_if_send<F: core::future::Future + Send>(future: F) -> F {
+    future
+}
+
 #[tokio::test]
 async fn a_caller_outside_this_crate_can_drive_the_loop_to_an_outcome() {
     let generator = Counting(Mutex::new(0));
     let validators = FailsOnce(Mutex::new(0));
     let mut events = Collect::default();
 
-    let outcome = run(
+    let outcome = only_if_send(run(
         "make the tests pass",
         Limits {
             ceiling: Ceiling::new(4).expect("a ceiling of four is usable"),
@@ -142,7 +159,7 @@ async fn a_caller_outside_this_crate_can_drive_the_loop_to_an_outcome() {
             redactor: &NothingHeld,
         },
         &mut [&mut events],
-    )
+    ))
     .await
     .expect("no port fails in this run, so the loop should reach an outcome");
 

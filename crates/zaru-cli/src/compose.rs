@@ -82,7 +82,7 @@ pub mod turn;
 
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
-pub use iterate::{Applying, Candidate, Generating, Iterations};
+pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept};
 pub use model::Classifying;
 pub use shared::Shared;
 pub use sink::Records;
