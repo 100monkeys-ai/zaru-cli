@@ -1041,7 +1041,9 @@ async fn a_child_that_ignores_the_signal_is_ended_anyway() {
         let running = spawn.execute(&line);
         tokio::pin!(running);
         let mut polls = 0_usize;
-        let pid = loop {
+        // The loop is this block's tail, so `running` -- and with it the child
+        // -- is dropped exactly here. That drop is the interrupt.
+        loop {
             tokio::select! {
                 biased;
                 outcome = &mut running => panic!("the child ended too early: {outcome:?}"),
@@ -1055,8 +1057,7 @@ async fn a_child_that_ignores_the_signal_is_ended_anyway() {
                     assert!(polls < POLL_BUDGET, "the child never wrote its process id");
                 }
             }
-        };
-        pid
+        }
     };
 
     let mut polls = 0_usize;
