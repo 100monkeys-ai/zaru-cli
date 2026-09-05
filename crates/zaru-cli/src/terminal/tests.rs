@@ -1444,3 +1444,68 @@ fn every_announcement_of_one_compaction_reaches_the_pane() {
         lines[2].text
     );
 }
+
+/// ADR-0013 D1's layer 6 is "conversation **and tool results**", and the tool
+/// results are on the event stream rather than in `Ran`, which carries what
+/// the turn *printed*.
+///
+/// `ToolLines` is the third consumer of ADR-0008 clause 3's one emission, and
+/// it keeps exactly the lines the shell's own vocabulary puts in the call
+/// register — so what reaches layer 6 and what the pane painted are the same
+/// bytes rather than two renderings.
+///
+/// The mutant: collecting every register rather than `Call`, which sweeps the
+/// model's own narration into layer 6 twice; and collecting none, which
+/// reddens the count.
+#[test]
+fn a_turns_tool_lines_are_collected_for_layer_six_and_nothing_else_is() {
+    use zaru_core::tool_call::{Event, EventSink, TurnEnding};
+
+    let mut collector = super::driver::ToolLines::default();
+    let elapsed = core::time::Duration::from_millis(5);
+    for event in [
+        Event::TurnStarted { n: 1, of: 8 },
+        Event::ModelResponded {
+            round: 1,
+            tokens: 400,
+            calls: 1,
+            elapsed,
+        },
+        Event::ToolRequested {
+            round: 1,
+            call: 1,
+            name: "fs.read".to_owned(),
+        },
+        Event::ToolCompleted {
+            round: 1,
+            call: 1,
+            name: "fs.read".to_owned(),
+            failed: false,
+            content_bytes: 82,
+            elapsed,
+        },
+        Event::TurnEnded {
+            n: 1,
+            ending: TurnEnding::Answered,
+            rounds: 1,
+            elapsed,
+        },
+    ] {
+        collector.emit(&event);
+    }
+
+    let lines = collector.taken();
+    assert!(
+        lines.iter().any(|line| line.contains("fs.read")),
+        "a tool call's rendered line is what layer 6 owes the next turn; got {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("turn 1")),
+        "the turn's own narration is not a tool result, and sweeping it in would put the pane's \
+         commentary into the next turn's prompt: {lines:?}"
+    );
+    assert!(
+        collector.taken().is_empty(),
+        "taking twice must not repeat a turn's tool lines into the turn after it"
+    );
+}

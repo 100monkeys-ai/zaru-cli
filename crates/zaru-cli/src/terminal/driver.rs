@@ -478,6 +478,41 @@ impl zaru_tui::shell::CommandVocabulary for NoVocabulary {
     }
 }
 
+/// Every tool line one turn produced, for [ADR-0013] D1's layer 6.
+///
+/// A third sink beside the pane's and the transcript's, and it exists because
+/// layer 6 is "conversation **and tool results**" and the tool results are on
+/// the event stream rather than in [`Ran`](crate::compose::Ran), which carries
+/// what the turn *printed*. Reading them off the same emission the pane and
+/// the transcript read is what keeps the three consistent — ADR-0008 clause
+/// 3's "one emission" with a third consumer rather than a second reading.
+///
+/// It keeps the lines the shell's own vocabulary puts in the call register,
+/// which is ADR-0011 D4's rendered line and the one this workspace already
+/// produces in exactly one place.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[derive(Debug, Default)]
+pub(crate) struct ToolLines {
+    lines: Vec<String>,
+}
+
+impl ToolLines {
+    /// Take what the turn produced, leaving the collector empty.
+    pub(crate) fn taken(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.lines)
+    }
+}
+
+impl zaru_core::tool_call::EventSink for ToolLines {
+    fn emit(&mut self, event: &zaru_core::tool_call::Event) {
+        let line = crate::terminal::vocabulary::turn_line(event);
+        if line.register == zaru_tui::shell::port::Register::Call {
+            self.lines.push(line.text);
+        }
+    }
+}
+
 /// Run one turn of this session for `task`, painting it as it happens.
 ///
 /// Returns the lines to leave on the pane. The shell and the surface are
@@ -501,11 +536,12 @@ pub fn run_a_turn<S: Surface + Send>(
     let n = turns.next;
     turns.next += 1;
 
+    let mut tools = ToolLines::default();
     let ran = {
         let pane = std::sync::Mutex::new(Pane::of(shell, surface));
         let confirm = PaneConfirm::over(&pane);
         let mut sink = PaneSink::over(&pane);
-        let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 1] = [&mut sink];
+        let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
 
         crate::compose::turn::run_one(
             turns.version,
@@ -521,16 +557,32 @@ pub fn run_a_turn<S: Surface + Send>(
             &mut turns.context,
         )
     };
+    let tool_lines = tools.taken();
 
-    // ADR-0013 D1's layer 6, so the next turn assembles over this one, through
-    // the one `Redactor` the session already holds — ADR-0008 clause 6's port,
-    // on every path from captured bytes into a model prompt.
-    let exchange = zaru_core::redaction::Redacted::by(
-        turns.prepared.redactor(),
-        &format!("user: {task}\nzaru: {}", ran.lines.join("\n")),
-    );
-    turns.context.record(zaru_core::context::Exchange::verbatim(
-        exchange.as_str().to_owned(),
+    // ADR-0013 D1's layer 6, so the next turn assembles over this one. Every
+    // part passes the one `Redactor` the session already holds — ADR-0008
+    // clause 6's port, on every path from captured bytes into a model prompt —
+    // and this is why this file is on that clause's enumeration.
+    //
+    // **All three parts, because D1's layer 6 is "conversation *and tool
+    // results*".** This caller recorded the task and the answer until
+    // 2026-09-05; `Exchange::of_turn` is `context-summariser`'s declared shape
+    // for the type and it takes the middle as well, so what the tools returned
+    // survives into the next turn instead of ending with the turn that ran
+    // them. That matters most in exactly the case the composed rule was
+    // written for: a coding session, where the file that was read and the
+    // command that failed are the facts a later turn needs.
+    let redactor = turns.prepared.redactor();
+    let redacted = |text: &str| {
+        zaru_core::redaction::Redacted::by(redactor, text)
+            .as_str()
+            .to_owned()
+    };
+    let results: Vec<String> = tool_lines.into_iter().map(|line| redacted(&line)).collect();
+    turns.context.record(zaru_core::context::Exchange::of_turn(
+        &redacted(&format!("user: {task}")),
+        &results,
+        &redacted(&format!("zaru: {}", ran.lines.join("\n"))),
     ));
 
     lines_of(&ran)
