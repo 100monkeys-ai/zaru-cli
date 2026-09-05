@@ -62,7 +62,9 @@
 //!
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
+use crate::cli::layers::LoadFailure;
 use crate::cli::refusal::CommandRefused;
+use crate::config::{Key, Schema};
 use crate::credentials::StoreError;
 use crate::failure::{
     Action, Classified, DefectReport, Location, Remedy, SessionEvidence, Statement,
@@ -201,6 +203,42 @@ impl<'a> Surface<'a> {
             ),
         };
         correctable(refusal, remedy)
+    }
+
+    /// A key `config explain` was asked about that no record declares.
+    ///
+    /// Associated rather than a method, because it needs no version and no
+    /// report URL: nothing about a key nothing declares is ours.
+    #[must_use]
+    pub fn undeclared_key(key: &Key, schema: &Schema) -> Classified {
+        let statement = format!(
+            "no record declares the configuration key {key}, so there is nothing to explain about \
+             it; explaining it would print five layers of `(not set)`, which reads as a key that \
+             exists and that nobody has set"
+        );
+        let remedy = match schema.nearest(key.as_str()) {
+            Some(nearest) => act(format!("run `zaru config explain {nearest}`")),
+            None => act("this binary declares no configuration key at all".to_owned()),
+        };
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(statement),
+            remedy,
+        }
+    }
+
+    /// A configuration fold this binary could not complete.
+    ///
+    /// The refusal arm is ADR-0014's own, already classified by
+    /// [`crate::failure::classify`], and is passed through rather than
+    /// re-decided. The source arm is a port failure with no product
+    /// implementation that can produce one — see [`LoadFailure::Source`] — so
+    /// reaching it means this binary is in a state it has no path to.
+    #[must_use]
+    pub fn load(&self, failure: &LoadFailure, session: SessionEvidence) -> Classified {
+        match failure {
+            LoadFailure::Refused(refusal) => Classified::from(refusal.clone()),
+            LoadFailure::Source(_) => undecided(self.version, self.report_at, session, line!()),
+        }
     }
 
     /// A tier that could not be taken from the resolved configuration.

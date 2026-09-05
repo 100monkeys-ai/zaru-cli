@@ -6,76 +6,90 @@
 //! # Boundary
 //!
 //! This crate is the composition root. It depends on all five library crates
-//! and nothing depends on it. ADR-0003 D7 names the installed binary `zaru`,
+//! and nothing depends on it. [ADR-0003] D7 names the installed binary `zaru`,
 //! which is why the package is `zaru-cli` and the binary target is not.
 //!
-//! Three things live here rather than anywhere else, and each is here because
-//! it is a property of the whole program rather than of any one part: the
-//! configuration hierarchy of ADR-0014, the session lifecycle that resolves
-//! the runtime tier once at session start, and the ADR-0016 error taxonomy
-//! together with its mapping to exit codes. The library crates raise their own
-//! errors; this crate classifies them.
+//! # What this binary does, which as of 2026-09-05 is something
 //!
-//! # What this binary does, which is still almost nothing
+//! It reads its arguments, folds three of [ADR-0014] D1's five configuration
+//! layers, and prints one of six data a landed module already produces. **This
+//! is the first thing in the harness a person can run**, and it is the reason
+//! several other records stopped being merely built: [ADR-0016] D5's exit codes
+//! are observable on the real artefact, [ADR-0014] D3's explain block is
+//! printed, [ADR-0012] D4's alias listing exists, [ADR-0001] D2's datum is
+//! shown, [ADR-0010] D6's deletion is reachable, and one of [ADR-0007] D7's
+//! five surfaces is built.
 //!
-//! It prints what it is composed of and exits. What is new as of 2026-09-04 is
-//! that it exits through [ADR-0016] D5's mapping rather than through `()`, and
-//! that it runs inside D3's defect boundary — so a panic anywhere under `run`
-//! is reported as a defect with the version and where to report it, and the
-//! process exits 70 instead of Rust's 101 with a banner.
+//! What it still cannot do is **run a task**, because that needs a provider and
+//! [ADR-0012] D3's trait has no implementation in any product tree. `zaru
+//! --help` says so rather than leaving the user to find out.
 //!
-//! **Nothing else is reachable from here.** The configuration hierarchy, the
-//! credential store and the local tool surface are all built and none of them
-//! is called: reaching them needs a command surface, which is ADR-0015's, and
-//! a session, which is ADR-0010's.
+//! # This file is three things and no more
 //!
-//! # The session is absent and the binary says so rather than pretending
+//! Parse, execute, write. Everything a check could want to reach lives in
+//! [`zaru_cli::cli`], because a binary target cannot be named from an
+//! integration test — the same reason this crate grew a library target for the
+//! credential store. What is left here is the boundary, the two writers, and
+//! the exit code.
 //!
-//! ADR-0010 is not started, so there is no `~/.zaru/sessions/<ulid>/` and no
-//! transcript. This binary passes
-//! [`SessionEvidence::NoSessionExists`],
-//! which is the whole reason that variant exists: D3 says a defect's message
-//! says the transcript is on disk, and claiming one that was never written
-//! would be worse than admitting there is none. **This is the one call site
-//! that changes the day ADR-0010 lands.**
+//! # The session is still absent and the binary still says so
 //!
+//! [ADR-0010]'s lifecycle is built and this binary reads it, but it starts no
+//! session: `zaru sessions list` lists what is there and `zaru --resume`
+//! restores one, and neither creates `~/.zaru/sessions/<ulid>/` for a session
+//! that never had a turn. So [`SessionEvidence::NoSessionExists`] is still what
+//! [ADR-0016] D3's boundary is given, and it is still true. **The day that call
+//! site changes is the day something reaches the loop.**
+//!
+//! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+//! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+//! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+//! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+//! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+//! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
 use std::process::ExitCode;
-use zaru_cli::failure::{Exit, Guarded, SessionEvidence, guard};
-
-/// The crates this binary is composed of, each reporting its own name and
-/// version rather than being described by a list kept here.
-///
-/// A list retyped beside the binary is a list that drifts. Every entry is read
-/// out of the crate itself, so an entry can only be wrong if that crate's own
-/// package metadata is wrong.
-fn composition() -> [(&'static str, &'static str); 5] {
-    [
-        (zaru_core::NAME, zaru_core::VERSION),
-        (zaru_tui::NAME, zaru_tui::VERSION),
-        (zaru_notes::NAME, zaru_notes::VERSION),
-        (zaru_seal::NAME, zaru_seal::VERSION),
-        (zaru_aegis::NAME, zaru_aegis::VERSION),
-    ]
-}
+use zaru_cli::cli::{Run, classify::Surface, parse_process};
+use zaru_cli::failure::{Exit, Guarded, Presentation, SessionEvidence, guard};
 
 /// Everything the binary does, inside the boundary.
 ///
 /// Returns an [`Exit`] rather than `()` so that what the process exits with is
 /// this function's answer rather than a decision `main` makes about it.
 fn run() -> Exit {
-    println!("zaru {}", env!("CARGO_PKG_VERSION"));
-    for (name, version) in composition() {
-        println!("  {name} {version}");
+    let version = env!("CARGO_PKG_VERSION");
+    let report_at = env!("CARGO_PKG_REPOSITORY");
+
+    let outcome = match parse_process() {
+        Ok(line) => Run { version, report_at }.execute(&line),
+        Err(refusal) => zaru_cli::cli::Outcome {
+            lines: Vec::new(),
+            exit: Exit::Failed(Surface::new(version, report_at).command(&refusal)),
+        },
+    };
+
+    for line in &outcome.lines {
+        println!("{line}");
     }
-    Exit::Succeeded
+
+    // A failure goes to standard error, so that a shell reading `zaru models`
+    // gets the listing on its pipe and the refusal on its terminal. ADR-0016
+    // D5's whole argument is that this harness is wrapped by CI, and a wrapper
+    // that has to parse a refusal out of the data stream is a wrapper that
+    // will one day take the refusal for data.
+    if let Exit::Failed(classified) = &outcome.exit {
+        eprintln!("{}", Presentation::of(classified));
+    }
+
+    outcome.exit
 }
 
 fn main() -> ExitCode {
     // ADR-0016 D3's boundary, wrapping exactly one call. The version and the
     // report URL are read out of this package's own metadata rather than
-    // retyped, for the same reason `composition` reads the crate names.
+    // retyped, for the same reason `zaru_cli::composition` reads the crate
+    // names.
     let guarded = guard(
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_REPOSITORY"),
@@ -100,7 +114,6 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     // Liveness only -- see the note in `zaru-core`.
     #[test]
@@ -118,7 +131,10 @@ mod tests {
     // from `Cargo.toml`, which stops this crate compiling.
     #[test]
     fn every_library_crate_is_linked() {
-        let names: Vec<&str> = composition().iter().map(|(name, _)| *name).collect();
+        let names: Vec<&str> = zaru_cli::composition()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
         assert_eq!(
             names,
             vec![
@@ -144,11 +160,5 @@ mod tests {
             env!("CARGO_PKG_REPOSITORY").starts_with("https://"),
             "a defect report has to name somewhere a person can actually reach"
         );
-        assert_eq!(
-            run(),
-            Exit::Succeeded,
-            "printing the composition is not a failure, so the binary exits 0"
-        );
-        assert_eq!(run().code(), 0, "ADR-0016 D5: 0 is success");
     }
 }

@@ -67,6 +67,8 @@ pub mod layers;
 pub mod namespace;
 pub mod parse;
 pub mod refusal;
+pub mod render;
+pub mod run;
 
 pub use classify::Surface;
 pub use flag::Flag;
@@ -75,6 +77,7 @@ pub use layers::{Flags, LoadFailure};
 pub use namespace::Namespace;
 pub use parse::{parse, parse_process};
 pub use refusal::CommandRefused;
+pub use run::{Outcome, Run};
 
 #[cfg(test)]
 mod tests;

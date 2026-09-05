@@ -71,6 +71,26 @@
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
+/// The crates this binary is composed of, each reporting its own name and
+/// version rather than being described by a list kept here.
+///
+/// A list retyped beside the binary is a list that drifts. Every entry is read
+/// out of the crate itself, so an entry can only be wrong if that crate's own
+/// package metadata is wrong.
+///
+/// In the library rather than in `main.rs` since 2026-09-05, because
+/// `--version` prints it and [`cli::run`] is where a request becomes lines.
+#[must_use]
+pub fn composition() -> [(&'static str, &'static str); 5] {
+    [
+        (zaru_core::NAME, zaru_core::VERSION),
+        (zaru_tui::NAME, zaru_tui::VERSION),
+        (zaru_notes::NAME, zaru_notes::VERSION),
+        (zaru_seal::NAME, zaru_seal::VERSION),
+        (zaru_aegis::NAME, zaru_aegis::VERSION),
+    ]
+}
+
 pub mod cli;
 pub mod config;
 pub mod credentials;
