@@ -50,6 +50,14 @@
 //! program rather than of any one part, which is this crate's whole
 //! responsibility.
 //!
+//! [Bounded Contexts] names no crate for ADR-0012's provider abstraction
+//! either, and [`providers`] is here under a delegated coordinator ruling of
+//! 2026-09-05, recorded on that page and on ADR-0012, for the same reason: an
+//! alias resolves through ADR-0014's five layers, which are this crate's, and
+//! nothing else in the workspace can see them. **No provider is called from
+//! anywhere in this workspace** and the provider trait has no implementation
+//! in any product tree.
+//!
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
@@ -57,5 +65,6 @@ pub mod config;
 pub mod credentials;
 pub mod failure;
 pub mod manifest;
+pub mod providers;
 pub mod session;
 pub mod tools;
