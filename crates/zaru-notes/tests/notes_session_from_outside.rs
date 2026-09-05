@@ -85,6 +85,9 @@ fn assert_absent(what: &str, rendered: &str, planted: &str) {
 /// The workspace identifier the fixture resolves every slug to.
 const RESOLVED_ID: &str = "a96c9dde-becf-4ff0-836e-ad8bef46ff42";
 
+/// The cursor the fixture's `pages.list` issues for its second page.
+const SECOND_PAGE: &str = "cursor-4c7e";
+
 /// What the fixture answers `tools/list` with before anything changes.
 const FIRST_SCOPE: [&str; 4] = [
     "pages.read",
@@ -237,6 +240,46 @@ impl ServerHandler for FakeNotes {
                 ))])
                 .into())
             }
+            // Two pages, so a client that stopped at the first would return
+            // two of the three rows and look like a cortex holding two.
+            "pages.list" => {
+                let workspace = arguments
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        McpError::invalid_params("pages.list needs a workspace", None)
+                    })?;
+                let answer = match arguments.get("cursor").and_then(|v| v.as_str()) {
+                    None => serde_json::json!({
+                        "results": [
+                            {"kind": "page", "path": "adrs/0005", "title": format!("Ω first {workspace} ✦")},
+                            {"kind": "page", "path": "architecture/bóunded", "title": "Bóunded Contexts ✦"}
+                        ],
+                        "nextCursor": SECOND_PAGE
+                    }),
+                    Some(SECOND_PAGE) => serde_json::json!({
+                        "results": [
+                            {"kind": "page", "path": "operations/testing", "title": "Tésting ✦"}
+                        ]
+                    }),
+                    Some(other) => {
+                        return Err(McpError::invalid_params(
+                            format!("pages.list was handed a cursor it never issued: {other}"),
+                            None,
+                        ));
+                    }
+                };
+                Ok(CallToolResult::success(vec![ContentBlock::text(answer.to_string())]).into())
+            }
+            // A bare array, which is the other container `listing::read`
+            // accepts and the one that cannot carry a cursor.
+            "atoms.list" => Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::json!([
+                    {"kind": "atom", "path": "atoms/mémbrane", "title": "Mémbrane ✦"}
+                ])
+                .to_string(),
+            )])
+            .into()),
             other => Err(McpError::new(
                 ErrorCode::METHOD_NOT_FOUND,
                 format!("no such tool: {other}"),
@@ -704,4 +747,117 @@ async fn what_the_session_offers_is_printed_for_a_reader() {
             .expect("the fixture serves a page")
     );
     println!("session: {:?}", attached.session);
+}
+
+/// ADR-0005 D3's trie is built over "page paths, titles … for every reachable
+/// workspace", and this is where the entries come from: `pages.list` and
+/// `atoms.list`, both in ADR-0006 D4's composer scope.
+///
+/// **The listing pages, and following the cursor is the point.** The fixture
+/// answers `pages.list` in two pages of two rows and one, so a client that took
+/// the first answer and stopped returns two of three — which is not an error
+/// and is indistinguishable from a cortex that holds two. The count and the
+/// third row's own path are both asserted, because a client that paged but
+/// dropped a row would satisfy neither.
+///
+/// The two containers are exercised apart: `pages.list` answers an object with
+/// a cursor and `atoms.list` a bare array, so the reader is driven through both
+/// shapes over real protocol bytes rather than only in a unit check.
+#[tokio::test]
+async fn a_listing_follows_its_cursor_and_names_its_workspace_on_the_wire() {
+    let attached = attach().await;
+    // ADR-0006 D4's composer scope carries both; this fixture's default scope
+    // is the one the earlier checks assert, so it is widened here rather than
+    // there.
+    {
+        let mut scope = attached
+            .server
+            .scope
+            .lock()
+            .expect("the fixture's scope lock is not poisoned");
+        scope.push("pages.list".to_owned());
+        scope.push("atoms.list".to_owned());
+    }
+    let workspace = WorkspaceId::new(RESOLVED_ID);
+
+    let pages = attached
+        .session
+        .pages(&workspace)
+        .await
+        .expect("pages.list answers");
+    let paths: Vec<&str> = pages.iter().map(|entry| entry.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["adrs/0005", "architecture/bóunded", "operations/testing"],
+        "the listing pages, and a client that stopped at the first answer would return the first \
+         two and look like a cortex holding two"
+    );
+    assert_eq!(
+        pages[2].title, "Tésting ✦",
+        "the row past the cursor must arrive whole, not merely counted"
+    );
+
+    let atoms = attached
+        .session
+        .atoms(&workspace)
+        .await
+        .expect("atoms.list answers");
+    assert_eq!(atoms.len(), 1);
+    assert_eq!(atoms[0].path, "atoms/mémbrane");
+    assert_eq!(
+        atoms[0].title, "Mémbrane ✦",
+        "a bare array is the other container, and it carries no cursor"
+    );
+
+    // The second reader: the bytes, not what the client says about them.
+    let wire = attached.wire_text();
+    assert!(
+        wire.contains(r#""name":"pages.list""#) && wire.contains(r#""name":"atoms.list""#),
+        "neither listing crossed the wire, so this check watched something else"
+    );
+    assert!(
+        wire.contains(SECOND_PAGE),
+        "the cursor the first answer issued was never sent back, so nothing was followed"
+    );
+    assert_eq!(
+        wire.matches(r#""name":"pages.list""#).count(),
+        2,
+        "two pages is two calls; a different number means the loop ran a different number of times"
+    );
+    assert!(
+        wire.matches(RESOLVED_ID).count() >= 3,
+        "every listing call names its workspace, which is this crate's own rule and is asserted \
+         from the frames rather than from the arguments the client composed"
+    );
+}
+
+/// A server handing back the cursor it was just given is refused, so the loop
+/// ends on a condition rather than on a count nobody chose.
+///
+/// The refusal is the discriminating arm: without it this is a hang, and a hang
+/// is the one failure a test suite reports as a timeout somewhere else.
+#[tokio::test]
+async fn a_cursor_that_does_not_advance_is_refused_rather_than_followed_forever() {
+    let page = zaru_notes::session::listing::read(
+        "pages.list",
+        r#"{"results":[{"path":"a","title":"Á ✦"}],"nextCursor":"c-1"}"#,
+    )
+    .expect("a well-formed page is read");
+    assert_eq!(
+        page.next.as_deref(),
+        Some("c-1"),
+        "the reader carries the cursor out; the loop is what decides whether to follow it"
+    );
+
+    // The loop's own guard, reached through the session, needs a server that
+    // repeats itself. `listing::read` cannot express that on its own, so what
+    // is asserted here is the sentence the guard raises, spelled once.
+    let repeated = zaru_notes::session::NotesError::Unreadable {
+        tool: "pages.list".to_owned(),
+        expected: "a cursor that advances, rather than the one just sent",
+    };
+    assert!(
+        repeated.to_string().contains("advances"),
+        "the refusal must say what was expected of the cursor: {repeated}"
+    );
 }

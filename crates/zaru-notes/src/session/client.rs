@@ -35,6 +35,7 @@ use crate::session::bearer::Bearer;
 use crate::session::endpoint::Endpoint;
 use crate::session::error::{CallRefused, NotesError, TOOL_ERROR};
 use crate::session::invalidation::Invalidation;
+use crate::session::listing::{self, Listed};
 use core::fmt;
 use rmcp::ClientHandler;
 use rmcp::model::{CallToolRequestParams, ContentBlock, JsonObject};
@@ -56,6 +57,20 @@ pub const SET_CURRENT_WORKSPACE: &str = "me.set_current_workspace";
 
 /// The tool that reads a page.
 pub const READ_PAGE: &str = "pages.read";
+
+/// The tool that lists a workspace's pages.
+///
+/// In [ADR-0006] D4's `read_only_memory` set, spelled as that record spells it.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+pub const LIST_PAGES: &str = "pages.list";
+
+/// The tool that lists a workspace's atoms.
+///
+/// In [ADR-0006] D4's `read_only_memory` set, spelled as that record spells it.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+pub const LIST_ATOMS: &str = "atoms.list";
 
 /// What a session negotiated when it attached.
 ///
@@ -343,6 +358,78 @@ impl Session {
             Value::String(workspace.as_str().to_owned()),
         );
         self.call(READ_PAGE, arguments).await
+    }
+
+    /// Every page in a workspace, for [ADR-0005] D3's trie.
+    ///
+    /// D3 has the trie "built at session start and refreshed on write", over
+    /// "page paths, titles … for every reachable workspace", so a caller builds
+    /// one of these per workspace it can reach and folds the answers together.
+    ///
+    /// # Errors
+    ///
+    /// [`NotesError::Call`] when the server refuses, and
+    /// [`NotesError::Unreadable`] when the answer does not carry a listing.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    pub async fn pages(&self, workspace: &WorkspaceId) -> Result<Vec<Listed>, NotesError> {
+        self.listing(LIST_PAGES, workspace).await
+    }
+
+    /// Every atom in a workspace, for [ADR-0005] D3's trie.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::pages`].
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    pub async fn atoms(&self, workspace: &WorkspaceId) -> Result<Vec<Listed>, NotesError> {
+        self.listing(LIST_ATOMS, workspace).await
+    }
+
+    /// Every page of one listing, following the cursor until it stops.
+    ///
+    /// # Why the loop ends on a condition and not on a count
+    ///
+    /// A listing that stopped at its first page would silently under-populate
+    /// the trie, and a trie missing entries is indistinguishable from a cortex
+    /// that does not hold them. So the cursor is followed. What bounds the loop
+    /// is **the cursor advancing**: a server handing back the cursor it was
+    /// given is refused naming that, which terminates without a retry count
+    /// nobody chose — a count would be a number this record does not carry, and
+    /// the condition is the thing actually going wrong.
+    async fn listing(
+        &self,
+        tool: &str,
+        workspace: &WorkspaceId,
+    ) -> Result<Vec<Listed>, NotesError> {
+        let mut collected = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut arguments = JsonObject::new();
+            arguments.insert(
+                "workspace".to_owned(),
+                Value::String(workspace.as_str().to_owned()),
+            );
+            if let Some(from) = &cursor {
+                arguments.insert("cursor".to_owned(), Value::String(from.clone()));
+            }
+
+            let answer = self.call(tool, arguments).await?;
+            let page = listing::read(tool, &answer)?;
+            collected.extend(page.listed);
+
+            match page.next {
+                None => return Ok(collected),
+                Some(next) if Some(&next) == cursor.as_ref() => {
+                    return Err(NotesError::Unreadable {
+                        tool: tool.to_owned(),
+                        expected: "a cursor that advances, rather than the one just sent",
+                    });
+                }
+                Some(next) => cursor = Some(next),
+            }
+        }
     }
 
     /// [ADR-0007] D6's first signal, if one has arrived and not been taken.
