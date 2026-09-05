@@ -48,26 +48,31 @@
 //! no implementation in this product tree, as do the prompt, the allowlist,
 //! the destructive matcher, the credential store's apex confirmer — its
 //! *sealing* left this list on 2026-09-05 and is now ordinary code over the OS
-//! keyring — ADR-0014's file
-//! layers **2 and 3** — layer 5 has a reader as of 2026-09-05,
-//! [`cli::layers::Flags`], the first implementation of that port in this
-//! product tree — `meta.toml`'s writer, ADR-0009's manifest reader,
-//! ADR-0012's provider and its alias negotiation, and ADR-0004's membrane.
+//! keyring — ADR-0012's provider and its alias negotiation, and ADR-0004's
+//! membrane. **Every port that reads or writes a file has an implementation as
+//! of 2026-09-05**: ADR-0014's layers 2 and 3 through
+//! [`cli::layers::UserFile`] and [`cli::layers::ProjectFile`], its layer 5
+//! through [`cli::layers::Flags`], ADR-0009's manifest through
+//! [`manifest::ManifestFile`], and ADR-0010's `meta.toml` through
+//! [`session::MetaFile`] — the four that read a file all over one
+//! [`config::TomlFile`], because two parsers would be two readings that can
+//! disagree about what a file says.
 //! **Nothing in this workspace can reach a provider at all**, and nothing
 //! contains a child process — ADR-0011 D2: "the harness is not a sandbox and
 //! says so."
 //!
-//! **Six of the ten are reachable from the `zaru` binary as of 2026-09-05**,
+//! **Seven of the ten are reachable from the `zaru` binary as of 2026-09-05**,
 //! and the sentence that said none of them was is gone with the argument
 //! parser ADR-0003 D2 decided under directive 20. [`cli`] is [ADR-0015] D2's
-//! out-of-session surface: it parses, folds three of ADR-0014 D1's five
+//! out-of-session surface: it parses, folds **all five** of ADR-0014 D1's
 //! layers, and prints `runtime`, `models`, `config explain <key>`, `sessions
-//! list`, `sessions rm <id>` and `notes tokens`. The binary still **runs no
-//! task**, because that needs a provider; `zaru --help` says so.
+//! list`, `sessions rm <id>` and `notes tokens` — and `init`, which is the one
+//! thing it does that changes a file the user owns, once, only when there is
+//! none. The binary still **runs no task**, because that needs a provider;
+//! `zaru --help` says so.
 //!
-//! `tools`, `manifest` and `redaction` are what nothing a user can type
-//! reaches, and each waits on what it always did: a tool-call loop with a
-//! model behind it, a TOML reader, and a prompt to redact.
+//! `redaction` is what nothing a user can type reaches, and it waits on what it
+//! always did: a prompt to redact.
 //!
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 //!

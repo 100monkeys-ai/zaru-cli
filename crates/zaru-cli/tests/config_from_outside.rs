@@ -1,23 +1,24 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The configuration hierarchy driven from outside the crate.
+//! The configuration hierarchy driven from outside the crate, over real files.
 //!
-//! # What this is evidence about, and what it is not
+//! # What this is evidence about
 //!
 //! [Verification lessons] §25: "For any capability a user interacts with, one
-//! check drives the interaction end to end and reads the outcome… A
-//! mechanism whose only callers are in the test suite is a mechanism nobody
-//! has been shown to reach." This file is that check for what exists: it uses
-//! only what `zaru-cli` exports, implements [`LayerSource`] from outside the
-//! crate as the TOML and argument parsers will, reads a real file off a
-//! scratch root, and prints the resolved block.
+//! check drives the interaction end to end and reads the outcome." This file is
+//! that check for the hierarchy: it uses only what `zaru-cli` exports, drives
+//! the product's own [`UserFile`] and [`ProjectFile`] over real files on a
+//! scratch root at the paths the product actually reads, and prints D3's block.
 //!
-//! **It is evidence about the mechanism and must not be quoted as evidence
-//! about the `zaru` binary.** No binary reaches this hierarchy: ADR-0014 D3's
-//! `config explain` is a command surface [ADR-0015] D2 places inside an
-//! interactive session, which needs [ADR-0010]'s session lifecycle and
-//! [ADR-0001] D2's tier resolution, and none of those exists.
+//! **Until 2026-09-05 it implemented [`LayerSource`] itself**, with a reader
+//! that took one `key = value` per line and said in its own documentation that
+//! it was not TOML, because [ADR-0003] D2's table named no parser. That
+//! implementation is deleted: the product has readers now, and a check standing
+//! in for one that exists is asserting about a fake.
+//!
+//! **Evidence about the mechanism, not about the `zaru` binary.**
+//! `tests/cli_from_outside.rs` is where the binary itself is driven.
 //!
 //! # The scratch root, and the reading that discriminates
 //!
@@ -38,88 +39,29 @@
 
 use std::path::{Path, PathBuf};
 
+use zaru_cli::cli::layers::{ProjectFile, UserFile};
 use zaru_cli::config::{
-    ConfigRefused, Contribution, Field, FieldKind, Key, Layer, LayerSource, Resolution, Schema,
-    Source, SourceFailure, Table, Value, environment, gather,
+    ConfigRefused, Contribution, Key, Layer, LayerSource, Resolution, Value, environment, gather,
 };
+use zaru_cli::tools::WorkingDirectory;
 
-/// A layer read from a real file on disk.
+/// Every key this binary declares, from the records that own them.
 ///
-/// This is what a TOML reader will be once [ADR-0003] D2 carries a parser. It
-/// reads one `key = value` per line, which is **not TOML** and is not offered
-/// as one — it exists so this check can put bytes on a filesystem and get a
-/// document back, exercising the port's own contract rather than a parser's.
-///
-/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
-struct FileLayer {
-    layer: Layer,
-    path: PathBuf,
+/// **This file spelled three of them itself until 2026-09-05**, which was one
+/// record's key written inside another check. `zaru_cli::cli::layers::schema`
+/// is what the binary folds against, so this drives what a user drives.
+fn schema() -> zaru_cli::config::Schema {
+    zaru_cli::cli::layers::schema()
 }
 
-impl LayerSource for FileLayer {
-    fn layer(&self) -> Layer {
-        self.layer
-    }
-
-    fn source(&self) -> Source {
-        Source::named(self.path.display().to_string())
-    }
-
-    fn read(&self) -> Result<Table, SourceFailure> {
-        // An absent file is a layer that set nothing, not a failure. A user
-        // with no configuration file has not made a mistake.
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Table::new());
-            }
-            Err(error) => {
-                return Err(SourceFailure::new(format!(
-                    "could not read {}: {error}",
-                    self.path.display()
-                )));
-            }
-        };
-
-        let mut document = Table::new();
-        for (number, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((name, value)) = line.split_once('=') else {
-                return Err(SourceFailure::new(format!(
-                    "{}:{} is not `key = value`",
-                    self.path.display(),
-                    number + 1,
-                )));
-            };
-            let key = Key::new(name.trim()).map_err(|refusal| {
-                SourceFailure::new(format!("{}:{} {refusal}", self.path.display(), number + 1))
-            })?;
-            document.insert_path(&key, Value::Text(value.trim().to_owned()));
-        }
-        Ok(document)
-    }
-}
-
-/// The schema this check declares, standing in for the records that own keys.
-fn schema() -> Schema {
-    Schema::new()
-        .with(
-            Key::new("project.name").expect("a well-formed key"),
-            Field::free(FieldKind::Text),
-        )
-        .with(
-            Key::new("project.workspace").expect("a well-formed key"),
-            Field::free(FieldKind::Text),
-        )
-        .with(
-            Key::new("runtime.max_iterations").expect("a well-formed key"),
-            Field::ceiling(),
-        )
-        // ADR-0001 owns this key and declares it once; a caller asks.
-        .with(zaru_cli::runtime::key(), zaru_cli::runtime::field())
+/// Layer 2 and layer 3, as the product reads them.
+fn files(scratch: &ScratchRoot) -> (UserFile, ProjectFile) {
+    (
+        UserFile::under(&scratch.dir()),
+        ProjectFile::in_directory(
+            WorkingDirectory::at(scratch.project()).expect("the project directory exists"),
+        ),
+    )
 }
 
 /// A tree this check owns, with a sibling that must survive its removal.
@@ -146,14 +88,25 @@ impl ScratchRoot {
         let base = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(base.join("control")).expect("could not stage the scratch tree");
         std::fs::create_dir_all(base.join("zaru")).expect("could not stage the scratch tree");
+        std::fs::create_dir_all(base.join("project")).expect("could not stage the scratch tree");
         std::fs::write(base.join("control").join("keep"), b"survives")
             .expect("could not stage the control");
         Self { base }
     }
 
-    /// Where the configuration files go.
-    fn path(&self, name: &str) -> PathBuf {
-        self.base.join("zaru").join(name)
+    /// Layer 2's file, at the name ADR-0014 D1 gives it.
+    fn user_file(&self) -> PathBuf {
+        self.dir().join("config.toml")
+    }
+
+    /// The working directory layer 3 is read from.
+    fn project(&self) -> PathBuf {
+        self.base.join("project")
+    }
+
+    /// Layer 3's file, at the name ADR-0009 D1 gives it.
+    fn project_file(&self) -> PathBuf {
+        self.project().join("zaru.toml")
     }
 
     /// The directory the configuration files are in.
@@ -183,31 +136,30 @@ fn the_hierarchy_resolves_from_outside_the_crate_over_real_files() {
 
     // Layer 2: the user's file, on disk.
     std::fs::write(
-        scratch.path("config"),
+        scratch.user_file(),
         "# the user's own configuration\n\
-         project.name = from-the-user\n\
-         project.workspace = acme-engineering\n\
-         runtime.max_iterations = 8\n\
-         runtime.tier = contained\n",
+         [project]\n\
+         name = \"from-the-user\"\n\
+         workspace = \"acme-engineering\"\n\
+         \n\
+         [runtime]\n\
+         max_iterations = 8\n\
+         tier = \"contained\"\n",
     )
     .expect("could not write the user's file");
 
     // Layer 3: the project's file, lowering the ceiling and renaming.
     std::fs::write(
-        scratch.path("zaru.toml"),
-        "project.name = from-the-project\n\
-         runtime.max_iterations = 3\n",
+        scratch.project_file(),
+        "[project]\n\
+         name = \"from-the-project\"\n\
+         \n\
+         [runtime]\n\
+         max_iterations = 3\n",
     )
     .expect("could not write the project's file");
 
-    let user = FileLayer {
-        layer: Layer::User,
-        path: scratch.path("config"),
-    };
-    let project = FileLayer {
-        layer: Layer::Project,
-        path: scratch.path("zaru.toml"),
-    };
+    let (user, project) = files(&scratch);
 
     let schema = schema();
     let sources: Vec<&dyn LayerSource> = vec![&user, &project];
@@ -279,7 +231,7 @@ fn the_hierarchy_resolves_from_outside_the_crate_over_real_files() {
     // The configuration directory is removed and its absence read three
     // ways, with a control beside it that must survive.
     let removed = scratch.dir();
-    let file = scratch.path("config");
+    let file = scratch.user_file();
     let control = scratch.control();
     std::fs::remove_dir_all(&removed).expect("could not remove the configuration directory");
 
@@ -308,7 +260,11 @@ fn the_hierarchy_resolves_from_outside_the_crate_over_real_files() {
         })
         .collect();
     remaining.sort();
-    assert_eq!(remaining, vec!["control".to_owned()]);
+    assert_eq!(
+        remaining,
+        vec!["control".to_owned(), "project".to_owned()],
+        "the configuration directory went and the project directory and control did not"
+    );
     // 4. A file inside it reads back as absent rather than as forbidden.
     assert_eq!(
         std::fs::read(&file).map(|_| ()).unwrap_err().kind(),
@@ -328,19 +284,12 @@ fn the_hierarchy_resolves_from_outside_the_crate_over_real_files() {
 fn a_project_file_that_raises_a_ceiling_is_refused_from_outside_the_crate() {
     let scratch = ScratchRoot::new();
 
-    std::fs::write(scratch.path("config"), "runtime.max_iterations = 3\n")
+    std::fs::write(scratch.user_file(), "[runtime]\nmax_iterations = 3\n")
         .expect("could not write the user's file");
-    std::fs::write(scratch.path("zaru.toml"), "runtime.max_iterations = 99\n")
+    std::fs::write(scratch.project_file(), "[runtime]\nmax_iterations = 99\n")
         .expect("could not write the project's file");
 
-    let user = FileLayer {
-        layer: Layer::User,
-        path: scratch.path("config"),
-    };
-    let project = FileLayer {
-        layer: Layer::Project,
-        path: scratch.path("zaru.toml"),
-    };
+    let (user, project) = files(&scratch);
     let sources: Vec<&dyn LayerSource> = vec![&user, &project];
     let contributions = gather(sources).expect("both files read");
 
@@ -374,15 +323,12 @@ fn a_project_file_carrying_a_bearer_shaped_value_is_refused_without_quoting_it()
             .as_nanos(),
     );
     std::fs::write(
-        scratch.path("zaru.toml"),
-        format!("project.name = {planted}\n"),
+        scratch.project_file(),
+        format!("[project]\nname = \"{planted}\"\n"),
     )
     .expect("could not write the project's file");
 
-    let project = FileLayer {
-        layer: Layer::Project,
-        path: scratch.path("zaru.toml"),
-    };
+    let (_, project) = files(&scratch);
     let sources: Vec<&dyn LayerSource> = vec![&project];
     let contributions = gather(sources).expect("the file reads");
 

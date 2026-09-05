@@ -17,7 +17,7 @@ Six crates compile, CI enforces the rules the repository is meant to hold
 itself to, and as of 2026-09-05 the binary does something a person can see.
 
 `zaru` reads its arguments, resolves configuration, and prints what is already
-on this machine. Six commands run:
+on this machine. Seven commands run:
 
 ```sh
 zaru runtime                  # the tier, what it engages, and what changing it would alter
@@ -26,6 +26,7 @@ zaru config explain <key>     # every layer's value for one key, with the effect
 zaru sessions list            # every session on this machine
 zaru sessions rm <id>         # delete a session's directory, with no tombstone
 zaru notes tokens             # the stored Nuclear Notes tokens and which is the composer's
+zaru init                     # write ADR-0009 D1's manifest here, once, if there is none
 ```
 
 `--runtime <tier>` and `--model <identifier>` set the two keys the flag layer
@@ -36,7 +37,7 @@ print its transcript. `--help` lists exactly what runs and nothing else.
 provider client exists anywhere in this workspace, so there is nothing for the
 agent loop to ask. A task invocation is refused, naming what is missing.
 
-Ten pieces exist behind that binary and the command surface reaches six of them.
+Ten pieces exist behind that binary and the command surface reaches seven of them.
 The iteration loop and the tool-call loop are in `zaru-core`, headless, driven
 through ports that nothing in any product tree implements. The composer is in
 `zaru-tui`, rendered under a test backend, reaching its two search tiers through
@@ -53,9 +54,12 @@ CI. `zaru notes tokens` still lists nothing on any real machine, because
 nothing here can *add* a token: that surface needs a Nuclear Notes server to
 authenticate against. The configuration hierarchy is
 in `zaru-cli`, resolving five layers over a schema whose keys arrive from the
-records that own them; **three of the five layers have readers** — the built-in
-one, `ZARU_*`, and the command line — and the two that read files wait on a
-TOML parser. The local tool surface is in `zaru-cli` too: the seven built-in
+records that own them; **all five layers have readers as of 2026-09-05** — the
+built-in one, `~/.zaru/config.toml`, `./zaru.toml`, `ZARU_*`, and the command
+line. The two that read files are the two that waited on a TOML parser, and a
+file that does not parse is refused naming the file, the line and the column
+and never the line's contents: the parser's own message renders the offending
+source line, and a refusal that quoted it would publish whatever was on it. The local tool surface is in `zaru-cli` too: the seven built-in
 tool names, the working-directory boundary, and the permission model. **Three
 of the seven act**: `fs.read` and `fs.list` through `std::fs` inside that
 boundary, and `cmd.run` as a real child process, started at the boundary's root
@@ -78,10 +82,12 @@ store the record of that work somewhere only it can read: an append-only
 transcript of one event per line, a checkpoint rewritten atomically beside it,
 a resume that restores and never re-executes, and bounded retention whose
 deletion is real. `zaru --resume` prints the transcript's own bytes for exactly
-that reason. Its `meta.toml` has no writer — the dependency table's `toml` row
-has no caller yet — so that file is a port with no implementation, like the
-others above. **The binary starts no session**: it reads the ones that are
-there and creates nothing by being asked a question.
+that reason. `meta.toml` is written and read since 2026-09-05, atomically and at
+`0600`, and it records one thing ADR-0010 D1 does not name — the configuration
+layer the tier came from, because a tier that cannot say where it came from is
+not a record of the session's tier. **The binary starts no session**: it reads
+the ones that are there and creates nothing by being asked a question, so no
+`meta.toml` exists on any machine yet.
 
 Cutting across three of the pieces above is one port rather than an eleventh:
 every path from captured bytes into a model prompt passes a `Redactor`, and the
@@ -141,14 +147,15 @@ cargo test --workspace
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
-build needs a registry: `Cargo.lock` resolves 203 packages, six of which are
+build needs a registry: `Cargo.lock` resolves 206 packages, six of which are
 this workspace's own. The third-party set is `rmcp` for the Nuclear Notes
 client, `ratatui` and `tui-textarea` for the composer, `serde` and `serde_json`
-for the credential store, `aes-gcm` and `keyring` for sealing that store,
-`tokio` for the client's channels, for the
-binary crate's own check that drives a session end to end, and for polling the
-loop's futures under `#[tokio::test]`, and what those eight pull in. Which dependencies the harness may carry is ADR-0003 D2's
-to decide, and `[workspace.dependencies]` is where each arrives once it has a
+for the credential store, `aes-gcm` and `keyring` for sealing that store, `toml`
+for `~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`, `tokio` for the
+client's channels, for the binary crate's own check that drives a session end to
+end, and for polling the loop's futures under `#[tokio::test]`, and what those
+nine pull in. Which dependencies the harness may carry is ADR-0003 D2's to
+decide, and `[workspace.dependencies]` is where each arrives once it has a
 caller.
 
 ## Where the knowledge is
