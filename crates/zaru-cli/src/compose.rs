@@ -18,9 +18,10 @@
 //! is [`crate::session`]'s, and the two loops are `zaru-core`'s. This module
 //! calls constructors and passes values.
 //!
-//! # The four things it does add, and each is an adapter
+//! # The six things it does add, and each is an adapter
 //!
-//! There were five until 2026-09-05. The fifth was `NoFetch`, a stand-in for
+//! There were five until 2026-09-05, then four, and now six. The fifth was
+//! `NoFetch`, a stand-in for
 //! ADR-0011 D1's seventh built-in, and its own module said it would go on the
 //! day a real one landed; [`crate::web`] is that, so it did. **It was the one
 //! entry here that was not an adapter** — the other four exist because a
@@ -34,6 +35,8 @@
 //! | [`Records`] | ADR-0010 D2's transcript is [ADR-0008] D3's stream, and the loop's sink is a `zaru-core` trait |
 //! | [`TurnContext`] | ADR-0013's `Context` is a value; `ContextPolicy` is the port the loop calls it through |
 //! | [`Shared`] | `tool_call::run` takes the tool surface by `&mut` and [ADR-0009] D4's branch in one call, so one executor needs two handles |
+//! | [`SessionContext`] | the same `Context` owned mutably, so ADR-0013 D2's compaction has a caller and D7 stays structural |
+//! | [`ModelSummariser`] | ADR-0013 D2's summary is a model call, and `zaru-core` may not make one |
 //!
 //! # What a turn does not have, stated here rather than discovered
 //!
@@ -45,12 +48,20 @@
 //! [`iterate`]: one client through one exchange, and an execution that is a
 //! candidate applied through the same tool surface a turn uses.
 //!
-//! **No summariser, and therefore no compaction.** [`ContextPolicy::assemble`]
-//! takes `&self` and `Context::compact` takes `&mut self`, so a policy cannot
-//! compact and nothing here calls the other half. A turn assembles once, and a
-//! context that will not fit refuses with [ADR-0013] D7's own answer rather
-//! than being rewritten. The layer-6 path is unreached by absence rather than
-//! by a stub.
+//! **A summariser, a turn boundary, and one turn to run between them.**
+//! [`ContextPolicy::assemble`] takes `&self` and `Context::compact` takes
+//! `&mut self`, so a policy still cannot compact — [ADR-0013] D7 held by the
+//! signatures. What arrived on 2026-09-05 is the other half: [`SessionContext`]
+//! owns the context mutably between turns and is the only thing that can call
+//! `compact`, and [`ModelSummariser`] is D2's generated summary over the
+//! provider the turn is already using.
+//!
+//! **This composition runs one turn, so its boundary compacts nothing**, and
+//! that is a session's shape rather than a missing implementation: layer 6 is
+//! empty before a first turn, so `Context::compact` returns through its own
+//! threshold check without spending a model call. The call is real, the
+//! summariser is real, and what is absent is a second turn — which the
+//! in-session shell supplies and which is a separate arc's.
 //!
 //! **No persona.** [ADR-0013] D1's layer 1 is "system prompt and persona" and
 //! [ADR-0027] D1 serves it from a prompt server this build reaches at no tier.
@@ -68,6 +79,7 @@
 //! [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 //! [`ContextPolicy::assemble`]: zaru_core::iteration::ContextPolicy::assemble
 
+pub mod boundary;
 pub mod context;
 pub mod count;
 pub mod iterate;
@@ -78,6 +90,7 @@ pub mod sink;
 pub mod summarise;
 pub mod turn;
 
+pub use boundary::SessionContext;
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
 pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept};

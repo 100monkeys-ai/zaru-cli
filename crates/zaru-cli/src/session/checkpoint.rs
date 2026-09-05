@@ -11,11 +11,17 @@
 //!
 //! # The contents are ADR-0013's and this module does not read them
 //!
-//! What is in the checkpoint is [ADR-0013]'s layering and compaction, which
-//! is unbuilt. So the value here is an opaque
-//! [`serde_json::Value`]: this module writes it whole,
-//! reads it whole, and interprets no field. **Nothing here compacts
-//! anything.**
+//! What is in the checkpoint is [ADR-0013]'s layering and compaction, and
+//! since 2026-09-05 the type that knows its shape is
+//! [`SessionContext`](crate::compose::SessionContext): `checkpoint()` produces
+//! the document and `restored()` reads it back, so layer 6's spelling has one
+//! home rather than a writer here and a reader there.
+//!
+//! The value here stays an opaque [`serde_json::Value`]: this module writes it
+//! whole, reads it whole, and interprets no field. **Nothing here compacts
+//! anything** — that is the boundary's, one crate module away, and the
+//! separation is D3's own: "compaction discards, and a store that both
+//! discards and is expected to be a complete record cannot be either".
 //!
 //! # The rewrite is a rename, and the reason is not a crash
 //!

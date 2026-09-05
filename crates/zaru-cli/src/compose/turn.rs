@@ -82,7 +82,7 @@
 
 use crate::cli::classify::Surface;
 use crate::cli::layers;
-use crate::compose::{Classifying, Records, TurnContext, context, prose};
+use crate::compose::{Classifying, ModelSummariser, Records, SessionContext, context, prose};
 use crate::config::Resolution;
 use crate::credentials::{CredentialStore, HarnessKeys, OsKeyring};
 use crate::failure::{Classified, Exit, SessionEvidence};
@@ -94,7 +94,6 @@ use crate::session::{
     Checkpoint, Meta, MetaFile, MetaStore, SessionId, SessionStore, SystemWallClock, Transcript,
 };
 use crate::tools::{Executor, Mode, SessionNotice, WorkingDirectory};
-use zaru_core::context::Context;
 use zaru_core::iteration::SystemClock;
 use zaru_core::tool_call::{self, Outcome as TurnOutcome, Ports, Start, ToolCalling};
 
@@ -630,7 +629,7 @@ pub fn run_one(
     confirmer: Option<&(dyn crate::tools::Confirm + Sync)>,
     extra: &mut [&mut dyn zaru_core::tool_call::EventSink],
     owed: &mut Owed,
-    context: &mut Context,
+    context: &mut SessionContext,
 ) -> Ran {
     let surface = Surface::new(version, report_at);
     let evidence = session.evidence();
@@ -658,6 +657,42 @@ pub fn run_one(
     {
         lines.push(sentence);
         lines.push(String::new());
+    }
+
+    // --- ADR-0013 D2's turn boundary, before this turn assembles -----------
+    //
+    // This is the one place a compaction may happen, and it is reached once
+    // per turn. On turn 1 layer 6 is empty and `Context::compact` returns
+    // through its own threshold check without spending a model call; from
+    // turn 2 it is the previous turns that fill it, which is what this
+    // record's own Status tracking calls the day the threshold becomes
+    // load-bearing.
+    let summariser = ModelSummariser::over(&provider, &prepared.held);
+    let compaction = match block_on(context.at_turn_boundary(&summariser, &prepared.held)) {
+        Ok(compaction) => compaction,
+        Err(failure) => {
+            return Ran::refused_having_said(
+                lines,
+                surface.summarisation(&failure, provider.taken().as_ref(), evidence),
+            );
+        }
+    };
+    // D3 and D4: announced once, with what it cost, before the turn they made
+    // room for. ADR-0002 D3's interrupt channel -- this reports on a turn the
+    // user's own message caused.
+    for announced in &compaction.announcements {
+        lines.push(format!(
+            "{} {}",
+            crate::cli::render::ANNOUNCEMENT_MARKER,
+            crate::cli::render::announcement(announced)
+        ));
+        lines.push(String::new());
+    }
+    // D2: "the raw span stays in the transcript."
+    if !compaction.announcements.is_empty()
+        && let Err(failure) = transcript.record(&crate::session::Record::Compacted(compaction))
+    {
+        return Ran::refused_having_said(lines, Surface::transcript(&failure, evidence));
     }
 
     // --- ADR-0011's acting half, over every port it needs ------------------
@@ -705,10 +740,10 @@ pub fn run_one(
         fetch: &fetch,
     };
 
-    // --- ADR-0013's context, assembled once at the turn boundary -----------
+    // --- ADR-0013's context, assembled once inside the turn ----------------
     let clock = SystemClock::started_now();
     let outcome = {
-        let policy = TurnContext::over(context, &prepared.held);
+        let policy = context.policy(&prepared.held);
         // ADR-0008's execution, decided 2026-09-05: one tool surface, reached
         // by both loops. See `crate::compose::shared` for why it is a lock and
         // why sharing the value rather than building a second one is what
@@ -868,8 +903,15 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     if let Err(failure) = MetaFile::at(session.meta_path()).write(&meta) {
         return Ran::refused(Surface::meta(&failure, evidence));
     }
+    // ADR-0013's context, opened before ADR-0010 D3's checkpoint because the
+    // checkpoint's contents are that record's: `session::checkpoint` writes an
+    // opaque value it never interprets, and `SessionContext` is the one type
+    // that knows what goes in it. On a session that has not had a turn that is
+    // an empty layer 6 -- and it is that shape because the type says so rather
+    // than because a literal here agrees with the type by hand.
+    let mut context = SessionContext::opened(context::prefix_for(), layers::context_limits());
     let checkpoint = Checkpoint::at(session.checkpoint_path());
-    if let Err(failure) = checkpoint.write(&serde_json::json!({ "exchanges": [] })) {
+    if let Err(failure) = checkpoint.write(&context.checkpoint()) {
         return Ran::refused(Surface::checkpoint(&failure, evidence));
     }
 
@@ -878,7 +920,6 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     // rather than performed -- which is `Decision::permit`'s own rule and the
     // reason this is an `Option` rather than a stub that answers yes.
     let confirmer = crate::tools::prompt::Prompt::from_process();
-    let mut context = Context::opened(context::prefix_for(), layers::context_limits());
 
     run_one(
         version,

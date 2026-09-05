@@ -60,6 +60,55 @@ impl Exchange {
         }
     }
 
+    /// Record one whole turn: what was asked, what the tools returned, and
+    /// what the model answered.
+    ///
+    /// # Three parts, because ADR-0013 D1's layer 6 is three things
+    ///
+    /// D1 names layer 6 "conversation **and tool results**", and a turn is
+    /// all of it: the task the user typed, the rendered line of every tool
+    /// call the model made on the way, and the answer it ended with. An
+    /// exchange holding only the first and the last would drop the middle,
+    /// and the middle is where a coding session's facts are — the file that
+    /// was read, the command that failed.
+    ///
+    /// # They are composed into one text rather than kept apart
+    ///
+    /// Every consumer of layer 6 wants the whole of it: [`Self::as_str`]
+    /// feeds the render, the token count and the summarisation, and none of
+    /// them has a use for the parts separately. Keeping three fields *and* a
+    /// rendered whole would be the same content twice, which is how the two
+    /// drift; keeping only the parts would make `as_str` allocate on every
+    /// count. What needs the parts separately is [ADR-0010] D2's transcript,
+    /// and that already holds each of them in its own record, at full
+    /// fidelity, written as it happened.
+    ///
+    /// The separator is [`SEPARATOR`](crate::context::prefix::SEPARATOR),
+    /// which is what every other join in this module uses, so a reader of an
+    /// assembled context meets one convention rather than two. An empty part
+    /// contributes nothing rather than a blank stretch — a turn with no tool
+    /// calls is the ordinary case, not a turn with an empty tool section.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    #[must_use]
+    pub fn of_turn(task: &str, tool_results: &[String], answer: &str) -> Self {
+        let mut text = String::new();
+        for part in core::iter::once(task)
+            .chain(tool_results.iter().map(String::as_str))
+            .chain(core::iter::once(answer))
+            .filter(|part| !part.is_empty())
+        {
+            if !text.is_empty() {
+                text.push_str(crate::context::prefix::SEPARATOR);
+            }
+            text.push_str(part);
+        }
+        Self {
+            text,
+            kind: ExchangeKind::Verbatim,
+        }
+    }
+
     /// The exchange's text.
     #[must_use]
     pub fn as_str(&self) -> &str {

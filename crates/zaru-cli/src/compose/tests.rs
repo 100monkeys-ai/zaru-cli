@@ -750,3 +750,362 @@ fn the_summarisers_debug_renders_no_text_at_all() {
          of it: {rendered:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0013 D2 and D7 — the turn boundary, and the only thing that may compact
+// ---------------------------------------------------------------------------
+
+/// Small enough that a handful of staged exchanges crosses the threshold.
+fn tight_limits(window: u64, threshold: u64) -> zaru_core::context::ContextLimits {
+    ContextLimits::new(
+        ContextWindow::new(window).expect("not zero"),
+        PressureThreshold::new(threshold).expect("not zero"),
+    )
+    .expect("the threshold is below the window")
+}
+
+/// A summariser that answers a fixed sentence and counts how often it is asked.
+struct Counting {
+    answer: String,
+    asked: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+impl Counting {
+    fn answering(answer: &str) -> Self {
+        Self {
+            answer: answer.to_owned(),
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn spans(&self) -> Vec<Vec<String>> {
+        self.asked.lock().expect("no panic holds this").clone()
+    }
+}
+
+impl zaru_core::context::Summariser for Counting {
+    async fn summarise(
+        &self,
+        span: &zaru_core::context::Span,
+    ) -> Result<String, zaru_core::iteration::PortFailure> {
+        self.asked.lock().expect("no panic holds this").push(
+            span.exchanges()
+                .iter()
+                .map(|exchange| exchange.as_str().to_owned())
+                .collect(),
+        );
+        Ok(self.answer.clone())
+    }
+}
+
+/// A summariser that always fails, for the history-preserving check.
+struct Failing;
+
+impl zaru_core::context::Summariser for Failing {
+    async fn summarise(
+        &self,
+        _span: &zaru_core::context::Span,
+    ) -> Result<String, zaru_core::iteration::PortFailure> {
+        Err(zaru_core::iteration::PortFailure::new(
+            "the provider was unreachable".to_owned(),
+        ))
+    }
+}
+
+/// D2: compaction happens "when the window pressure threshold is crossed".
+///
+/// Below it nothing is spent — which is what makes the one-turn binary's own
+/// boundary call free rather than a wasted model call on every invocation.
+///
+/// The mutant: removing `Context::compact`'s early return, which makes the
+/// summariser be asked and reddens both assertions.
+#[test]
+fn a_turn_boundary_under_the_threshold_spends_nothing() {
+    let held = HeldSecrets::none();
+    let mut session = crate::compose::SessionContext::opened(
+        context::prefix_for(),
+        tight_limits(100_000, 75_000),
+    );
+    session.record(zaru_core::context::Exchange::verbatim("a short exchange"));
+    let summariser = Counting::answering("never asked");
+
+    let compaction = futures_lite_block_on(session.at_turn_boundary(&summariser, &held))
+        .expect("nothing to do is not a failure");
+
+    assert!(
+        summariser.spans().is_empty(),
+        "the threshold was not crossed, so no model call is owed; the summariser was asked {:?}",
+        summariser.spans()
+    );
+    assert!(
+        compaction.announcements.is_empty() && compaction.raw.is_none(),
+        "a compaction that took nothing announces nothing: {compaction:?}"
+    );
+}
+
+/// D2 end to end through the product's own types: crossing the threshold
+/// replaces the oldest span with a generated summary, announces once with
+/// real counts, and hands the raw span back for ADR-0010 D2's transcript.
+///
+/// The mutant: compacting newest-first, which reddens the span assertion.
+#[test]
+fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() {
+    let held = HeldSecrets::none();
+    let mut session =
+        crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 1_200));
+    for nth in 0..8 {
+        session.record(zaru_core::context::Exchange::verbatim(format!(
+            "exchange {nth}: {}",
+            "detail ".repeat(30)
+        )));
+    }
+    let before: Vec<String> = session
+        .exchanges()
+        .iter()
+        .map(|exchange| exchange.as_str().to_owned())
+        .collect();
+    let summariser = Counting::answering("they settled on eight spaces");
+
+    let compaction = futures_lite_block_on(session.at_turn_boundary(&summariser, &held))
+        .expect("the staged summariser answers");
+
+    let raw = compaction.raw.as_ref().expect("layer 6 was compacted");
+    let taken: Vec<String> = raw
+        .exchanges()
+        .iter()
+        .map(|exchange| exchange.as_str().to_owned())
+        .collect();
+    assert!(
+        !taken.is_empty() && taken.len() < before.len(),
+        "the span is some of layer 6 and not all of it; {} of {} were taken",
+        taken.len(),
+        before.len()
+    );
+    // Neither arm travels through the compaction: `before` was read off the
+    // context prior to it, and `taken` off the returned span.
+    assert_eq!(
+        taken,
+        before[..taken.len()],
+        "D2 compacts oldest first, so the span must be the oldest exchanges in order"
+    );
+    assert_eq!(
+        summariser.spans(),
+        vec![taken.clone()],
+        "the summariser is handed exactly the span that was removed, once"
+    );
+    assert_eq!(
+        session.exchanges()[0].as_str(),
+        "they settled on eight spaces",
+        "the summary replaces the span at the front of layer 6"
+    );
+    assert_eq!(
+        session.exchanges()[0].kind(),
+        zaru_core::context::ExchangeKind::Summary,
+        "a summary is marked as one, so a renderer can say which it is"
+    );
+
+    match &compaction.announcements[..] {
+        [
+            zaru_core::context::Announcement::Compacted {
+                turns,
+                before: cost,
+                after,
+            },
+        ] => {
+            assert_eq!(
+                *turns as usize,
+                taken.len(),
+                "D3's count is how many exchanges were replaced"
+            );
+            let measured: u64 = taken.iter().map(|text| text.len() as u64).sum();
+            assert_eq!(
+                *cost, measured,
+                "D3 asks for real before-and-after counts, so `before` is what the replaced \
+                 exchanges actually cost through the counter rather than how many there were"
+            );
+            assert_eq!(*after, "they settled on eight spaces".len() as u64);
+        }
+        other => panic!("D3 announces exactly once per compaction; got {other:?}"),
+    }
+}
+
+/// D2: "History is preserved on disk." A summariser that fails must not cost
+/// the session its conversation.
+///
+/// The mutant: draining the span before awaiting the summary, which reddens
+/// the byte-identity assertion.
+#[test]
+fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
+    let held = HeldSecrets::none();
+    let mut session =
+        crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 1_200));
+    for nth in 0..8 {
+        session.record(zaru_core::context::Exchange::verbatim(format!(
+            "exchange {nth}: {}",
+            "detail ".repeat(30)
+        )));
+    }
+    let before: Vec<String> = session
+        .exchanges()
+        .iter()
+        .map(|exchange| exchange.as_str().to_owned())
+        .collect();
+
+    let failure = futures_lite_block_on(session.at_turn_boundary(&Failing, &held))
+        .expect_err("the staged summariser fails");
+    assert!(failure.to_string().contains("unreachable"));
+
+    let after: Vec<String> = session
+        .exchanges()
+        .iter()
+        .map(|exchange| exchange.as_str().to_owned())
+        .collect();
+    assert_eq!(
+        after, before,
+        "the summary is obtained before anything is removed, so a failed summarisation loses no \
+         history"
+    );
+}
+
+/// Directive 20 decision (11): "ADR-0013's reading that a summary may itself
+/// be re-compacted is accepted."
+///
+/// Asserted through the product's own boundary rather than through
+/// `zaru-core`'s fixture: compact twice, and find the first summary inside
+/// the second span. Exempting summaries would eventually leave compaction
+/// with nothing it is allowed to free, which routes straight to D7's
+/// exhaustion.
+///
+/// The mutant: skipping `ExchangeKind::Summary` when choosing the span.
+#[test]
+fn a_summary_is_compacted_again_like_any_other_exchange() {
+    let held = HeldSecrets::none();
+    let mut session =
+        crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 900));
+    for nth in 0..8 {
+        session.record(zaru_core::context::Exchange::verbatim(format!(
+            "exchange {nth}: {}",
+            "detail ".repeat(30)
+        )));
+    }
+
+    let first = Counting::answering("the first summary, which is itself layer 6");
+    futures_lite_block_on(session.at_turn_boundary(&first, &held)).expect("the first compaction");
+    assert!(
+        session
+            .exchanges()
+            .iter()
+            .any(|exchange| exchange.kind() == zaru_core::context::ExchangeKind::Summary),
+        "the first compaction left a summary to be found"
+    );
+
+    // More pressure, so a second compaction has to reach past the summary.
+    for nth in 8..16 {
+        session.record(zaru_core::context::Exchange::verbatim(format!(
+            "exchange {nth}: {}",
+            "detail ".repeat(30)
+        )));
+    }
+    let second = Counting::answering("the second summary");
+    futures_lite_block_on(session.at_turn_boundary(&second, &held)).expect("the second compaction");
+
+    let spans = second.spans();
+    let span = spans.first().expect("the second compaction took a span");
+    assert!(
+        span.iter()
+            .any(|text| text == "the first summary, which is itself layer 6"),
+        "a summary is a layer-6 exchange like any other and may be re-compacted, oldest first; \
+         the second span held {span:?}"
+    );
+}
+
+/// ADR-0010 D3's checkpoint holds "what the model needs to continue — the
+/// compacted conversation, per ADR-0013", and a resumed session reads it back.
+///
+/// The prefix is deliberately not in it: D1 forbids rewriting layers 1 to 4
+/// mid-session, and a resumed session builds its own from its own
+/// configuration.
+///
+/// The mutant: writing the rendered text instead of the exchanges, which
+/// reddens the restore.
+#[test]
+fn the_checkpoint_carries_layer_six_and_a_resumed_session_reads_it_back() {
+    let limits = tight_limits(100_000, 75_000);
+    let mut session = crate::compose::SessionContext::opened(context::prefix_for(), limits);
+    session.record(zaru_core::context::Exchange::of_turn(
+        "read notes.txt and tell me the rehearsal number",
+        &["fs.read notes.txt -- 82 bytes".to_owned()],
+        "the rehearsal number is 4173",
+    ));
+    session.record(zaru_core::context::Exchange::summary("an older stretch"));
+
+    let stored = session.checkpoint();
+    let restored = crate::compose::SessionContext::restored(context::prefix_for(), limits, &stored)
+        .expect("what this type wrote, it reads");
+
+    let there: Vec<&str> = session
+        .exchanges()
+        .iter()
+        .map(zaru_core::context::Exchange::as_str)
+        .collect();
+    let back: Vec<&str> = restored
+        .exchanges()
+        .iter()
+        .map(zaru_core::context::Exchange::as_str)
+        .collect();
+    assert_eq!(there, back, "layer 6 comes back as what it was");
+    assert_eq!(
+        restored.exchanges()[1].kind(),
+        zaru_core::context::ExchangeKind::Summary,
+        "a summary comes back marked as one, or a re-compaction would treat it as fresh \
+         conversation"
+    );
+    assert!(
+        !stored.to_string().contains(prose::NO_PERSONA),
+        "the stable prefix is not in the checkpoint: D1 forbids rewriting layers 1 to 4 \
+         mid-session, and a stored prefix would outlive the session that read it"
+    );
+
+    // A document this type did not write is refused rather than read as an
+    // empty conversation, which would drop a session's history and look
+    // exactly like a session that had none.
+    crate::compose::SessionContext::restored(
+        context::prefix_for(),
+        limits,
+        &serde_json::json!({ "exchanges": "not a list" }),
+    )
+    .expect_err("a checkpoint this type did not write is refused");
+}
+
+/// ADR-0013 D1's layer 6 is "conversation **and tool results**", so a turn is
+/// all three parts.
+///
+/// The mutant: dropping the tool results from `of_turn`, which reddens the
+/// middle assertion — and the middle is where a coding session's facts are.
+#[test]
+fn one_turn_in_layer_six_carries_the_task_the_tool_results_and_the_answer() {
+    let exchange = zaru_core::context::Exchange::of_turn(
+        "read notes.txt",
+        &[
+            "fs.read notes.txt -- 82 bytes".to_owned(),
+            "cmd.run cargo test -- exit 0".to_owned(),
+        ],
+        "the rehearsal number is 4173",
+    );
+    let text = exchange.as_str();
+    for part in [
+        "read notes.txt",
+        "fs.read notes.txt -- 82 bytes",
+        "cmd.run cargo test -- exit 0",
+        "the rehearsal number is 4173",
+    ] {
+        assert!(
+            text.contains(part),
+            "layer 6 is conversation and tool results, and {part:?} is missing from {text:?}"
+        );
+    }
+    // An empty part contributes nothing rather than a blank stretch: a turn
+    // with no tool calls is the ordinary case.
+    let quiet = zaru_core::context::Exchange::of_turn("a question", &[], "an answer");
+    assert_eq!(quiet.as_str(), "a question\n\nan answer");
+}

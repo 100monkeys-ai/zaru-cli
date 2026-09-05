@@ -174,7 +174,7 @@ pub fn open(
             // ADR-0013 D1's layers, opened once for the session. Layer 6 is
             // empty at the first turn and is what every turn after it
             // assembles over.
-            context: zaru_core::context::Context::opened(
+            context: crate::compose::SessionContext::opened(
                 crate::compose::prefix_for(),
                 crate::cli::layers::context_limits(),
             ),

@@ -753,13 +753,18 @@ pub const CONTEXT_WINDOW_TOKENS: u64 = 1_048_576;
 /// pressure threshold" and D6 has the number visible continuously; neither
 /// says what it is, and no key declares one.
 ///
-/// **Nothing in this binary compacts, so today this number has exactly one
-/// observable effect**: [`ContextLimits::new`](zaru_core::context::ContextLimits::new)
-/// refuses a threshold above its window, and this pair is accepted. That is
-/// said plainly rather than dressed up — a turn assembles once, `compact` takes
-/// `&mut self` and nothing calls it, and the layer-6 path is unreached by
-/// absence. The number becomes load-bearing on the day a session holds more
-/// than one turn.
+/// **This number is what a turn boundary compares against**, and since
+/// 2026-09-05 something compares: `SessionContext::at_turn_boundary` calls
+/// `Context::compact`, which does nothing at or below this threshold and
+/// summarises the oldest span above it.
+///
+/// **On the binary's own path it is still never crossed**, and that is stated
+/// plainly rather than dressed up: one invocation is one turn, layer 6 is empty
+/// at the only boundary that turn has, and an empty layer 6 cannot exceed
+/// anything. The number becomes load-bearing on the day a session holds more
+/// than one turn. Its other effect is unchanged:
+/// [`ContextLimits::new`](zaru_core::context::ContextLimits::new) refuses a
+/// threshold above its window, and this pair is accepted.
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 pub const PRESSURE_THRESHOLD_TOKENS: u64 = CONTEXT_WINDOW_TOKENS / 4 * 3;

@@ -219,7 +219,7 @@ pub struct Turns<'a> {
     /// [ADR-0013]'s context, carried across turns.
     ///
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-    pub context: zaru_core::context::Context,
+    pub context: crate::compose::SessionContext,
     /// Which turn the next one is.
     ///
     /// [`zaru_core::tool_call::run`]'s `n` is "the caller's, because a session
@@ -522,21 +522,16 @@ pub fn run_a_turn<S: Surface + Send>(
         )
     };
 
-    // ADR-0013 D1's layer 6, so the next turn assembles over this one. **What
-    // an exchange holds is `context-summariser`'s to declare**, together with
-    // what `context.json` really carries; this is the caller that fills it,
-    // and it fills it with what this turn was about and what came back, through
+    // ADR-0013 D1's layer 6, so the next turn assembles over this one, through
     // the one `Redactor` the session already holds — ADR-0008 clause 6's port,
     // on every path from captured bytes into a model prompt.
     let exchange = zaru_core::redaction::Redacted::by(
         turns.prepared.redactor(),
         &format!("user: {task}\nzaru: {}", ran.lines.join("\n")),
     );
-    turns
-        .context
-        .record_exchange(zaru_core::context::Exchange::verbatim(
-            exchange.as_str().to_owned(),
-        ));
+    turns.context.record(zaru_core::context::Exchange::verbatim(
+        exchange.as_str().to_owned(),
+    ));
 
     lines_of(&ran)
 }

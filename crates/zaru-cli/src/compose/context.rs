@@ -15,19 +15,21 @@
 //! borrow. **The mutation that would break D7 does not compile here either**,
 //! which is the property being inherited rather than re-established.
 //!
-//! # A one-turn binary assembles once and compacts never
+//! # Compaction is somewhere else, and that is the whole of D7
 //!
-//! D2's compaction is a turn-boundary act and this composition runs one turn,
-//! so nothing calls `compact` and no [`Summariser`](zaru_core::context::Summariser)
-//! is constructed anywhere. That is absence rather than a stub: the layer-6
-//! path is unreached because there is nothing to reach it with, and a
-//! summariser standing in for a model call nobody makes would be a fixture in
-//! the product tree.
+//! D2's compaction is a turn-boundary act, and the type that can perform one
+//! is [`SessionContext`](crate::compose::SessionContext) — which owns the
+//! context mutably and hands out one of these for the turn. So the borrow this
+//! type holds is what makes D7 structural at both layers: while a `TurnContext`
+//! exists, nothing can compact, because `at_turn_boundary` needs `&mut` and
+//! this has the shared half.
 //!
-//! A context that will not fit therefore **refuses**, with [ADR-0013] D7's own
+//! A context that will not fit still **refuses**, with [ADR-0013] D7's own
 //! answer — "an iteration that would exceed the window fails as exhausted with
 //! a clear reason rather than continuing on a rewritten context" — carried out
-//! as `ContextRefusal::WindowExceeded` with both numbers on it.
+//! as `ContextRefusal::WindowExceeded` with both numbers on it. That is the
+//! answer *inside* a turn, where D7 forbids rewriting; relieving the pressure
+//! is what the boundary before the next turn is for.
 //!
 //! # What is in each of D1's seven layers today
 //!
@@ -38,7 +40,7 @@
 //! | 3 relationship memory | empty: [ADR-0031] D3 delivers it *inside* the served prompt and forbids a second fetch path, so it is absent exactly when layer 1 is |
 //! | 4 project manifest summary | empty: no record says what a manifest summary is, and inventing a shape would settle it |
 //! | 5 user attachments | empty: [ADR-0005] D5's attachments are not built and the trie is `zaru-notes`' |
-//! | 6 conversation and tool results | empty on the first turn; the turn's own results ride on `ModelRequest.results` rather than here, which is [ADR-0013] D7 as `tool_call::run` reads it |
+//! | 6 conversation and tool results | empty on the first turn; the turn's own results ride on `ModelRequest.results` rather than here, which is [ADR-0013] D7 as `tool_call::run` reads it, and a finished turn joins it through [`Exchange::of_turn`](zaru_core::context::Exchange::of_turn) at the boundary |
 //! | 7 iteration history | empty: no iteration runs, because there is no inner loop |
 //!
 //! **Six of the seven are empty and the prefix says so about the one that

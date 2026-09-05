@@ -1095,6 +1095,51 @@ impl Surface<'_> {
         }
     }
 
+    /// A summarisation that did not produce a summary, in its own class.
+    ///
+    /// # It reuses the provider's classification and adds no taxonomy
+    ///
+    /// [ADR-0013] D2's compaction is a model call, so a failure here is a
+    /// provider failure and [`Self::provider_failure`] already says which of
+    /// [ADR-0016] D1's classes each shape belongs to. The typed value is kept
+    /// by the same `Classifying` adapter the turn uses, which is why the
+    /// summariser borrows that adapter rather than a client.
+    ///
+    /// The arm with no typed failure is not unreachable here, and that is the
+    /// difference from [`Self::turn`]: the summariser can fail for a reason
+    /// the provider never saw — a model that stopped without text, or one that
+    /// asked for a tool it was not offered — and neither is a `GeminiFailure`.
+    /// Both are the mechanism reporting what happened rather than a defect, so
+    /// they are user-correctable: the reader can shorten the session or
+    /// configure a model that answers, and the sentence carries the
+    /// provider's own words.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn summarisation(
+        &self,
+        failure: &zaru_core::iteration::PortFailure,
+        provider: Option<&crate::providers::GeminiFailure>,
+        session: SessionEvidence,
+    ) -> Classified {
+        match provider {
+            Some(typed) => self.provider_failure(typed, session),
+            None => Classified::UserCorrectable {
+                statement: Statement::sanitised(format!(
+                    "the context could not be compacted, so this turn did not run: {failure}. \
+                     ADR-0013 D2 replaces the oldest conversation with a generated summary when \
+                     the window fills, and the summary is what did not arrive; nothing was \
+                     discarded, and the transcript still holds every turn"
+                )),
+                remedy: Remedy::one(Action::described(Statement::sanitised(
+                    "start a new session, or configure a model that answers a summarisation"
+                        .to_owned(),
+                ))),
+            },
+        }
+    }
+
     /// One provider failure, in the class [ADR-0016]'s own table gives it.
     ///
     /// The table is that record's Status tracking of 2026-09-05, written when
