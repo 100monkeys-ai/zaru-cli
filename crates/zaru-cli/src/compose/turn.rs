@@ -543,7 +543,7 @@ pub fn prepare(
 /// happened.
 ///
 /// `n` is the turn's position in the session, which
-/// [`tool_call::run`](zaru_core::tool_call::run) says is "the caller's,
+/// [`zaru_core::tool_call::run`] says is "the caller's,
 /// because a session spans many calls to this function and a number invented
 /// here would restart at one every turn". [`task`] passes `1`; a shell counts
 /// up.

@@ -734,8 +734,10 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
 /// prompt, and constructed [`crate::tools::prompt::Prompt`] over a standard
 /// input the terminal was already holding in raw mode.
 ///
-/// So the seam is the same one [`request_for`] already uses against the same
-/// class of accident: **a function with nothing to execute cannot execute
+/// So the seam is the same one `request_for`, two functions down, already uses
+/// against the same class of accident — named in prose rather than linked,
+/// because it is `pub(crate)` and rustdoc's `private_intra_doc_links` is right
+/// to refuse a public page pointing at something its reader cannot open: **a function with nothing to execute cannot execute
 /// anything**. What a typed line *means* and what running it *does* are two
 /// things, and only the second belongs anywhere near a `Run`. What runs a turn
 /// now is [`run_a_turn`], over a session that already exists.
