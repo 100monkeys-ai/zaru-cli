@@ -1,8 +1,10 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The runtime tier, the permission mode, and the layer a mode may not come
-//! from.
+//! The permission mode, and the layer a mode may not come from.
+//!
+//! [ADR-0001]'s runtime tier was declared here too until 2026-09-05 and is now
+//! [`crate::runtime`]'s, re-exported below — see [`Tier`] for the ruling.
 //!
 //! # A project may not set the permission mode, and that is the whole point
 //!
@@ -35,61 +37,25 @@
 
 use core::fmt;
 
-/// How much of the platform is engaged, per ADR-0001 D1.
+/// [ADR-0001] D1's three runtime tiers.
 ///
-/// Transcribed from that record, which names the three and says they are
-/// "effectively permanent once published". ADR-0011 D2's own table uses the
-/// same three, and this type exists because D2's enforcement differs across
-/// them.
+/// **Declared once, in [`crate::runtime`], and re-exported here.** This module
+/// declared it until 2026-09-05, because the tool surface needed it first —
+/// [ADR-0011] D2's enforcement differs per tier — which left one file holding
+/// ADR-0001's tier beside ADR-0011's permission mode and [ADR-0014] D1's
+/// layers. The declaration that stays is `runtime`'s, because ADR-0001 owns
+/// the tier and its D1 table, its D2 resolution and its D3 ceilings all live
+/// with it. This is the **delegated coordinator ruling of 2026-09-05**,
+/// recorded on ADR-0001's Status tracking and open to Jeshua's veto, and it is
+/// the same move the [`Layer`] re-export below records for 2026-09-04.
 ///
-/// **Fixed for the life of a session.** ADR-0001 D2: "Tier is resolved at
-/// session start and is immutable for the life of a session... A membrane
-/// that can be dropped mid-session is not a membrane." ADR-0014 D7 restates
-/// it. Nothing here can change a tier, because there is nothing to change: a
-/// tier is a value a caller holds, not a field on anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
-    /// No AEGIS, no membrane. ADR-0011 D2: harness-level prompts and an
-    /// allowlist, advisory, and the harness says so.
-    Bare,
-    /// AEGIS locally. D2: SEAL security contexts, enforced by the
-    /// orchestrator.
-    Contained,
-    /// The account is attached. D2: as contained; offloaded work carries its
-    /// own context.
-    Linked,
-}
-
-impl Tier {
-    /// Every tier ADR-0001 D1 names.
-    pub const ALL: [Self; 3] = [Self::Bare, Self::Contained, Self::Linked];
-
-    /// The tier's name as ADR-0001 D1 spells it.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Bare => "bare",
-            Self::Contained => "contained",
-            Self::Linked => "linked",
-        }
-    }
-
-    /// Whether a membrane exists at this tier.
-    ///
-    /// ADR-0011 D2's table gives `bare` no enforcement at all, which is why
-    /// the not-a-sandbox line of D2 exists and why it is emitted at this tier
-    /// and no other. See [`SessionNotice`](super::notice::SessionNotice).
-    #[must_use]
-    pub const fn has_membrane(self) -> bool {
-        !matches!(self, Self::Bare)
-    }
-}
-
-impl fmt::Display for Tier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+/// Nothing that imported `crate::tools::Tier` changed: this re-export is the
+/// same path it always was.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+pub use crate::runtime::Tier;
 
 /// Which of ADR-0014 D1's five configuration layers a value came from.
 ///
