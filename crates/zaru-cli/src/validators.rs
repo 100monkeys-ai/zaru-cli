@@ -74,9 +74,11 @@
 
 pub mod ceiling;
 pub mod pattern;
+pub mod schema;
 
 pub use ceiling::{PatternCeiling, PatternCeilingIsZero};
 pub use pattern::{PatternRefused, Patterns};
+pub use schema::{NothingIsLoaded, RefFollowedOutOfTheDocument, SchemaFiles, SchemaRefused};
 
 #[cfg(test)]
 mod tests;

@@ -259,6 +259,42 @@ regex = { version = "1.13.1", default-features = false, features = [
     "unicode",
 ] }
 
+# `boon` is D2's row for [ADR-0009] D3's fourth `expect` kind,
+# `json_schema = "<path>"`, accepted 2026-09-05 under directive 20 as
+# amendment 5, and this is the arc that gives it a caller. Drafts 4, 6, 7,
+# 2019-09 and 2020-12, with 2020-12 pinned as the default -- see
+# `crate::validators::schema` for why a default draft is pinned rather than
+# taken.
+#
+# **41 packages in the lock and 42 in the build tree**, measured 2026-09-05
+# from 206 and 162. That is the largest single addition this workspace has
+# made and the number is stated rather than buried; eighteen of the
+# forty-two are the ICU crates `url` and `idna` pull for `$id` and `$ref`
+# resolution, which the loader below never uses. A licence scan of all
+# forty-two returns Unicode-3.0, MIT OR Apache-2.0, MIT, Apache-2.0 OR MIT,
+# Unlicense OR MIT, MIT-0 and BSD-2-Clause OR Apache-2.0 OR MIT, and no
+# copyleft, so D7's clean scan holds.
+#
+# **`jsonschema` 0.53 was measured and refused twice over.** At its defaults
+# it is 336/258, because `resolve-http` and `tls-aws-lc-rs` pull `reqwest`,
+# `rustls` and a cmake-driven C build of `aws-lc-sys` -- the same chain the
+# `rmcp` comment above already refuses by name. With default features off it
+# is 243/199, four packages smaller than this row, and it compiles a schema's
+# own `pattern` keyword with `fancy-regex`, which backtracks. A schema
+# arrives in a file from a repository the user cloned and this evaluator runs
+# on the harness's own thread, which `ProcessCeiling` does not bound. `boon`
+# uses `regex`, so a project's schema inherits the row above's `O(m * n)`
+# guarantee. Five packages for one engine and one bound.
+#
+# `valico` 4.0.0 (254/211) is larger, unreleased since 2023 and also on
+# `fancy-regex`; `jsonschema-valid` 0.5.2 (240/199) is the smallest and is
+# MPL-2.0, which D7's clean-scan argument is about.
+#
+# Default features off, and `boon` declares none at all -- named for the same
+# reason every other row here names them: so that a future default cannot
+# arrive in this tree without a decision.
+boon = { version = "0.6.1", default-features = false }
+
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
 # turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-

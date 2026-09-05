@@ -38,6 +38,9 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 # ADR-0009 D3's third `expect` kind. See `[workspace.dependencies]` for why
 # this crate and not `zaru-core`, and for what the two features buy.
 regex = { workspace = true }
+# ADR-0009 D3's fourth `expect` kind. See `[workspace.dependencies]` for the
+# measurement and for why this crate and not `jsonschema`.
+boon = { workspace = true }
 
 [dev-dependencies]
 # The two halves of the outside-caller check in `tests/notes_scope_from_outside.rs`,
