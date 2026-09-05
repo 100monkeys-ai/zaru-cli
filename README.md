@@ -118,7 +118,12 @@ boundary is the directory it starts in — and **nothing contains that child**:
 at `bare` tier the harness is not a sandbox and the decision record says so.
 Every call's arguments arrive as one JSON object, read before the permission
 decision because a path that has not been extracted is not yet a target.
-`web.fetch` alone sits behind a port with no implementation. **The permission model
+`web.fetch` acts too, and it is the last of the seven to: `http` and `https`
+only, no redirect followed across a host, this machine and the cloud
+metadata range refused by name, no cookie kept and no header of the harness's
+own added — and a response larger than the ceiling its caller supplies is
+refused whole rather than cut short, because a document the harness stopped
+reading is one no complete copy could be kept of. **The permission model
 itself is now whole**: what the user pre-approved is read from
 `~/.zaru/config.toml` as a list of the exact lines the prompt shows, matched
 byte for byte and never by glob, and refused to a cloned repository; the
@@ -214,7 +219,9 @@ client, `ratatui` and `tui-textarea` for the composer, `serde` and `serde_json`
 for the credential store, `aes-gcm` and `keyring` for sealing that store, `toml`
 for `~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`, `regex` and `boon` for
 two of a declared validator's four `expect` kinds, `reqwest` for the provider
-client, `tokio` for the client's channels, for polling that provider's futures,
+client **and for `web.fetch`, which share one builder** — a second caller for a
+crate already carried rather than a new dependency, so the set is still
+twelve — `tokio` for the client's channels, for polling that provider's futures,
 for the binary crate's own check that drives a session end to end, and for
 polling the loop's futures under `#[tokio::test]`, and what those twelve pull
 in. `boon` needs the URL and Unicode machinery `$ref` resolution

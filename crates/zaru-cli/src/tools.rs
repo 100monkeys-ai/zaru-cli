@@ -11,7 +11,7 @@
 //! found at a security boundary... joins a permanent hostile-input corpus as
 //! its reproduction", and the corpus never shrinks.
 //!
-//! **Six of the seven execute, and one does not.** [`files`] holds the five
+//! **All seven execute.** [`files`] holds the five
 //! filesystem acts, all on `std::fs` inside D4's boundary and all reading
 //! their path out of the [`Target`] the decision was reached about; `fs.write`
 //! and `fs.edit` replace a whole file through [`crate::atomic`] at the file's
@@ -19,13 +19,15 @@
 //! following a link. `cmd.run` acts through [`crate::process`], which is the
 //! one place this workspace starts a child process; a command is not measured
 //! against D4 as a path, because its boundary is the working directory it is
-//! started in. **`web.fetch` alone sits behind a port** with no implementation
-//! in this crate's product tree — see [`port`] for what it is waiting on. So
-//! does the prompt, and so does [`seal`]'s membrane. **[`allowlist`] and
-//! [`destructive`] are the exceptions as of 2026-09-05**: ADR-0011 D3's
-//! allowlist has a product implementation reading ADR-0014 D1's layer 2, and
-//! D6's four categories have one over the two of them whose shape the
-//! record's own words determine.
+//! started in. **`web.fetch` acts as of 2026-09-05**, through [`crate::web`],
+//! which is the one place a model-chosen URL is retrieved and the one place
+//! this workspace builds an HTTP client: `http` and `https` only, no redirect
+//! across a host, this machine and the link-local range refused by name, and
+//! a body over a caller-passed ceiling refused whole rather than cut short.
+//! **No built-in sits behind a port with no implementation any more** —
+//! [`allowlist`] and [`destructive`] stopped on 2026-09-05, and so did the
+//! prompt. What still has none is [`seal`]'s membrane, which ADR-0004 is
+//! blocked upstream on.
 //!
 //! Every call's arguments arrive as one JSON object and are read in
 //! [`arguments`], which is the only door from a request's text into a call —

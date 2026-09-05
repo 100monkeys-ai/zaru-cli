@@ -21,11 +21,25 @@
 //! # No scheme is parsed, and no URL crate is taken
 //!
 //! An endpoint is text. Nothing here checks that it begins `http`, resolves a
-//! host, or is a URL at all — that would be a dependency ([ADR-0003] D2's
-//! table names `reqwest` and it has no caller here) or a hand-written URL
-//! vocabulary, which is worse. This crate already treats a URL as text:
-//! [`Subject::Url`](crate::tools::Subject) carries a bare `&str` and validates
-//! nothing.
+//! host, or is a URL at all — that would be a hand-written URL vocabulary,
+//! which is worse than the alternative it saves.
+//!
+//! **The reason has changed and the decision has not, which is worth saying
+//! rather than quietly rewriting.** This paragraph used to add that "this
+//! crate already treats a URL as text: `Subject::Url` carries a bare `&str`
+//! and validates nothing", and that stopped being true on 2026-09-05 when
+//! `web.fetch` gained [`RequestedUrl`](crate::web::RequestedUrl) — a URL that
+//! parsed, carrying a scheme that surface retrieves. It also used to say a
+//! parser would be a new dependency, and that stopped being true when
+//! `reqwest` landed and brought `url` with it.
+//!
+//! So the cheap arguments are both gone and the endpoint is **still** text,
+//! on the argument that survives: an endpoint is not retrieved by this crate.
+//! It is a value a user configures, rendered into `zaru models`' listing and
+//! into every refusal that names it, and a client composes a path onto it.
+//! What is refused is derived from that surface, never from taste — see
+//! below. `web.fetch` parses because it **dials** what it was handed, and
+//! nothing here dials anything.
 //!
 //! What *is* refused is derived from a surface, never from taste, exactly as
 //! [`Alias`](crate::credentials::Alias) and [`Key`](crate::config::Key) are:
