@@ -29,6 +29,30 @@
 //!
 //! Attachments go last and one at a time, re-measuring after each, because
 //! D1 puts layer 5 last and D4 says the user chose to spend that context.
+//!
+//! # Redaction happens here, at the boundary, and not per layer
+//!
+//! [ADR-0008]'s trigger clause 6 was decided on 2026-09-05 and names ADR-0013
+//! D5's layer 7 as one of the paths from captured bytes into a model prompt.
+//! The port is applied to the **whole assembled render** rather than to layer
+//! 7 alone, which was a coordinator ruling of 2026-09-05 recorded on
+//! ADR-0008.
+//!
+//! Two reasons, and the second is the one that matters. Layer 7 is not the
+//! only layer that carries captured bytes: D1's layer 6 is "conversation
+//! **and tool results**", so the moment anything writes a tool result into an
+//! [`Exchange`] there is a second place with the same obligation. Redacting
+//! per layer would put one rule in two places, which is the shape the
+//! duplicate `Layer` enum ruling removed from this workspace. And the render
+//! is where every layer meets, so one call there cannot be forgotten by
+//! whoever adds the next producer.
+//!
+//! The measurement passes it too. [`Context::usage`] and [`Context::compact`]
+//! count the redacted text, because a marker is not the same length as the
+//! value it replaced and a count of bytes that will not be sent is not a
+//! measurement of anything.
+//!
+//! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 
 use crate::context::announcement::Announcement;
 use crate::context::exchange::Exchange;
@@ -40,12 +64,16 @@ use crate::context::port::{Span, Summariser, TokenCounter};
 use crate::context::prefix::{SEPARATOR, StablePrefix};
 use crate::context::usage::Usage;
 use crate::iteration::port::{ContextRefusal, PortFailure};
+use crate::redaction::{Redacted, Redactor};
 use core::fmt;
 
 /// What the model will see, and what it costs.
+///
+/// The text is [`Redacted`], so a [`Prompt`](crate::iteration::Prompt) built
+/// from one has passed ADR-0008 clause 6's port by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assembled {
-    text: String,
+    text: Redacted,
     usage: Usage,
 }
 
@@ -53,7 +81,17 @@ impl Assembled {
     /// The whole assembled context.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.text
+        self.text.as_str()
+    }
+
+    /// The whole assembled context, as the value a prompt is built from.
+    ///
+    /// This is the door between ADR-0013's assembly and ADR-0008's
+    /// `Prompt`: a context policy hands this straight to `Prompt::new`, and
+    /// there is no other way to make one.
+    #[must_use]
+    pub fn into_redacted(self) -> Redacted {
+        self.text
     }
 
     /// What it costs against the window. ADR-0013 D6's number.
@@ -176,8 +214,9 @@ impl Context {
     /// ADR-0013 D6's continuous number. Takes `&self`: reading the meter
     /// never changes what it measures.
     #[must_use]
-    pub fn usage<C: TokenCounter>(&self, counter: &C) -> Usage {
-        Usage::new(counter.count(&self.render("")), self.limits.window().get())
+    pub fn usage<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> Usage {
+        let text = Redacted::by(redactor, &self.render(""));
+        Usage::new(counter.count(text.as_str()), self.limits.window().get())
     }
 
     /// Assemble what the model sees for the iteration about to begin.
@@ -191,13 +230,14 @@ impl Context {
     /// # Errors
     ///
     /// [`Exceeded`] when the assembled context does not fit the window.
-    pub fn assemble<C: TokenCounter>(
+    pub fn assemble<C: TokenCounter, R: Redactor + ?Sized>(
         &self,
         counter: &C,
+        redactor: &R,
         tail: &str,
     ) -> Result<Assembled, Exceeded> {
-        let text = self.render(tail);
-        let needed = counter.count(&text);
+        let text = Redacted::by(redactor, &self.render(tail));
+        let needed = counter.count(text.as_str());
         let window = self.limits.window().get();
         if needed > window {
             return Err(Exceeded { needed, window });
@@ -220,13 +260,14 @@ impl Context {
     /// [`PortFailure`] when the summariser fails. The context is left
     /// unchanged: the span is only removed once a summary exists to put in
     /// its place, so a failed summarisation cannot lose history.
-    pub async fn compact<S: Summariser, C: TokenCounter>(
+    pub async fn compact<S: Summariser, C: TokenCounter, R: Redactor + ?Sized>(
         &mut self,
         summariser: &S,
         counter: &C,
+        redactor: &R,
     ) -> Result<Compaction, PortFailure> {
         let threshold = self.limits.threshold().get();
-        let mut used = counter.count(&self.render(""));
+        let mut used = self.measured(counter, redactor);
         if used <= threshold {
             return Ok(Compaction::default());
         }
@@ -261,7 +302,7 @@ impl Context {
                 after,
             });
             compaction.raw = Some(span);
-            used = counter.count(&self.render(""));
+            used = self.measured(counter, redactor);
         }
 
         // --- Layer 5: discarded last, and never silently -----------------
@@ -273,10 +314,19 @@ impl Context {
                     identity: dropped.id().clone(),
                     how_to_reattach: dropped.reattach().to_owned(),
                 });
-            used = counter.count(&self.render(""));
+            used = self.measured(counter, redactor);
         }
 
         Ok(compaction)
+    }
+
+    /// What the context costs, measured on the bytes that would be sent.
+    ///
+    /// The redaction is part of the measurement rather than applied after it:
+    /// a marker is not the same length as the value it replaced, so counting
+    /// the raw render would be counting text nobody will ever be shown.
+    fn measured<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> u64 {
+        counter.count(Redacted::by(redactor, &self.render("")).as_str())
     }
 
     /// How many of the oldest exchanges it takes to cover `overage`.

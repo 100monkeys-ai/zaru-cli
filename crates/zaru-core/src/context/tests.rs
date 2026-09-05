@@ -29,7 +29,7 @@ use crate::context::limits::{ContextLimits, ContextWindow, LimitsRefused, Pressu
 use crate::context::prefix::{PrefixParts, StablePrefix};
 use crate::iteration::machine::run;
 use crate::iteration::{Ceiling, Limits, Ports, TruncationBudget};
-use crate::redaction::fixtures::NothingHeld;
+use crate::redaction::fixtures::{HoldingOne, NothingHeld, ascii_core};
 
 /// How many words each of the four prefix layers is staged with.
 const PREFIX_WORDS: usize = 6;
@@ -191,7 +191,7 @@ async fn layers_one_to_four_are_byte_identical_across_every_turn_of_a_long_sessi
         context.record_iteration(staged_iteration(turn));
 
         let compaction = context
-            .compact(&summariser, &counter)
+            .compact(&summariser, &counter, &NothingHeld)
             .await
             .expect("the staged summariser does not fail here");
         for announcement in &compaction.announcements {
@@ -202,7 +202,11 @@ async fn layers_one_to_four_are_byte_identical_across_every_turn_of_a_long_sessi
         }
 
         let assembled = context
-            .assemble(&counter, &staged_text(&format!("tail-{turn}"), 4))
+            .assemble(
+                &counter,
+                &NothingHeld,
+                &staged_text(&format!("tail-{turn}"), 4),
+            )
             .expect("the staged window admits this context");
 
         assert!(
@@ -245,7 +249,7 @@ async fn crossing_the_threshold_compacts_the_oldest_span_of_layer_six_first() {
     }
 
     let compaction = context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect("the staged summariser does not fail here");
 
@@ -318,7 +322,7 @@ async fn the_announcement_carries_the_counts_the_counter_measured() {
     }
 
     let compaction = context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect("the staged summariser does not fail here");
 
@@ -371,16 +375,16 @@ async fn nothing_below_the_threshold_is_compacted_and_no_model_is_called() {
     let before = context.clone();
 
     let compaction = context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect("nothing to do cannot fail");
 
     // Assert the staging: this check is vacuous if the context was already
     // over the threshold and something simply refused to run.
     assert!(
-        context.usage(&counter).used() <= 3_000,
+        context.usage(&counter, &NothingHeld).used() <= 3_000,
         "the staged context was meant to be UNDER the threshold and used {} tokens",
-        context.usage(&counter).used()
+        context.usage(&counter, &NothingHeld).used()
     );
     assert!(
         compaction.announcements.is_empty() && compaction.raw.is_none(),
@@ -406,7 +410,7 @@ async fn a_failing_summariser_leaves_every_exchange_where_it_was() {
     let before = context.clone();
 
     let failure = context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect_err("a failing summariser is a failure");
 
@@ -434,14 +438,14 @@ async fn a_summary_is_compacted_again_like_any_other_exchange() {
     }
 
     context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect("first compaction");
     for n in 5..=8 {
         context.record_exchange(staged_exchange(n, 10));
     }
     let second = context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect("second compaction");
 
@@ -477,7 +481,7 @@ async fn a_dropped_attachment_is_named_with_its_workspace_and_says_how_to_get_it
     }
 
     let compaction = context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect("no summariser call is needed when layer 6 is empty");
 
@@ -649,6 +653,128 @@ async fn the_newest_failure_reaches_the_model_byte_for_byte_through_a_real_loop_
     );
 }
 
+// --- ADR-0008 trigger clause 6, decided 2026-09-05 -------------------------
+
+#[tokio::test]
+async fn a_held_secret_in_layer_seven_is_absent_from_the_prompt_the_model_is_given() {
+    // ADR-0013 D5's layer 7 is the second of the paths that decision names,
+    // and this record's own Status tracking has carried it as an open finding
+    // since 2026-09-04: "layer 7 carries the most recent failure's verbatim
+    // output into the assembled context, which is a model prompt, without
+    // passing through that seam". It passes the port now.
+    //
+    // Driven through a real loop run and read out of the *generator*, which is
+    // one layer beyond the policy under test. The discriminating arm is
+    // `the_newest_failure_reaches_the_model_byte_for_byte_through_a_real_loop_run`
+    // above, which drives the same staging with nothing held and asserts
+    // these exact bytes are present.
+    let held = verbatim_failure_for(3);
+    let core = ascii_core(&held);
+    assert!(
+        !core.is_empty() && core != held,
+        "the staged failure must have an ASCII core distinct from itself, or \
+         the escaped-form arm asserts nothing: {held:?}"
+    );
+    let holding = HoldingOne::new(held.clone(), "work");
+
+    let counter = WordCounter;
+    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000));
+    for n in 1..=3 {
+        context.record_iteration(staged_iteration(n));
+    }
+    let policy = PolicyOver::new(&context, &counter).holding(&holding);
+    let generator = InertGenerator::default();
+    let validators = ScriptedValidators::new(vec![true]);
+
+    run(
+        "make the tests pass",
+        Limits {
+            ceiling: Ceiling::new(1).expect("ceiling"),
+            budget: TruncationBudget::new(4096).expect("budget"),
+        },
+        Ports {
+            generator: &generator,
+            executor: &InertExecutor,
+            validators: &validators,
+            context: &policy,
+            clock: &FrozenClock,
+            redactor: &holding,
+        },
+        &mut [],
+    )
+    .await
+    .expect("the staged run reaches an outcome");
+
+    let assembled = generator.prompts();
+    assert_eq!(assembled.len(), 1, "one iteration is one assembly");
+    assert!(
+        !assembled[0].contains(&held),
+        "layer 7's verbatim output carried a held value into the model's \
+         prompt:\n{}",
+        assembled[0]
+    );
+    assert!(
+        !assembled[0].contains(core),
+        "layer 7 carried a held value's ASCII core into the model's prompt, \
+         so an escaping renderer would publish it:\n{}",
+        assembled[0]
+    );
+    assert!(
+        assembled[0].contains("<redacted: work>"),
+        "nothing marks where the value was, and a policy that assembled an \
+         empty context would satisfy both assertions above on its own:\n{}",
+        assembled[0]
+    );
+}
+
+#[test]
+fn a_held_secret_in_layer_six_is_absent_from_the_assembled_context() {
+    // ADR-0013 D1's layer 6 is "conversation **and tool results**", so it
+    // carries captured bytes the moment anything writes a tool result into an
+    // exchange. Redacting at the assembly boundary rather than inside layer 7
+    // is what makes that path covered before it has a producer, and this
+    // check is what says so rather than a comment claiming it.
+    let held = format!("{NONCE}-tool-result-e\u{301}\u{1f701}");
+    let core = ascii_core(&held);
+    let holding = HoldingOne::new(held.clone(), "work");
+    let counter = WordCounter;
+
+    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000));
+    context.record_exchange(Exchange::verbatim(held.clone()));
+
+    let assembled = context
+        .assemble(&counter, &holding, "the task")
+        .expect("the staged context fits the window");
+    assert!(
+        !assembled.as_str().contains(&held),
+        "layer 6 carried a held value into the assembled context: {:?}",
+        assembled.as_str()
+    );
+    assert!(
+        !assembled.as_str().contains(core),
+        "layer 6 carried a held value's ASCII core into the assembled \
+         context: {:?}",
+        assembled.as_str()
+    );
+    assert!(
+        assembled.as_str().contains("<redacted: work>"),
+        "nothing marks where the value was: {:?}",
+        assembled.as_str()
+    );
+
+    // The discriminating arm: the same exchange with nothing held reaches the
+    // model unaltered, so the assertions above are about redaction rather
+    // than about an assembler that drops layer 6.
+    let carried = context
+        .assemble(&counter, &NothingHeld, "the task")
+        .expect("the staged context fits the window");
+    assert!(
+        carried.as_str().contains(&held),
+        "with nothing held, layer 6 must reach the model unaltered: {:?}",
+        carried.as_str()
+    );
+}
+
 // --- Trigger clause 6 and D7: compaction never runs during an iteration ----
 
 #[tokio::test]
@@ -671,10 +797,10 @@ async fn a_loop_run_under_pressure_compacts_nothing() {
     let before = context.clone();
 
     assert!(
-        context.usage(&counter).used() > 60,
+        context.usage(&counter, &NothingHeld).used() > 60,
         "the staged context was meant to be over its threshold on the strength of its \
          compactable layers, and used {} tokens",
-        context.usage(&counter).used()
+        context.usage(&counter, &NothingHeld).used()
     );
 
     let policy = PolicyOver::new(&context, &counter);
@@ -728,7 +854,7 @@ fn assembly_refuses_rather_than_rewriting_when_the_window_would_be_exceeded() {
     let before = context.clone();
 
     let exceeded = context
-        .assemble(&counter, "a tail")
+        .assemble(&counter, &NothingHeld, "a tail")
         .expect_err("sixty tokens of layer 6 do not fit a thirty-token window");
 
     assert_eq!(
@@ -757,7 +883,7 @@ async fn usage_is_readable_between_turns_and_falls_when_a_compaction_frees_room(
         context.record_exchange(staged_exchange(n, 10));
     }
 
-    let before = context.usage(&counter);
+    let before = context.usage(&counter, &NothingHeld);
     assert_eq!(
         before.window(),
         400,
@@ -774,10 +900,10 @@ async fn usage_is_readable_between_turns_and_falls_when_a_compaction_frees_room(
     );
 
     context
-        .compact(&summariser, &counter)
+        .compact(&summariser, &counter, &NothingHeld)
         .await
         .expect("the staged summariser does not fail here");
-    let after = context.usage(&counter);
+    let after = context.usage(&counter, &NothingHeld);
 
     assert!(
         after.used() < before.used(),

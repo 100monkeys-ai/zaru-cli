@@ -102,7 +102,9 @@ impl ContextPolicy for Policy<'_> {
         };
         Ok(Prompt::new(Redacted::by(
             &NothingHeld,
-            self.context.assemble(self.counter, &tail)?.as_str(),
+            self.context
+                .assemble(self.counter, &NothingHeld, &tail)?
+                .as_str(),
         )))
     }
 }
@@ -251,7 +253,7 @@ async fn a_caller_outside_this_crate_drives_a_long_session_to_a_compaction_and_a
             .collect();
 
         let compaction = context
-            .compact(&summariser, &counter)
+            .compact(&summariser, &counter, &NothingHeld)
             .await
             .expect("the staged summariser does not fail");
 
@@ -295,7 +297,7 @@ async fn a_caller_outside_this_crate_drives_a_long_session_to_a_compaction_and_a
         }
 
         let assembled = context
-            .assemble(&counter, &text_of(&format!("tail-{turn}"), 3))
+            .assemble(&counter, &NothingHeld, &text_of(&format!("tail-{turn}"), 3))
             .expect("the staged window is roomy");
 
         assert!(

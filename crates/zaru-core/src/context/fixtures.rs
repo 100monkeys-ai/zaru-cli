@@ -32,7 +32,7 @@ use crate::context::history::IterationRecord;
 use crate::context::item::{AttachedItem, ItemId};
 use crate::context::port::{Span, Summariser, TokenCounter};
 use crate::iteration::port::{ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn};
-use crate::redaction::Redacted;
+use crate::redaction::Redactor;
 use crate::redaction::fixtures::NothingHeld;
 use std::sync::Mutex;
 
@@ -160,15 +160,38 @@ impl Summariser for StagedSummariser {
 /// It holds the context by shared reference and therefore **cannot compact**:
 /// that is ADR-0013 D7 made structural rather than remembered, and it is the
 /// shape `zaru-cli` will build the product adapter in.
-#[derive(Debug)]
 pub(super) struct PolicyOver<'a> {
     context: &'a Context,
     counter: &'a WordCounter,
+    redactor: &'a (dyn Redactor + Sync),
+}
+
+impl core::fmt::Debug for PolicyOver<'_> {
+    /// Written by hand because a `&dyn Redactor` is not `Debug` and giving
+    /// the trait that bound would put a redactor's contents -- which is a set
+    /// of held secrets -- into every `{:?}` in the program. `Secret`'s
+    /// discipline, one layer up.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PolicyOver")
+            .field("context", &self.context)
+            .field("counter", &self.counter)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> PolicyOver<'a> {
     pub(super) const fn new(context: &'a Context, counter: &'a WordCounter) -> Self {
-        Self { context, counter }
+        Self {
+            context,
+            counter,
+            redactor: &NothingHeld,
+        }
+    }
+
+    /// The same policy over a redactor that holds something.
+    pub(super) const fn holding(mut self, redactor: &'a (dyn Redactor + Sync)) -> Self {
+        self.redactor = redactor;
+        self
     }
 }
 
@@ -182,8 +205,8 @@ impl ContextPolicy for PolicyOver<'_> {
                 interrupted.call()
             ),
         };
-        let assembled = self.context.assemble(self.counter, &tail)?;
-        Ok(Prompt::new(Redacted::by(&NothingHeld, assembled.as_str())))
+        let assembled = self.context.assemble(self.counter, self.redactor, &tail)?;
+        Ok(Prompt::new(assembled.into_redacted()))
     }
 }
 
