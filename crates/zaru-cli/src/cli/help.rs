@@ -135,16 +135,37 @@ pub fn lines(version: &str) -> Vec<String> {
     //
     // Corrected on sight by the `mode-key` arc, which needed this paragraph to
     // be true in order to add a line to the list above it.
-    lines.push("`zaru \"<task>\"` runs one turn: it asks the model, runs the tools it".to_owned());
+    //
+    // **It drifted a second time and is corrected again on 2026-09-05.** It
+    // read "cannot do yet: any provider kind but `gemini`, the iteration loop,
+    // or a conversation longer than one turn", and two of those three had
+    // stopped being true: `iteration-wiring` landed the iteration loop, so a
+    // project declaring validators in `./zaru.toml` runs it, and
+    // `shell-task-turns` landed `--resume` and `--continue`, so a session is a
+    // conversation whose next turn remembers the last. Twice in two days is
+    // the shape rather than the accident: **this list names capabilities other
+    // arcs land, so it goes stale in a commit that never touches this file**,
+    // and no check can hold it because "what this binary cannot do" is a
+    // sentence about absent code. What is left below is verified rather than
+    // remembered -- `KINDS_WITH_A_CLIENT` has one element, and the
+    // composition's `verdicts` is `NoMembrane` at every tier.
+    lines.push("`zaru \"<task>\"` runs a turn: it asks the model, runs the tools it".to_owned());
     lines.push(
         "asks for under ADR-0011's permission model, and writes a transcript you can".to_owned(),
     );
     lines.push(
-        "read with `cat`. Store a key with `providers keys add <kind>` first. What it".to_owned(),
+        "read with `cat`. A project that declares validators in `./zaru.toml` runs".to_owned(),
     );
-    lines
-        .push("cannot do yet: any provider kind but `gemini`, the iteration loop, or a".to_owned());
-    lines.push("conversation longer than one turn.".to_owned());
+    lines.push(
+        "the iteration loop instead, and `--resume` and `--continue` reopen a session".to_owned(),
+    );
+    lines.push(
+        "where each line you type is a turn. Store a key with `providers keys add".to_owned(),
+    );
+    lines.push(
+        "<kind>` first. What it cannot do yet: any provider kind but `gemini`, and a".to_owned(),
+    );
+    lines.push("membrane at the contained and linked tiers, which enforce nothing yet.".to_owned());
 
     lines
 }
