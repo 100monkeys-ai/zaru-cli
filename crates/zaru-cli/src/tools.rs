@@ -21,9 +21,11 @@
 //! against D4 as a path, because its boundary is the working directory it is
 //! started in. **`web.fetch` alone sits behind a port** with no implementation
 //! in this crate's product tree — see [`port`] for what it is waiting on. So
-//! does the prompt, so does the destructive matcher, and so does [`seal`]'s
-//! membrane. **[`allowlist`] is the exception as of 2026-09-05**: ADR-0011
-//! D3's allowlist has a product implementation reading ADR-0014 D1's layer 2.
+//! does the prompt, and so does [`seal`]'s membrane. **[`allowlist`] and
+//! [`destructive`] are the exceptions as of 2026-09-05**: ADR-0011 D3's
+//! allowlist has a product implementation reading ADR-0014 D1's layer 2, and
+//! D6's four categories have one over the two of them whose shape the
+//! record's own words determine.
 //!
 //! Every call's arguments arrive as one JSON object and are read in
 //! [`arguments`], which is the only door from a request's text into a call —
@@ -80,6 +82,7 @@
 pub mod allowlist;
 pub mod arguments;
 pub mod decision;
+pub mod destructive;
 pub mod execute;
 pub mod files;
 pub mod mode;
@@ -96,6 +99,7 @@ pub use decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, InvocationRefused, Permission,
     RefusedBecause, Requirement, Subject, TranscriptEntry,
 };
+pub use destructive::{Category, Shapes};
 pub use execute::{Executor, NotACall, OVERFLOW_PREFIX, SessionOverflow, descriptors};
 pub use mode::{Layer, Mode, ModeRefused, Tier};
 pub use name::{Effect, SubjectKind, ToolName};

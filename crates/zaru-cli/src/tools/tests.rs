@@ -29,6 +29,7 @@ use crate::tools::allowlist::{self, Allowed, AllowlistRefused, Entry};
 use crate::tools::decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
 };
+use crate::tools::destructive::{Category, Shapes};
 use crate::tools::fixtures::{
     RecordedConfirmer, RefusingOverflow, ScratchOverflow, ScratchTree, StagedAllowlist,
     StagedDestructive, nonce,
@@ -39,7 +40,7 @@ use crate::tools::notice::SessionNotice;
 use crate::tools::output::{
     BudgetIsZero, Captured, ELISION_PREFIX, OutputBudget, PresentationRefused,
 };
-use crate::tools::port::Allowlist as _;
+use crate::tools::port::{Allowlist as _, DestructiveMatch as _};
 use crate::tools::tree::{Placement, WorkingDirectory};
 use std::path::PathBuf;
 
@@ -1977,5 +1978,237 @@ fn the_product_allowlist_is_what_allow_mode_consults() {
         outside.requirement(),
         Requirement::Ask,
         "ADR-0011 D3: `allow` \"prompts for anything outside it\""
+    );
+}
+
+/// **Corpus case: a destructive shape is surfaced and never vetoed, and the
+/// shapes that are not destructive are not annotated.**
+///
+/// The accepting siblings are the load-bearing half — `rm` with no recursive
+/// flag, `git` that is not a push, `git push` with no force flag — because a
+/// matcher that annotated every command would satisfy the hostile arm alone.
+///
+/// The mutants: dropping the flag test from `RecursiveRemoval` (so any `rm`
+/// matches); dropping the `push` test from `ForcePush` (so `git status -f`
+/// matches); comparing the short cluster with `== "-r"` (so `-rf` escapes);
+/// and any route from a match to a refusal, which does not compile because
+/// `Requirement` has no such variant.
+#[test]
+fn d6s_two_transcribed_categories_match_their_shapes_and_nothing_beside_them() {
+    let matcher = Shapes::new();
+
+    let destructive = [
+        ("rm -rf build", Category::RecursiveRemoval),
+        ("rm -r build", Category::RecursiveRemoval),
+        ("rm --recursive build", Category::RecursiveRemoval),
+        ("rm -fR build", Category::RecursiveRemoval),
+        ("/bin/rm -r build", Category::RecursiveRemoval),
+        ("git push --force origin main", Category::ForcePush),
+        ("git push -f origin main", Category::ForcePush),
+        (
+            "git push --force-with-lease origin main",
+            Category::ForcePush,
+        ),
+        ("/usr/bin/git push -f origin main", Category::ForcePush),
+    ];
+
+    // Each accepting sibling differs from a hostile case by exactly the one
+    // token the rule is about, so a matcher that ignored that token would
+    // annotate it too.
+    let ordinary = [
+        "rm build/one",
+        "rm -f build/one",
+        "rm -- -r",
+        "git push origin main",
+        "git status -f",
+        "git commit --force",
+        "cargo test",
+        "dd if=/dev/zero of=/dev/sda",
+        "npm install -g typescript",
+    ];
+
+    let mut wrong = Vec::new();
+    for (text, expected) in destructive {
+        let line = CommandLine::split(text).expect("a command line");
+        let invocation = Invocation::running(&line);
+        match matcher.category(&invocation) {
+            Some(found) if found == expected => {}
+            Some(found) => wrong.push(format!("{text:?} matched {found} and not {expected}")),
+            None => wrong.push(format!(
+                "{text:?} matched nothing and D6 names it {expected}"
+            )),
+        }
+    }
+    for text in ordinary {
+        let line = CommandLine::split(text).expect("a command line");
+        let invocation = Invocation::running(&line);
+        if let Some(found) = matcher.category(&invocation) {
+            wrong.push(format!(
+                "{text:?} was annotated as {found}, and ADR-0011's own reason for keeping the list \
+                 short is that \"a prompt that cries wolf gets dismissed reflexively\""
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("; "));
+}
+
+/// **The two categories that name no program match nothing, and that is
+/// pinned so adding one is a visible act.**
+///
+/// ADR-0011 D6 names four categories and no patterns. "Disk operations" and
+/// "package-manager global installs" name no program, and turning either into
+/// a matcher is authoring a security vocabulary. The commands below are the
+/// ones an implementer would reach for first; **all of them must be
+/// unannotated**, and this check is what makes adding any of them a change
+/// somebody has to look at.
+///
+/// The mutant is giving either category one program — `dd`, or `npm` — which
+/// reddens here immediately.
+#[test]
+fn the_two_categories_that_name_no_program_match_nothing() {
+    let matcher = Shapes::new();
+
+    assert_eq!(
+        Category::ALL.len(),
+        4,
+        "ADR-0011 D6 names four categories; a fifth is the record author's"
+    );
+    for category in Category::ALL {
+        assert_eq!(
+            category.names_a_shape(),
+            matches!(category, Category::RecursiveRemoval | Category::ForcePush),
+            "{category} disagrees with itself about whether D6's words determine a shape"
+        );
+    }
+
+    let unwritten = [
+        "dd if=/dev/zero of=/dev/sda bs=1M",
+        "mkfs.ext4 /dev/sda1",
+        "fdisk /dev/sda",
+        "parted /dev/sda mklabel gpt",
+        "wipefs -a /dev/sda",
+        "shred -u /dev/sda",
+        "npm install -g typescript",
+        "npm i --global typescript",
+        "pip install --user nothing",
+        "cargo install cargo-edit",
+        "gem install rails",
+        "go install example.com/tool@latest",
+    ];
+
+    let mut annotated = Vec::new();
+    for text in unwritten {
+        let line = CommandLine::split(text).expect("a command line");
+        if matcher.is_destructive(&Invocation::running(&line)) {
+            annotated.push(text);
+        }
+    }
+    assert!(
+        annotated.is_empty(),
+        "ADR-0011 D6's third and fourth categories name no program, so this matcher writes none. \
+         These are now annotated: {annotated:?}. If that is deliberate, it is a change to what the \
+         harness tells a user is dangerous -- record it on ADR-0011 D6 and update this check, which \
+         exists so the change is visible"
+    );
+
+    // The accepting arm: the two categories that do name a shape still match,
+    // so an implementation that matched nothing at all would fail here.
+    let recursive = CommandLine::split("rm -rf build").expect("a command line");
+    assert!(
+        matcher.is_destructive(&Invocation::running(&recursive)),
+        "the matcher matched nothing at all, so the table above asserted nothing"
+    );
+}
+
+/// **D6 is about commands, so a path and a URL are never annotated.**
+///
+/// All four of D6's categories are command shapes and its heading is
+/// "Destructive **commands**". Making an `fs.write` destructive would be a
+/// fifth category, which is this record's author's.
+///
+/// The mutant is answering on the rendered subject text rather than on the
+/// command line — which is what a matcher built to the brief's original
+/// shape would have done, and which annotates `fs.write /tmp/rm -rf` and
+/// every path with `rm` in its name.
+#[test]
+fn a_path_and_a_url_are_never_destructive() {
+    let matcher = Shapes::new();
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+
+    // A path whose *text* carries every token the matcher looks for. A
+    // matcher reading the subject text rather than the command line annotates
+    // this one.
+    let target = working.classify("inside/rm -rf --force");
+    let write = Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+    assert!(
+        !matcher.is_destructive(&write),
+        "a filesystem path was annotated as a destructive command: {:?}",
+        target.resolved()
+    );
+
+    let fetch = Invocation::fetching("https://example.invalid/rm?args=-rf");
+    assert!(
+        !matcher.is_destructive(&fetch),
+        "a URL was annotated as a destructive command"
+    );
+
+    // The accepting arm: the same tokens, as an actual command line.
+    let line = CommandLine::split("rm -rf inside").expect("a command line");
+    assert!(
+        matcher.is_destructive(&Invocation::running(&line)),
+        "the matcher recognises nothing, so the two assertions above are vacuous"
+    );
+}
+
+/// **The product matcher annotates and raises prominence, and there is
+/// nowhere for it to veto.**
+///
+/// The sibling of `a_destructive_match_annotates_and_raises_prominence_and_never_vetoes`,
+/// which asserts the same rule against a staged answer. This one drives the
+/// **product** matcher through [`Decision::assess`], at `yolo` — the mode
+/// with no prompt at all — so what is asserted is that D6's annotation
+/// survives where D3 has removed the prompt.
+///
+/// The mutant is `Decision::reach` letting `assessment.destructive` reach
+/// `requirement`, which is the veto D6 forbids; it does not compile as a
+/// value, so the mutation is the assignment and this reddens.
+#[test]
+fn the_product_matcher_annotates_at_yolo_where_there_is_no_prompt_at_all() {
+    let line = CommandLine::split("rm -rf build").expect("a command line");
+    let invocation = Invocation::running(&line);
+
+    let decision = Decision::assess(Mode::Yolo, &invocation, &Allowed::nothing(), &Shapes::new());
+
+    assert_eq!(
+        decision.requirement(),
+        Requirement::Proceed,
+        "ADR-0011 D6: \"It does not veto.\" D3's `yolo`: \"No prompts.\""
+    );
+    assert!(
+        decision.question().is_none(),
+        "a call at `yolo` raised a question"
+    );
+    assert!(
+        decision.entry().is_destructive()
+            && decision.entry().render().contains(DESTRUCTIVE_MARKING),
+        "D6's annotation did not survive a mode that removes the prompt: {:?}",
+        decision.entry().render()
+    );
+
+    // The accepting sibling at the same mode: an ordinary command carries no
+    // annotation, so the assertion above is about the match and not about the
+    // renderer.
+    let ordinary = CommandLine::split("cargo test").expect("a command line");
+    let quiet = Decision::assess(
+        Mode::Yolo,
+        &Invocation::running(&ordinary),
+        &Allowed::nothing(),
+        &Shapes::new(),
+    );
+    assert!(
+        !quiet.entry().is_destructive() && !quiet.entry().render().contains(DESTRUCTIVE_MARKING),
+        "an ordinary command was annotated: {:?}",
+        quiet.entry().render()
     );
 }
