@@ -386,24 +386,30 @@ fn the_effective_marker_names_the_layer_that_supplied_the_value_not_the_highest_
         "exactly one row carries D3's marker",
     );
 }
-
-/// D3's block, read back out of the rendered text.
+/// D3's block, rendered over the values this check planted.
 ///
-/// One arm of this comparison does not travel through the renderer: the
-/// expected values are the literals planted in each layer, per
-/// [Verification lessons] §11. A check that asked the explanation for its own
-/// numbers would agree with itself for as long as a defect lived.
+/// The effective value is read back out of the **rendered text** rather than
+/// asked of the explanation, so the two sides of the assertion do not both
+/// come from the same place ([Verification lessons] §10) — an assertion that
+/// compared the explanation's own numbers would agree with itself for as long
+/// as a defect lived.
 ///
-/// The numbers are D3's own — 3, 5 and 8 — but the key is not. D3's example
-/// explains `runtime.max_iterations`, which is a ceiling, and the block it
-/// prints has the project *raising* it from 5 to 8. **D6 refuses that**, so
-/// the record's own worked example cannot be resolved by an implementation
-/// that holds the record. That contradiction has its own check below; this
-/// one renders the same block over a key the project may set freely.
+/// D3's own key and D3's own layers, with the project **lowering** the ceiling
+/// — which is the corrected worked example. It rendered over
+/// `runtime.log_lines` from 2026-09-04 until 2026-09-05 because the example as
+/// written *raised* a ceiling and the fold refused it; the record is corrected
+/// under Jeshua's directive of 2026-09-05 and the block is rendered over the
+/// key it explains.
+///
+/// It also asserts the two spellings that directive corrects, because those
+/// are properties of this rendering rather than of the record: layer 2 renders
+/// the file [ADR-0014] D1 names, and layer 4 renders the variable the
+/// transform actually produces.
 ///
 /// The mutant is rendering the effective marker on every row, and separately,
 /// dropping the header line.
 ///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 #[test]
 fn the_explanation_renders_d3s_block_with_the_values_this_check_planted() {
@@ -413,28 +419,28 @@ fn the_explanation_renders_d3s_block_with_the_values_this_check_planted() {
             at(
                 Layer::BuiltIn,
                 "built-in",
-                document([("runtime.log_lines", Value::Integer(3))]),
+                document([("runtime.max_iterations", Value::Integer(8))]),
             ),
             at(
                 Layer::User,
                 "~/.zaru/config.toml",
-                document([("runtime.log_lines", Value::Integer(5))]),
+                document([("runtime.max_iterations", Value::Integer(5))]),
             ),
             at(
                 Layer::Project,
                 "./zaru.toml",
-                document([("runtime.log_lines", Value::Integer(8))]),
+                document([("runtime.max_iterations", Value::Integer(3))]),
             ),
         ],
     )
-    .expect("the fixture resolves");
+    .expect("a project lowering its own ceiling is what ADR-0014 D6 permits");
 
-    let block = resolved.explain(&key("runtime.log_lines")).to_string();
+    let block = resolved.explain(&key("runtime.max_iterations")).to_string();
     let lines: Vec<&str> = block.lines().collect();
 
     assert_eq!(
         lines.first().copied(),
-        Some("runtime.log_lines = 8"),
+        Some("runtime.max_iterations = 3"),
         "D3's header is the key and its effective value; the block was:\n{block}",
     );
     assert_eq!(
@@ -444,18 +450,28 @@ fn the_explanation_renders_d3s_block_with_the_values_this_check_planted() {
     );
 
     assert!(
+        lines[2].contains("ZARU_RUNTIME_MAX_ITERATIONS"),
+        "layer 4's row names the variable ADR-0014's own transform produces; the block \
+         was:\n{block}",
+    );
+    assert!(
         lines[3].contains("./zaru.toml")
-            && lines[3].contains('8')
+            && lines[3].contains('3')
             && lines[3].contains("← effective"),
-        "layer 3 planted 8 and its row is not the marked one; the block was:\n{block}",
+        "layer 3 lowered the ceiling to 3 and its row is not the marked one; the block \
+         was:\n{block}",
     );
     assert!(
-        lines[4].contains('5') && !lines[4].contains("← effective"),
-        "layer 2 planted 5 and its row must carry no marker; the block was:\n{block}",
+        lines[4].contains("~/.zaru/config.toml") && lines[4].contains('5'),
+        "layer 2 planted 5 and its row names the file D1 names; the block was:\n{block}",
     );
     assert!(
-        lines[5].contains("built-in") && lines[5].contains('3'),
-        "layer 1 planted 3; the block was:\n{block}",
+        !lines[4].contains("← effective"),
+        "layer 2's row must carry no marker; the block was:\n{block}",
+    );
+    assert!(
+        lines[5].contains("built-in") && lines[5].contains('8'),
+        "layer 1 planted 8; the block was:\n{block}",
     );
     assert_eq!(
         block.matches("← effective").count(),
@@ -467,37 +483,69 @@ fn the_explanation_renders_d3s_block_with_the_values_this_check_planted() {
         2,
         "layers 4 and 5 set nothing; the block was:\n{block}",
     );
+    println!("{block}");
 }
 
-/// **ADR-0014 D3's worked example is refused by ADR-0014 D6.**
+/// **ADR-0014 D3's worked example, as corrected: the project lowers the
+/// ceiling and the fold accepts it.**
 ///
-/// Found by running rather than by reading ([Verification lessons] §29): the
-/// first version of the check above staged D3's block verbatim and the fold
-/// refused it.
+/// D3's block printed `3  ./zaru.toml  8  ← effective` above
+/// `2  ~/.zaru/config  5` — a project file *raising* an iteration ceiling from
+/// 5 to 8. D6 says a project "may lower its own iteration ceiling" and lists
+/// what it may not do; raising one is on neither list, and the clause exists
+/// so that "a repository the user cloned must not be able to configure its way
+/// to more privilege than the user granted". Both could not hold as written.
 ///
-/// D3 explains `runtime.max_iterations` and prints `3  ./zaru.toml  8  ←
-/// effective` above `2  ~/.zaru/config  5`. That is a project file raising an
-/// iteration ceiling from 5 to 8. D6 says a project "may lower its own
-/// iteration ceiling" and lists what it may not do; raising one is not on the
-/// permitted list, and the whole clause exists so that "a repository the user
-/// cloned must not be able to configure its way to more privilege than the
-/// user granted".
+/// **Found by running rather than by reading** ([Verification lessons] §29):
+/// the first version of the block check above staged D3's example verbatim and
+/// the fold refused it. It was pinned as a contradiction from 2026-09-04, and
+/// under Jeshua's directive of 2026-09-05 the record is corrected — the
+/// example lowers the ceiling — so this check is re-transcribed against the
+/// corrected block.
 ///
-/// Both clauses cannot hold as written. This check pins the contradiction so
-/// that correcting the record reddens it and whoever corrects it sees this
-/// note, rather than the disagreement being smoothed over in an
-/// implementation. It is recorded on the record as a question for the author
-/// and is **not** settled here.
+/// **Both arms, because the accepting arm alone says nothing about D6 and the
+/// refusing arm alone is satisfied by an implementation that refuses
+/// everything** ([Verification lessons] §13, which this record's own Status
+/// tracking records as measured rather than argued).
+///
+/// The mutant: restoring the old text, which is the second arm here — a
+/// project raising 5 to 8 must still be refused, whatever D3's example says.
 ///
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 #[test]
-fn adr_0014_d3s_worked_example_is_refused_by_adr_0014_d6() {
+fn adr_0014_d3s_corrected_example_is_accepted_and_a_raise_is_still_refused() {
+    // The corrected example: the project lowers 5 to 3.
+    let resolved = Resolution::resolve(
+        &schema(),
+        vec![
+            at(
+                Layer::User,
+                "~/.zaru/config.toml",
+                document([("runtime.max_iterations", Value::Integer(5))]),
+            ),
+            at(
+                Layer::Project,
+                "./zaru.toml",
+                document([("runtime.max_iterations", Value::Integer(3))]),
+            ),
+        ],
+    )
+    .expect("D6: a project may lower its own iteration ceiling");
+
+    assert_eq!(
+        resolved.get(&key("runtime.max_iterations")),
+        Some(&Value::Integer(3)),
+        "the project's lowered ceiling is not the effective value",
+    );
+
+    // The arm that makes the first one mean something: raising is still
+    // refused, which is D6 itself rather than a property of D3's example.
     let refusal = Resolution::resolve(
         &schema(),
         vec![
             at(
                 Layer::User,
-                "~/.zaru/config",
+                "~/.zaru/config.toml",
                 document([("runtime.max_iterations", Value::Integer(5))]),
             ),
             at(
@@ -508,8 +556,8 @@ fn adr_0014_d3s_worked_example_is_refused_by_adr_0014_d6() {
         ],
     )
     .expect_err(
-        "ADR-0014 D3's worked example raises a ceiling from 5 to 8, which D6 forbids; if this \
-         now resolves, the record has been corrected and this check should be read again",
+        "ADR-0014 D6 forbids a project raising its ceiling; if this now resolves, D6 has been \
+         changed and this check should be read again",
     );
 
     assert_eq!(
@@ -520,6 +568,7 @@ fn adr_0014_d3s_worked_example_is_refused_by_adr_0014_d6() {
             asked: 8,
         },
     );
+    println!("{refusal}");
 }
 
 /// D3's block names the environment's variable on a row that set nothing.
@@ -1049,9 +1098,12 @@ fn the_user_layer_may_set_what_the_project_layer_may_not() {
 
 /// The transform, stated once and checked here.
 ///
-/// **ADR-0014 D3's own example prints `ZARU_MAX_ITER` for
-/// `runtime.max_iterations`**, which no mechanical transform produces. The
-/// transform is what is built; the divergence is recorded on the record.
+/// ADR-0014 D3's own example printed `ZARU_MAX_ITER` for
+/// `runtime.max_iterations` — an abbreviation no mechanical transform
+/// produces, which dropped a segment and shortened a word. Under Jeshua's
+/// directive of 2026-09-05 the record is corrected to name the variable the
+/// transform actually produces, and this check asserts that variable rather
+/// than pinning the divergence.
 #[test]
 fn the_variable_a_key_maps_to_is_zaru_plus_the_key_upper_cased() {
     assert_eq!(
@@ -1065,8 +1117,9 @@ fn the_variable_a_key_maps_to_is_zaru_plus_the_key_upper_cased() {
     assert_ne!(
         environment::variable_name(&key("runtime.max_iterations")),
         "ZARU_MAX_ITER",
-        "D3's worked example is not producible by this transform, and that is recorded on the \
-         record rather than worked around here",
+        "`ZARU_MAX_ITER` was D3's example before it was corrected, and it is not producible by \
+         any mechanical transform: it drops a segment and shortens a word. This arm stays so \
+         that reintroducing the abbreviation is a visible act rather than a silent one",
     );
 }
 
