@@ -170,17 +170,32 @@ impl LayerSource for Flags {
 
 /// Every key this binary declares.
 ///
-/// [ADR-0012]'s eleven, from that record's own `declare`, plus [ADR-0001]'s
-/// `runtime.tier` from that record's own `field`. **Nothing is spelled here**,
-/// which is [ADR-0014]'s Neutral section: "Each record owns its own keys; this
-/// one owns how they resolve."
+/// [ADR-0012]'s eleven and [ADR-0009]'s two, from those records' own `declare`,
+/// plus [ADR-0001]'s `runtime.tier` and `runtime.max_iterations` from that
+/// record's own `field`. **Nothing is spelled here**, which is [ADR-0014]'s
+/// Neutral section: "Each record owns its own keys; this one owns how they
+/// resolve."
+///
+/// **The three that arrived on 2026-09-05 are what makes a real `zaru.toml`
+/// loadable at all.** Until then this binary declared sixteen keys and none of
+/// them was one ADR-0009 D1's own worked manifest sets, so a file in that
+/// record's shape was refused by ADR-0014 D5 as an unknown key the moment
+/// layer 3 could be read.
 ///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 #[must_use]
 pub fn schema() -> Schema {
-    crate::providers::declare(Schema::new()).with(crate::runtime::key(), crate::runtime::field())
+    let declared = crate::providers::declare(Schema::new());
+    let declared = crate::manifest::declare(declared);
+    declared
+        .with(crate::runtime::key(), crate::runtime::field())
+        .with(
+            crate::runtime::max_iterations_key(),
+            crate::runtime::max_iterations_field(),
+        )
 }
 
 /// Fold the layers this binary can read, over a caller's environment.

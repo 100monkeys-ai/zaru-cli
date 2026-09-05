@@ -101,6 +101,59 @@ pub fn field() -> Field {
     Field::refused_to_projects(FieldKind::Text, PROJECT_REFUSAL)
 }
 
+/// The configuration key [ADR-0001] D3's iteration defaults are overridden at.
+///
+/// Spelled here and nowhere else, for the reason [`KEY`] is: [ADR-0009] D1's
+/// worked manifest sets `[runtime] max_iterations`, [ADR-0014] D3's worked
+/// example explains `runtime.max_iterations`, and the record that owns the
+/// numbers is this one — D3's table is the source of truth for what a tier's
+/// default is, so the key that overrides it is ADR-0001's to spell.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+pub const MAX_ITERATIONS_KEY: &str = "runtime.max_iterations";
+
+/// [`MAX_ITERATIONS_KEY`] as a [`Key`].
+///
+/// # Panics
+///
+/// Never. [`MAX_ITERATIONS_KEY`] is a literal this module owns and is well
+/// formed.
+#[must_use]
+pub fn max_iterations_key() -> Key {
+    Key::new(MAX_ITERATIONS_KEY).expect("runtime.max_iterations is a well-formed key")
+}
+
+/// What [`MAX_ITERATIONS_KEY`] holds, and what the project layer may do to it.
+///
+/// [`Field::ceiling`], which is [ADR-0014] D6's `LowerOnly` policy: "A project
+/// may **lower** its own iteration ceiling". **This is that arm's first real
+/// key** — until 2026-09-05 the only key carrying it was a fixture's, and a
+/// policy exercised only by a fixture is a policy nothing in the product has
+/// ever been measured against.
+///
+/// # What reads it, and what does not
+///
+/// **Nothing consumes this value yet, and that is stated rather than implied.**
+/// The loop's ceiling comes from [`iterations`](crate::runtime::iterations) —
+/// ADR-0001 D3's own twelve cells — through a caller-passed
+/// [`Ceiling`](zaru_core::iteration::Ceiling), and no binary runs the loop. The
+/// arc that wires a provider client into the loop is the one that connects this
+/// key to that number.
+///
+/// That is not [ADR-0014] D5's silent typo. D5's failure is "the user sees no
+/// change and concludes the setting does not work"; here `zaru config explain
+/// runtime.max_iterations` prints the value, the layer that supplied it, and
+/// every layer that did not, so where the setting stops is exactly what the
+/// harness shows.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[must_use]
+pub fn max_iterations_field() -> Field {
+    Field::ceiling()
+}
+
 /// The tier [ADR-0014] D1's layer 1 supplies when nothing else does.
 ///
 /// **`bare`, decided 2026-09-05 under directive 20**, as a delegated

@@ -917,3 +917,135 @@ fn a_tier_no_record_names_is_refused_once_and_the_refusal_names_its_layer() {
         other => panic!("an unknown tier was not refused by the fold: {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// The keys ADR-0009 D1's own manifest sets, declared by the records that own
+// them
+// ---------------------------------------------------------------------------
+
+/// Every key [ADR-0009] D1's worked manifest sets is one this binary declares.
+///
+/// **The population is the record's manifest, not a list retyped here**, so a
+/// key added to that file is covered the moment it is added
+/// ([Verification lessons] §17). It is asserted by *resolving* the manifest
+/// through the binary's own schema rather than by asking the schema whether it
+/// knows each name: ADR-0014 D5's refusal is what a user would actually meet,
+/// and asking `Schema::field` would be a proxy for it.
+///
+/// Until 2026-09-05 this binary declared sixteen keys and not one of them was
+/// `project.name`, `project.workspace` or `runtime.max_iterations` — so the
+/// moment layer 3 gained a reader, a file in D1's own shape was refused as an
+/// unknown key, and `zaru init` would have written a file the binary refused to
+/// fold.
+///
+/// The mutant is dropping any one of the three declarations from
+/// [`layers::schema`].
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn every_key_adr_0009_d1s_worked_manifest_sets_is_one_this_binary_declares() {
+    use crate::config::{Contribution, Layer, Resolution, Source, Table, Value};
+
+    // D1's corrected `[project]` and `[runtime]`, as the record now prints
+    // them: no `tier`, and a ceiling that lowers.
+    let mut project = Table::new();
+    project.insert("name", Value::Text("acme-api".to_owned()));
+    project.insert("workspace", Value::Text("acme-engineering".to_owned()));
+    let mut runtime = Table::new();
+    runtime.insert("max_iterations", Value::Integer(3));
+    let mut document = Table::new();
+    document.insert(crate::manifest::PROJECT_TABLE, Value::Table(project));
+    document.insert(crate::manifest::RUNTIME_TABLE, Value::Table(runtime));
+
+    let resolution = Resolution::resolve(
+        &layers::schema(),
+        vec![Contribution::new(
+            Layer::Project,
+            Source::named("./zaru.toml"),
+            document,
+        )],
+    )
+    .unwrap_or_else(|refusal| {
+        panic!(
+            "ADR-0009 D1's own worked manifest must fold through this binary's schema, or `zaru \
+             init` writes a file `zaru config explain` refuses: {refusal}"
+        )
+    });
+
+    for spelling in [
+        crate::manifest::NAME_KEY,
+        crate::manifest::WORKSPACE_KEY,
+        crate::runtime::MAX_ITERATIONS_KEY,
+    ] {
+        let key = crate::config::Key::new(spelling).expect("a well-formed key");
+        assert!(
+            resolution.get(&key).is_some(),
+            "`{spelling}` is set by ADR-0009 D1's manifest and resolved to nothing"
+        );
+        println!("{}", resolution.explain(&key));
+    }
+}
+
+/// ADR-0014 D6's permitted direction, over a real record's key rather than a
+/// fixture's.
+///
+/// **Both arms, and the permitted one is what makes the refusal mean
+/// anything**: an implementation that refused everything the project layer
+/// offers passes every D6 refusal check and fails this one. That was measured
+/// on this fold when the hierarchy landed; what is new is that the key is
+/// [ADR-0001]'s rather than a fixture's.
+///
+/// The mutant is declaring `runtime.max_iterations` `Free` instead of a
+/// ceiling, which reddens on the raise.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+#[test]
+fn a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it() {
+    use crate::config::{ConfigRefused, Contribution, Layer, Resolution, Source, Table, Value};
+
+    let granted = |number: i64| {
+        let mut runtime = Table::new();
+        runtime.insert("max_iterations", Value::Integer(number));
+        let mut document = Table::new();
+        document.insert(crate::manifest::RUNTIME_TABLE, Value::Table(runtime));
+        document
+    };
+    let fold = |asked: i64| {
+        Resolution::resolve(
+            &layers::schema(),
+            vec![
+                Contribution::new(
+                    Layer::User,
+                    Source::named("~/.zaru/config.toml"),
+                    granted(5),
+                ),
+                Contribution::new(Layer::Project, Source::named("./zaru.toml"), granted(asked)),
+            ],
+        )
+    };
+
+    // D6: "A project may lower its own iteration ceiling."
+    let lowered = fold(3).expect("a project lowering its own ceiling is what D6 permits");
+    assert_eq!(
+        lowered.get(&crate::runtime::max_iterations_key()),
+        Some(&Value::Integer(3)),
+        "the project's lower ceiling is the effective one"
+    );
+
+    // And never raise one.
+    let refusal = fold(8).expect_err("a project raising a ceiling is what D6 forbids");
+    let ConfigRefused::ProjectMayNotRaise {
+        key,
+        granted: was,
+        asked,
+    } = &refusal
+    else {
+        panic!("expected D6's ceiling refusal, got {refusal:?}");
+    };
+    assert_eq!(
+        (key.as_str(), *was, *asked),
+        (crate::runtime::MAX_ITERATIONS_KEY, 5, 8)
+    );
+    println!("{refusal}");
+}

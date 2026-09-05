@@ -61,7 +61,10 @@ pub mod document;
 pub mod port;
 
 pub use absent::{MissingManifest, Recommendation};
-pub use document::{Manifest, ManifestRefused, PROJECT_TABLE, RUNTIME_TABLE};
+pub use document::{
+    Manifest, ManifestRefused, NAME_KEY, PROJECT_TABLE, RUNTIME_TABLE, WORKSPACE_KEY, declare,
+    fields,
+};
 pub use port::ManifestSource;
 
 #[cfg(test)]

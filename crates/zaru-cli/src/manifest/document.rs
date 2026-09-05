@@ -43,7 +43,7 @@
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [`ConfigRefused`]: crate::config::ConfigRefused
 
-use crate::config::{Contribution, Layer, Source, Table, Value};
+use crate::config::{Contribution, Field, FieldKind, Key, Layer, Schema, Source, Table, Value};
 use crate::tools::WorkingDirectory;
 use core::fmt;
 use std::path::PathBuf;
@@ -66,6 +66,71 @@ pub const PROJECT_TABLE: &str = "project";
 ///
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 pub const RUNTIME_TABLE: &str = "runtime";
+
+/// The name [ADR-0009] D1's `[project]` table gives the project.
+///
+/// A constant for the reason [`PROJECT_TABLE`] is one: it is written into a
+/// schema here and read back out of a document by the fold.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+pub const NAME_KEY: &str = "project.name";
+
+/// The name [ADR-0009] D1's `[project]` table gives the Nuclear Notes
+/// workspace, per [ADR-0006] D5.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+pub const WORKSPACE_KEY: &str = "project.workspace";
+
+/// The two configuration keys [ADR-0009] D1's `[project]` table sets.
+///
+/// Handed to whatever builds a [`Schema`], which is
+/// [ADR-0014]'s own Neutral section — "Each record owns its own keys; this one
+/// owns how they resolve" — followed the way
+/// [`crate::providers::fields`] already follows it.
+///
+/// **Both are free at every layer.** [ADR-0014] D6 lists what a project may do
+/// and "name its workspace" is on it in as many words; a project naming itself
+/// is the same kind of statement.
+///
+/// # Why these had to be declared before a file could be read
+///
+/// Until 2026-09-05 the binary declared sixteen keys and none of them was one
+/// this record's own worked manifest sets, so the moment layer 3 gained a
+/// reader a real `zaru.toml` in D1's shape was refused by ADR-0014 D5 with
+/// *"unknown key `project.name` in project config (layer 3)"* — and `zaru init`
+/// would have written a file the binary then refused to fold.
+///
+/// # Panics
+///
+/// Never. The two spellings are this module's own and neither is empty, carries
+/// a control character, has an empty segment or has a segment surrounded by
+/// whitespace.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[must_use]
+pub fn fields() -> Vec<(Key, Field)> {
+    [NAME_KEY, WORKSPACE_KEY]
+        .into_iter()
+        .map(|spelling| {
+            (
+                Key::new(spelling).expect("ADR-0009 D1's key spellings are well formed"),
+                Field::free(FieldKind::Text),
+            )
+        })
+        .collect()
+}
+
+/// Declare ADR-0009's keys into a caller's schema.
+///
+/// Built on [`fields`] rather than repeating it, so there is one list.
+#[must_use]
+pub fn declare(schema: Schema) -> Schema {
+    fields()
+        .into_iter()
+        .fold(schema, |schema, (key, field)| schema.with(key, field))
+}
 
 /// Why a manifest was not taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
