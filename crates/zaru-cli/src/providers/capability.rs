@@ -28,11 +28,15 @@
 //! The **structural** half belongs to the tool-call loop in `zaru-core`, which
 //! demands a witness that the check happened before its first event, so a model
 //! that cannot call tools cannot reach a turn at all. That is a guarantee about
-//! the loop rather than a second check of this rule, and when it lands this
-//! type gains a `From` into that crate's own capability type rather than a
-//! second declaration of what a capability is. **One rule, one place**, which
-//! is the ruling [`Layer`](crate::config::Layer) already carries in this
-//! workspace.
+//! the loop rather than a second check of this rule.
+//!
+//! **That `From` landed on 2026-09-05**, when the first provider client
+//! arrived and needed to answer both traits: `impl From<ProviderCapabilities>
+//! for zaru_core::tool_call::Capabilities` below is what makes
+//! [`GeminiClient`](crate::providers::GeminiClient)'s two `capabilities`
+//! methods one statement read twice rather than two literals that can drift.
+//! **One rule, one place**, which is the ruling
+//! [`Layer`](crate::config::Layer) already carries in this workspace.
 //!
 //! # Streaming and token accounting are carried and not consulted
 //!
@@ -155,5 +159,31 @@ impl ProviderCapabilities {
             return Ok(());
         }
         Err(CapabilityRefused::ToolCallingUnavailable { alias, kind })
+    }
+}
+
+/// [ADR-0012] D3's descriptor as the tool-call loop needs it.
+///
+/// # One statement, not two
+///
+/// `zaru-core`'s [`Capabilities`] carries the one flag its loop refuses on,
+/// and this type carries all three of D3's. A provider implementing both
+/// traits answers each `capabilities` method through this conversion, so a
+/// client that stops calling tools cannot say so in one place and not the
+/// other. Declaring a second literal is what this exists to prevent, and it
+/// is the shape this module's documentation promised when the loop's own type
+/// landed.
+///
+/// Nothing is lost that the loop reads: streaming and token accounting have
+/// no arm in `Capabilities`, because ADR-0012 D3 gives a reason for refusing
+/// on exactly one concern and the loop refuses on exactly that one.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [`Capabilities`]: zaru_core::tool_call::Capabilities
+impl From<ProviderCapabilities> for zaru_core::tool_call::Capabilities {
+    fn from(declared: ProviderCapabilities) -> Self {
+        Self {
+            tool_calling: declared.tool_calling(),
+        }
     }
 }

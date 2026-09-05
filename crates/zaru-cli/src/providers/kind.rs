@@ -103,6 +103,31 @@ impl ProviderKind {
         }
     }
 
+    /// The [ADR-0007] alias this kind's API key is stored under.
+    ///
+    /// `provider.<kind>`, and **one key per kind** rather than one per model
+    /// alias. That is the decision: `model.<alias>` resolves to a model
+    /// identifier and a model identifier belongs to a provider, so a key
+    /// addressed per model alias would be the same credential stored up to
+    /// five times, diverging the first time one of them was rotated.
+    ///
+    /// The dot is legal in an [`Alias`](crate::credentials::Alias), which
+    /// refuses only what a listing and ADR-0007 D5's `notes:<alias>`
+    /// namespace cannot carry: empty, `.`, `..`, a path separator, a colon, a
+    /// control character, surrounding whitespace.
+    ///
+    /// # Panics
+    ///
+    /// Never. The five key segments are this module's own and none of them is
+    /// refused by [`Alias::new`](crate::credentials::Alias::new).
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    #[must_use]
+    pub fn credential_alias(self) -> crate::credentials::Alias {
+        crate::credentials::Alias::new(&format!("{}.{}", Self::TABLE, self.key_segment()))
+            .expect("ADR-0012 D3's kind segments are well-formed credential aliases")
+    }
+
     /// Which kind a name spells, if any.
     ///
     /// Built by searching [`ProviderKind::ALL`] rather than by a match, so a

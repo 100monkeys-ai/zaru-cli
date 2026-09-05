@@ -69,7 +69,7 @@ pub use entry::{
 pub use family::Family;
 pub use notes::{Cached, Refreshed, ScopeError, bearer_for_dispatch};
 pub use port::Confirm;
-pub use projection::{NAMESPACE_PREFIX, Namespace};
+pub use projection::{Listed, Listing, NAMESPACE_PREFIX, Namespace};
 pub use sealing::{
     CREDENTIAL_KEY_VARIABLE, FromKeyring, HarnessKeys, KeyStore, Keyring, OsKeyring, Sealed,
     SealingError, SealingKey,

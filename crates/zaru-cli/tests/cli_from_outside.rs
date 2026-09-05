@@ -829,9 +829,29 @@ fn the_two_halves_of_a_missing_provider_are_different_classes() {
         "with a model configured what is missing is ours, and D5's capability code is what this \
          reading claims"
     );
+    // The statement says what is missing rather than what the reader should
+    // change -- and since 2026-09-05 what is missing is the **wiring**, not
+    // the client. A `gemini` client exists; nothing connects one to a loop.
+    // The sentence that stood here until then said "no provider client", and
+    // it is corrected rather than loosened: a refusal that overstates what is
+    // absent sends a reader looking for the wrong thing.
     assert!(
-        configured.stderr.contains("no provider client"),
+        configured
+            .stderr
+            .contains("nothing wires a provider client to a loop"),
         "the statement must say what is missing rather than what the reader should change: {}",
+        configured.stderr
+    );
+    assert!(
+        !configured.stderr.contains("no provider client"),
+        "the refusal still claims this workspace has no provider client, which stopped being \
+         true when `providers::gemini` landed: {}",
+        configured.stderr
+    );
+    assert!(
+        configured.stderr.contains("gemini"),
+        "the refusal must name the kind that does have a client, so a reader can tell which of \
+         the five they are short of: {}",
         configured.stderr
     );
 }

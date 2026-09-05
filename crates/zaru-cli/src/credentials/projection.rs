@@ -84,3 +84,60 @@ fn agent_description(record: &Record) -> String {
         Some(StoredReach::Apex) => format!("{} [{}]", record.description, Reach::APEX_MARKING),
     }
 }
+
+/// Which family a listing is asking for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listing {
+    /// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+    /// D7's `notes tokens`.
+    Notes,
+    /// `providers keys`.
+    Providers,
+}
+
+/// One stored credential as **either** listing renders it.
+///
+/// # Three fields, and the fourth is the point
+///
+/// A stored record has four things a listing could want: the alias, the kind,
+/// the description, and the sealed bearer value. This type has the first
+/// three and **no field the fourth could occupy**, so neither listing can
+/// render a value however it is written — the same argument
+/// [`Namespace`] makes about what the agent sees, one surface along.
+///
+/// Both listings are built from this rather than from [`Record`] directly,
+/// which is what makes "a listing never prints a value" one rule in one place
+/// instead of two rules in two renderers that have to agree. `notes tokens`
+/// adds its own three Nuclear Notes columns on top; `providers keys` prints
+/// these three and stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// The credential's local name.
+    pub alias: String,
+    /// `personal`, `app`, or a provider kind.
+    pub kind: String,
+    /// What it is for, in the user's own words.
+    pub description: String,
+}
+
+impl CredentialStore {
+    /// Every credential of one family, as a listing may see it.
+    ///
+    /// Sorted by alias, because the store is a `BTreeMap` keyed by one — so
+    /// the order a user reads is a function of what is stored rather than of
+    /// when it was stored.
+    #[must_use]
+    pub fn listed(&self, listing: Listing) -> Vec<Listed> {
+        self.records()
+            .filter(|(_, record)| match listing {
+                Listing::Notes => record.is_notes(),
+                Listing::Providers => !record.is_notes(),
+            })
+            .map(|(alias, record)| Listed {
+                alias: alias.to_string(),
+                kind: record.kind().to_owned(),
+                description: record.description.clone(),
+            })
+            .collect()
+    }
+}

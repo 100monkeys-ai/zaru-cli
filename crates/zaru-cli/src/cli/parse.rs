@@ -53,6 +53,7 @@ use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::cli::namespace::Namespace;
 use crate::cli::refusal::CommandRefused;
 use crate::config::Key;
+use crate::providers::ProviderKind;
 use crate::session::SessionId;
 use std::ffi::OsString;
 
@@ -312,6 +313,43 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             }),
             (other, _, _) => unreachable!("`{other}` is not one of Namespace::Notes's verbs"),
         },
+        // The one namespace whose grammar is two words deep, so it does not
+        // go through `verb`. See `Namespace::verbs` for why the nesting is
+        // what it is.
+        Namespace::Providers => match rest {
+            [] => Err(CommandRefused::VerbMissing { namespace }),
+            [keys] if keys == KEYS => Ok(Request::ProviderKeys),
+            [keys, add] if keys == KEYS && add == ADD => Err(CommandRefused::ArgumentMissing {
+                command: format!("{namespace} {KEYS} {ADD}"),
+                argument: "a provider kind",
+            }),
+            [keys, add, kind] if keys == KEYS && add == ADD => Ok(Request::ProviderKeysAdd {
+                kind: ProviderKind::parse(kind).ok_or_else(|| CommandRefused::UnknownVerb {
+                    namespace,
+                    offered: kind.escape_debug().to_string(),
+                    nearest: crate::config::nearest::nearest(
+                        ProviderKind::ALL.iter().map(|kind| kind.as_str()),
+                        kind,
+                    ),
+                })?,
+            }),
+            [keys, extra] if keys == KEYS => Err(CommandRefused::UnknownVerb {
+                namespace,
+                offered: extra.escape_debug().to_string(),
+                nearest: crate::config::nearest::nearest([ADD], extra),
+            }),
+            [keys, add, _, extra, ..] if keys == KEYS && add == ADD => {
+                Err(CommandRefused::UnexpectedWord {
+                    command: format!("{namespace} {KEYS} {ADD}"),
+                    offered: extra.escape_debug().to_string(),
+                })
+            }
+            [other, ..] => Err(CommandRefused::UnknownVerb {
+                namespace,
+                offered: other.escape_debug().to_string(),
+                nearest: crate::config::nearest::nearest(namespace.verbs().iter().copied(), other),
+            }),
+        },
         Namespace::Stack | Namespace::Memory | Namespace::Learned | Namespace::Inbox => {
             Err(CommandRefused::NamespaceNotBuilt { namespace })
         }
@@ -384,3 +422,9 @@ fn task_or_typo(positionals: &[String]) -> Result<Request, CommandRefused> {
         words: positionals.to_vec(),
     })
 }
+
+/// The verb `providers` takes.
+const KEYS: &str = "keys";
+
+/// The verb `providers keys` takes.
+const ADD: &str = "add";

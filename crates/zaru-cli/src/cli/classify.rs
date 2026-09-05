@@ -65,11 +65,13 @@
 use crate::cli::layers::LoadFailure;
 use crate::cli::refusal::CommandRefused;
 use crate::config::{Key, Schema};
-use crate::credentials::{CREDENTIAL_KEY_VARIABLE, SealingError, SealingKey, StoreError};
+use crate::credentials::{
+    CREDENTIAL_KEY_VARIABLE, SealingError, SealingKey, SecretRefused, StoreError,
+};
 use crate::failure::{
     Action, Classified, DefectReport, Location, Remedy, SessionEvidence, Statement, Wait,
 };
-use crate::providers::{ModelAlias, ModelId};
+use crate::providers::{ModelAlias, ModelId, ProviderKind};
 use crate::runtime::TierRefused;
 use crate::session::{PruneFailure, ResumeFailure, SessionError, SessionIdRefused};
 
@@ -308,14 +310,60 @@ impl<'a> Surface<'a> {
     pub fn no_provider_client(&self, model: &ModelId) -> Classified {
         Classified::Capability {
             statement: Statement::sanitised(format!(
-                "the alias `{}` resolves to {:?}, and this harness carries no provider client \
-                 that can reach it: ADR-0012 D3's provider trait has no implementation in any \
-                 product tree",
-                ModelAlias::Default,
-                model.as_str()
+                "the alias `{alias}` resolves to {model:?}, and nothing wires a provider client \
+                 to a loop in this build. A `{gemini}` client exists as of 2026-09-05 and the \
+                 other {remaining} of ADR-0012 D3's {total} kinds have none; what is missing for \
+                 every kind alike is the wiring, which is why this refusal is the same whichever \
+                 one the alias resolves to",
+                alias = ModelAlias::Default,
+                model = model.as_str(),
+                gemini = ProviderKind::Gemini,
+                remaining = ProviderKind::ALL.len() - 1,
+                total = ProviderKind::ALL.len(),
             )),
             offered_by: crate::runtime::Tier::Bare,
         }
+    }
+
+    /// Standard input could not be read while adding a provider key.
+    ///
+    /// Environmental: the reader did not choose their pipe's behaviour, and
+    /// nothing they type at the harness fixes a closed descriptor. **The
+    /// partial read is discarded and never quoted** — whatever arrived before
+    /// the failure is part of a credential.
+    #[must_use]
+    pub fn key_not_readable(kind: ProviderKind, failure: &std::io::Error) -> Classified {
+        Classified::Environmental {
+            statement: Statement::sanitised(format!(
+                "the `{kind}` key could not be read from standard input: {failure}. Whatever was \
+                 read before the failure is deliberately not quoted -- it is part of a credential"
+            )),
+            // No retry is offered, and the sentence says why rather than
+            // leaving a reader to infer it: this command reads a credential
+            // from a pipe, and a pipe that closed mid-read does not reopen
+            // by being waited on.
+            wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                "standard input has already been consumed; run the command again with the key                  on its input"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// A provider key the store would not take.
+    ///
+    /// The user's: they supplied the value and they can supply another. The
+    /// refusal names what was wrong with the shape and **never the value** —
+    /// [`SecretRefused`](crate::credentials::SecretRefused) is `Copy` and
+    /// therefore cannot carry one.
+    #[must_use]
+    pub fn key_refused(kind: ProviderKind, refusal: &SecretRefused) -> Classified {
+        correctable(
+            refusal,
+            act(format!(
+                "pipe the key in with no trailing spaces, as in `printf %s \"$KEY\" | zaru \
+                 providers keys add {kind}`"
+            )),
+        )
     }
 
     /// `--continue` on a machine with no sessions at all.

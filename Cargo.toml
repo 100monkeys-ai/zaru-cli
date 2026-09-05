@@ -29,8 +29,16 @@ repository = "https://github.com/100monkeys-ai/zaru-cli"
 # question about ordering untested. `zaru-core` itself needs no runtime -- its
 # port methods return `impl Future` rather than being `async fn`, so the crate
 # stays runtime-agnostic -- and takes this as a dev-dependency only, to poll
-# those futures under `#[tokio::test]`. Hence `rt` and `macros` and nothing
-# else: nothing in this workspace yet spawns, sleeps, or opens a socket.
+# those futures under `#[tokio::test]`.
+#
+# **It became a product dependency of `zaru-cli` on 2026-09-05**, when the
+# `gemini` client arrived: a client that opens a socket needs a reactor, and
+# `reqwest`'s futures need one to be polled on. That is a caller arriving for
+# a crate this table already names rather than a new dependency, which is
+# ADR-0003 clause 7's own distinction. `zaru-cli` names `rt` and `macros` for
+# its own code and `reqwest` names what it needs on top; the features here are
+# still `rt` and `macros` and nothing else, because that is what this
+# workspace's own code uses.
 tokio = { version = "1.53.1", default-features = false, features = [
     "rt",
     "macros",
@@ -170,6 +178,49 @@ toml = { version = "1.1.5", default-features = false, features = [
     "parse",
     "display",
     "serde",
+] }
+
+# `reqwest` is D2's "HTTP" row, and 2026-09-05 is the day it got a caller: the
+# `gemini` provider client, which is the first thing in this workspace that
+# can reach a model at all. Until then the row was in the record and not in
+# this file, for the reason at the top of this block.
+#
+# **`rustls-tls` rather than `default-tls`, and the closure is why.** Measured
+# 2026-09-05 in a scratch copy with `cargo tree -p zaru-cli -e normal`, which
+# is feature-aware where `Cargo.lock` is not -- the lock resolves optional
+# dependencies whether a feature turns them on or not, so it reports 285
+# packages where 217 are built. Four TLS choices, all within one crate of each
+# other in size, so size decided nothing:
+#
+#   rustls-tls               217 crates   ring, webpki-roots
+#   rustls-tls-webpki-roots  217 crates   identical
+#   rustls-tls-native-roots  218 crates   + rustls-native-certs, openssl-probe
+#   default-tls              217 crates   + native-tls, openssl, OPENSSL-SYS
+#
+# `default-tls` is refused for the reason `keyring` 4 was chosen over
+# `keyring` 3 above: it links `libssl` and `libcrypto`, C system libraries,
+# and ADR-0003 D7 promises a default install that is "zaru alone" -- a binary
+# that will not start on a box without a system library is not that.
+# `rustls-tls-native-roots` needs the host to have a trust store;
+# `rustls-tls` carries Mozilla's roots in the binary and needs nothing from
+# the machine it runs on.
+#
+# **One honest cost.** `ring` compiles C and assembly through `cc`, so a build
+# now needs a C compiler where it did not before. It is not `aws-lc-sys` and
+# it needs no `cmake` -- which is what the `rmcp` block above measured as the
+# price of the streamable-HTTP transport, 113 packages including a
+# cmake-driven build. This is the cheaper half of that trade, and CONTRIBUTING
+# says so where a contributor will read it.
+#
+# Default features off, then two named. `json` is the request and response
+# bodies, which are `serde_json` values this workspace already carries.
+# `rustls-tls` is above. Everything else reqwest offers -- `blocking`,
+# `cookies`, `gzip`, `multipart`, `stream`, `http3` -- has no caller: ADR-0012
+# D3's streaming is deliberately not built by this arc, so not even `stream`
+# is taken.
+reqwest = { version = "0.12.28", default-features = false, features = [
+    "json",
+    "rustls-tls",
 ] }
 
 [workspace.lints.rust]

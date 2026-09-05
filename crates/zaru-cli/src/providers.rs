@@ -7,13 +7,20 @@
 //! # What this module owns, and what it deliberately does not
 //!
 //! It owns the *invariant* half of ADR-0012 — the vocabulary, the resolution
-//! as data, the capability descriptor, the disagreement and the accounting.
-//! **No provider is called from anywhere in this workspace**, nothing opens a
-//! socket, and the provider trait has no implementation in any product tree,
-//! for the reason [`crate::config::port`] gives at length about [ADR-0014]'s
-//! file layers: a provider client is a dependency and [ADR-0003] D2's table
-//! names none. `reqwest` is in that table and has **no caller here**, so it is
-//! not taken; a dependency arrives in the arc that has a caller.
+//! as data, the capability descriptor, the disagreement and the accounting —
+//! and, since 2026-09-05, **one implementation of D3's trait**: [`gemini`],
+//! the first thing in this workspace that can reach a model at all.
+//!
+//! The sentences that stood here until then said no provider is called from
+//! anywhere in this workspace and that the provider trait has no
+//! implementation in any product tree. Both were true and neither is, and
+//! they are rewritten rather than qualified. What is still true is narrower
+//! and worth saying exactly: **four of D3's five kinds have no client**, and
+//! nothing here is wired to a loop — `zaru <task>` runs no task.
+//!
+//! `reqwest` arrived with that client, which is what ADR-0003 clause 7 means
+//! by a dependency having a caller; the table named it from the start and
+//! this workspace had nobody to use it.
 //!
 //! # The names, and the four they had to avoid
 //!
@@ -52,6 +59,7 @@
 pub mod alias;
 pub mod capability;
 pub mod endpoint;
+pub mod gemini;
 pub mod inference;
 pub mod kind;
 pub mod negotiation;
@@ -62,6 +70,7 @@ pub mod usage;
 pub use alias::ModelAlias;
 pub use capability::{CapabilityRefused, ProviderCapabilities};
 pub use endpoint::{EndpointRefused, ProviderEndpoint};
+pub use gemini::{GeminiClient, GeminiFailure};
 pub use inference::{Inference, InferenceRefused, Placement};
 pub use kind::ProviderKind;
 pub use negotiation::{

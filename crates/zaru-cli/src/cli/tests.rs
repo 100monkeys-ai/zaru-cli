@@ -87,8 +87,9 @@ fn every_namespace_carries_both_of_adr_0015_d2s_spellings_and_one_pair_differs()
 fn the_namespace_set_is_closed_and_no_two_namespaces_share_a_spelling() {
     assert_eq!(
         Namespace::ALL.len(),
-        10,
-        "ADR-0015 D2's table has eight rows plus `/models` and `/init`, both added 2026-09-05"
+        11,
+        "ADR-0015 D2's table has eight rows plus `/models`, `/init` and `/providers`, all \
+         three added 2026-09-05"
     );
 
     let mut slashes: Vec<&str> = Namespace::ALL.iter().map(|n| n.slash()).collect();
@@ -173,10 +174,29 @@ fn every_command_the_help_text_lists_is_one_the_parser_accepts() {
     for spelling in &listed {
         // Stand in a value for whatever argument the command takes, so that a
         // command with one is exercised rather than skipped.
-        let mut words: Vec<&str> = spelling.iter().map(String::as_str).collect();
+        let mut words: Vec<&str> = spelling
+            .iter()
+            .map(String::as_str)
+            // A `<placeholder>` in the help text stands for an argument, and
+            // the arm below supplies a real one; carrying the placeholder
+            // through would have the parser refuse a command the help lists
+            // for the wrong reason.
+            .filter(|word| !word.starts_with('<'))
+            .collect();
         let argument = match words.as_slice() {
             ["config", "explain"] => Some("runtime.tier"),
             ["sessions", "rm"] => Some("01HM2E5Y001440E1G50G1G4080"),
+            // `<kind>` is one of ADR-0012 D3's five, and the help text spells
+            // the placeholder rather than the value. Taken from
+            // `ProviderKind::ALL` rather than written here, so a sixth kind
+            // does not leave this arm exercising a name that is no longer the
+            // first one.
+            ["providers", "keys", "add"] => Some(
+                crate::providers::ProviderKind::ALL
+                    .first()
+                    .expect("ADR-0012 D3 names at least one kind")
+                    .as_str(),
+            ),
             _ => None,
         };
         if let Some(argument) = argument {

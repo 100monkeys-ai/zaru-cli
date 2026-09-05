@@ -36,6 +36,7 @@
 //! [Ubiquitous Language]: https://100monkeys-ai.cortex.page/zaru/p/architecture/ubiquitous-language
 
 use crate::config::Key;
+use crate::providers::ProviderKind;
 use crate::session::SessionId;
 
 /// What [ADR-0014] D1's layer 5 was told, before it becomes a layer.
@@ -111,6 +112,26 @@ pub enum Request {
     SessionsRemove {
         /// The id, already validated by [`SessionId::parse`].
         id: SessionId,
+    },
+    /// `zaru providers keys` — which providers this machine holds a key for.
+    ///
+    /// A sibling of [`Request::NotesTokens`] rather than a widening of it:
+    /// [ADR-0007] D7's listing is Nuclear Notes tokens', and every column it
+    /// prints -- workspace, tool count, instance, composer role -- is a Notes
+    /// token's. The two listings share one projection so that "never a value"
+    /// is one rule rather than two.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    ProviderKeys,
+    /// `zaru providers keys add <kind>` — store a provider's key.
+    ///
+    /// **The key is read from standard input and never from an argument.** An
+    /// argument is in the shell's history file, in `/proc/<pid>/cmdline`, and
+    /// in the output of `ps` for every user on the machine for as long as the
+    /// process runs.
+    ProviderKeysAdd {
+        /// Which provider the key authenticates against.
+        kind: ProviderKind,
     },
     /// `zaru notes tokens` — [ADR-0007] D7's listing.
     ///

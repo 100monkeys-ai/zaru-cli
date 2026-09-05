@@ -80,14 +80,28 @@ pub enum Namespace {
     /// closed the same way, as an accepted Update under directive 20 and open
     /// to Jeshua's veto.
     Init,
+    /// D2 row 11, added 2026-09-05 — provider credentials.
+    ///
+    /// **An accepted Update to [ADR-0015] D2 under directive 20**, beside the
+    /// `models` row the `command-surface` arc added the same day, and open to
+    /// Jeshua's veto. The row is needed because a provider key has to get into
+    /// [ADR-0007]'s store somehow and no existing namespace owns one: `/notes`
+    /// is Nuclear Notes' by D2's own second column, `/config` is the one place
+    /// [ADR-0014] D4 says a credential must never go, and `/models` is alias
+    /// resolution rather than credentials.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Providers,
 }
 
 impl Namespace {
     /// Every namespace, in D2's table order.
     ///
-    /// The length is annotated, so an eleventh fails to compile here as well as
+    /// The length is annotated, so a twelfth fails to compile here as well as
     /// in every exhaustive match below.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Runtime,
         Self::Stack,
         Self::Notes,
@@ -98,6 +112,7 @@ impl Namespace {
         Self::Session,
         Self::Models,
         Self::Init,
+        Self::Providers,
     ];
 
     /// The spelling inside a session — D2's own first column.
@@ -114,6 +129,7 @@ impl Namespace {
             Self::Session => "/session",
             Self::Models => "/models",
             Self::Init => "/init",
+            Self::Providers => "/providers",
         }
     }
 
@@ -136,6 +152,7 @@ impl Namespace {
             Self::Session => "sessions",
             Self::Models => "models",
             Self::Init => "init",
+            Self::Providers => "providers",
         }
     }
 
@@ -153,6 +170,7 @@ impl Namespace {
             Self::Session => "resume, list, remove",
             Self::Models => "alias resolution",
             Self::Init => "the project manifest",
+            Self::Providers => "provider credentials",
         }
     }
 
@@ -169,7 +187,7 @@ impl Namespace {
 
     /// Whether this harness implements the namespace's out-of-session half.
     ///
-    /// **Four of the nine answer `false`, and that is a statement about this
+    /// **Four of the eleven answer `false`, and that is a statement about this
     /// build rather than about D2.** `/stack` needs [ADR-0003] D7's component
     /// fetch, `/memory` needs [ADR-0031]'s relationship memory, `/learned` and
     /// `/inbox` need [ADR-0002]'s announcement channel — none of which exists
@@ -189,7 +207,8 @@ impl Namespace {
             | Self::Config
             | Self::Session
             | Self::Models
-            | Self::Init => true,
+            | Self::Init
+            | Self::Providers => true,
             Self::Stack | Self::Memory | Self::Learned | Self::Inbox => false,
         }
     }
@@ -207,6 +226,15 @@ impl Namespace {
             Self::Config => &["explain"],
             Self::Session => &["list", "rm"],
             Self::Notes => &["tokens"],
+            // One verb with a verb of its own under it, which is why this
+            // namespace is the one arm of the grammar that does not go
+            // through `verb`: `providers keys` lists and `providers keys add
+            // <kind>` writes. The nesting is deliberate rather than
+            // convenient -- flattening it to `providers add <kind>` would
+            // make `providers rm` and `providers list` read as though they
+            // were about providers rather than about their keys, and a
+            // provider is not a thing this harness stores.
+            Self::Providers => &["keys"],
             Self::Stack | Self::Memory | Self::Learned | Self::Inbox => &[],
         }
     }

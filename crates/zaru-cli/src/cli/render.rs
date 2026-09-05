@@ -33,7 +33,8 @@
 
 use crate::config::Explanation;
 use crate::config::explain::NOT_SET;
-use crate::providers::{ModelTable, ResolvedModel};
+use crate::credentials::Listing;
+use crate::providers::{ModelTable, ProviderKind, ResolvedModel};
 use crate::runtime::Runtime;
 
 /// [ADR-0014] D3's block, as lines.
@@ -256,14 +257,15 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
     // is a Nuclear Notes token's, and a provider key rendered here would show
     // four empty cells under headings that do not apply to it. The other
     // listing is `zaru providers keys`, and the two share
-    // `crate::credentials::listed`.
+    // `CredentialStore::listed`, which both listings are built from.
     let rows: Vec<[String; 6]> = store
-        .records()
-        .filter(|(_, record)| record.is_notes())
-        .map(|(alias, record)| {
+        .listed(Listing::Notes)
+        .into_iter()
+        .zip(store.records().filter(|(_, record)| record.is_notes()))
+        .map(|(listed, (_, record))| {
             [
-                alias.to_string(),
-                record.description.clone(),
+                listed.alias,
+                listed.description,
                 record
                     .workspace()
                     .map_or_else(|| NOT_SET.to_owned(), str::to_owned),
@@ -320,4 +322,61 @@ pub fn initialised(path: &std::path::Path) -> Vec<String> {
             .to_owned(),
         "read is not a contract. Edit it before running anything against it.".to_owned(),
     ]
+}
+
+/// `zaru providers keys` — which providers this machine holds a key for.
+///
+/// # What it prints, and the one thing it cannot
+///
+/// The alias, the kind and the description, built from
+/// [`Listed`](crate::credentials::Listed) — which has no field a bearer value
+/// could occupy. So "this listing never prints a key" is a property of the
+/// type both listings are built from rather than a rule each renderer keeps
+/// separately.
+///
+/// It deliberately does **not** print a length, a prefix, a fingerprint or a
+/// masked form of the key. Every one of those is a fact about the value, and
+/// a fact about a value is what a listing exists to avoid carrying: a length
+/// tells an onlooker which of two keys is stored, and a masked prefix is the
+/// part of a credential that most often identifies the account.
+#[must_use]
+pub fn provider_keys(store: &crate::credentials::CredentialStore) -> Vec<String> {
+    let listed = store.listed(Listing::Providers);
+    if listed.is_empty() {
+        return vec![
+            "no provider key is stored on this machine.".to_owned(),
+            format!(
+                "  add one with `zaru providers keys add <kind>`, which reads the key from \
+                 standard input: {}",
+                ProviderKind::ALL
+                    .iter()
+                    .map(|kind| kind.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ];
+    }
+
+    let rows: Vec<[String; 3]> = listed
+        .into_iter()
+        .map(|entry| [entry.alias, entry.kind, entry.description])
+        .collect();
+
+    let mut widths = [0usize; 3];
+    for row in &rows {
+        for (slot, cell) in widths.iter_mut().zip(row) {
+            *slot = (*slot).max(cell.chars().count());
+        }
+    }
+
+    rows.iter()
+        .map(|row| {
+            let padded: Vec<String> = row
+                .iter()
+                .zip(widths)
+                .map(|(cell, width)| format!("{cell:width$}"))
+                .collect();
+            padded.join("  ").trim_end().to_owned()
+        })
+        .collect()
 }

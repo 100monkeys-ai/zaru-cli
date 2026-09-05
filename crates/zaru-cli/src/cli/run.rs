@@ -28,9 +28,9 @@ use crate::cli::classify::Surface;
 use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::cli::{help, layers, render};
 use crate::config::{Key, Resolution};
-use crate::credentials::CredentialStore;
+use crate::credentials::{CredentialStore, Description, Entry, HarnessKeys, OsKeyring, Secret};
 use crate::failure::{Classified, Exit, SessionEvidence};
-use crate::providers::{ModelAlias, ModelTable, ResolvedModel};
+use crate::providers::{ModelAlias, ModelTable, ProviderKind, ResolvedModel};
 use crate::runtime::{ResolvedTier, Runtime};
 use crate::session::{SessionId, SessionStore};
 
@@ -115,6 +115,8 @@ impl Run<'_> {
             Request::Resume { id } => self.resume(id, &line.overrides),
             Request::Continue => self.resume_latest(&line.overrides),
             Request::NotesTokens => self.notes_tokens(),
+            Request::ProviderKeys => self.provider_keys(),
+            Request::ProviderKeysAdd { kind } => self.provider_keys_add(*kind),
             Request::Task { .. } => self.no_provider(&line.overrides),
         }
     }
@@ -247,6 +249,129 @@ impl Run<'_> {
     /// `sessions list` does not either.
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// `zaru providers keys` — which providers this machine holds a key for.
+    ///
+    /// Opens the store for **reading**, exactly as `notes tokens` does, so
+    /// asking a question creates nothing.
+    fn provider_keys(&self) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let root = match CredentialStore::default_root() {
+            Ok(root) => root,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        match CredentialStore::reading(root) {
+            Ok(store) => Outcome::printed(render::provider_keys(&store)),
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
+        }
+    }
+
+    /// `zaru providers keys add <kind>` — store a provider's key.
+    ///
+    /// # The key comes from standard input, and that is the whole of the
+    /// surface's design
+    ///
+    /// Not from an argument. An argument is written into the shell's history
+    /// file, is readable in `/proc/<pid>/cmdline` by anything that can see the
+    /// process, and appears in `ps` output for every user on the machine for
+    /// as long as the process runs. [operations/repositories] states the rule
+    /// this follows — "a credential enters the product the way a user's would"
+    /// — and the way a user's should is the way that does not publish it.
+    ///
+    /// **Nothing this function does echoes the key.** It is read, trimmed of
+    /// the single trailing newline a terminal or a `printf` adds, handed to
+    /// [`Secret::provider`], and sealed. What is printed afterwards is the
+    /// alias and the kind.
+    ///
+    /// The trailing newline is trimmed rather than refused because it is not
+    /// the user's: `printf '%s\n' "$KEY" | zaru …` and pressing return in a
+    /// terminal both add one, and refusing it would make every ordinary way
+    /// of supplying a key fail. Whitespace the user actually typed is still
+    /// refused by `Secret::provider`, which is the distinction that matters —
+    /// a key with a space in the middle of it is a paste artefact worth
+    /// telling them about.
+    ///
+    /// [operations/repositories]: https://100monkeys-ai.cortex.page/zaru/p/operations/repositories
+    fn provider_keys_add(&self, kind: ProviderKind) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+
+        let mut offered = String::new();
+        if let Err(failure) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut offered) {
+            return Outcome::failed(Surface::key_not_readable(kind, &failure));
+        }
+        // Exactly one trailing line ending, and only if it is there.
+        let offered = offered
+            .strip_suffix('\n')
+            .unwrap_or(&offered)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| offered.strip_suffix('\n').unwrap_or(&offered));
+
+        let secret = match Secret::provider(kind, offered) {
+            Ok(secret) => secret,
+            // The refusal carries no part of the value -- see `SecretRefused`,
+            // which is `Copy` and therefore cannot.
+            Err(refusal) => return Outcome::failed(Surface::key_refused(kind, &refusal)),
+        };
+
+        let alias = ProviderKind::credential_alias(kind);
+        let description = match Description::new(format!("the {kind} API key")) {
+            Ok(description) => description,
+            Err(refusal) => {
+                return Outcome::failed(undecided_description(
+                    self.version,
+                    self.report_at,
+                    &refusal,
+                ));
+            }
+        };
+        let entry = match Entry::provider(alias.clone(), description, secret) {
+            Ok(entry) => entry,
+            Err(refusal) => {
+                return Outcome::failed(undecided_entry(self.version, self.report_at, &refusal));
+            }
+        };
+
+        let root = match CredentialStore::default_root() {
+            Ok(root) => root,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        // The key store the product uses: the OS keyring where there is one,
+        // and `ZARU_CREDENTIAL_KEY` where there is not -- which is the
+        // ordinary case on a headless machine, not just in CI.
+        let keyring = OsKeyring::for_store(&root);
+        let keys = HarnessKeys::from_process(&keyring);
+
+        let mut store = match CredentialStore::open(root.clone()) {
+            Ok(store) => store,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        // No confirmer: ADR-0007 D8's apex confirmation is a Nuclear Notes
+        // token's, and a provider key has no reach to be apex with -- the
+        // enum is what says so.
+        match store.add(entry, &keys, None) {
+            Ok(()) => Outcome::printed(vec![
+                format!("stored a `{kind}` key under the alias `{alias}`."),
+                "  the value is sealed and is not printed by any command.".to_owned(),
+            ]),
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
+        }
+    }
+
     fn notes_tokens(&self) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
         let root = match CredentialStore::default_root() {
@@ -358,4 +483,52 @@ fn explain(resolution: &Resolution, key: &Key) -> Outcome {
         return Outcome::failed(Surface::undeclared_key(key, &schema));
     }
     Outcome::printed(render::explanation(&resolution.explain(key)))
+}
+
+/// A description this module composed that the store would not take.
+///
+/// Unreachable: the sentence is `format!("the {kind} API key")` over
+/// [`ProviderKind::as_str`]'s five literals, none of which carries a control
+/// character. It is reported as a defect rather than unwrapped so that a
+/// sixth kind spelled with one cannot turn a command into a panic.
+fn undecided_description(
+    version: &str,
+    report_at: &str,
+    refusal: &crate::credentials::DescriptionRefused,
+) -> Classified {
+    let _ = refusal;
+    Classified::Defect(crate::failure::DefectReport::new(
+        version,
+        report_at,
+        crate::failure::Location {
+            file: file!().to_owned(),
+            line: line!(),
+            column: 0,
+        },
+        SessionEvidence::NoSessionExists,
+    ))
+}
+
+/// An entry this module built whose secret belongs to the other family.
+///
+/// Unreachable: the secret two lines above came from [`Secret::provider`],
+/// so its kind is `Kind::Provider` by construction and
+/// [`Entry::provider`] cannot refuse it. Reported rather than unwrapped for
+/// the reason above.
+fn undecided_entry(
+    version: &str,
+    report_at: &str,
+    refusal: &crate::credentials::EntryRefused,
+) -> Classified {
+    let _ = refusal;
+    Classified::Defect(crate::failure::DefectReport::new(
+        version,
+        report_at,
+        crate::failure::Location {
+            file: file!().to_owned(),
+            line: line!(),
+            column: 0,
+        },
+        SessionEvidence::NoSessionExists,
+    ))
 }

@@ -62,6 +62,16 @@ fn summaries(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
             "init",
             "write ADR-0009 D1's manifest into this directory, once, if there is none",
         )],
+        Namespace::Providers => &[
+            (
+                "providers keys",
+                "print which providers this machine holds a key for",
+            ),
+            (
+                "providers keys add <kind>",
+                "store a provider's API key, read from standard input",
+            ),
+        ],
         Namespace::Stack | Namespace::Memory | Namespace::Learned | Namespace::Inbox => &[],
     }
 }
@@ -114,17 +124,22 @@ pub fn lines(version: &str) -> Vec<String> {
     }
 
     lines.push(String::new());
+    // Rewritten 2026-09-05. The sentence here said no provider client is
+    // built, which stopped being true the day the `gemini` client landed. A
+    // help text that overstates what is missing is as wrong as one that
+    // overstates what works, and the thing actually missing is narrower: a
+    // client exists and nothing connects it to a loop.
     lines.push(
-        "This harness cannot run a task yet: no provider client is built, so there is nothing"
-            .to_owned(),
+        "This harness cannot run a task yet. One provider client is built and nothing".to_owned(),
     );
     lines.push(
-        "for the agent loop to ask. What runs today is the list above, which reads what is"
-            .to_owned(),
+        "connects it to the agent loop, so there is still nothing for the loop to ask.".to_owned(),
     );
     lines.push(
-        "already on this machine and changes none of it except `sessions rm` and `init`."
-            .to_owned(),
+        "What runs today is the list above, which reads what is already on this machine".to_owned(),
+    );
+    lines.push(
+        "and changes none of it except `sessions rm`, `init` and `providers keys add`.".to_owned(),
     );
 
     lines

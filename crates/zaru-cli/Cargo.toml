@@ -29,6 +29,12 @@ serde_json = { workspace = true }
 aes-gcm = { workspace = true }
 keyring = { workspace = true }
 toml = { workspace = true }
+# ADR-0012 D3's first provider client. See `[workspace.dependencies]` for why
+# `rustls-tls` and for the C-compiler cost that comes with it.
+reqwest = { workspace = true }
+# A product dependency since 2026-09-05, not a dev one: `reqwest`'s futures
+# need a reactor to be polled on, and `providers::gemini` is what polls them.
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [dev-dependencies]
 # The two halves of the outside-caller check in `tests/notes_scope_from_outside.rs`,

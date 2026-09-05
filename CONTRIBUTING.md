@@ -78,6 +78,26 @@ link renders as plain text — nothing on the published page says the link was
 meant to go somewhere, so it ships silently. Three were shipping when the gate
 was added.
 
+## What a build needs on the machine
+
+The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it.
+Since 2026-09-05 a build also needs **a C compiler**, and that is a genuinely
+new requirement rather than an assumption that was always true.
+
+`reqwest` arrived with the first provider client, and its `rustls-tls` feature
+pulls `ring`, which compiles C and assembly through `cc`. It is not
+`aws-lc-sys` and it needs no `cmake` — that pairing is what the streamable
+HTTP transport would have cost, measured at 113 further packages, and it is
+deliberately not taken. On a Debian-derived machine `build-essential` is
+enough; on any other, whatever provides `cc`.
+
+The alternative was `reqwest`'s `default-tls`, which links `libssl` and
+`libcrypto` — system libraries rather than a build-time tool — and ADR-0003 D7
+promises a default install that is "zaru alone". A binary that will not
+*start* without a system library is a worse trade than one that will not
+*build* without a compiler, so the compiler is the cost that was taken. The
+measurement behind that choice is in `Cargo.toml`, beside the dependency.
+
 ## Licence headers
 
 Every Rust source file starts with exactly these two lines:
