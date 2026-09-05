@@ -186,7 +186,7 @@ pub struct Pump {
 ///
 /// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
 /// is told it did not complete**." The first half is
-/// [`crate::session::resume`]'s and has been built since `session-lifecycle`:
+/// [`crate::session::resume()`]'s and has been built since `session-lifecycle`:
 /// a `Phase::Started` with no `Completed` or `Refused` closing it **is** the
 /// interruption, because a killed process writes nothing. The second half is
 /// the turn's, and until 2026-09-05 nothing in any product tree started one —
