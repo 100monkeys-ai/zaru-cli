@@ -183,6 +183,55 @@ impl ToolName {
         }
     }
 
+    /// The fields this tool's arguments object declares, in the order a
+    /// refusal and a schema name them.
+    ///
+    /// **This is the wire contract**, decided under directive 20 of
+    /// 2026-09-05 and recorded on [ADR-0011] D1 as an accepted Update — see
+    /// [`crate::tools::arguments`] for the three measurements that decided it
+    /// and for why a field's value is never rendered.
+    ///
+    /// The names are the record's own nouns wherever D1 supplies one: D1's row
+    /// for `fs.edit` is "Replace an exact string within a file", so the fields
+    /// are the file and the exact string, `old` and `new`. `fs.search`'s row
+    /// is "Content and filename search", which needs somewhere to look and
+    /// something to look for, so `root` and `needle` rather than a second
+    /// `path` that would mean a different thing from the other four.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    #[must_use]
+    pub const fn fields(self) -> &'static [&'static str] {
+        match self {
+            Self::FsRead | Self::FsList => &["path"],
+            Self::FsWrite => &["path", "contents"],
+            Self::FsEdit => &["path", "old", "new"],
+            Self::FsSearch => &["root", "needle"],
+            Self::CmdRun => &["command"],
+            Self::WebFetch => &["url"],
+        }
+    }
+
+    /// What kind of thing this tool is addressed to.
+    ///
+    /// One derivation, and the four
+    /// [`Invocation`](crate::tools::decision::Invocation) constructors are
+    /// exhaustive over it — so a tool cannot be paired with a subject of the
+    /// wrong kind, which is a property of the constructors rather than a rule
+    /// somebody keeps. [`Self::addresses_a_path`] is derived from this rather
+    /// than written as a second match, for the reason
+    /// [`Tier::has_membrane`](crate::runtime::Tier::has_membrane) is derived
+    /// from ADR-0001 D1's own column: two matches over one set can disagree,
+    /// and this one decides where a security boundary applies.
+    #[must_use]
+    pub const fn subject_kind(self) -> SubjectKind {
+        match self {
+            Self::FsRead | Self::FsWrite | Self::FsEdit | Self::FsList => SubjectKind::Path,
+            Self::FsSearch => SubjectKind::SearchRoot,
+            Self::CmdRun => SubjectKind::CommandLine,
+            Self::WebFetch => SubjectKind::Url,
+        }
+    }
+
     /// Whether this tool addresses something in the filesystem.
     ///
     /// ADR-0011 D4's working-directory boundary is about paths, and **two of
@@ -210,11 +259,44 @@ impl ToolName {
     /// where its text resolves. Corrected under the coordinator's ruling of
     /// 2026-09-05 and recorded on ADR-0011 D4 as an accepted Update.
     ///
+    /// # `fs.search` addresses a path too, and it is not addressed *by* one
+    ///
+    /// D4 applies to a search's root exactly as it applies to a read's target,
+    /// so this stays true for `fs.search`. What changed on 2026-09-05 is that
+    /// a search is not described by a bare path — it carries a root **and** a
+    /// needle — so it has its own
+    /// [`Invocation`](crate::tools::decision::Invocation) constructor. The two
+    /// questions are different and [`Self::subject_kind`] is the one that
+    /// decides which constructor applies.
+    ///
     /// [ADR-0004]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0004-native-seal-in-the-harness
     #[must_use]
     pub const fn addresses_a_path(self) -> bool {
-        !matches!(self, Self::WebFetch | Self::CmdRun)
+        matches!(
+            self.subject_kind(),
+            SubjectKind::Path | SubjectKind::SearchRoot
+        )
     }
+}
+
+/// What kind of thing a tool is addressed to.
+///
+/// Four kinds and four [`Invocation`](crate::tools::decision::Invocation)
+/// constructors. [ADR-0011] D4's boundary is about paths, and two of D1's
+/// seven address something that is not one — `web.fetch` a URL and `cmd.run` a
+/// command line, whose boundary is the working directory it is started in.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubjectKind {
+    /// A single filesystem path, classified against D4.
+    Path,
+    /// A filesystem path to search under, with what to search for.
+    SearchRoot,
+    /// A command line, whose boundary is where it is started.
+    CommandLine,
+    /// A URL, which D4 says nothing about.
+    Url,
 }
 
 impl fmt::Display for ToolName {

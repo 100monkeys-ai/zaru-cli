@@ -247,7 +247,7 @@ async fn a_model_reads_a_file_inside_the_boundary_and_the_bytes_reach_it() {
                 calls: vec![ToolRequest {
                     id: String::from("c1"),
                     name: String::from("fs.read"),
-                    arguments: String::from("src/main.rs"),
+                    arguments: serde_json::json!({ "path": "src/main.rs" }).to_string(),
                 }],
                 tokens: TokenUsage {
                     prompt: 9,
@@ -353,7 +353,7 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
                 calls: vec![ToolRequest {
                     id: String::from("c1"),
                     name: String::from("fs.read"),
-                    arguments: String::from("../elsewhere/secret"),
+                    arguments: serde_json::json!({ "path": "../elsewhere/secret" }).to_string(),
                 }],
                 tokens: TokenUsage::default(),
             },
@@ -575,7 +575,7 @@ async fn a_denying_membrane_refuses_at_yolo_and_presents_as_an_expected_failure(
                 calls: vec![ToolRequest {
                     id: String::from("c1"),
                     name: String::from("fs.read"),
-                    arguments: String::from("src/main.rs"),
+                    arguments: serde_json::json!({ "path": "src/main.rs" }).to_string(),
                 }],
                 tokens: TokenUsage::default(),
             },

@@ -481,7 +481,7 @@ async fn one_command_turn(
             calls: vec![ToolRequest {
                 id: String::from("c1"),
                 name: String::from("cmd.run"),
-                arguments: command.to_owned(),
+                arguments: serde_json::json!({ "command": command }).to_string(),
             }],
             tokens: TokenUsage {
                 prompt: 9,
@@ -1092,7 +1092,7 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
         calls: vec![ToolRequest {
             id: String::from("c1"),
             name: String::from("cmd.run"),
-            arguments: String::from(IN_FLIGHT),
+            arguments: serde_json::json!({ "command": IN_FLIGHT }).to_string(),
         }],
         tokens: TokenUsage {
             prompt: 1,

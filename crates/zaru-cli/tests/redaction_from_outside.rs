@@ -343,7 +343,7 @@ async fn read_a_file_carrying(
             calls: vec![ToolRequest {
                 id: String::from("c1"),
                 name: String::from("fs.read"),
-                arguments: String::from("src/config.rs"),
+                arguments: serde_json::json!({ "path": "src/config.rs" }).to_string(),
             }],
             tokens: TokenUsage::default(),
         },

@@ -70,6 +70,7 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 //! [`credentials::Confirm`]: crate::credentials::Confirm
 
+pub mod arguments;
 pub mod decision;
 pub mod execute;
 pub mod mode;
@@ -81,13 +82,14 @@ pub mod seal;
 pub mod tree;
 pub mod writes;
 
+pub use arguments::{ArgumentsRefused, Call, schema};
 pub use decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, InvocationRefused, Permission,
     RefusedBecause, Requirement, Subject, TranscriptEntry,
 };
 pub use execute::{Executor, NotACall, OVERFLOW_PREFIX, SessionOverflow, descriptors};
 pub use mode::{Layer, Mode, ModeRefused, Tier};
-pub use name::{Effect, ToolName};
+pub use name::{Effect, SubjectKind, ToolName};
 pub use notice::SessionNotice;
 pub use output::{
     BudgetIsZero, Captured, ELISION_PREFIX, Excerpt, OutputBudget, Overflow, OverflowFailure,

@@ -1244,14 +1244,46 @@ fn two_built_ins_do_not_address_a_path_and_carry_no_placement() {
          2026-09-05: D4 measures the paths a tool addresses, and a command addresses none"
     );
 
-    // The arm that discriminates: every other built-in does take a path.
+    // `fs.search` addresses a path -- D4 applies to where it looks -- and is
+    // not described by one alone, because it carries a root and a needle.
+    // Added 2026-09-05 with the wire contract: the two questions are
+    // different, and `subject_kind` is the one that decides the constructor.
+    assert!(
+        ToolName::FsSearch.addresses_a_path(),
+        "D4 applies to a search's root exactly as it applies to a read's target"
+    );
+    assert!(
+        Invocation::on_path(ToolName::FsSearch, &target).is_err(),
+        "a search is not described by a bare path: a record that said only where it looked would \
+         not carry its arguments, which is ADR-0011 clause 1's second half"
+    );
+    let search = Invocation::searching(&target, "need\"le");
+    assert_eq!(search.tool(), ToolName::FsSearch);
+    assert_eq!(
+        search.placement(),
+        Some(target.placement()),
+        "a search's placement is its root's; D4 is not suspended because the call carries a \
+         second argument"
+    );
+    let rendered = search.subject_text();
+    assert!(
+        rendered.starts_with(&target.resolved().display().to_string())
+            && rendered.contains("need\\\"le"),
+        "a search's transcript subject carries the root and the needle, the needle quoted so one \
+         holding a space or a quote cannot be read as part of the path: {rendered}"
+    );
+
+    // The arm that discriminates: the four addressed BY a bare path still are.
     for tool in ToolName::ALL {
-        if matches!(tool, ToolName::WebFetch | ToolName::CmdRun) {
+        if matches!(
+            tool,
+            ToolName::WebFetch | ToolName::CmdRun | ToolName::FsSearch
+        ) {
             continue;
         }
         assert!(
             Invocation::on_path(tool, &target).is_ok(),
-            "{tool} addresses a path and was refused one"
+            "{tool} is addressed by a path and was refused one"
         );
     }
 }

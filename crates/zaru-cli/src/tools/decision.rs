@@ -62,10 +62,10 @@ impl fmt::Display for InvocationRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the tool {} does not address a filesystem path, so it cannot be described as a call \
-             on one. ADR-0011 D4's boundary is about paths, and two of D1's seven address \
-             something else: `web.fetch` addresses a URL and `cmd.run` addresses a command line, \
-             whose boundary is the working directory it is started in",
+            "the tool {} is not described by a bare filesystem path, so it cannot be built as a \
+             call on one. `web.fetch` addresses a URL and `cmd.run` a command line, neither of \
+             which ADR-0011 D4 measures; `fs.search` addresses a path and is not described by one \
+             alone, because it carries a root and a needle. Each has its own constructor",
             self.tool
         )
     }
@@ -94,6 +94,20 @@ impl std::error::Error for InvocationRefused {}
 pub enum Subject<'a> {
     /// A filesystem path, already classified against the working directory.
     Path(&'a Target),
+    /// A search: where to look, classified, and what to look for.
+    ///
+    /// A fourth variant rather than a `Path` with the needle dropped, because
+    /// ADR-0011 clause 1 asks that a built-in "appear in the transcript **with
+    /// their arguments**" and a search whose record says only where it looked
+    /// does not. This is the same move [`Subject::Command`] makes for
+    /// `cmd.run`, and it has the same consequence: for these two the clause's
+    /// second half is met exactly rather than narrowly.
+    Search {
+        /// Where the walk starts. Classified against D4 like any other path.
+        root: &'a Target,
+        /// The literal being looked for.
+        needle: &'a str,
+    },
     /// A command line, already split into a program and its arguments.
     Command(&'a CommandLine),
     /// A URL, which D4 says nothing about.
@@ -117,13 +131,26 @@ impl<'a> Invocation<'a> {
     /// [`Invocation::fetching`] and [`Invocation::running`], each taking the
     /// subject that tool actually addresses.
     pub fn on_path(tool: ToolName, target: &'a Target) -> Result<Self, InvocationRefused> {
-        if !tool.addresses_a_path() {
+        if !matches!(tool.subject_kind(), crate::tools::name::SubjectKind::Path) {
             return Err(InvocationRefused { tool });
         }
         Ok(Self {
             tool,
             subject: Subject::Path(target),
         })
+    }
+
+    /// The one built-in that addresses a root and a needle.
+    ///
+    /// The tool is not a parameter, for the reason [`Invocation::fetching`]'s
+    /// and [`Invocation::running`]'s are not: there is exactly one, and this
+    /// is the only constructor that produces [`Subject::Search`].
+    #[must_use]
+    pub const fn searching(root: &'a Target, needle: &'a str) -> Self {
+        Self {
+            tool: ToolName::FsSearch,
+            subject: Subject::Search { root, needle },
+        }
     }
 
     /// The one built-in that addresses a URL.
@@ -175,7 +202,9 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub const fn placement(&self) -> Option<Placement> {
         match self.subject {
-            Subject::Path(target) => Some(target.placement()),
+            Subject::Path(target) | Subject::Search { root: target, .. } => {
+                Some(target.placement())
+            }
             Subject::Command(_) | Subject::Url(_) => None,
         }
     }
@@ -186,10 +215,19 @@ impl<'a> Invocation<'a> {
     /// [`CommandLine::split`] would accept it back — which is what makes
     /// ADR-0010's sentence that "a rendered `cmd.run` line **is** a command
     /// line" true rather than approximately true.
+    ///
+    /// For a search it is the resolved root and the needle, the needle quoted
+    /// and escaped so that one carrying a space, a quote or a newline cannot
+    /// be read as part of the path. That is what makes ADR-0011 clause 1's
+    /// "with their arguments" met exactly for `fs.search`, as it already is
+    /// for `cmd.run`.
     #[must_use]
     pub fn subject_text(&self) -> String {
         match self.subject {
             Subject::Path(target) => target.resolved().display().to_string(),
+            Subject::Search { root, needle } => {
+                format!("{} {needle:?}", root.resolved().display())
+            }
             Subject::Command(line) => line.render(),
             Subject::Url(url) => url.to_owned(),
         }

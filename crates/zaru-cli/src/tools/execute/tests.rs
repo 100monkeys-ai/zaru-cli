@@ -181,11 +181,54 @@ macro_rules! executor {
     };
 }
 
-fn request(name: &str, target: &str) -> ToolRequest {
+/// A request whose arguments are the JSON object the named tool declares.
+///
+/// Values are positional, in `ToolName::fields` order, so a check reads as
+/// ADR-0011 D1's row does. Built here rather than typed at each call site,
+/// because a hand-written object at twenty call sites is the wire contract
+/// transcribed twenty-one times.
+///
+/// It refuses rather than skips when the arity is wrong ([Verification
+/// lessons] §4): a staging that quietly built the wrong object would make
+/// every assertion below a statement about a refusal.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+fn request(name: &str, values: &[&str]) -> ToolRequest {
+    let tool = ToolName::ALL
+        .into_iter()
+        .find(|tool| tool.as_str() == name)
+        .unwrap_or_else(|| panic!("staging: {name} is not one of ADR-0011 D1's seven"));
+    assert_eq!(
+        values.len(),
+        tool.fields().len(),
+        "staging: {tool} takes {:?} and {} value(s) were supplied",
+        tool.fields(),
+        values.len()
+    );
+    let object: serde_json::Map<String, serde_json::Value> = tool
+        .fields()
+        .iter()
+        .zip(values)
+        .map(|(field, value)| {
+            (
+                (*field).to_owned(),
+                serde_json::Value::String((*value).to_owned()),
+            )
+        })
+        .collect();
+    raw_request(name, &serde_json::Value::Object(object).to_string())
+}
+
+/// A request whose arguments are exactly what the caller wrote.
+///
+/// For the checks that are about a name or an arguments text the contract
+/// refuses, where building a well-formed object would be building the thing
+/// under test.
+fn raw_request(name: &str, arguments: &str) -> ToolRequest {
     ToolRequest {
         id: nonce("call"),
         name: name.to_owned(),
-        arguments: target.to_owned(),
+        arguments: arguments.to_owned(),
     }
 }
 
@@ -221,7 +264,7 @@ async fn a_read_inside_the_working_directory_returns_the_files_bytes() {
     );
 
     let outcome = executor
-        .execute(&request("fs.read", "inside/file"))
+        .execute(&request("fs.read", &["inside/file"]))
         .await
         .expect("no port failed");
 
@@ -284,7 +327,7 @@ async fn nothing_outside_the_working_directory_is_ever_read() {
         );
 
         let outcome = executor
-            .execute(&request("fs.read", target))
+            .execute(&request("fs.read", &[target]))
             .await
             .expect("a refusal is not a port failure");
 
@@ -314,7 +357,7 @@ async fn nothing_outside_the_working_directory_is_ever_read() {
             &unbuilt
         );
         let inside = executor
-            .execute(&request("fs.read", "inside/file"))
+            .execute(&request("fs.read", &["inside/file"]))
             .await
             .expect("no port failed");
         assert!(
@@ -358,7 +401,13 @@ async fn a_write_is_never_performed_under_a_reads_decision() {
     );
 
     let target = tree.project().join("inside").join("written");
-    let asked = request("fs.write", target.to_str().expect("utf-8"));
+    let asked = request(
+        "fs.write",
+        &[
+            target.to_str().expect("utf-8"),
+            "what a model asked to store",
+        ],
+    );
     let failure = executor
         .execute(&asked)
         .await
@@ -380,7 +429,7 @@ async fn a_write_is_never_performed_under_a_reads_decision() {
     // act. Without it the assertions above are satisfied by an executor that
     // routes everything to a port.
     let inside = executor
-        .execute(&request("fs.read", "inside/file"))
+        .execute(&request("fs.read", &["inside/file"]))
         .await
         .expect("fs.read acts");
     assert!(
@@ -421,7 +470,7 @@ async fn a_command_at_ask_with_the_user_declining_does_not_act() {
     // `Unbuilt::run` answers with a failure naming itself, so reaching it at
     // all would surface as an `Err` here rather than as a refusal.
     let outcome = executor
-        .execute(&request("cmd.run", "rm -rf /"))
+        .execute(&request("cmd.run", &["rm -rf /"]))
         .await
         .expect("a declined prompt is not a port failure");
 
@@ -476,7 +525,7 @@ async fn a_refused_call_is_recorded_and_is_never_reported_as_interrupted() {
             &unbuilt
         );
         executor
-            .execute(&request("cmd.run", "echo hello"))
+            .execute(&request("cmd.run", &["echo hello"]))
             .await
             .expect("a refusal is not a port failure");
     }
@@ -533,7 +582,7 @@ async fn the_record_is_written_at_every_mode_including_yolo() {
                 &unbuilt
             );
             executor
-                .execute(&request("fs.read", "inside/file"))
+                .execute(&request("fs.read", &["inside/file"]))
                 .await
                 .expect("no port failed");
         }
@@ -597,7 +646,7 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
     };
 
     let outcome = executor
-        .execute(&request("fs.read", "inside/file"))
+        .execute(&request("fs.read", &["inside/file"]))
         .await
         .expect("no port failed");
 
@@ -660,7 +709,7 @@ async fn a_denied_verdict_refuses_at_every_mode_and_is_an_expected_failure() {
         );
 
         let outcome = executor
-            .execute(&request("fs.read", "inside/file"))
+            .execute(&request("fs.read", &["inside/file"]))
             .await
             .expect("a denied verdict is not a port failure");
 
@@ -712,10 +761,12 @@ fn the_descriptors_are_the_seven_and_carry_the_records_own_words() {
             tool.purpose(),
             "the description is D1's second column, transcribed"
         );
-        assert!(
-            descriptor.parameters.is_empty(),
-            "ADR-0011 D1 names no argument schema, and inventing one here would be authoring the \
-             surface's wire contract"
+        assert_eq!(
+            descriptor.parameters,
+            crate::tools::arguments::schema(tool),
+            "the descriptor offers the schema the parser enforces; ADR-0011 D1 named no argument \
+             schema until directive 20 decided one on 2026-09-05, and an empty string -- what \
+             this field held until then -- is not JSON, so a provider client refuses it"
         );
     }
 }
@@ -746,7 +797,7 @@ async fn a_name_that_is_not_a_built_in_is_reported_to_the_model_and_is_not_an_er
     );
 
     let outcome = executor
-        .execute(&request("fs.chmod", "inside/file"))
+        .execute(&raw_request("fs.chmod", r#"{"path":"inside/file"}"#))
         .await
         .expect("an unknown name is not a port failure");
 
