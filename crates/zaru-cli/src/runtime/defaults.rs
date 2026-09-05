@@ -60,7 +60,9 @@
 //!
 //! Under Jeshua's directive of 2026-09-05 the axis is decided rather than
 //! inferred: [`Inference`] is **declared per alias in configuration**, at
-//! `model.<alias>.inference`, and [`Inference::resolved_for`] reads it.
+//! `inference.<alias>` — a sibling of `model.<alias>` rather than a child, so
+//! that one key is never both a value and a table — and
+//! [`Inference::resolved_for`] reads it.
 //! [`Placement`] is [`Placement::Local`] unless ADR-0012 D3's `aegis` kind is
 //! the resolved provider kind. Neither is guessed from a model name and
 //! neither has a default in this module — a default here would be this
@@ -77,6 +79,7 @@
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+//! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use crate::config::{Key, KeyRefused, Resolution};
@@ -131,11 +134,17 @@ impl Inference {
 
     /// The key one alias declares this axis at.
     ///
-    /// `model.<alias>.inference`, per Jeshua's directive of 2026-09-05. The
-    /// `model.<alias>` half of that path is [ADR-0012]'s and is declared by
-    /// whoever owns that record's keys; **this module declares no
-    /// [`Field`](crate::config::Field) for it and no schema**, because the key
-    /// belongs to ADR-0012 and only its *reading* belongs to ADR-0001 D3.
+    /// `inference.<alias>`, per Jeshua's directive of 2026-09-05 as amended
+    /// the same day. **A sibling of `model.<alias>` rather than a child of
+    /// it**, and the amendment is a measurement rather than a preference: the
+    /// nested spelling `model.<alias>.inference` makes `model.<alias>` both a
+    /// value and a table, and [ADR-0014] D2's merge resolves that by write
+    /// order, so one order silently drops the setting. `provider-aliases`
+    /// measured it.
+    ///
+    /// The key is [ADR-0012]'s to declare, with `ollama` defaulting to local;
+    /// **this module declares no [`Field`](crate::config::Field) for it and no
+    /// schema**, because only its *reading* belongs to ADR-0001 D3.
     ///
     /// # Errors
     ///
@@ -146,7 +155,7 @@ impl Inference {
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     pub fn key_for(alias: &str) -> Result<Key, KeyRefused> {
-        Key::new(&format!("model.{alias}.inference"))
+        Key::new(&format!("inference.{alias}"))
     }
 
     /// Read this axis for one alias out of a resolved configuration.

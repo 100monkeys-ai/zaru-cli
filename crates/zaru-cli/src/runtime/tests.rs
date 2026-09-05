@@ -670,9 +670,12 @@ fn every_populated_cell_converts_to_a_ceiling_zaru_core_accepts() {
 
 /// D3's column is **read** from configuration, not guessed.
 ///
-/// Under Jeshua's directive of 2026-09-05 the axis is declared per alias at
-/// `model.<alias>.inference`. The key belongs to [ADR-0012] and this module
-/// declares no `Field` for it — only the reading is ADR-0001 D3's.
+/// Under Jeshua's directive of 2026-09-05, as amended the same day, the axis is
+/// declared per alias at `inference.<alias>` — **a sibling of `model.<alias>`
+/// rather than a child**, because the nested spelling would make one key both a
+/// value and a table and ADR-0014 D2's merge would resolve that by write order.
+/// The key belongs to [ADR-0012] and this module declares no `Field` for it —
+/// only the reading is ADR-0001 D3's.
 ///
 /// The mutant: defaulting an unset key to `Local`, which would silently give
 /// every alias `contained`'s 3 rather than its 5.
@@ -680,11 +683,11 @@ fn every_populated_cell_converts_to_a_ceiling_zaru_core_accepts() {
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[test]
 fn the_inference_axis_is_read_from_configuration_for_an_alias() {
-    let inference_key = crate::config::Key::new("model.default.inference").expect("a key");
+    let inference_key = crate::config::Key::new("inference.default").expect("a key");
     assert_eq!(
         Inference::key_for("default").expect("a key").as_str(),
         inference_key.as_str(),
-        "the key this module reads is not `model.<alias>.inference`",
+        "the key this module reads is not `inference.<alias>`",
     );
 
     let with_the_key = schema().with(
@@ -699,7 +702,7 @@ fn the_inference_axis_is_read_from_configuration_for_an_alias() {
                 Layer::User,
                 "user config",
                 document([(
-                    "model.default.inference",
+                    "inference.default",
                     Value::Text(planted.as_str().to_owned()),
                 )]),
             )],
@@ -730,7 +733,7 @@ fn the_inference_axis_is_read_from_configuration_for_an_alias() {
         vec![at(
             Layer::Flag,
             "flag",
-            document([("model.default.inference", Value::Text("cloud".to_owned()))]),
+            document([("inference.default", Value::Text("cloud".to_owned()))]),
         )],
     )
     .expect("the fold takes any text for this key");
@@ -965,5 +968,74 @@ fn nothing_in_the_runtime_module_prints() {
         "{} line(s) in the runtime module print. ADR-0001 D2's status line is `zaru-tui`'s and \
          `/runtime` is ADR-0015 D2's; this module builds the datum and no renderer: {printing:#?}",
         printing.len(),
+    );
+}
+
+/// Why the inference axis is a **sibling** of `model.<alias>` and not a child.
+///
+/// The directive of 2026-09-05 first put it at `model.<alias>.inference` and
+/// was amended the same day because `provider-aliases` measured that the
+/// nested spelling makes one key both a value and a table. This check pins the
+/// measurement, so the reason for the spelling survives in code rather than
+/// only in a ruling somebody has to find.
+///
+/// **Measured here, and it is worse than "one order drops the setting":
+/// both orders drop one.** `Table::insert_path` replaces a non-table sitting
+/// where a table is needed, so writing the model id first loses the id when
+/// the nested key arrives, and writing the nested key first loses the
+/// inference when the id arrives. Which setting is lost depends on write
+/// order, and nothing reports either loss — [ADR-0014] D5's silent-typo
+/// failure arriving through the schema's shape rather than through a typo.
+///
+/// The mutant: none is needed on the product, because this is a measurement of
+/// a shape rather than a rule. What would redden it is `insert_path` learning
+/// to refuse a collision, which would be a change to ADR-0014's own merge.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[test]
+fn the_inference_axis_is_a_sibling_because_the_nested_spelling_loses_a_setting() {
+    let model = crate::config::Key::new("model.default").expect("a key");
+    let nested = crate::config::Key::new("model.default.inference").expect("a key");
+    let sibling = Inference::key_for("default").expect("a key");
+
+    assert_eq!(
+        sibling.as_str(),
+        "inference.default",
+        "the axis is read from a sibling of `model.<alias>`",
+    );
+
+    // The model id first, then the nested axis: the id is gone.
+    let mut first = crate::config::Table::new();
+    first.insert_path(&model, Value::Text("a-model".to_owned()));
+    first.insert_path(&nested, Value::Text("frontier".to_owned()));
+    assert_eq!(
+        first.get_path(&model).and_then(Value::as_text),
+        None,
+        "the nested spelling kept the model id, so this check no longer measures the collision \
+         it was written for",
+    );
+
+    // The nested axis first, then the model id: the axis is gone.
+    let mut second = crate::config::Table::new();
+    second.insert_path(&nested, Value::Text("frontier".to_owned()));
+    second.insert_path(&model, Value::Text("a-model".to_owned()));
+    assert_eq!(
+        second.get_path(&nested).and_then(Value::as_text),
+        None,
+        "the nested spelling kept the inference axis under the other write order",
+    );
+
+    // The sibling spelling keeps both, under either order.
+    let mut both = crate::config::Table::new();
+    both.insert_path(&model, Value::Text("a-model".to_owned()));
+    both.insert_path(&sibling, Value::Text("frontier".to_owned()));
+    assert_eq!(
+        both.get_path(&model).and_then(Value::as_text),
+        Some("a-model"),
+    );
+    assert_eq!(
+        both.get_path(&sibling).and_then(Value::as_text),
+        Some("frontier"),
+        "the sibling spelling is the one that holds both settings, which is why it was chosen",
     );
 }
