@@ -42,15 +42,30 @@ slash. Through a pipe they print the transcript's own bytes and exit, because
 there is nobody there to be inside anything. `/exit` or `Ctrl-C` leaves, and
 both exit 0.
 
-Anything else you type is a **task**, and running one is what the harness is
-for:
+**Anything else you type at that prompt is a task, and since 2026-09-05 it
+runs.** It is the next turn of the session you are already in — the transcript
+grows, the conversation carries forward, and every step is painted into the
+pane as it happens rather than after it. A tool call that needs your permission
+asks *in the pane*, and answering is one keystroke; the harness reads no other
+terminal. The line saying this tier is not a sandbox is said once for the
+session rather than once per turn, and so is the recommendation to declare
+validators. What the session cannot do it says once, in the same words
+`zaru "<task>"` uses: no key for a provider this build can reach, no client for
+the ones you hold keys for, or a project that declared validators.
+
+One thing it does not do, said rather than left to be discovered: **while the
+model is thinking, the pane does not repaint and no keystroke is read.** There
+is no asynchronous terminal source yet, so a `Ctrl-C` pressed then is queued
+and acted on when the model answers.
+
+Outside a session, `zaru "<task>"` runs one turn and exits:
 
 ```sh
 zaru providers keys add gemini   # reads the key from standard input, never an argument
 zaru "read src/main.rs and tell me what it does"
 ```
 
-One invocation is one turn. It creates `~/.zaru/sessions/<ulid>/` with three
+One such invocation is one turn. It creates `~/.zaru/sessions/<ulid>/` with three
 plain files, asks the model, runs whatever of the seven built-in tools it asks
 for — prompting you before a write or a command, unless you are not at a
 terminal, in which case a call that needed asking is refused rather than
@@ -142,9 +157,11 @@ the four whose shape its own words determine, with the two that name no
 program matching nothing rather than a list nobody chose; and the prompt
 itself is one line over the terminal, `y/N` with `N` the default, which
 refuses the call rather than defaulting it when there is no terminal to ask.
-**Nothing a user runs reaches any of that yet**, because no command reaches
-the tool surface — `zaru config explain tools.allowlist` is what a person can
-see of it today.
+**All of it is reachable**: `zaru "<task>"` runs the tools a model asks for
+under that model, and inside a session the same question is put in the
+transcript pane instead of on a line, through the same port and with the same
+sentence — so what you were told and what the harness believes it asked cannot
+drift apart.
 
 The Nuclear Notes client is in `zaru-notes`: a session over MCP with the
 workspace named on every read, a bearer value the type system will not render,
