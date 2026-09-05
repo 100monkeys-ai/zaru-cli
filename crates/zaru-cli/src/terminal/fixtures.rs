@@ -49,8 +49,19 @@ pub(crate) struct Recording {
 impl Recording {
     /// A terminal that paints into a buffer and counts its restores.
     pub(crate) fn of(restores: Restores) -> Self {
+        Self::wide(restores, 72)
+    }
+
+    /// The same, at a chosen width.
+    ///
+    /// A pane truncates each line to its width, so a check whose subject is a
+    /// marking near the end of a long line is otherwise asserting the default
+    /// 72 rather than the renderer. Used by
+    /// `an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo`, whose
+    /// line carries a scratch directory's absolute path.
+    pub(crate) fn wide(restores: Restores, width: u16) -> Self {
         Self {
-            terminal: Terminal::new(TestBackend::new(72, 16)).expect("test terminal"),
+            terminal: Terminal::new(TestBackend::new(width, 16)).expect("test terminal"),
             restores,
             frames: Vec::new(),
         }

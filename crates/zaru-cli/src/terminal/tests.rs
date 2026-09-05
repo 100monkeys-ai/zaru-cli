@@ -2642,3 +2642,114 @@ fn painted_row(shell: &Shell) -> String {
         .trim_end()
         .to_owned()
 }
+// ------------------------------- ADR-0011 D4, rendered where a person reads it
+
+/// An out-of-tree call renders distinctly on the painted pane, at `yolo` —
+/// [ADR-0011] D4 and its trigger clause 4.
+///
+/// # What was missing, and it was not the marking
+///
+/// D4: anything above the working directory "prompts in `ask` and `allow`, and
+/// **it renders differently in the transcript at every mode including
+/// `yolo`**". Clause 4 asks for that, asserted. The record's own Status
+/// tracking has said since `fs-tools` that "the distinction exists and is
+/// asserted at every mode … what is missing is **the rendering**", which
+/// "still waits on `zaru-tui`".
+///
+/// It was not waiting on a marking. `TranscriptEntry::render` has appended
+/// `Placement::as_str` since the tool surface landed, and
+/// `tools::execute` puts that same string on the event a turn emits:
+/// `statement` is `decision.question().map_or_else(|| entry.render(), |q|
+/// q.statement)`, and `Decision::question` is `format!("Allow {}?",
+/// self.entry.render())` — so at **every** mode, prompt or no prompt, the
+/// marking is inside the statement. What was missing is any assertion that it
+/// survives to the frame a person actually reads.
+///
+/// # The property is text in the buffer, and deliberately not a colour
+///
+/// Read out of `TestBackend`'s cells. **No register and no colour is claimed
+/// as the distinction**: no record gives an out-of-tree call one, inventing a
+/// seventh register would be authoring, and a colour is not something this
+/// check could read anyway. What it reads is `Placement::as_str`'s own words,
+/// taken from that constant rather than retyped, so renaming the marking moves
+/// this check with it.
+///
+/// **Both arms.** An assertion that only looked for the marking would be
+/// satisfied by a renderer that marked everything, which is the same pair
+/// `tools::tests::an_out_of_tree_call_renders_differently_from_an_ordinary_one`
+/// holds one layer down — that one on the entry, this one on the frame.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo() {
+    use crate::tools::decision::{Assessment, Decision, Invocation};
+    use crate::tools::fixtures::ScratchTree;
+    use crate::tools::mode::Mode;
+    use crate::tools::name::ToolName;
+    use crate::tools::tree::{Placement, WorkingDirectory};
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let inside = working.classify("notes.txt");
+    let outside = working.classify("../elsewhere/secret");
+
+    // The statement exactly as `tools::execute` composes it, through the real
+    // decision, at `yolo` -- the mode that removes the prompt and, D4 says,
+    // never removes the record.
+    let statement_for = |target: &crate::tools::tree::Target| {
+        let decision = Decision::reach(
+            Mode::Yolo,
+            &Invocation::on_path(ToolName::FsRead, target).expect("addresses a path"),
+            Assessment::default(),
+        );
+        decision
+            .question()
+            .map_or_else(|| decision.entry().render(), |question| question.statement)
+    };
+
+    let frame_for = |target: &crate::tools::tree::Target| {
+        let mut shell = shell();
+        let restores: Restores = Arc::new(AtomicUsize::new(0));
+        // Wide enough for the whole line: the target is a scratch directory's
+        // absolute path, and at the default 72 the marking is truncated off
+        // the frame. That truncation is real and is recorded on ADR-0011 as a
+        // finding -- a deep enough path hides D4's marking from a narrow
+        // terminal -- but it is a question about the line's shape, which no
+        // record gives, and not about whether this renderer marks the call.
+        let mut surface = Recording::wide(Arc::clone(&restores), 200);
+        {
+            let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+            let mut sink = PaneSink::over(&pane);
+            zaru_core::tool_call::EventSink::emit(
+                &mut sink,
+                &zaru_core::tool_call::Event::ToolPermissionDecided {
+                    round: 1,
+                    call: 1,
+                    statement: statement_for(target),
+                    permitted: true,
+                },
+            );
+        }
+        surface
+            .frames
+            .last()
+            .expect("a frame was painted")
+            .join("\n")
+    };
+
+    let marking = Placement::OutOfTree.as_str();
+    let escaping = frame_for(&outside);
+    let ordinary = frame_for(&inside);
+
+    assert!(
+        escaping.contains(marking),
+        "a call outside the working directory is not marked on the frame at `yolo`; \
+         ADR-0011 D4 requires it to render differently at every mode including this \
+         one, and clause 4 asks for exactly this assertion:\n{escaping}"
+    );
+    assert!(
+        !ordinary.contains(marking),
+        "an ordinary in-tree call was marked as having left the tree, so the marking \
+         says nothing:\n{ordinary}"
+    );
+}
