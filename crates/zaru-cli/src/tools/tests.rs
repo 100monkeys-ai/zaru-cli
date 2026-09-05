@@ -1725,6 +1725,149 @@ fn the_mode_key_is_declared_once_holds_text_and_is_refused_to_a_project() {
     }
 }
 
+/// **A mode set in the user's own configuration reaches a real decision, and
+/// an unset key is still `ask`.**
+///
+/// The accepting arm of ADR-0014 D6 for [ADR-0011] D3's mode key, and the
+/// thing declaring the key was *for*: until 2026-09-05 the composition passed
+/// `Mode::default()` and the record said in as many words that "a user who
+/// wants `allow` or `yolo` has nowhere to say so from the terminal".
+///
+/// The prompting rule itself is checked exhaustively by
+/// `the_prompting_rule_is_the_records_at_every_mode`, and this check does not
+/// re-state it. What it asserts is the **path**: a value in layer 2 becomes
+/// the `Mode` a [`Decision`] is reached at. So an allowlisted `cmd.run` needs
+/// no prompt when the user wrote `allow`, and the *same call* with the key
+/// unset does — which is what makes the first assertion mean something rather
+/// than being satisfied by a rule that never prompts.
+///
+/// Two mutants. Returning `Mode::default()` from `from_configuration`
+/// regardless of the layer fails the first. Returning `Mode::Allow` for an
+/// unset key fails the second, and that is the one worth having: it is the
+/// direction a mistake here goes, because it is the direction with fewer
+/// prompts in it.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn a_mode_the_user_configured_reaches_the_decision_and_an_unset_key_is_ask() {
+    let command = CommandLine::split("cargo test").expect("a command line");
+    let invocation = Invocation::running(&command);
+    let allowlisted = Assessment {
+        allowlisted: true,
+        destructive: false,
+    };
+
+    let granted = Mode::from_configuration(&mode_from(Layer::User, "allow"))
+        .expect("the user's own layer is not bound by D6's escalation ceiling");
+    assert_eq!(
+        granted,
+        Mode::Allow,
+        "layer 2's value is not the mode taken"
+    );
+    assert_eq!(
+        Decision::reach(granted, &invocation, allowlisted).requirement(),
+        Requirement::Proceed,
+        "ADR-0011 D3: `allow` runs the user's allowlist without prompting, and the mode the user \
+         wrote did not reach the decision"
+    );
+
+    // The discriminating sibling: the same call, the same allowlist, no key.
+    let unset = Mode::from_configuration(
+        &Resolution::resolve(&permissive_mode_schema(), Vec::new())
+            .expect("an empty resolution folds"),
+    )
+    .expect("an unset key is not a refusal");
+    assert_eq!(
+        unset,
+        Mode::Ask,
+        "ADR-0011 D3's table says `ask` is the default, and layer 1 declares none so this is \
+         `Mode::default`"
+    );
+    assert_eq!(
+        Decision::reach(unset, &invocation, allowlisted).requirement(),
+        Requirement::Ask,
+        "with no key set the harness must still prompt before a command, or the first assertion \
+         above is satisfied by a rule that never prompts"
+    );
+}
+
+/// **A project may not set the permission mode, and the user may.**
+///
+/// The second of [`Mode::from_configuration`]'s two arms — the one the fold
+/// does not run, reached by a caller holding a resolution built some other
+/// way. The fold's own arm is
+/// `the_mode_key_is_declared_once_holds_text_and_is_refused_to_a_project`,
+/// and each reddens alone: this helper deliberately declares the key
+/// [`Field::free`] so that a resolution *can* be built with the project layer
+/// carrying it, which is what leaves this arm something to refuse
+/// ([Verification lessons] §11: one arm of a comparison must not travel
+/// through the thing being checked).
+///
+/// The accepting sibling is the same value at the user's layer, in the check
+/// above. **The misspelling arm is not re-checked here**:
+/// `from_configuration` delegates it to `Mode::from_layer`, whose sentence is
+/// asserted over `Mode::ALL` by
+/// `a_value_that_names_no_mode_is_refused_naming_the_three_that_exist`. What
+/// this check does add for that path is the **key**: `from_configuration`
+/// hands `mode::KEY` down, and a refusal naming some other key is one its
+/// reader cannot act on.
+///
+/// The mutant is `from_configuration` handing `Layer::User` down instead of
+/// the layer the resolution says was effective — which is the mistake this
+/// function can actually make, since the ceiling test itself is
+/// `from_layer`'s and is checked there.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_project_may_not_set_the_permission_mode_however_the_resolution_was_built() {
+    let refusal = Mode::from_configuration(&mode_from(Layer::Project, "yolo"))
+        .expect_err("ADR-0014 D6's first escalation");
+
+    let ModeRefused::FromAClonedRepository { key, offered, .. } = &refusal else {
+        panic!("expected D6's escalation refusal, got {refusal:?}");
+    };
+    assert_eq!(
+        key,
+        mode::KEY,
+        "the refusal must name the key the user has to find"
+    );
+    assert_eq!(
+        offered, "yolo",
+        "the refusal must quote back what the project wrote"
+    );
+
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains("more privilege than the user granted"),
+        "D6's own sentence is what says why: {rendered:?}"
+    );
+}
+
+/// A schema that lets any layer carry the mode, so both of
+/// [`Mode::from_configuration`]'s arms have something to refuse.
+///
+/// Deliberately **not** `cli::layers::schema`: that one declares the key
+/// `Refused`, so the fold would refuse a project's value before this module's
+/// own arm was reached and the check would be measuring the fold twice.
+fn permissive_mode_schema() -> Schema {
+    Schema::new().with(mode::key(), Field::free(FieldKind::Text))
+}
+
+/// A resolution in which one layer set the mode to `value`.
+fn mode_from(layer: Layer, value: &str) -> Resolution {
+    let mut document = Table::new();
+    document.insert_path(&mode::key(), Value::Text(value.to_owned()));
+    Resolution::resolve(
+        &permissive_mode_schema(),
+        [Contribution::new(
+            layer,
+            Source::named(format!("{} (staged)", layer.label())),
+            document,
+        )],
+    )
+    .expect("a permissive schema takes text at any layer")
+}
+
 /// **The two keys under `[tools]` are siblings, and `tools` itself is not a
 /// key.**
 ///

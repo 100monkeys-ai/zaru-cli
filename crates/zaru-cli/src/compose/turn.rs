@@ -378,13 +378,20 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         }
     };
 
+    // ADR-0011 D3's mode, from the user's own configuration. This read
+    // `Mode::default()` until 2026-09-05, with a comment saying no key was
+    // declared for it and that a user could not change the mode from the
+    // terminal; `tools.mode` is that key, and this is the line that made
+    // declaring it worth anything. Unset is still `Ask`, which is D3's
+    // default rather than this composition's choice.
+    let mode = match Mode::from_configuration(resolution) {
+        Ok(mode) => mode,
+        Err(refusal) => return Ran::refused_having_said(lines, Surface::mode(&refusal)),
+    };
+
     let executor = Executor {
         working_directory: &here,
-        // ADR-0011 D3's default, and no key is declared for it: that record
-        // names none and ADR-0014's Neutral consequence leaves each record its
-        // own. A user cannot change the mode from the terminal, which is a
-        // real limitation and is recorded rather than closed by inventing one.
-        mode: Mode::default(),
+        mode,
         allowlist: &allowlist,
         destructive: &destructive,
         confirmer: confirmer

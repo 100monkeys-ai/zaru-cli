@@ -83,7 +83,7 @@
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [Autonomous Development]: https://100monkeys-ai.cortex.page/project-management/p/process/autonomous-development
 
-use crate::config::{Field, FieldKind, Key, Schema};
+use crate::config::{Field, FieldKind, Key, Resolution, Schema};
 use core::fmt;
 
 /// The configuration key [ADR-0011] D3's permission mode is read from.
@@ -303,6 +303,56 @@ impl Mode {
                 key: key.to_owned(),
                 offered: value.escape_debug().to_string(),
             })
+    }
+
+    /// The mode a folded configuration resolves to.
+    ///
+    /// The shape [`Allowed::from_configuration`](crate::tools::Allowed) uses,
+    /// and for the same reason: the value and the layer that supplied it come
+    /// from **one** [`Resolution::explain`] call, so a caller cannot read the
+    /// value from one place and the layer from another and have them disagree.
+    ///
+    /// An unset key is [`Mode::Ask`] — [ADR-0011] D3's own default, taken from
+    /// [`Mode::default`] rather than spelled again here, because layer 1
+    /// declares none and D3's table is where "Default" is written.
+    ///
+    /// **What this adds to [ADR-0014] D6 is the layer**, not the test.
+    /// [`Mode::from_layer`] holds the ceiling and has since the mode landed;
+    /// what a resolution contributes is *which layer to ask it about*, and
+    /// getting that wrong is how a project's value gets judged as though the
+    /// user had written it. So the effective layer is read from the same
+    /// `explain` call the value comes from and handed straight down. The
+    /// fold's own arm — [`field`]'s declaration, which refuses a project
+    /// before any value exists — is independent of both, and each reddens on
+    /// its own.
+    ///
+    /// # Errors
+    ///
+    /// [`ModeRefused::FromAClonedRepository`] when the effective layer is one
+    /// [`Layer::bound_by_the_escalation_ceiling`] binds;
+    /// [`ModeRefused::NoSuchMode`] when the value names none of the three.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    pub fn from_configuration(resolution: &Resolution) -> Result<Self, ModeRefused> {
+        let key = key();
+        let explanation = resolution.explain(&key);
+
+        let (Some(value), Some(layer)) =
+            (explanation.value.as_ref(), explanation.effective_layer())
+        else {
+            return Ok(Self::default());
+        };
+
+        // The shape a layer carries is the schema's business, and the schema
+        // declares this key as text -- so anything else here is a coercion
+        // that already happened or a caller who built the resolution by hand.
+        // Either way the value is quoted back rather than described, which is
+        // `NoSuchMode`'s own contract.
+        let offered = value
+            .as_text()
+            .map_or_else(|| value.shape().to_owned(), std::borrow::ToOwned::to_owned);
+        Self::from_layer(layer, KEY, &offered)
     }
 }
 
