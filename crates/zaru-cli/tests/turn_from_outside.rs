@@ -638,57 +638,79 @@ fn the_turns_events_reach_the_transcript_as_they_occur() {
     absent_everywhere(&home, &ran, &value, &core, "the stored provider key");
 }
 
-/// A project that declares validators is refused rather than run.
+/// A project that declares validators takes [ADR-0009] D4's other branch.
 ///
-/// [ADR-0009] D4 branches on the manifest and this build has no iteration loop
-/// to branch into. Running the tool-call loop instead would report work as
-/// done that nothing checked, which is D2's silent green one layer up.
+/// **This check asserted the opposite until 2026-09-05**, when the iteration
+/// loop was wired: it read `a_project_that_declares_validators_is_refused_and_one_without_runs`
+/// and asserted exit `4` with a refusal naming "iteration loop". That refusal
+/// is deleted, so the check is re-transcribed against the behaviour rather
+/// than left to fail — and it is renamed with it, because a check whose name
+/// states the old rule is a second statement of it that nothing keeps true.
 ///
-/// Its **accepting sibling** is the second half: the same project with its
-/// validators removed runs a turn, so the refusal is about the validators
-/// rather than about the manifest existing.
+/// What is asserted here is the **branch**, from the outside: a project with
+/// validators and one without take different paths through the same binary
+/// against the same closed socket, and the difference is visible in where each
+/// one fails. The loop itself is
+/// `tests/iteration_from_outside.rs`, which has a model that answers.
+///
+/// - **With validators**, the first thing that reaches the socket is the
+///   *generator*, so the failure is the inner loop's — and its class is the
+///   inner port's, read off the typed error the composition kept.
+/// - **Without validators**, the tool-call loop's model port reaches it
+///   instead. Both are ADR-0016 D5's `3`, and both create a session, which is
+///   the half that changed: a validator-declaring project used to be refused
+///   before one existed.
 ///
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[test]
-fn a_project_that_declares_validators_is_refused_and_one_without_runs() {
-    let home = Home::new("validators");
+fn a_project_that_declares_validators_takes_adr_0009_d4s_other_branch() {
+    let iterating_home = Home::new("validators");
     let (value, _core) = nonce("validators");
-    store_a_key(&home, "gemini", &value);
+    store_a_key(&iterating_home, "gemini", &value);
 
     std::fs::write(
-        home.project().join("zaru.toml"),
+        iterating_home.project().join("zaru.toml"),
         "[project]\nname = \"acme\"\n\n[[validator]]\nname = \"build\"\nrun = \"true\"\nexpect = \
          \"exit-zero\"\n",
     )
     .expect("the manifest is written");
 
-    let refused = zaru(
-        &home,
+    let iterated = zaru(
+        &iterating_home,
         &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
         &["--model", "gemini-3.6-flash", "build", "it"],
     );
     assert_eq!(
-        refused.code, 4,
-        "a project that asked for validation and cannot have it is not the user's fault"
+        iterated.code,
+        3,
+        "a project that declares validators runs the iteration loop, whose generator then fails \
+         at the socket: {}",
+        iterated.everything()
     );
     assert!(
-        refused.stderr.contains("iteration loop"),
-        "the refusal must name what is missing: {}",
-        refused.stderr
+        !iterated.stderr.contains("iteration loop to run"),
+        "the refusal that said this build has no iteration loop is deleted, and nothing should \
+         still be saying it: {}",
+        iterated.stderr
     );
     assert!(
-        !home.path().join(".zaru/sessions").exists(),
-        "a project that could not be served still had a session written for it"
+        iterating_home.path().join(".zaru/sessions").exists(),
+        "a project that declares validators is served now, and a served project gets a session"
     );
 
-    // The accepting sibling: the same manifest without validators runs.
+    // The accepting sibling: the same manifest without validators takes the
+    // other branch, so the difference is the validators rather than the file.
+    let plain_home = Home::new("validators-none");
+    let (value, _core) = nonce("validators-none");
+    store_a_key(&plain_home, "gemini", &value);
     std::fs::write(
-        home.project().join("zaru.toml"),
+        plain_home.project().join("zaru.toml"),
         "[project]\nname = \"acme\"\n",
     )
-    .expect("the manifest is rewritten");
+    .expect("the manifest is written");
     let ran = zaru(
-        &home,
+        &plain_home,
         &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
         &["--model", "gemini-3.6-flash", "build", "it"],
     );
@@ -697,9 +719,34 @@ fn a_project_that_declares_validators_is_refused_and_one_without_runs() {
         "a project with a manifest and no validators runs a turn, which then fails at the socket"
     );
     assert!(
-        home.path().join(".zaru/sessions").exists(),
+        plain_home.path().join(".zaru/sessions").exists(),
         "the turn that ran created no session"
     );
+    // The branch is visible in the transcript, which is the reading that
+    // separates the two paths: both exit 3 at the same closed socket, and only
+    // one of them started an iteration before it got there.
+    let iterating = transcript_of(&iterating_home);
+    assert!(
+        iterating.contains("\"loop\":{\"iteration_started\""),
+        "a project that declares validators must have started an iteration before it reached the \
+         socket: {iterating}"
+    );
+    let plain = transcript_of(&plain_home);
+    assert!(
+        !plain.contains("\"loop\":"),
+        "a project with no validators runs the tool-call loop only, and this one emitted the \
+         iteration loop's own stream: {plain}"
+    );
+    assert!(
+        plain.contains("\"turn_loop\":{\"turn_started\""),
+        "the turn-only path must still have started a turn: {plain}"
+    );
+}
+
+/// The one session's transcript, as bytes.
+fn transcript_of(home: &Home) -> String {
+    std::fs::read_to_string(home.one_session().join("transcript.jsonl"))
+        .expect("a turn that ran wrote a transcript")
 }
 
 /// [ADR-0011] D2's not-a-sandbox line, once, at the tier where it is true.

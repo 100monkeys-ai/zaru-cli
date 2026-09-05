@@ -549,14 +549,14 @@ fn a_held_secret_in_a_validators_output_is_redacted_in_the_refinement_and_kept_i
     let home = Home::new("redacted");
     let nonce = "rehearsal-4173";
     // `printf` rather than a shell line: ADR-0009 D1's `run` is a command line
-    // and the harness runs no shell. It exits 0, so the validator has to fail
-    // some other way -- `test -f` on a file nothing writes does that, and the
-    // printing validator runs first and passes, so its output is not the
-    // failure. So one validator does both: print, then fail.
-    home.manifest(&format!(
-        "[project]\nname = \"scratch\"\n\n[[validator]]\nname = \"leaky\"\nrun = \"cat \
-         leaked\"\nexpect = {{ exit-code = 9 }}\n"
-    ));
+    // and the harness runs no shell. One validator has to both print the
+    // secret and fail, because ADR-0009 D5 sends only a FAILING validator's
+    // output into refinement -- so `cat` prints the file and `exit-code = 9`
+    // makes exiting 0 a failure, which is D3's second kind doing exactly what
+    // it says.
+    home.manifest(
+        "[project]\nname = \"scratch\"\n\n[[validator]]\nname = \"leaky\"\nrun = \"cat          leaked\"\nexpect = { exit-code = 9 }\n",
+    );
     std::fs::write(
         home.project().join("leaked"),
         format!("{nonce} {NONCE_KEY}\n"),
