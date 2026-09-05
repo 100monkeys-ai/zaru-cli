@@ -4,16 +4,17 @@
 use crate::cli::invocation::{Overrides, Request};
 use crate::cli::namespace::Namespace;
 use crate::failure::Exit;
+use crate::session::Record;
 use crate::terminal::driver::{Guard, question_for_the_shell, request_for, run};
 use crate::terminal::fixtures::{Counting, Recording, Restores, press, typed};
 use crate::terminal::open::is_a_session;
 use crate::terminal::trie::{NOTHING_CACHED, NotesTrie};
-use crate::terminal::vocabulary::Vocabulary;
+use crate::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use crate::tools::port::Question;
 use core::cell::Cell;
 use std::rc::Rc;
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
-use zaru_tui::shell::port::CommandVocabulary;
+use zaru_tui::shell::port::{CommandVocabulary, TranscriptSource};
 use zaru_tui::shell::{COMPOSER_ROWS, Key, Shell, Status};
 
 const VERSION: &str = "0.0.0";
@@ -400,6 +401,213 @@ fn sessions_on_this_machine() -> Option<Vec<crate::session::SessionId>> {
         .ok()
         .map(crate::session::SessionStore::reading)
         .and_then(|store| store.ids().ok())
+}
+
+// ------------------------------------------- ADR-0008 D1's outer loop, rendered
+
+/// Every one of the outer loop's events, in the order a turn emits them.
+///
+/// Built once and walked by the two checks below, so neither carries a list of
+/// its own and a seventh event has to be given a register here rather than
+/// falling into whatever the last arm was.
+fn every_turn_event() -> Vec<zaru_core::tool_call::Event> {
+    use core::time::Duration;
+    use zaru_core::tool_call::{Event, TurnEnding};
+
+    let took = Duration::from_millis(1_250);
+    let mut events = vec![
+        Event::TurnStarted { n: 2, of: 8 },
+        Event::ModelResponded {
+            round: 1,
+            tokens: 451,
+            calls: 1,
+            elapsed: took,
+        },
+        Event::ToolRequested {
+            round: 1,
+            call: 1,
+            name: "fs.read".to_owned(),
+        },
+        Event::ToolPermissionDecided {
+            round: 1,
+            call: 1,
+            statement: "read notes.txt in /home/someone/project".to_owned(),
+            permitted: true,
+        },
+        Event::ToolCompleted {
+            round: 1,
+            call: 1,
+            name: "fs.read".to_owned(),
+            failed: false,
+            content_bytes: 42,
+            elapsed: took,
+        },
+        Event::ToolRefused {
+            round: 1,
+            call: 2,
+            name: "cmd.run".to_owned(),
+            because: "the user declined".to_owned(),
+            elapsed: took,
+        },
+    ];
+    for ending in [
+        TurnEnding::Answered,
+        TurnEnding::Stopped,
+        TurnEnding::CeilingReached,
+        TurnEnding::Iterated {
+            iterations: 3,
+            succeeded: true,
+        },
+        TurnEnding::Iterated {
+            iterations: 3,
+            succeeded: false,
+        },
+    ] {
+        events.push(Event::TurnEnded {
+            n: 2,
+            ending,
+            rounds: 1,
+            elapsed: took,
+        });
+    }
+    events
+}
+
+/// The pane's line for a turn event, through the path a resumed session uses.
+fn painted_turn_line(event: &zaru_core::tool_call::Event) -> zaru_tui::shell::port::Line {
+    let pane = Pane::of(&[Record::TurnLoop(event.clone())]);
+    let mut lines = pane.lines();
+    assert_eq!(lines.len(), 1, "one record did not produce one line");
+    lines.remove(0)
+}
+
+/// The outer loop's events are sentences in this shell's own registers, and
+/// **not** a `Debug` dump in the narration one.
+///
+/// Until 2026-09-05 the arm was `Line::new(Register::Plain, format!("{event:?}"))`,
+/// so every event rendered as its Rust shape and three registers this shell
+/// defines were unreachable from a real turn. That was already what a person
+/// saw: `zaru --resume <id>` at a terminal over a session `zaru "<task>"`
+/// created painted whole turns that way.
+///
+/// The second arm is what discriminates. A rendering that carried the variant's
+/// own identifier is a `Debug` of it whatever else it also says, and no
+/// sentence composed for a reader has a reason to contain one.
+#[test]
+fn every_turn_event_renders_in_a_register_this_shell_defines_and_never_as_debug() {
+    use zaru_tui::shell::port::Register;
+
+    let expected = [
+        Register::Plain,
+        Register::Plain,
+        Register::Call,
+        Register::Call,
+        Register::Call,
+        // ADR-0011 D6 gives the harness no veto and the user's "no" is an
+        // answer, so a refused call is announced -- never `Failed`.
+        Register::Announced,
+        Register::Succeeded,
+        Register::Failed,
+        // ADR-0008 D5: exhaustion is neither.
+        Register::Exhausted,
+        Register::Succeeded,
+        Register::Exhausted,
+    ];
+    let events = every_turn_event();
+    assert_eq!(
+        events.len(),
+        expected.len(),
+        "the event list and the register list are different lengths, so this \
+         check would have compared a prefix"
+    );
+
+    let identifiers = [
+        "TurnStarted",
+        "ModelResponded",
+        "ToolRequested",
+        "ToolPermissionDecided",
+        "ToolCompleted",
+        "ToolRefused",
+        "TurnEnded",
+        "TurnEnding",
+    ];
+    for (event, want) in events.iter().zip(expected) {
+        let line = painted_turn_line(event);
+        assert_eq!(
+            line.register, want,
+            "{event:?} rendered in {:?} rather than {want:?}",
+            line.register
+        );
+        for identifier in identifiers {
+            assert!(
+                !line.text.contains(identifier),
+                "the line for {event:?} carries the Rust identifier {identifier:?}, so it \
+                 is a `Debug` of the event rather than a sentence: {:?}",
+                line.text
+            );
+        }
+        assert!(
+            !line.text.trim().is_empty(),
+            "{event:?} rendered as nothing at all"
+        );
+    }
+}
+
+/// A refused call and a failed turn are different registers, and each carries
+/// the words its own event holds.
+///
+/// Two arms in opposite directions. A rendering that put everything in the
+/// error register would satisfy the second and fail the first; one that put
+/// everything in a decision register would do the reverse.
+#[test]
+fn a_refused_call_is_announced_and_a_stopped_turn_is_failed() {
+    use zaru_tui::shell::port::Register;
+
+    let events = every_turn_event();
+    let refused = painted_turn_line(
+        events
+            .iter()
+            .find(|event| matches!(event, zaru_core::tool_call::Event::ToolRefused { .. }))
+            .expect("the staged events carry a refusal"),
+    );
+    assert_eq!(
+        refused.register,
+        Register::Announced,
+        "a declined prompt was rendered in {:?}; ADR-0011 D6 makes it a decision \
+         and its own event says a consumer renders it \"never in the error one\"",
+        refused.register
+    );
+    assert!(
+        refused.text.contains("the user declined"),
+        "the refusal does not carry the refusing surface's own words: {:?}",
+        refused.text
+    );
+
+    let stopped = painted_turn_line(
+        events
+            .iter()
+            .find(|event| {
+                matches!(
+                    event,
+                    zaru_core::tool_call::Event::TurnEnded {
+                        ending: zaru_core::tool_call::TurnEnding::Stopped,
+                        ..
+                    }
+                )
+            })
+            .expect("the staged events carry a stopped turn"),
+    );
+    assert_eq!(
+        stopped.register,
+        Register::Failed,
+        "a turn that stopped without answering was rendered in {:?}",
+        stopped.register
+    );
+    assert_ne!(
+        refused.register, stopped.register,
+        "a declined prompt and a failed turn render identically, so a reader \
+         cannot tell an answer they gave from a failure they did not"
+    );
 }
 
 // -------------------------------------------------------------- ADR-0011 D3
