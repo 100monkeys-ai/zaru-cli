@@ -74,7 +74,7 @@ pub mod value;
 pub use credential::CredentialRef;
 pub use explain::{Explanation, ExplanationRow};
 pub use file::{CeilingRefused, FileRefused, Position, SizeCeiling, TomlFile};
-pub use home::{HomeFailure, ensure};
+pub use home::{CONFIG_FILE, HomeFailure, ensure};
 pub use key::{Key, KeyRefused};
 pub use layer::{Contribution, Layer, Source};
 pub use port::{LayerSource, SourceFailure, gather};

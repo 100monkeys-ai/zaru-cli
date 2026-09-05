@@ -285,9 +285,7 @@ impl CredentialStore {
     ///
     /// [`StoreError::NoHome`] when no home directory can be resolved.
     pub fn default_root() -> Result<PathBuf, StoreError> {
-        std::env::home_dir()
-            .map(|home| home.join(HOME_DIRECTORY))
-            .ok_or(StoreError::NoHome)
+        crate::config::home::default_root().ok_or(StoreError::NoHome)
     }
 
     /// Open the store under `root`, creating the directory if it is absent.

@@ -295,12 +295,9 @@ impl Run<'_> {
         overrides: &Overrides,
         then: impl FnOnce(&Resolution) -> Outcome,
     ) -> Outcome {
-        let surface = Surface::new(self.version, self.report_at);
         match layers::resolve_from_process(overrides) {
             Ok(resolution) => then(&resolution),
-            Err(failure) => {
-                Outcome::failed(surface.load(&failure, SessionEvidence::NoSessionExists))
-            }
+            Err(failure) => Outcome::failed(Surface::load(&failure)),
         }
     }
 }

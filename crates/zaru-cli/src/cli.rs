@@ -73,7 +73,7 @@ pub mod run;
 pub use classify::Surface;
 pub use flag::Flag;
 pub use invocation::{CommandLine, Overrides, Request};
-pub use layers::{Flags, LoadFailure};
+pub use layers::{FILE_CEILING_BYTES, Files, Flags, LoadFailure, ProjectFile, UserFile};
 pub use namespace::Namespace;
 pub use parse::{parse, parse_process};
 pub use refusal::CommandRefused;

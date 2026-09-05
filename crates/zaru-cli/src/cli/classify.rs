@@ -231,14 +231,44 @@ impl<'a> Surface<'a> {
     ///
     /// The refusal arm is ADR-0014's own, already classified by
     /// [`crate::failure::classify`], and is passed through rather than
-    /// re-decided. The source arm is a port failure with no product
-    /// implementation that can produce one — see [`LoadFailure::Source`] — so
-    /// reaching it means this binary is in a state it has no path to.
+    /// re-decided.
+    ///
+    /// **The source arm is the user's, and the provenance is what says so.**
+    /// It was a defect until 2026-09-05, when it was unreachable: the two
+    /// sources were a compiled constant and a parsed flag and neither could
+    /// fail. Layers 2 and 3 read files now, and the two files a
+    /// [`Files`](crate::cli::Files) can be built from are `~/.zaru/config.toml`
+    /// under the user's own home and `./zaru.toml` in the directory they ran
+    /// the harness in. **Neither is ever written by this harness** — ADR-0014
+    /// D6 keeps the loader out of the user's file, and ADR-0009 D6 lets `zaru
+    /// init` write the project's exactly once, from a constant a check parses
+    /// and folds — so a file that does not parse is a file a person edited, and
+    /// [ADR-0016] D1 makes that user-correctable.
+    ///
+    /// `meta.toml` is deliberately not covered by this reading and stays a
+    /// defect when it is malformed, because that file's only writer is this
+    /// harness. The two are told apart by *which port* failed, not by the value.
+    ///
+    /// Associated rather than a method: nothing about a file a person wrote is
+    /// ours, so no version and no report URL is needed. Written as an Update on
+    /// [ADR-0016] beside the `command-surface` arc's, under a delegated
+    /// coordinator ruling of 2026-09-05 open to Jeshua's veto.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     #[must_use]
-    pub fn load(&self, failure: &LoadFailure, session: SessionEvidence) -> Classified {
+    pub fn load(failure: &LoadFailure) -> Classified {
         match failure {
             LoadFailure::Refused(refusal) => Classified::from(refusal.clone()),
-            LoadFailure::Source(_) => undecided(self.version, self.report_at, session, line!()),
+            LoadFailure::Source(source) => correctable(
+                source,
+                act(
+                    "the message above names the file and, where it parsed far enough to say, the \
+                     line and column; edit that file. Nothing in this harness writes either \
+                     configuration file except `zaru init`, which writes `./zaru.toml` once when \
+                     it is absent"
+                        .to_owned(),
+                ),
+            ),
         }
     }
 

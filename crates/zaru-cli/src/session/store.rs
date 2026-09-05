@@ -33,7 +33,6 @@ compile_error!(
 );
 
 use crate::config::home::{self, HomeFailure};
-use crate::credentials::store::HOME_DIRECTORY;
 use crate::failure::{SessionEvidence, SessionId as EvidenceId};
 use crate::session::id::{SessionId, SessionIdRefused};
 use core::fmt;
@@ -145,9 +144,7 @@ impl SessionStore {
     ///
     /// [`SessionError::NoHome`] when no home directory can be resolved.
     pub fn default_root() -> Result<PathBuf, SessionError> {
-        std::env::home_dir()
-            .map(|home| home.join(HOME_DIRECTORY))
-            .ok_or(SessionError::NoHome)
+        crate::config::home::default_root().ok_or(SessionError::NoHome)
     }
 
     /// Open the store under `root`, making `root` and `root/sessions` ready.

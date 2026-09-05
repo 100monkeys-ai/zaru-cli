@@ -40,11 +40,14 @@
 
 use crate::cli::invocation::Overrides;
 use crate::config::{
-    ConfigRefused, Contribution, Layer, LayerSource, Resolution, Schema, Source, SourceFailure,
-    Table, Value, environment, gather,
+    ConfigRefused, Contribution, Layer, LayerSource, Resolution, Schema, SizeCeiling, Source,
+    SourceFailure, Table, TomlFile, Value, environment, gather,
 };
+use crate::manifest::{ManifestFile, ManifestSource};
 use crate::providers::ModelAlias;
+use crate::tools::WorkingDirectory;
 use core::fmt;
+use std::path::Path;
 
 /// Everything the fold could refuse this binary.
 #[derive(Debug)]
@@ -168,6 +171,218 @@ impl LayerSource for Flags {
     }
 }
 
+/// How large a configuration file this binary will parse, in bytes.
+///
+/// **One mebibyte, and this is the one place the number is written.**
+/// [`SizeCeiling`] takes it as a required argument with no default of its own,
+/// because a default there would be a value chosen for a different caller
+/// ([Verification lessons] §14); a caller has to choose, and this is that
+/// choice.
+///
+/// A file above it is refused **before it is parsed**, with the sentence that
+/// whatever it is, it is not a configuration file somebody wrote. No record
+/// names a number, so this is a delegated coordinator ruling of 2026-09-05
+/// recorded on [ADR-0014] and open to Jeshua's veto. Two properties made it the
+/// number: ADR-0014 D1's files are hand-written, and D5 already refuses an
+/// unknown key, so a legitimate file is bounded by the schema rather than by
+/// its own length.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+pub const FILE_CEILING_BYTES: u64 = 1 << 20;
+
+/// [`FILE_CEILING_BYTES`] as the reader takes it.
+///
+/// # Panics
+///
+/// Never. [`FILE_CEILING_BYTES`] is not zero.
+#[must_use]
+pub fn file_ceiling() -> SizeCeiling {
+    SizeCeiling::new(FILE_CEILING_BYTES).expect("a mebibyte is not zero")
+}
+
+/// [ADR-0014] D1's layer 2: `~/.zaru/config.toml`.
+///
+/// **The loader never creates `~/.zaru/`.** That directory has exactly one
+/// creator, [`crate::config::home::ensure`], and a loader that created it in
+/// order to find nothing in it would be creating state to read state — see
+/// [`crate::config::port`].
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserFile {
+    file: TomlFile,
+}
+
+impl UserFile {
+    /// Layer 2 under a `~/.zaru`-equivalent directory.
+    #[must_use]
+    pub fn under(home: &Path) -> Self {
+        Self {
+            file: TomlFile::at(home.join(crate::config::CONFIG_FILE), file_ceiling()),
+        }
+    }
+
+    /// The file, whether or not it is there.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.file.path()
+    }
+}
+
+impl LayerSource for UserFile {
+    fn layer(&self) -> Layer {
+        Layer::User
+    }
+
+    /// D3's second column: the file, because this one is actually opened.
+    fn source(&self) -> Source {
+        Source::named(self.path().display().to_string())
+    }
+
+    fn read(&self) -> Result<Table, SourceFailure> {
+        self.file
+            .read()
+            .map(Option::unwrap_or_default)
+            .map_err(|refusal| SourceFailure::new(refusal.to_string()))
+    }
+}
+
+/// [ADR-0014] D1's layer 3, which is [ADR-0009] D1's manifest.
+///
+/// **One file, one reader.** This is an adapter over
+/// [`ManifestFile`] rather than a second parse
+/// of the same bytes, which is the shape [`crate::manifest::port`] named on
+/// 2026-09-04: the manifest is read whole and the layer's document is
+/// [`Manifest::contribution`](crate::manifest::Manifest::contribution)'s.
+/// `[[validator]]` is therefore not in this layer at all — see that record's
+/// own Update for the reading and the one it was chosen over.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectFile {
+    manifest: ManifestFile,
+}
+
+impl ProjectFile {
+    /// Layer 3 at the root of a working directory.
+    #[must_use]
+    pub fn in_directory(working_directory: WorkingDirectory) -> Self {
+        Self {
+            manifest: ManifestFile::in_directory(working_directory, file_ceiling()),
+        }
+    }
+
+    /// The manifest itself, for a caller that wants ADR-0009's whole value
+    /// rather than ADR-0014's layer.
+    #[must_use]
+    pub const fn manifest(&self) -> &ManifestFile {
+        &self.manifest
+    }
+
+    /// The file, whether or not it is there.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.manifest.path()
+    }
+}
+
+impl LayerSource for ProjectFile {
+    fn layer(&self) -> Layer {
+        Layer::Project
+    }
+
+    fn source(&self) -> Source {
+        self.manifest.source()
+    }
+
+    fn read(&self) -> Result<Table, SourceFailure> {
+        let source = self.source();
+        Ok(self
+            .manifest
+            .read()?
+            .map(|manifest| manifest.contribution(source).document)
+            .unwrap_or_default())
+    }
+}
+
+/// The two files [ADR-0014] D1's layers 2 and 3 are read from.
+///
+/// A parameter rather than something [`resolve`] reads for itself, for the
+/// reason the environment is one: a check owns its own scratch home and its own
+/// working directory and is an ordinary caller writing to the paths the product
+/// writes to, rather than a fake standing in for a filesystem.
+///
+/// **An absent half is absent rather than empty-and-named.** A layer this
+/// binary did not open prints `(not set)` against its own label, because a
+/// source column naming `~/.zaru/config.toml` would claim a reading that did
+/// not happen — which is the one thing D3's block exists to prevent.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Files {
+    user: Option<UserFile>,
+    project: Option<ProjectFile>,
+}
+
+impl Files {
+    /// Neither layer, for a caller with no home and no working directory.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Layer 2 under `home` and layer 3 in `working_directory`, where each is
+    /// given.
+    #[must_use]
+    pub fn at(home: Option<&Path>, working_directory: Option<WorkingDirectory>) -> Self {
+        Self {
+            user: home.map(UserFile::under),
+            project: working_directory.map(ProjectFile::in_directory),
+        }
+    }
+
+    /// The two files this process would read.
+    ///
+    /// A machine with no home directory has no layer 2, and a process whose
+    /// working directory cannot be canonicalised has no layer 3. Neither is a
+    /// failure: no file was opened, so the block says so.
+    #[must_use]
+    pub fn from_process() -> Self {
+        Self::at(
+            crate::config::home::default_root().as_deref(),
+            std::env::current_dir()
+                .ok()
+                .and_then(|here| WorkingDirectory::at(here).ok()),
+        )
+    }
+
+    /// Layer 2, if this caller has one.
+    #[must_use]
+    pub const fn user(&self) -> Option<&UserFile> {
+        self.user.as_ref()
+    }
+
+    /// Layer 3, if this caller has one.
+    #[must_use]
+    pub const fn project(&self) -> Option<&ProjectFile> {
+        self.project.as_ref()
+    }
+
+    /// Both, as the fold reads them.
+    fn sources(&self) -> Vec<&dyn LayerSource> {
+        let mut sources: Vec<&dyn LayerSource> = Vec::with_capacity(2);
+        if let Some(user) = &self.user {
+            sources.push(user);
+        }
+        if let Some(project) = &self.project {
+            sources.push(project);
+        }
+        sources
+    }
+}
+
 /// Every key this binary declares.
 ///
 /// [ADR-0012]'s eleven and [ADR-0009]'s two, from those records' own `declare`,
@@ -220,13 +435,15 @@ pub fn schema() -> Schema {
 pub fn resolve(
     overrides: &Overrides,
     variables: impl IntoIterator<Item = (String, String)>,
+    files: &Files,
 ) -> Result<Resolution, LoadFailure> {
     let schema = schema();
     let built_in = BuiltIn::new();
     let flags = Flags::of(overrides);
 
-    let mut contributions = gather([&built_in as &dyn LayerSource, &flags as &dyn LayerSource])
-        .map_err(LoadFailure::Source)?;
+    let mut sources: Vec<&dyn LayerSource> = vec![&built_in, &flags];
+    sources.extend(files.sources());
+    let mut contributions = gather(sources).map_err(LoadFailure::Source)?;
     contributions.push(Contribution::new(
         Layer::Environment,
         Layer::Environment.default_source(),
@@ -242,5 +459,5 @@ pub fn resolve(
 ///
 /// [`LoadFailure`].
 pub fn resolve_from_process(overrides: &Overrides) -> Result<Resolution, LoadFailure> {
-    resolve(overrides, std::env::vars())
+    resolve(overrides, std::env::vars(), &Files::from_process())
 }

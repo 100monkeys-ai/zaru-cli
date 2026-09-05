@@ -31,7 +31,7 @@
 //!
 //! # The layout constant is not re-typed here
 //!
-//! [`HOME_DIRECTORY`](crate::credentials::store::HOME_DIRECTORY) and
+//! [`HOME_DIRECTORY`] and
 //! [`DIRECTORY_MODE`] stay where
 //! the credential store declared them and are read from there. Moving them
 //! would be more than the call-site substitution the ruling permits in that
@@ -45,11 +45,39 @@
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use crate::credentials::store::DIRECTORY_MODE;
+use crate::credentials::store::{DIRECTORY_MODE, HOME_DIRECTORY};
 use core::fmt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+/// [ADR-0014] D1's layer 2, inside `~/.zaru/`.
+///
+/// One spelling, read by [`crate::cli::layers`] and named by D1, so the file
+/// the loader opens and the file the record names cannot drift apart.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+pub const CONFIG_FILE: &str = "config.toml";
+
+/// `~/.zaru`, where this machine's home directory is one.
+///
+/// **The one place this join is written.** It was written twice until
+/// 2026-09-05 — once in the credential store and once in the session store —
+/// and layer 2 would have been a third. Both call this now, and each keeps its
+/// own error for the absent case, because "no home directory" means different
+/// things to a store that is about to write and to a loader that is about to
+/// read.
+///
+/// `None` where no home directory can be resolved, which for a *loader* is not
+/// a failure: a machine with no home has no `~/.zaru/config.toml`, so
+/// [ADR-0014] D3 renders that layer as `(not set)` against its own label and
+/// no file is claimed to have been opened.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[must_use]
+pub fn default_root() -> Option<PathBuf> {
+    std::env::home_dir().map(|home| home.join(HOME_DIRECTORY))
+}
 
 /// `~/.zaru/` could not be made ready.
 ///

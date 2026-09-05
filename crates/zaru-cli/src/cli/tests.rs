@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::cli::invocation::Request;
+use crate::tools::WorkingDirectory;
 use std::ffi::OsString;
 
 /// The words a user typed, as the parser receives them.
@@ -722,7 +723,8 @@ fn a_flag_reaches_the_tier_through_adr_0014s_layer_five_and_not_around_it() {
         tier: Some("linked".to_owned()),
         model: None,
     };
-    let resolution = layers::resolve(&overrides, []).expect("three readable layers fold");
+    let resolution =
+        layers::resolve(&overrides, [], &Files::none()).expect("three readable layers fold");
     let explanation = resolution.explain(&crate::runtime::key());
 
     assert_eq!(
@@ -746,7 +748,8 @@ fn a_flag_reaches_the_tier_through_adr_0014s_layer_five_and_not_around_it() {
 /// D3's block exists to print.
 #[test]
 fn adr_0014_layer_one_supplies_bare_and_every_higher_layer_still_wins() {
-    let bare = layers::resolve(&Overrides::default(), []).expect("layer 1 alone folds");
+    let bare =
+        layers::resolve(&Overrides::default(), [], &Files::none()).expect("layer 1 alone folds");
     let resolved = crate::runtime::ResolvedTier::from_configuration(&bare)
         .expect("layer 1 supplies ADR-0001 D1's on-ramp tier");
     assert_eq!(
@@ -762,6 +765,7 @@ fn adr_0014_layer_one_supplies_bare_and_every_higher_layer_still_wins() {
             model: None,
         },
         [],
+        &Files::none(),
     )
     .expect("layers 1 and 5 fold");
     let resolved = crate::runtime::ResolvedTier::from_configuration(&overridden)
@@ -824,26 +828,216 @@ fn layer_five_carries_exactly_the_two_keys_adr_0014_d1_names() {
     );
 }
 
-/// Layers 2 and 3 have no reader, and the block says so in their own words.
+/// A layer this binary did not open names its own label; one it opened names
+/// its file.
 ///
-/// The alternative — naming `~/.zaru/config.toml` in the source column — would
-/// claim a reading that did not happen, which is the one thing D3's block is
-/// for. Ruled 2026-09-05.
+/// **Both arms, and the second is new on 2026-09-05.** Until then layers 2 and
+/// 3 had no reader at all and this check asserted only the first half —
+/// "naming `~/.zaru/config.toml` in the source column would claim a reading
+/// that did not happen". They have readers now, so the rule is unchanged and
+/// its consequence inverts: a layer that *was* opened names the file, because
+/// the column is what makes ADR-0014 D3's block evidence about where a value
+/// came from.
+///
+/// A check that only kept the first arm would now be asserting that the binary
+/// never reads a file, which is the assertion that would go quiet as this arc
+/// landed.
+///
+/// The mutant is a source that names the layer's label even when the file was
+/// read.
 #[test]
-fn an_unread_layer_names_its_own_label_rather_than_a_file_nothing_opened() {
-    let resolution =
-        layers::resolve(&Overrides::default(), []).expect("three readable layers fold");
-    let rendered = resolution.explain(&crate::runtime::key()).to_string();
-
+fn a_layer_this_binary_did_not_open_names_its_own_label_and_one_it_opened_names_its_file() {
+    // Nothing opened.
+    let unread = layers::resolve(&Overrides::default(), [], &Files::none())
+        .expect("three readable layers fold");
+    let rendered = unread.explain(&crate::runtime::key()).to_string();
     assert!(
         rendered.contains("user config") && rendered.contains("project config"),
-        "layers 2 and 3 must appear under their own labels: {rendered}"
+        "a layer with no file appears under its own label: {rendered}"
     );
     assert!(
         !rendered.contains(".toml"),
-        "no layer this binary cannot read may name a file in D3's source column, or the block \
+        "no layer this binary did not open may name a file in D3's source column, or the block \
          claims a reading that did not happen: {rendered}"
     );
+
+    // Both opened.
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let home = tree.base().join("home");
+    std::fs::create_dir_all(&home).expect("staging: the scratch home");
+    std::fs::write(
+        home.join(crate::config::CONFIG_FILE),
+        b"[model]\ndefault = \"from-the-user-file\"\n",
+    )
+    .expect("staging: layer 2");
+    std::fs::write(
+        tree.project().join(crate::manifest::MANIFEST_FILE),
+        b"[project]\nname = \"from-the-project-file\"\n",
+    )
+    .expect("staging: layer 3");
+
+    let files = Files::at(
+        Some(&home),
+        Some(WorkingDirectory::at(tree.project()).expect("the project directory exists")),
+    );
+    let read = layers::resolve(&Overrides::default(), [], &files).expect("five layers fold");
+    let block = read
+        .explain(&crate::providers::ModelAlias::Default.key())
+        .to_string();
+    assert!(
+        block.contains(crate::config::CONFIG_FILE),
+        "a layer this binary opened names the file it opened: {block}"
+    );
+    let project_block = read
+        .explain(&crate::config::Key::new(crate::manifest::NAME_KEY).expect("a key"))
+        .to_string();
+    let marked: Vec<&str> = project_block
+        .lines()
+        .filter(|line| line.contains(crate::config::explain::EFFECTIVE_MARKER))
+        .collect();
+    assert_eq!(
+        marked.len(),
+        1,
+        "exactly one row is marked:\n{project_block}"
+    );
+    assert!(
+        marked[0].trim_start().starts_with("3 ")
+            && marked[0].contains(crate::manifest::MANIFEST_FILE)
+            && marked[0].contains("from-the-project-file"),
+        "layer 3 names the manifest it read AND carries what that file set; a source column that \
+         named the file over an empty document would satisfy a check that only read the name:\n\
+         {project_block}"
+    );
+    println!("{block}{project_block}");
+}
+
+/// ADR-0014 clause 1, whole, from the fold this binary runs.
+///
+/// "A value set in all five layers resolves to the flag, and `config explain`
+/// prints every layer with the effective one marked." **The five-layer half was
+/// short by two layers until 2026-09-05**, because from the binary a value could
+/// only be set at layers 1, 4 and 5; layers 2 and 3 have readers now and this is
+/// the whole clause.
+///
+/// The key is `model.default`, which is free at every layer. `runtime.tier`
+/// cannot be the demonstration: ADR-0014 D6 refuses it to layer 3, so a
+/// five-layer case over it is a case the record forbids.
+///
+/// Every expected value is a literal this check owns, and the effective one is
+/// read out of the **rendered block** rather than asked of the resolution, so
+/// the two sides do not travel through one path
+/// ([Verification lessons] §11).
+///
+/// The mutant is any precedence order wrong in the middle; the adjacent-pair
+/// check in `config::tests` is what sees that, and this one sees the top.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn adr_0014_clause_1_a_value_set_in_all_five_layers_resolves_to_the_flag() {
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let home = tree.base().join("home");
+    std::fs::create_dir_all(&home).expect("staging: the scratch home");
+    std::fs::write(
+        home.join(crate::config::CONFIG_FILE),
+        b"[model]\ndefault = \"layer-two\"\n",
+    )
+    .expect("staging: layer 2");
+    std::fs::write(
+        tree.project().join(crate::manifest::MANIFEST_FILE),
+        b"[project]\nname = \"p\"\n",
+    )
+    .expect("staging: layer 3");
+
+    // Layer 3 sets it through the manifest's `[project]`? It cannot -- ADR-0009
+    // D1's manifest carries no `model` table -- so layer 3's contribution is
+    // `[project]` and `[runtime]` and the alias is set at the other four. The
+    // five-layer case for a key layer 3 CAN set is `project.name`, below.
+    let files = Files::at(
+        Some(&home),
+        Some(WorkingDirectory::at(tree.project()).expect("the project directory exists")),
+    );
+    let resolution = layers::resolve(
+        &Overrides {
+            tier: None,
+            model: Some("layer-five".to_owned()),
+        },
+        [("ZARU_MODEL_DEFAULT".to_owned(), "layer-four".to_owned())],
+        &files,
+    )
+    .expect("five layers fold");
+
+    let block = resolution
+        .explain(&crate::providers::ModelAlias::Default.key())
+        .to_string();
+    let marked: Vec<&str> = block
+        .lines()
+        .filter(|line| line.contains(crate::config::explain::EFFECTIVE_MARKER))
+        .collect();
+    assert_eq!(marked.len(), 1, "exactly one row is marked:\n{block}");
+    assert!(
+        marked[0].trim_start().starts_with("5 ") && marked[0].contains("layer-five"),
+        "ADR-0014 D1: the flag wins over every layer below it:\n{block}"
+    );
+    assert_eq!(
+        block.lines().count(),
+        6,
+        "D3's block is the key's line and one row per layer, always five:\n{block}"
+    );
+    // The three layers below the flag are each present with their own value, so
+    // the marked row is "the highest that SET it" rather than "the highest".
+    for planted in ["layer-two", "layer-four"] {
+        assert!(
+            block.contains(planted),
+            "every layer that set the key appears in the block:\n{block}"
+        );
+    }
+    println!("{block}");
+}
+
+/// A malformed configuration file is the user's, and the message names it.
+///
+/// [ADR-0016] D3: "Never present a defect as a user error", and its converse is
+/// what this holds — until 2026-09-05 `LoadFailure::Source` was carried as a
+/// defect, which was honest while nothing could produce one and would have told
+/// a user with a typo in their own file to report a bug in the harness.
+///
+/// The mutant is classifying the source arm as a defect.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn a_malformed_configuration_file_is_the_users_and_the_message_names_it() {
+    use crate::failure::{Class, Classified};
+
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let home = tree.base().join("home");
+    std::fs::create_dir_all(&home).expect("staging: the scratch home");
+    // The mistake is on the second line on purpose, so "line 2" in the message
+    // is the parser's reading of this file rather than a constant that would be
+    // right for any file whose first line is wrong.
+    std::fs::write(
+        home.join(crate::config::CONFIG_FILE),
+        b"[model]\ndefault = \n",
+    )
+    .expect("staging: a file a person mistyped");
+
+    let failure = layers::resolve(&Overrides::default(), [], &Files::at(Some(&home), None))
+        .expect_err("a file that is not TOML does not fold");
+    let classified = Surface::load(&failure);
+
+    assert_eq!(
+        classified.class(),
+        Class::UserCorrectable,
+        "a file this harness never writes is the user's: {classified:?}"
+    );
+    let Classified::UserCorrectable { statement, .. } = &classified else {
+        panic!("expected a user-correctable classification, got {classified:?}");
+    };
+    let rendered = statement.to_string();
+    assert!(
+        rendered.contains(crate::config::CONFIG_FILE) && rendered.contains("line 2"),
+        "the message names the file and where: {rendered}"
+    );
+    println!("{rendered}");
 }
 
 /// Layer 4 reaches the same keys as layer 5, and layer 5 beats it.
@@ -856,6 +1050,7 @@ fn the_environment_sets_the_same_keys_and_a_flag_beats_it() {
     let from_environment = layers::resolve(
         &Overrides::default(),
         [("ZARU_RUNTIME_TIER".to_owned(), "contained".to_owned())],
+        &Files::none(),
     )
     .expect("layers 1 and 4 fold");
     let resolved = crate::runtime::ResolvedTier::from_configuration(&from_environment)
@@ -874,6 +1069,7 @@ fn the_environment_sets_the_same_keys_and_a_flag_beats_it() {
             model: None,
         },
         [("ZARU_RUNTIME_TIER".to_owned(), "contained".to_owned())],
+        &Files::none(),
     )
     .expect("layers 1, 4 and 5 fold");
     let resolved =
@@ -898,6 +1094,7 @@ fn a_tier_no_record_names_is_refused_once_and_the_refusal_names_its_layer() {
             model: None,
         },
         [],
+        &Files::none(),
     )
     .expect("an unknown tier is a well-formed text value and folds");
 
