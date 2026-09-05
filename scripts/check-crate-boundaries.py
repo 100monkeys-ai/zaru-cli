@@ -28,6 +28,25 @@
 # that can open a socket, speak HTTP, or terminate TLS. The list is named
 # below rather than matched by a heuristic, because a heuristic over crate
 # names silently stops covering whatever gets named differently next.
+#
+# Narrowed 2026-09-05 under directive 20, recorded as an accepted Update on
+# ADR-0003 D8 and one sentence on ADR-0005's Status tracking. The property this
+# gate holds is that the composer's search tier carries no network capability.
+# Until now it was transcribed as "nothing in the closure that touches a
+# socket", and that transcription was wider than the property: crossterm -- the
+# terminal backend every in-session surface in ADR-0015 D2 needs -- brings mio
+# and rustix, which are an OS interface rather than a network one. Measured:
+# crossterm 0.28 takes rustix with default features off and exactly
+# ["stdio", "termios"], so rustix::net is not compiled in at all.
+#
+# So the property is split in two, and BOTH halves are asserted. Nothing on
+# NETWORK_CRATES may be reachable at all. Anything on BACKEND_ONLY may be
+# reachable only THROUGH crossterm, which is asserted as a path rather than as
+# an absence: the closure is walked a second time with crossterm treated as a
+# leaf, and a BACKEND_ONLY crate still reachable in that reduced walk has a
+# route that is not the terminal's. That is strictly stronger than deleting the
+# two names from the list, which is what makes this a narrowing rather than a
+# weakening.
 
 import json
 import subprocess
@@ -49,7 +68,31 @@ ALLOWED = {
 # that reaches a network would be its own problem, and the claim here is about
 # what the shipped library can do. Build-dependencies are excluded for the same
 # reason and are worth revisiting if one ever appears.
+#
+# zaru-cli is deliberately NOT here and never will be: it is the composition
+# root, it holds the terminal driver, and ADR-0003 D2 names reqwest for a
+# provider client it will one day own. Its dependencies do not reach zaru-tui,
+# because ADR-0003 D8 lets zaru-tui name only zaru-core -- a dependency edge
+# runs from the dependent to the dependency, so zaru-cli taking tokio puts
+# nothing whatever in zaru-tui's closure. Said here rather than feared.
 NO_NETWORK = {"zaru-tui"}
+
+# The one crate a BACKEND_ONLY name may be reached through.
+#
+# Named rather than derived: "whatever the terminal backend happens to pull"
+# would be a rule that changes meaning when the backend does, which is the
+# heuristic failure the comment above already rejects once.
+TERMINAL_BACKEND = "crossterm"
+
+# Crates a NO_NETWORK crate may reach ONLY through TERMINAL_BACKEND.
+#
+# Both are on NETWORK_CRATES' original list and both stay refused by every
+# other route. mio is a poll/epoll reactor and rustix is a raw syscall wrapper;
+# each can open a socket in the abstract, and neither does anything of the kind
+# on the path that puts it here -- crossterm reads key events off a terminal
+# file descriptor and restores termios. A direct edge to either from a
+# NO_NETWORK crate is what this gate exists to catch, and it still is.
+BACKEND_ONLY = {"mio", "rustix"}
 
 # Named, not matched. Every entry is a crate that provides an HTTP client or
 # server, terminates TLS, opens a socket, resolves DNS, or drives an I/O
@@ -87,10 +130,14 @@ NETWORK_CRATES = {
     "schannel",
     "security-framework",
     # sockets, reactors, DNS
+    #
+    # mio and rustix were on this list until 2026-09-05 and are now on
+    # BACKEND_ONLY, which refuses them by every route except the terminal
+    # backend's. They are not removed from this gate's reach; they moved to a
+    # stricter question.
     "tokio",
     "async-std",
     "smol",
-    "mio",
     "polling",
     "socket2",
     "async-io",
@@ -100,7 +147,6 @@ NETWORK_CRATES = {
     "hickory-resolver",
     "trust-dns-resolver",
     "nix",
-    "rustix",
     # MCP and websockets, which arrive over one of the above
     "rmcp",
     "tungstenite",
@@ -118,13 +164,20 @@ def metadata(*flags: str) -> dict:
     return json.loads(raw)
 
 
-def normal_closure(resolved: dict, root: str) -> set[str]:
+def normal_closure(resolved: dict, root: str, leaves: set[str] | None = None) -> set[str]:
     """Every package reachable from `root` through normal dependencies.
 
     `cargo metadata` reports a dependency's kind as null for a normal one and
     as "dev" or "build" otherwise, so following only the null kind is what
     keeps a dev-dependency -- zaru-core's tokio, for one -- out of the answer.
+
+    A package named in `leaves` is included in the answer and its own edges are
+    not followed. That is what turns "is X reachable" into "is X reachable by
+    some route other than through Y", which is the question BACKEND_ONLY asks:
+    walk once normally, walk again with crossterm as a leaf, and anything still
+    there in the second walk got there without the terminal backend.
     """
+    leaves = leaves or set()
     by_id = {p["id"]: p["name"] for p in resolved["packages"]}
     nodes = {n["id"]: n for n in resolved["resolve"]["nodes"]}
     start = next((i for i, name in by_id.items() if name == root), None)
@@ -134,7 +187,10 @@ def normal_closure(resolved: dict, root: str) -> set[str]:
     seen = {start}
     frontier = [start]
     while frontier:
-        node = nodes.get(frontier.pop())
+        current = frontier.pop()
+        if by_id.get(current) in leaves:
+            continue
+        node = nodes.get(current)
         if node is None:
             continue
         for dep in node["deps"]:
@@ -193,6 +249,7 @@ def main() -> int:
             )
 
     closures = []
+    backends = []
     for name in sorted(NO_NETWORK & on_disk):
         closure = normal_closure(resolved, name)
         third_party = closure - members
@@ -213,6 +270,23 @@ def main() -> int:
                 "an amendment to ADR-0003 D2 and to this gate, not an import."
                 .format(name, reachable)
             )
+
+        # The BACKEND_ONLY half. Walk again with the terminal backend as a
+        # leaf; whatever is still reachable got there another way.
+        without = normal_closure(resolved, name, leaves={TERMINAL_BACKEND})
+        escaped = sorted((closure & BACKEND_ONLY) & without)
+        for reachable in escaped:
+            failures.append(
+                "crate {!r} can reach {!r} by a route that does not pass through {!r}. "
+                "That name is permitted in this closure only as part of the terminal "
+                "backend ADR-0015 D2's in-session surface needs -- crossterm reads key "
+                "events and restores termios -- and a second route to it is a socket "
+                "capability arriving with no decision behind it. Adding it is an "
+                "amendment to ADR-0003 D2 and to this gate, not an import."
+                .format(name, reachable, TERMINAL_BACKEND)
+            )
+        through = sorted((closure & BACKEND_ONLY) - set(escaped))
+        backends.append((name, through, TERMINAL_BACKEND in closure))
 
     if checked == 0:
         print(
@@ -245,6 +319,24 @@ def main() -> int:
             "{} of them third-party, and carries none of the {} network-capable crates "
             "this gate names.".format(name, total, third_party, len(NETWORK_CRATES))
         )
+    for name, through, has_backend in backends:
+        if not has_backend:
+            print(
+                "crate-boundaries: OK -- {!r} reaches no terminal backend at all, so none "
+                "of the {} backend-only crate(s) this gate names can be there by any "
+                "route.".format(name, len(BACKEND_ONLY))
+            )
+        else:
+            print(
+                "crate-boundaries: OK -- {!r} reaches {} through {!r} and by no other "
+                "route; walked a second time with {!r} as a leaf and none of them was "
+                "still reachable.".format(
+                    name,
+                    ", ".join(repr(c) for c in through) or "none of the backend-only crates",
+                    TERMINAL_BACKEND,
+                    TERMINAL_BACKEND,
+                )
+            )
     return 0
 
 
