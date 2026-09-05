@@ -38,11 +38,14 @@
 //! choosing one — whether `**` crosses a symlink, whether a leading dot
 //! matches — is authoring the surface's search vocabulary.
 //!
-//! # `cmd.run` and `web.fetch` — a subprocess and a socket
+//! # `web.fetch` — a socket
 //!
-//! Neither exists anywhere in this workspace. `cmd.run` is also the tool D6's
-//! destructive categories are mostly about, and that matcher has no
-//! implementation.
+//! No socket exists anywhere in this workspace, and ADR-0011 D4's boundary is
+//! about paths rather than outbound destinations. `cmd.run` was named here
+//! until 2026-09-05 and is now built, over [`crate::process`] — though it is
+//! still the tool D6's destructive categories are mostly about, and that
+//! matcher has no implementation, so a `cmd.run` cannot be given the prompt
+//! prominence D6 requires.
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0004]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0004-native-seal-in-the-harness

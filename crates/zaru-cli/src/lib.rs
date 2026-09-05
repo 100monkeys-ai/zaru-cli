@@ -38,16 +38,22 @@
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //!
 //! What that means for what acts. `session` writes a real directory, a real
-//! append-only transcript and a real checkpoint. `tools` decides, and **two
+//! append-only transcript and a real checkpoint. `tools` decides, and **three
 //! of ADR-0011 D1's seven built-ins now act**: `fs.read` and `fs.list`,
-//! through `std::fs`, inside D4's working-directory boundary. The other five
-//! sit behind ports with no implementation in this product tree, as do the
-//! prompt, the allowlist, the destructive matcher, the credential store's
-//! sealing, ADR-0014's file layers **2 and 3** — layer 5 has a reader as of
-//! 2026-09-05, [`cli::layers::Flags`], the first implementation of that port
-//! in this product tree — `meta.toml`'s writer, ADR-0009's manifest reader,
+//! through `std::fs`, inside D4's working-directory boundary, and `cmd.run`,
+//! through [`process`] — which is the one place this workspace starts a child
+//! process, and the first thing here that acts on the world outside a file.
+//! `process` also implements ADR-0009 D3's `ValidatorRunner`, so a declared
+//! validator's command runs. The other four built-ins sit behind ports with
+//! no implementation in this product tree, as do the prompt, the allowlist,
+//! the destructive matcher, the credential store's sealing, ADR-0014's file
+//! layers **2 and 3** — layer 5 has a reader as of 2026-09-05,
+//! [`cli::layers::Flags`], the first implementation of that port in this
+//! product tree — `meta.toml`'s writer, ADR-0009's manifest reader,
 //! ADR-0012's provider and its alias negotiation, and ADR-0004's membrane.
-//! **Nothing in this workspace can reach a provider at all.**
+//! **Nothing in this workspace can reach a provider at all**, and nothing
+//! contains a child process — ADR-0011 D2: "the harness is not a sandbox and
+//! says so."
 //!
 //! **Six of the ten are reachable from the `zaru` binary as of 2026-09-05**,
 //! and the sentence that said none of them was is gone with the argument

@@ -52,9 +52,15 @@ in `zaru-cli`, resolving five layers over a schema whose keys arrive from the
 records that own them; **three of the five layers have readers** — the built-in
 one, `ZARU_*`, and the command line — and the two that read files wait on a
 TOML parser. The local tool surface is in `zaru-cli` too: the seven built-in
-tool names, the working-directory boundary, and the permission model. Two of
-the seven act, through `std::fs`, inside that boundary; the other five sit
-behind ports with no implementation, as does the permission prompt itself.
+tool names, the working-directory boundary, and the permission model. **Three
+of the seven act**: `fs.read` and `fs.list` through `std::fs` inside that
+boundary, and `cmd.run` as a real child process, started at the boundary's root
+with a cleared environment and a wall-clock ceiling the caller supplies. A
+command is not measured against the boundary as though it were a path — its
+boundary is the directory it starts in — and **nothing contains that child**:
+at `bare` tier the harness is not a sandbox and the decision record says so.
+The other four sit behind ports with no implementation, as does the permission
+prompt itself.
 
 The Nuclear Notes client is in `zaru-notes`: a session over MCP with the
 workspace named on every read, a bearer value the type system will not render,

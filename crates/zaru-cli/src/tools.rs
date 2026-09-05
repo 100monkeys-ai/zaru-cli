@@ -11,14 +11,17 @@
 //! found at a security boundary... joins a permanent hostile-input corpus as
 //! its reproduction", and the corpus never shrinks.
 //!
-//! **Two of the seven execute, and five do not.** `fs.read` and `fs.list` act
-//! through `std::fs` inside D4's boundary, because neither can create a path
-//! and so neither is classified against a tree it is about to change.
-//! `fs.write`, `fs.edit`, `fs.search`, `cmd.run` and `web.fetch` sit behind
-//! ports with no implementation in this crate's product tree — see
-//! [`writes`] and [`port`] for what each one is waiting on. So does the
-//! prompt, so does the allowlist, so does the destructive matcher, and so
-//! does [`seal`]'s membrane.
+//! **Three of the seven execute, and four do not.** `fs.read` and `fs.list`
+//! act through `std::fs` inside D4's boundary, because neither can create a
+//! path and so neither is classified against a tree it is about to change.
+//! `cmd.run` acts through [`crate::process`], which is the one place this
+//! workspace starts a child process; a command is not measured against D4 as
+//! a path, because its boundary is the working directory it is started in.
+//! `fs.write`, `fs.edit`, `fs.search` and `web.fetch` sit behind ports with
+//! no implementation in this crate's product tree — see [`writes`] and
+//! [`port`] for what each one is waiting on. So does the prompt, so does the
+//! allowlist, so does the destructive matcher, and so does [`seal`]'s
+//! membrane.
 //!
 //! # Where it lives, and why here
 //!

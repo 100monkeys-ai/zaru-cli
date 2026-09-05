@@ -4,26 +4,31 @@
 //! The acting half of [ADR-0011]: what happens after the permission decision
 //! says a call may act.
 //!
-//! # Two of the seven act, and five do not
+//! # Three of the seven act, and four do not
 //!
 //! | Tool | Here |
 //! | --- | --- |
 //! | `fs.read` | `std::fs`, inside D4's boundary |
 //! | `fs.list` | `std::fs`, inside D4's boundary |
+//! | `cmd.run` | [`Subprocess`], over [`Spawn`](crate::process::Spawn), started at D4's boundary root |
 //! | `fs.write`, `fs.edit` | [`FileWrites`], no implementation |
 //! | `fs.search` | [`Search`], no implementation |
-//! | `cmd.run` | [`Subprocess`], no implementation |
 //! | `web.fetch` | [`Fetch`], no implementation |
 //!
-//! The two that act are the two that cannot create a path. That matters
-//! because D4's classification resolves through a candidate's **longest
-//! existing ancestor**, so a write is classified against a tree that does not
-//! yet contain what it is about to make — and deciding what the boundary
-//! means for a path that does not exist yet is a decision no record makes.
-//! `fs.search` needs a matcher, which is either a dependency outside
+//! The two filesystem tools that act are the two that cannot create a path.
+//! That matters because D4's classification resolves through a candidate's
+//! **longest existing ancestor**, so a write is classified against a tree that
+//! does not yet contain what it is about to make — and deciding what the
+//! boundary means for a path that does not exist yet is a decision no record
+//! makes. `fs.search` needs a matcher, which is either a dependency outside
 //! [ADR-0003] D2's table or a glob semantics this crate would be inventing.
-//! `cmd.run` needs a subprocess and `web.fetch` needs a socket, and the
-//! harness has neither.
+//! `web.fetch` needs a socket, and the harness has none.
+//!
+//! **`cmd.run` acts as of 2026-09-05**, and it is not classified against D4 at
+//! all: a command addresses a command line, and its boundary is the working
+//! directory `Spawn` starts it in. Nothing contains it there — ADR-0011 D2,
+//! "the harness is not a sandbox and says so" — and the module documentation
+//! of [`crate::process::spawn`] says exactly what that costs.
 //!
 //! # A decision is derived here, never accepted from a caller
 //!

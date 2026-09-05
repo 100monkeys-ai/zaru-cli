@@ -40,16 +40,19 @@
 //! and leaves the workspace's `unsafe_code = "deny"` untouched. A timeout
 //! crate, `libc`, and any shell-word crate are each outside [ADR-0003] D2's
 //! table and none is taken; the ceiling is a poll and two threads, and the
-//! splitter is [`line`].
+//! splitter is [`mod@line`].
 //!
 //! # The four pieces
 //!
 //! | Module | Holds |
 //! | --- | --- |
-//! | [`line`] | a command as a program and arguments, and the one door text comes through |
+//! | [`mod@line`] | a command as a program and arguments, and the one door text comes through |
 //! | [`environment`] | exactly what a child is given, with [ADR-0014] D1's layer 4 unable to be in it |
 //! | [`ceiling`] | how long a child may run, refused at zero, no number chosen here |
 //! | [`spawn`] | the child itself, at the boundary's root, under the ceiling |
+//!
+//! [`ports`] holds the two trait implementations, so that "two ports, one
+//! process" is legible in the file list.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
@@ -60,6 +63,7 @@
 pub mod ceiling;
 pub mod environment;
 pub mod line;
+pub mod ports;
 pub mod spawn;
 
 pub use ceiling::{CeilingIsZero, ProcessCeiling};
