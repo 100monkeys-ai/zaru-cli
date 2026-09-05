@@ -1351,3 +1351,109 @@ fn provider_keys_over_an_empty_store_names_the_command_and_the_kinds() {
         );
     }
 }
+
+// --- The four numbers this binary chooses for a turn -----------------------
+//
+// Each of the four is a value no record carries, so what a check can hold is
+// not "the number is right" — nothing is available to compare it against.
+// What it can hold is the property each number's own documentation claims,
+// and those are genuinely different claims: a floor the mechanism sets, a pair
+// the constructor validates, and an ordering between two numbers that answer
+// different questions.
+
+/// The tool-call ceiling clears the floor its own mechanism sets.
+///
+/// `TOOL_CALL_CEILING`'s documentation says the floor is two, because a turn
+/// that calls a tool spends one exchange asking and a second answering. That
+/// is a property of `zaru_core::tool_call::run` rather than of the number, and
+/// it is what makes any ceiling of one unable to complete a tool-using turn.
+///
+/// The mutant: a ceiling of one, which is a value
+/// `ToolCallCeiling::new` accepts — so the constructor cannot hold this and a
+/// check has to. It printed *"a ceiling of 1 cannot both call a tool and
+/// answer: ADR-0008 D1's cycle needs one exchange to ask and a second to
+/// reply"*.
+#[test]
+fn the_tool_call_ceiling_clears_the_floor_the_mechanism_sets() {
+    let ceiling = crate::cli::layers::tool_call_ceiling().get();
+    assert!(
+        ceiling >= 2,
+        "a ceiling of {ceiling} cannot both call a tool and answer: ADR-0008 D1's cycle needs one \
+         exchange to ask and a second to reply"
+    );
+    assert_eq!(ceiling, crate::cli::layers::TOOL_CALL_CEILING);
+}
+
+/// The three byte numbers answer two different questions, and the smaller one
+/// is the one measured against a context window.
+///
+/// `OUTPUT_BUDGET_BYTES`' documentation is explicit that it is not the same
+/// question as the two mebibyte ceilings: those bound what this harness reads
+/// into memory, and this bounds what goes into a window. A budget at or above
+/// them would mean one tool result could be the whole of what a model is read.
+///
+/// Watched red by setting the budget to `FILE_CEILING_BYTES`, which printed
+/// *"one tool result may not be as large as the largest file this harness will
+/// read whole: 1048576 against 1048576"*.
+#[test]
+fn what_a_model_is_shown_of_one_tool_result_is_smaller_than_what_the_harness_will_read() {
+    let budget = crate::cli::layers::OUTPUT_BUDGET_BYTES as u64;
+    for (name, ceiling) in [
+        ("FILE_CEILING_BYTES", crate::cli::layers::FILE_CEILING_BYTES),
+        (
+            "SEARCH_CEILING_BYTES",
+            crate::cli::layers::SEARCH_CEILING_BYTES,
+        ),
+    ] {
+        assert!(
+            budget < ceiling,
+            "one tool result may not be as large as {name}, which is what this harness will read \
+             whole: {budget} against {ceiling}"
+        );
+    }
+}
+
+/// The window and the threshold are a pair the constructor accepts, and the
+/// threshold is genuinely below the window rather than equal to it.
+///
+/// `ContextLimits::new` refuses a threshold *above* a window and accepts one
+/// equal to it — at which point compaction would fire only once the context
+/// already did not fit, which is the warning arriving after the failure it
+/// warns about. The constructor cannot hold that; this does.
+///
+/// Watched red by a threshold equal to the window, which printed *"a threshold
+/// of 1048576 is not below the window of 1048576, so compaction would fire
+/// only once the context already did not fit"*.
+#[test]
+fn the_pressure_threshold_is_below_the_window_rather_than_at_it() {
+    let limits = crate::cli::layers::context_limits();
+    let window = limits.window().get();
+    let threshold = limits.threshold().get();
+    assert!(
+        threshold < window,
+        "a threshold of {threshold} is not below the window of {window}, so compaction would fire \
+         only once the context already did not fit"
+    );
+    assert_eq!(window, crate::cli::layers::CONTEXT_WINDOW_TOKENS);
+    assert_eq!(threshold, crate::cli::layers::PRESSURE_THRESHOLD_TOKENS);
+}
+
+/// The process ceiling bounds a build rather than a request, so it is longer
+/// than the provider's own exchange timeout.
+///
+/// `PROCESS_CEILING`'s documentation says the sixty seconds
+/// `providers::gemini::EXCHANGE_TIMEOUT` uses is deliberately not reused,
+/// because the two bound different things. Reusing it is the mutant, and it
+/// printed *"a command is a build or a test suite and a request is not: 60s
+/// against the provider's 60s"*.
+#[test]
+fn the_process_ceiling_is_longer_than_the_providers_exchange_timeout() {
+    let ceiling = crate::cli::layers::process_ceiling().get();
+    let exchange = crate::providers::gemini::EXCHANGE_TIMEOUT;
+    assert!(
+        ceiling > exchange,
+        "a command is a build or a test suite and a request is not: {ceiling:?} against the \
+         provider's {exchange:?}"
+    );
+    assert_eq!(ceiling, crate::cli::layers::PROCESS_CEILING);
+}

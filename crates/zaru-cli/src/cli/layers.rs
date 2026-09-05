@@ -536,3 +536,183 @@ pub fn resolve(
 pub fn resolve_from_process(overrides: &Overrides) -> Result<Resolution, LoadFailure> {
     resolve(overrides, std::env::vars(), &Files::from_process())
 }
+
+// --- The four numbers a turn needs, and the one that is not here ------------
+//
+// [ADR-0014] D3's `runtime.max_iterations` is **not** in this block, and that
+// is the distinction the whole block exists to make. It is a declared
+// configuration key, resolved through D1's five layers and lowered only by a
+// project under D6's `LowerOnly`, so a user chooses it and `zaru config
+// explain runtime.max_iterations` shows where their value came from. The four
+// below are not settable by anybody: no record names a number for one of them
+// and none declares a key, so this binary chooses, in one place, and says so.
+//
+// Each is a **delegated coordinator ruling of 2026-09-05** under Jeshua's
+// directive of that day, open to his veto, and each is recorded as an accepted
+// Update on the record that owns the quantity. They sit here rather than in
+// the modules that consume them for the reason `FILE_CEILING_BYTES` already
+// gives: the constructors take a required argument with no default, because a
+// default there would be a value chosen for a different caller ([Verification
+// lessons] §14), so a caller has to choose and this module is where this
+// binary's choices live.
+
+/// How many exchanges with the model one turn may take.
+///
+/// **Eight, and no record carries a number for this.** [ADR-0008]'s own Status
+/// tracking says so in as many words — "**A row for it belongs in ADR-0001 D3's
+/// table or in this record**, and neither has one" — and that record is equally
+/// clear that the quantity is not [ADR-0001] D3's: "ADR-0001 D3's table is
+/// *iteration* ceilings, per tier and per provider, and iterations are the
+/// inner loop's."
+///
+/// So it is chosen here, and the argument is termination rather than
+/// capability. **The mechanism's own floor is two**: a turn that calls a tool
+/// spends one exchange asking for it and a second answering with its result,
+/// so a ceiling of one can never both call a tool and reply. Above that floor
+/// nothing bounds how many times a model that keeps requesting tools may be
+/// asked, and "an unbounded loop does not terminate, which is not a property a
+/// harness may acquire by omission" — that record again. Eight is deliberately
+/// generous against the floor, because the two outcomes are not symmetric: a
+/// turn stopped at the ceiling is reported as `Exhausted` and the user reads
+/// what was tried and where it stopped, while a turn that never stops is a
+/// harness that has to be killed.
+///
+/// **It is not derived from ADR-0001 D3's cells and must not be read as
+/// related to them.** Tying the outer ceiling to the tier would invent the
+/// relation that record declines to state.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+pub const TOOL_CALL_CEILING: u32 = 8;
+
+/// [`TOOL_CALL_CEILING`] as the loop takes it.
+///
+/// # Panics
+///
+/// Never. [`TOOL_CALL_CEILING`] is not zero.
+#[must_use]
+pub fn tool_call_ceiling() -> zaru_core::tool_call::ToolCallCeiling {
+    zaru_core::tool_call::ToolCallCeiling::new(TOOL_CALL_CEILING).expect("eight is not zero")
+}
+
+/// How long a child process started by [ADR-0011] D1's `cmd.run` may run.
+///
+/// **Two minutes.** [`crate::process::ceiling`] says where the number has to
+/// come from — "no record names a wall-clock bound for a command, so a ceiling
+/// invented by the thing being bounded is not a ceiling … the numbers are the
+/// composition's to supply" — and this is the composition supplying it.
+///
+/// **The provider's sixty seconds is deliberately not reused.**
+/// [`crate::providers::gemini::EXCHANGE_TIMEOUT`] bounds a request to a service
+/// that answers in seconds; a `cmd.run` is a build, a test suite or a linter,
+/// and [ADR-0009]'s own Negative consequence is that "a project whose test
+/// suite takes minutes makes the loop impractical". Two minutes is short
+/// enough that a hung command is a recognisable event rather than a session
+/// nobody can leave, and long enough that an ordinary build is not cut off.
+///
+/// A command killed here reports `137`, per ADR-0009 D3's shell-convention
+/// rule — and `ValidatorOutput` cannot say the harness was what killed it,
+/// which that record raises and does not settle.
+///
+/// **No configuration key is declared for it**, because [ADR-0014]'s Neutral
+/// consequence leaves each record its own keys and [ADR-0011] names none.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+pub const PROCESS_CEILING: core::time::Duration = core::time::Duration::from_secs(120);
+
+/// [`PROCESS_CEILING`] as [`crate::process::Spawn`] takes it.
+///
+/// # Panics
+///
+/// Never. [`PROCESS_CEILING`] is not zero.
+#[must_use]
+pub fn process_ceiling() -> crate::process::ProcessCeiling {
+    crate::process::ProcessCeiling::new(PROCESS_CEILING).expect("two minutes is not zero")
+}
+
+/// How much of one tool's output the model is shown, in bytes.
+///
+/// **Thirty-two kibibytes.** [ADR-0011] D5 "requires truncation and names no
+/// size", and [`crate::tools::OutputBudget`] refuses zero and takes the rest
+/// from its caller.
+///
+/// It is far smaller than [`FILE_CEILING_BYTES`] and [`SEARCH_CEILING_BYTES`],
+/// which are both a mebibyte, and the difference is the question each answers.
+/// Those two bound how much this harness will read into memory. **This one
+/// bounds how much of what it read goes into a context window**, and a
+/// mebibyte of one tool result would leave no room for the conversation it is
+/// part of — see [`CONTEXT_WINDOW_TOKENS`], against which a byte over-counts.
+///
+/// A small budget is honest only because nothing is lost: D5 has the whole
+/// output written to the session directory with the path shown, which
+/// [`crate::tools::SessionOverflow`] does, and refuses to clip at all when
+/// there is nowhere to preserve it.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub const OUTPUT_BUDGET_BYTES: usize = 32 * (1 << 10);
+
+/// [`OUTPUT_BUDGET_BYTES`] as the tool surface takes it.
+///
+/// # Panics
+///
+/// Never. [`OUTPUT_BUDGET_BYTES`] is not zero.
+#[must_use]
+pub fn output_budget() -> crate::tools::OutputBudget {
+    crate::tools::OutputBudget::new(OUTPUT_BUDGET_BYTES).expect("32 KiB is not zero")
+}
+
+/// The context window one turn is assembled against, in tokens.
+///
+/// **1,048,576, and it is a citation rather than a choice.** [ADR-0013]'s
+/// Neutral consequence says "Nothing here sets a threshold. It is
+/// provider-dependent configuration", and [ADR-0012] D3's
+/// [`ProviderCapabilities`](crate::providers::ProviderCapabilities) carries
+/// three booleans and no context size — so the descriptor cannot supply it and
+/// the provider's own documentation is the next reading. Google's model page
+/// for `gemini-3.6-flash`, read 2026-09-05, states **"Input token limit
+/// 1,048,576"**: <https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash>.
+///
+/// **This binary carries one number for one model and that is a real limit.**
+/// The moment a second provider kind has a client, this constant is wrong for
+/// it, and the honest fix is a context size on D3's capability descriptor
+/// rather than a table here — raised on ADR-0012 and on ADR-0013 rather than
+/// pre-empted.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub const CONTEXT_WINDOW_TOKENS: u64 = 1_048_576;
+
+/// The usage at which [ADR-0013] D2's compaction would run, in tokens.
+///
+/// **Three quarters of [`CONTEXT_WINDOW_TOKENS`].** D2 crosses "the window
+/// pressure threshold" and D6 has the number visible continuously; neither
+/// says what it is, and no key declares one.
+///
+/// **Nothing in this binary compacts, so today this number has exactly one
+/// observable effect**: [`ContextLimits::new`](zaru_core::context::ContextLimits::new)
+/// refuses a threshold above its window, and this pair is accepted. That is
+/// said plainly rather than dressed up — a turn assembles once, `compact` takes
+/// `&mut self` and nothing calls it, and the layer-6 path is unreached by
+/// absence. The number becomes load-bearing on the day a session holds more
+/// than one turn.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub const PRESSURE_THRESHOLD_TOKENS: u64 = CONTEXT_WINDOW_TOKENS / 4 * 3;
+
+/// [`CONTEXT_WINDOW_TOKENS`] and [`PRESSURE_THRESHOLD_TOKENS`], as
+/// [`zaru_core::context::Context`] takes them.
+///
+/// # Panics
+///
+/// Never. Neither is zero and the threshold is below the window.
+#[must_use]
+pub fn context_limits() -> zaru_core::context::ContextLimits {
+    let window = zaru_core::context::ContextWindow::new(CONTEXT_WINDOW_TOKENS)
+        .expect("the window is not zero");
+    let threshold = zaru_core::context::PressureThreshold::new(PRESSURE_THRESHOLD_TOKENS)
+        .expect("the threshold is not zero");
+    zaru_core::context::ContextLimits::new(window, threshold)
+        .expect("three quarters of a window is not above it")
+}
