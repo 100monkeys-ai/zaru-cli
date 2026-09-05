@@ -88,7 +88,7 @@
 //! time stated the line again and "once ever" was true of a session and not
 //! of a session reopened. [`MissingManifest::for_manifest_in_session`] is the
 //! rule that closes it, reading
-//! [`AlreadySaid`](crate::session::AlreadySaid) off the session's own
+//! [`crate::session::AlreadySaid`] off the session's own
 //! transcript — where ADR-0002's Status tracking rules the counter belongs —
 //! and **there is no second store**: `crate::session::Record::Said` is the
 //! sixth producer of ADR-0010 D2's stream and the only thing that remembers.
