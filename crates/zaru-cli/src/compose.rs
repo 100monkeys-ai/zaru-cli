@@ -81,7 +81,7 @@ pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
 pub use model::Classifying;
 pub use sink::Records;
-pub use turn::{KINDS_WITH_A_CLIENT, Ran};
+pub use turn::{KINDS_WITH_A_CLIENT, Owed, Prepared, Ran};
 
 /// The inner loop this composition never supplies.
 ///
