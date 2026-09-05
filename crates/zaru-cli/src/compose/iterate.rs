@@ -68,14 +68,14 @@
 //! say who killed a command … the room for it has to be made in ADR-0009's
 //! shape or this record's, and no code has picked an answer" — arriving one
 //! port over, and it is recorded on [ADR-0011] rather than settled here.
-//! [`ExecutionOutcome::exit_code`] is therefore `0` applied whole and `1`
+//! [`ExecutionOutcome`]'s `exit_code` is therefore `0` applied whole and `1`
 //! otherwise, with the two non-zero cases distinguished by their streams and
 //! never by the number.
 //!
 //! # One `zaru-core` bound had to be stated for any of this to run
 //!
 //! [ADR-0009] D4's branch is
-//! [`InnerLoop`](zaru_core::tool_call::InnerLoop), whose `iterate` declares
+//! [`InnerLoop`], whose `iterate` declares
 //! `impl Future<…> + Send`. [`iteration::run`](zaru_core::iteration::run)
 //! holds `sinks: &mut [&mut dyn EventSink]` across every await point, so
 //! until 2026-09-05 the two could not both be satisfied and **no inhabited
@@ -85,7 +85,7 @@
 //! passed at that branch satisfied the bound vacuously — it is deleted now
 //! that there is something to pass instead.
 //!
-//! [`EventSink`](zaru_core::iteration::EventSink) now carries `Send`. Every
+//! [`EventSink`] now carries `Send`. Every
 //! implementation in both crates already did — the whole workspace compiled
 //! with the bound added and nothing else changed — so it records what was
 //! already true. Decided under directive 20 and on that trait's own
@@ -97,6 +97,7 @@
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 //! [`ModelRequest::tools`]: zaru_core::tool_call::ModelRequest
 //! [`Turn`]: zaru_core::iteration::Turn
+//! [`ToolResult`]: zaru_core::tool_call::ToolResult
 
 use crate::compose::Shared;
 use crate::session::{Record, Transcript, TranscriptError};

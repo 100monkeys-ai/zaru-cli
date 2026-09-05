@@ -355,8 +355,9 @@ impl<'a> Surface<'a> {
     /// D1's row for it is "the tier does not offer this", and no tier is what
     /// is wrong — the client has not been written. **D1 has no row for "not
     /// built yet"**, which [ADR-0016]'s open question already records and
-    /// which this arc did not answer; [`Surface::no_inner_loop`] is its second
-    /// instance.
+    /// which this arc did not answer. It had a second instance until
+    /// 2026-09-05, `Surface::no_inner_loop`, and that one is gone because the
+    /// thing it said was not built is built.
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy

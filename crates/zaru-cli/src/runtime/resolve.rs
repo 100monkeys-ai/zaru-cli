@@ -137,12 +137,15 @@ pub fn max_iterations_key() -> Key {
 ///
 /// # What reads it, and what does not
 ///
-/// **Nothing consumes this value yet, and that is stated rather than implied.**
-/// The loop's ceiling comes from [`iterations`](crate::runtime::iterations) —
-/// ADR-0001 D3's own twelve cells — through a caller-passed
-/// [`Ceiling`](zaru_core::iteration::Ceiling), and no binary runs the loop. The
-/// arc that wires a provider client into the loop is the one that connects this
-/// key to that number.
+/// **It has a consumer since 2026-09-05, and this sentence said it had none.**
+/// [`ceiling_for`] is it: the value resolved here is the ceiling `zaru-core`
+/// is handed where any layer set the key, and where none did, the cell
+/// [`iterations`](crate::runtime::iterations) gives for the resolved tier,
+/// inference axis and placement. The sentence this replaces read "**Nothing
+/// consumes this value yet** … the arc that wires a provider client into the
+/// loop is the one that connects this key to that number" — that arc ran and
+/// could not, because the consumer is the *iteration* ceiling and there was no
+/// iteration loop; the arc that built one is the one that connected it.
 ///
 /// That is not [ADR-0014] D5's silent typo. D5's failure is "the user sees no
 /// change and concludes the setting does not work"; here `zaru config explain
