@@ -34,7 +34,23 @@ toml = { workspace = true }
 reqwest = { workspace = true }
 # A product dependency since 2026-09-05, not a dev one: `reqwest`'s futures
 # need a reactor to be polled on, and `providers::gemini` is what polls them.
-tokio = { workspace = true, features = ["rt", "macros"] }
+#
+# **`net` and `time` were added on 2026-09-05 when the composition built the
+# reactor**, and they are declared rather than inherited. `reqwest` already
+# enables both on this same crate, so Cargo's feature unification made
+# `Builder::enable_all()` compile without them -- which is a rule that holds by
+# circumstance rather than by construction, and it would break in a confusing
+# place the day `reqwest`'s own feature set moved. Declaring what this
+# workspace's own code uses is what `[workspace.dependencies]`' comment asks
+# for, and it is the difference between a build that works and a build that
+# says why.
+#
+# **Measured, and the cost is nothing**: `Cargo.lock` is unchanged at 300
+# packages and `cargo tree -p zaru-cli -e normal` is unchanged, because both
+# features were already resolved for `reqwest`. ADR-0003 clause 7's own
+# distinction -- a caller arriving for a crate D2's table already names, rather
+# than a new dependency.
+tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }
 # ADR-0009 D3's third `expect` kind. See `[workspace.dependencies]` for why
 # this crate and not `zaru-core`, and for what the two features buy.
 regex = { workspace = true }

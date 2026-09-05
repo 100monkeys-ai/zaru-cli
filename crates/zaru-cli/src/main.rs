@@ -9,20 +9,20 @@
 //! and nothing depends on it. [ADR-0003] D7 names the installed binary `zaru`,
 //! which is why the package is `zaru-cli` and the binary target is not.
 //!
-//! # What this binary does, which as of 2026-09-05 is something
+//! # What this binary does, which as of 2026-09-05 includes running a task
 //!
-//! It reads its arguments, folds three of [ADR-0014] D1's five configuration
-//! layers, and prints one of six data a landed module already produces. **This
-//! is the first thing in the harness a person can run**, and it is the reason
-//! several other records stopped being merely built: [ADR-0016] D5's exit codes
-//! are observable on the real artefact, [ADR-0014] D3's explain block is
-//! printed, [ADR-0012] D4's alias listing exists, [ADR-0001] D2's datum is
-//! shown, [ADR-0010] D6's deletion is reachable, and one of [ADR-0007] D7's
-//! five surfaces is built.
+//! It reads its arguments, folds all five of [ADR-0014] D1's configuration
+//! layers, prints what a landed module already produces — and **runs one
+//! turn**. `zaru <task>` starts a session, asks a model, executes the tool
+//! calls it asks for under [ADR-0011]'s permission model, writes every event
+//! to [ADR-0010] D2's transcript as it happens, and exits through
+//! [ADR-0016] D5.
 //!
-//! What it still cannot do is **run a task**, because that needs a provider and
-//! [ADR-0012] D3's trait has no implementation in any product tree. `zaru
-//! --help` says so rather than leaving the user to find out.
+//! What it cannot do is run a task against four of [ADR-0012] D3's five
+//! provider kinds, which have no client, or run [ADR-0008] D1's **inner** loop
+//! over a project that declares validators, which has no `Generator` and no
+//! `Executor`. Both are refused naming what is missing rather than left for a
+//! user to find out.
 //!
 //! # This file is three things and one branch
 //!
@@ -38,18 +38,26 @@
 //! credential store. What is left here is the boundary, the two writers, and
 //! the exit code.
 //!
-//! # The binary still starts no session, and now it can be inside one
+//! # The binary starts a session, and this is the day that changed
 //!
-//! [ADR-0010]'s lifecycle is built and this binary reads it, but it **creates**
-//! nothing: `zaru sessions list` lists what is there and `zaru --resume` opens
-//! one that already exists, and neither creates `~/.zaru/sessions/<ulid>/` for
-//! a session that never had a turn. So [`SessionEvidence::NoSessionExists`] is
-//! still what [ADR-0016] D3's boundary is given, and it is still true of this
-//! process: the shell restores a session rather than starting one, and nothing
-//! in the workspace writes a first record. **The day that call site changes is
-//! the day something reaches the loop.**
+//! [ADR-0010]'s Status tracking has carried one sentence since 2026-09-04:
+//! "**The day that call site changes is the day something reaches the loop.**"
+//! It changed on 2026-09-05. `zaru <task>` starts a session, writes D1's three
+//! files including the first `meta.toml` any product path has ever written,
+//! runs one turn of [ADR-0008] D1's outer loop, and exits through
+//! [ADR-0016] D5.
+//!
+//! So [`SessionEvidence::NoSessionExists`] is **still what this boundary is
+//! given, and it is still true of this call**: `guard` wraps the whole
+//! process, including the parse, which happens before any session could exist.
+//! What changed is that the paths *inside* it that have a session now hand
+//! their own evidence to their own refusals — see [`zaru_cli::cli::run`]. A
+//! defect caught out here is a defect in the harness before it had a session
+//! to name, which is what this arm says.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+//! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+//! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 //! [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store

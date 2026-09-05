@@ -36,7 +36,7 @@
 //! # Why the failure is kept in a lock
 //!
 //! The same reason `GeminiClient::last` is:
-//! [`Model::respond`](zaru_core::tool_call::Model::respond) returns
+//! [`Model::respond`] returns
 //! `impl Future + Send` over `&self`, so the client is reachable from more
 //! than one task and anything it mutates has to be safe to read from all of
 //! them. The guard is taken after the await and dropped before the return, so

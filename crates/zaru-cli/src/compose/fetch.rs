@@ -16,7 +16,7 @@
 //! # It is the work's failure, not a port failure, and the difference is a
 //! whole turn
 //!
-//! [`Fetch::retrieve`](crate::tools::Fetch::retrieve) may return a
+//! [`Fetch::retrieve`] may return a
 //! `PortFailure`, and one would end the **entire turn**:
 //! `tool_call::run` maps it to `ToolCallError::Port` and returns, so a model
 //! that tried `web.fetch` once would take everything else it had done with it.

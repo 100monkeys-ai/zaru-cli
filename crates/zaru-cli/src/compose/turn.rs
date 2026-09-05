@@ -35,7 +35,7 @@
 //!   **It needs a real model**, so on the artefact it is behind a key.
 //! - **`3`**, environmental: a provider that answered `5xx` or a socket that
 //!   never opened, read off the typed [`GeminiFailure`] the
-//!   [`Classifying`](crate::compose::Classifying) adapter kept.
+//!   [`Classifying`] adapter kept.
 //! - **`70` through the loop**, where a port failure whose class
 //!   [ADR-0016]'s Update deliberately leaves unmapped is carried as a defect.
 //!
@@ -90,9 +90,30 @@ pub struct Ran {
 }
 
 impl Ran {
+    /// A refusal reached before anything was said.
     fn refused(classified: Classified) -> Self {
         Self {
             lines: Vec::new(),
+            exit: Exit::Failed(classified),
+        }
+    }
+
+    /// A refusal reached after the session had already said something.
+    ///
+    /// **[ADR-0011] D2's line is owed by a session that started**, whatever
+    /// happens next: the sentence is stated "once at session start" and a turn
+    /// that then failed at its provider still started. Dropping it would make
+    /// the one tier that is not a sandbox say so only when the turn succeeded,
+    /// which is exactly backwards.
+    ///
+    /// [`Outcome`](crate::cli::Outcome)'s own documentation carries the
+    /// general form: "a failed run may still have lines -- a partial listing is
+    /// worth more than nothing".
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    fn refused_having_said(lines: Vec<String>, classified: Classified) -> Self {
+        Self {
+            lines,
             exit: Exit::Failed(classified),
         }
     }
@@ -331,7 +352,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     let mut overflow = crate::tools::SessionOverflow::in_session(session.directory());
     let allowlist = match crate::tools::Allowed::from_configuration(resolution) {
         Ok(allowlist) => allowlist,
-        Err(refusal) => return Ran::refused(Surface::allowlist(&refusal)),
+        Err(refusal) => return Ran::refused_having_said(lines, Surface::allowlist(&refusal)),
     };
     let destructive = crate::tools::Shapes;
     let verdicts = crate::tools::NoMembrane;
@@ -342,7 +363,9 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     let confirmer = crate::tools::prompt::Prompt::from_process();
     let environment = match crate::process::Environment::inherited_minimum() {
         Ok(environment) => environment,
-        Err(refusal) => return Ran::refused(Surface::child_environment(&refusal)),
+        Err(refusal) => {
+            return Ran::refused_having_said(lines, Surface::child_environment(&refusal));
+        }
     };
     let spawn = crate::process::Spawn::new(&here, environment, layers::process_ceiling());
     let fetch = NoFetch;
@@ -397,13 +420,16 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     // A transcript that lost an event has not recorded what happened, whatever
     // the loop returned, and ADR-0010 D2 makes this file the replayable record.
     if let Some(failure) = events.first_failure() {
-        return Ran::refused(Surface::transcript(failure, evidence));
+        return Ran::refused_having_said(lines, Surface::transcript(failure, evidence));
     }
 
     let mut ran = match outcome {
         Ok(outcome) => rendered(&provider, &outcome, &mut lines),
         Err(error) => {
-            return Ran::refused(surface.turn(&error, provider.taken().as_ref(), evidence));
+            return Ran::refused_having_said(
+                lines,
+                surface.turn(&error, provider.taken().as_ref(), evidence),
+            );
         }
     };
 

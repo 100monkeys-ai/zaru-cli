@@ -337,24 +337,45 @@ impl<'a> Surface<'a> {
         }
     }
 
-    /// A model resolved and this build carries no client that can reach it.
+    /// A model resolved and this build carries no client for its kind.
     ///
-    /// See [`crate::cli::run::Run`]'s own documentation for why this is D1's
-    /// capability class, why the class does not fit, and where the missing row
-    /// is raised.
+    /// # The sentence changed on 2026-09-05 and the reason is the whole point
+    ///
+    /// It said "nothing wires a provider client to a loop in this build", which
+    /// was true from the day the `gemini` client landed until the day this
+    /// composition ran a turn. **Something wires one now**, so what is missing
+    /// is no longer the wiring: it is a client for four of [ADR-0012] D3's five
+    /// kinds. A refusal that overstates what is absent sends a reader looking
+    /// for the wrong thing, which is why the sentence is corrected in the
+    /// commit that made it false rather than loosened.
+    ///
+    /// # It is still D1's capability class and the class still does not fit
+    ///
+    /// [`Classified::Capability`] carries a [`Tier`](crate::runtime::Tier),
+    /// D1's row for it is "the tier does not offer this", and no tier is what
+    /// is wrong — the client has not been written. **D1 has no row for "not
+    /// built yet"**, which [ADR-0016]'s open question already records and
+    /// which this arc did not answer; [`Surface::no_inner_loop`] is its second
+    /// instance.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     #[must_use]
     pub fn no_provider_client(&self, model: &ModelId) -> Classified {
+        let reachable: Vec<&str> = crate::compose::KINDS_WITH_A_CLIENT
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
         Classified::Capability {
             statement: Statement::sanitised(format!(
-                "the alias `{alias}` resolves to {model:?}, and nothing wires a provider client \
-                 to a loop in this build. A `{gemini}` client exists as of 2026-09-05 and the \
-                 other {remaining} of ADR-0012 D3's {total} kinds have none; what is missing for \
-                 every kind alike is the wiring, which is why this refusal is the same whichever \
-                 one the alias resolves to",
+                "the alias `{alias}` resolves to {model:?}, and this build carries a client for \
+                 {reachable} of ADR-0012 D3's {total} provider kinds. A turn against that kind \
+                 runs; nothing you can configure gives the other {remaining} a client, because a \
+                 client has to be written",
                 alias = ModelAlias::Default,
                 model = model.as_str(),
-                gemini = ProviderKind::Gemini,
-                remaining = ProviderKind::ALL.len() - 1,
+                reachable = reachable.join(", "),
+                remaining = ProviderKind::ALL.len() - reachable.len(),
                 total = ProviderKind::ALL.len(),
             )),
             offered_by: crate::runtime::Tier::Bare,

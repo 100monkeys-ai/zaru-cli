@@ -41,7 +41,7 @@
 //!
 //! # A sink cannot fail, so the failure is kept for the caller
 //!
-//! [`EventSink::emit`](zaru_core::tool_call::EventSink::emit) returns `()`:
+//! [`EventSink::emit`] returns `()`:
 //! the loop's contract has nowhere to put a disk error and should not grow
 //! one. A transcript write can fail. So the first failure is kept and the
 //! caller reads it after the run — **the first rather than the last**, because
@@ -108,7 +108,7 @@ impl EventSink for Records {
     /// Append one event, and keep the first failure rather than losing it.
     ///
     /// A `Record::TurnLoop`, which is the fourth producer
-    /// [`Record`](crate::session::Record) declares — a variant rather than a
+    /// [`Record`] declares — a variant rather than a
     /// widening of `Record::Loop`, because ADR-0008 D1 makes the two loops
     /// different loops and D3's eight events are all iteration-shaped.
     fn emit(&mut self, event: &Event) {

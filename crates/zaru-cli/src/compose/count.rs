@@ -10,7 +10,7 @@
 //! before-and-after counts", D6's status line carries usage, and D7 refuses an
 //! iteration whose assembly would exceed the window. `zaru-core` takes every
 //! one of those numbers through
-//! [`TokenCounter`](zaru_core::context::TokenCounter) rather than computing
+//! [`TokenCounter`] rather than computing
 //! one, because **no tokeniser is in [ADR-0003] D2's table** — `fastembed`,
 //! the only local model that table admits, is an embedder — and "a count
 //! invented by the thing being counted is not a measurement".

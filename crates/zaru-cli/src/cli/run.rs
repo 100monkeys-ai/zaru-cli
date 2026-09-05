@@ -117,7 +117,7 @@ impl Run<'_> {
             Request::NotesTokens => self.notes_tokens(),
             Request::ProviderKeys => self.provider_keys(),
             Request::ProviderKeysAdd { kind } => self.provider_keys_add(*kind),
-            Request::Task { .. } => self.no_provider(&line.overrides),
+            Request::Task { words } => self.task(words, &line.overrides),
         }
     }
 
@@ -221,7 +221,20 @@ impl Run<'_> {
                 outcome
             }
             Err(failure) => {
-                Outcome::failed(surface.resume(&failure, SessionEvidence::NoSessionExists))
+                // **The session exists**, and until 2026-09-05 this passed
+                // `NoSessionExists`, so a defect report about a transcript that
+                // could not be read said "there is no session and no transcript
+                // was written" about a session directory that was right there.
+                // ADR-0016 D3 wants the session id and the transcript's path in
+                // the report, and `Session::evidence` produces exactly that; the
+                // arm that "makes a lie unrepresentable" was being handed the
+                // wrong arm on the one path that has a real session.
+                let evidence = store
+                    .existing(id)
+                    .map_or(SessionEvidence::NoSessionExists, |session| {
+                        session.evidence()
+                    });
+                Outcome::failed(surface.resume(&failure, evidence))
             }
         }
     }
@@ -423,6 +436,57 @@ impl Run<'_> {
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     /// [`Tier`]: crate::runtime::Tier
+    /// [ADR-0008] D1's outer loop, over one task.
+    ///
+    /// The composition is [`crate::compose::turn`] and it is deliberately not
+    /// inline here: this module is "what each request does", and what a turn
+    /// does is a dependency order twenty steps long that has to be read in one
+    /// place. What is here is the call and the fold that feeds it.
+    ///
+    /// **This is the call site [ADR-0010]'s Status tracking has named since
+    /// 2026-09-04**: "the day that call site changes is the day something
+    /// reaches the loop".
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    fn task(&self, words: &[String], overrides: &Overrides) -> Outcome {
+        // The words as the user typed them, joined with the single space that
+        // separated them on the command line. The parser holds them as a
+        // vector so a refusal can quote what it could not run; a turn needs
+        // one string, and re-splitting would be a second reading of a line
+        // that was already parsed.
+        let task = words.join(" ");
+        self.configured(overrides, |resolution| {
+            let ran = crate::compose::turn::task(self.version, self.report_at, resolution, &task);
+            Outcome {
+                lines: ran.lines,
+                exit: ran.exit,
+            }
+        })
+    }
+
+    /// What a bare `--resume` or `--continue` ends with, having restored.
+    ///
+    /// **A resume is not a task**, and since 2026-09-05 this is the only
+    /// caller: `Request::Task` runs a turn. It restores, prints the
+    /// transcript's own bytes, and then stops, because `resume` holds no ports
+    /// and there is no task for a turn to be about.
+    ///
+    /// **The exit code it stops with is an open question and this arc did not
+    /// answer it.** [ADR-0010] D4's own Update names it: "the non-terminal
+    /// path still exits with the no-provider refusal's `2` or `4` … the
+    /// refusal's sentence is about *running a task*, and a bare `--resume`
+    /// asks for no task, so the code was arguably always slightly wrong for it
+    /// and is now visibly so. It is pinned by an assertion in
+    /// `tests/shell_from_outside.rs` so that deciding it the other way reddens
+    /// something, and **it wants a person's answer**." It is left exactly as
+    /// that arc left it, and the pin is what will redden when somebody decides
+    /// it.
+    ///
+    /// What *has* changed is the sentence: it no longer says nothing wires a
+    /// client to a loop, because something does.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     fn no_provider(&self, overrides: &Overrides) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
         self.configured(

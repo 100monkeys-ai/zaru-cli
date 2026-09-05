@@ -12,9 +12,11 @@ for a smoother surface, the legible option wins. That trade is the product.
 
 ## Status
 
-**Pre-alpha. Nothing here is installable, and the harness cannot run a task.**
-Six crates compile, CI enforces the rules the repository is meant to hold
-itself to, and as of 2026-09-05 the binary does something a person can see.
+**Pre-alpha. Nothing here is installable.** Six crates compile, CI enforces the
+rules the repository is meant to hold itself to, and as of 2026-09-05 the
+harness runs a task: `zaru <task>` starts a session, asks a model, runs the
+tools it asks for, and writes every step to a transcript you can read with
+`cat`.
 
 `zaru` reads its arguments, resolves configuration, and prints what is already
 on this machine. Seven commands run:
@@ -40,12 +42,28 @@ slash. Through a pipe they print the transcript's own bytes and exit, because
 there is nobody there to be inside anything. `/exit` or `Ctrl-C` leaves, and
 both exit 0.
 
-**It cannot run a task**, and it says so rather than letting you find out. A
-provider client exists as of 2026-09-05 — the `gemini` kind, which is the one
-an issued key exists for — but **nothing wires a client to a loop**, and the
-other four of ADR-0012 D3's kinds have no client at all. What is missing is the
-wiring, and it is missing for every kind alike, which is why a task invocation
-is refused with the same sentence whichever alias resolves.
+Anything else you type is a **task**, and running one is what the harness is
+for:
+
+```sh
+zaru providers keys add gemini   # reads the key from standard input, never an argument
+zaru "read src/main.rs and tell me what it does"
+```
+
+One invocation is one turn. It creates `~/.zaru/sessions/<ulid>/` with three
+plain files, asks the model, runs whatever of the seven built-in tools it asks
+for — prompting you before a write or a command, unless you are not at a
+terminal, in which case a call that needed asking is refused rather than
+performed — and prints what the model answered and what the turn cost in
+tokens. At `bare` tier it says, once, that it is not a sandbox, because it is
+not.
+
+**Two things it will refuse.** Four of ADR-0012 D3's five provider kinds have
+no client, so a task against one is refused naming the kind that does. And a
+project whose `zaru.toml` declares validators is refused rather than run,
+because the iteration loop those validators are for does not exist yet and
+running the tool-call loop instead would report work as done that nothing
+checked.
 
 Eleven pieces exist behind that binary and the command surface reaches eight of
 them. The iteration loop and the tool-call loop are in `zaru-core`, headless,

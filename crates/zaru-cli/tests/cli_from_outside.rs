@@ -792,11 +792,15 @@ fn listing_tokens_on_a_fresh_machine_says_so_and_creates_nothing() {
 /// **This pins the reading ruled on 2026-09-05 so that deciding it the other
 /// way reddens.** An unresolved `model.default` is the user's — the remedy
 /// names a key they can set, and setting it moves the refusal on. A resolved
-/// one is not: the user has done their half and this build carries no provider
-/// client, which is presented as ADR-0016 D1's capability class at exit 4. That
-/// class carries a `Tier` and no tier in this build offers a provider, so the
-/// line names `bare` and is true of the design rather than of this binary. D1
-/// has no row for "not built yet" and that is raised as an open question.
+/// one is not, and **both are now the user's**: with no model they have a key
+/// to set, and with a model and no key they have a key to store. Until
+/// 2026-09-05 the second was ADR-0016 D1's capability class at exit 4, because
+/// what was missing then was the wiring; a composition wires it now, so the
+/// only thing left between a configured model and a turn is a credential.
+///
+/// D1's capability class is still reachable and still does not fit -- a project
+/// that declares validators gets it, in `turn_from_outside.rs` -- and D1's
+/// missing row for "not built yet" is still an open question on that record.
 #[test]
 fn the_two_halves_of_a_missing_provider_are_different_classes() {
     let home = Home::new("task");
@@ -820,32 +824,34 @@ fn the_two_halves_of_a_missing_provider_are_different_classes() {
         unconfigured.stderr
     );
 
+    // **The second half changed class on 2026-09-05 and that is this check's
+    // whole subject.** It asserted exit 4 and the sentence "nothing wires a
+    // provider client to a loop", which was true from the day the `gemini`
+    // client landed until the day a composition ran a turn. Something wires
+    // one now, so what a machine with a model and no key is short of is a
+    // **key** -- theirs, at exit 2, with a command they can run. A refusal
+    // that still said "the wiring" would send a reader looking for the wrong
+    // thing.
     let configured = zaru(
         &home,
         &["--model", "a-model-identifier", "do", "a", "thing"],
     );
     assert_eq!(
-        configured.code, 4,
-        "with a model configured what is missing is ours, and D5's capability code is what this \
-         reading claims"
+        configured.code, 2,
+        "with a model configured and no key, what is missing is the user's and the remedy is a \
+         command this binary runs"
     );
-    // The statement says what is missing rather than what the reader should
-    // change -- and since 2026-09-05 what is missing is the **wiring**, not
-    // the client. A `gemini` client exists; nothing connects one to a loop.
-    // The sentence that stood here until then said "no provider client", and
-    // it is corrected rather than loosened: a refusal that overstates what is
-    // absent sends a reader looking for the wrong thing.
     assert!(
-        configured
-            .stderr
-            .contains("nothing wires a provider client to a loop"),
-        "the statement must say what is missing rather than what the reader should change: {}",
+        configured.stderr.contains("providers keys add"),
+        "the remedy must be the command that stores a key: {}",
         configured.stderr
     );
     assert!(
-        !configured.stderr.contains("no provider client"),
-        "the refusal still claims this workspace has no provider client, which stopped being \
-         true when `providers::gemini` landed: {}",
+        !configured
+            .stderr
+            .contains("nothing wires a provider client to a loop"),
+        "the refusal still claims nothing wires a client to a loop, which stopped being true when \
+         the composition landed: {}",
         configured.stderr
     );
     assert!(
@@ -853,6 +859,11 @@ fn the_two_halves_of_a_missing_provider_are_different_classes() {
         "the refusal must name the kind that does have a client, so a reader can tell which of \
          the five they are short of: {}",
         configured.stderr
+    );
+    // Nothing was written for a turn that never began.
+    assert!(
+        !home.path().join(".zaru/sessions").exists(),
+        "a refusal reached before the session created one anyway"
     );
 }
 
@@ -912,5 +923,74 @@ fn adr_0009_d6s_init_writes_once_refuses_twice_and_what_it_wrote_folds() {
         marked[0].trim_start().starts_with("3 ") && marked[0].contains("zaru.toml"),
         "the value came from the manifest `init` wrote: {}",
         explained.stdout
+    );
+}
+
+/// [ADR-0016] D5's `70`, from the real artefact, with no panic anywhere.
+///
+/// # Two records say this is not observable, and both are wrong about it
+///
+/// This record's Status tracking and [ADR-0015]'s both say "`1`, `3` and `70`
+/// did not become observable and none was attempted", reasoning that there is
+/// "no honest way to make the binary panic". The reasoning is right and the
+/// conclusion does not follow: D5's `70` is D1's **defect** class, and a
+/// *reported* defect reaches it without any panic at all.
+///
+/// One is reachable on a machine with a session whose transcript this harness
+/// cannot read back. `ResumeFailure::Transcript` is one of the two variants
+/// [ADR-0016]'s own Update lists as "unmapped, carried as a defect -- this
+/// harness is the only writer of both files, so a complete line it cannot read
+/// back is one it wrote wrongly".
+///
+/// # And the report names the session, which until 2026-09-05 it did not
+///
+/// `cli::run::resume` passed `SessionEvidence::NoSessionExists` on this path,
+/// so the report said "there is no session and no transcript was written"
+/// about a session directory that was right there and a transcript that had
+/// been written. D3 asks for the session id and says the transcript is on
+/// disk; the arm that makes claiming one a compile error was being handed the
+/// wrong arm on the one path with a real session. Both halves are asserted
+/// here, and the second is the one that would go quiet again.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn adr_0016_d5s_seventy_is_a_reported_defect_and_the_report_names_the_session() {
+    let home = Home::new("defect");
+    let id = "01HM2E5Y001440E1G50G1G4080";
+    let session = home.path().join(".zaru/sessions").join(id);
+    std::fs::create_dir_all(&session).expect("a scratch session directory");
+    // A **complete** line -- it ends in a newline -- that is not a record. A
+    // fragment would be the event in flight, which D2 permits and the reader
+    // tolerates by design, so it would assert nothing.
+    std::fs::write(session.join("transcript.jsonl"), "this is not a record\n")
+        .expect("the transcript is written");
+
+    let ran = zaru(&home, &["--resume", id]);
+    assert_eq!(
+        ran.code, 70,
+        "a transcript this harness alone writes and cannot read back is ours, and D5 gives that 70"
+    );
+    assert!(
+        ran.stderr.contains("this is a bug in Zaru"),
+        "D3: a defect says it is a defect: {}",
+        ran.stderr
+    );
+    assert!(
+        ran.stderr.contains(id) && ran.stderr.contains("transcript.jsonl"),
+        "D3's report carries the session id and says where the transcript is: {}",
+        ran.stderr
+    );
+    assert!(
+        !ran.stderr.contains("there is no session"),
+        "the report claimed there is no session about a session that exists: {}",
+        ran.stderr
+    );
+    // The defect boundary's own rule: the message the panic hook would have
+    // printed is not in the report, because the report has no field for one.
+    assert!(
+        !ran.stderr.contains("this is not a record"),
+        "the report quoted the file's contents, which D3's own shape has nowhere to put: {}",
+        ran.stderr
     );
 }
