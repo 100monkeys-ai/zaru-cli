@@ -163,7 +163,11 @@ impl ToolName {
             Self::FsEdit => "Replace an exact string within a file",
             Self::FsList => "List a directory",
             Self::FsSearch => "Content and filename search",
-            Self::CmdRun => "Execute a shell command",
+            // D1's row read "Execute a shell command" until 2026-09-05, and
+            // the harness runs no shell — see `crate::process::line`. The row
+            // was corrected on the record in the same change under the
+            // coordinator's ruling, so this is still a transcription.
+            Self::CmdRun => "Execute a command line (no shell)",
             Self::WebFetch => "Retrieve a URL",
         }
     }
@@ -181,13 +185,35 @@ impl ToolName {
 
     /// Whether this tool addresses something in the filesystem.
     ///
-    /// ADR-0011 D4's working-directory boundary is about paths, and
-    /// `web.fetch` addresses a URL rather than a path. A URL allowlist is a
-    /// separate question that D4 does not raise and no record answers, so
-    /// nothing here classifies one.
+    /// ADR-0011 D4's working-directory boundary is about paths, and **two of
+    /// the seven do not address one**. `web.fetch` addresses a URL; a URL
+    /// allowlist is a separate question that D4 does not raise and no record
+    /// answers, so nothing here classifies one.
+    ///
+    /// # `cmd.run` addresses a command line, and this returned `true` for it
+    /// until 2026-09-05
+    ///
+    /// That was an accident of this predicate being written as "everything
+    /// except `web.fetch`" when the only two shapes in the workspace were a
+    /// path and a URL. Its effect was that a *command string* was measured
+    /// against D4's boundary as though it were a filename: `printf hi`
+    /// resolved to `<root>/printf hi` and counted as in-tree, and
+    /// `../../../bin/printf hi` counted as out-of-tree and was marked — a
+    /// classification of something that is not a path, in the one place the
+    /// record is a security boundary.
+    ///
+    /// **A command's boundary is its working directory**, which
+    /// [`Spawn`](crate::process::Spawn) fixes at D4's root structurally, and
+    /// the record never measured a command string as a path: [ADR-0004] D6's
+    /// worked example decides a `cmd.run` by its program —
+    /// `SUBCOMMAND_DENIED — curl not in allowed_subcommands` — and never by
+    /// where its text resolves. Corrected under the coordinator's ruling of
+    /// 2026-09-05 and recorded on ADR-0011 D4 as an accepted Update.
+    ///
+    /// [ADR-0004]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0004-native-seal-in-the-harness
     #[must_use]
     pub const fn addresses_a_path(self) -> bool {
-        !matches!(self, Self::WebFetch)
+        !matches!(self, Self::WebFetch | Self::CmdRun)
     }
 }
 

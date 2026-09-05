@@ -59,7 +59,9 @@
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
 use crate::session::{Record, ToolCall, Transcript, TranscriptError};
-use crate::tools::decision::{Decision, Invocation, Permission, RefusedBecause, TranscriptEntry};
+use crate::tools::decision::{
+    Decision, Invocation, Permission, RefusedBecause, Subject, TranscriptEntry,
+};
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::output::{Captured, OutputBudget, Overflow, Presented};
@@ -92,6 +94,23 @@ pub enum NotACall {
         /// Which built-in.
         tool: ToolName,
     },
+    /// A `cmd.run` carried something that is not a command line.
+    ///
+    /// **Not a refusal by the harness**, for the same reason its two siblings
+    /// are not: a string carrying a shell construct is not a call this
+    /// surface can make, so there is nothing to permit or deny. The model is
+    /// told which construct and the turn carries on.
+    ///
+    /// **No transcript record is written**, which is the landed shape for
+    /// every `NotACall`: ADR-0011 D4's "mode may remove the prompt; it never
+    /// removes the record" is about a *call*, and nothing was attempted here.
+    /// The refusal is reached before the decision and before the first
+    /// `Phase::Started`, so a resumed session cannot read it as an
+    /// interruption.
+    NotACommandLine {
+        /// Why, in the splitter's own words.
+        because: crate::process::line::NotACommandLine,
+    },
 }
 
 impl core::fmt::Display for NotACall {
@@ -106,6 +125,7 @@ impl core::fmt::Display for NotACall {
                 f,
                 "the call to {tool} carried no target, so there is nothing to address it to"
             ),
+            Self::NotACommandLine { because } => write!(f, "{because}"),
         }
     }
 }
@@ -221,9 +241,20 @@ where
 
     /// Do the thing, having been permitted to.
     ///
-    /// Five of the seven leave through a port with no product implementation.
-    /// The two that stay are the two that cannot create a path.
-    async fn act(&mut self, tool: ToolName, target: &str) -> Result<Captured, PortFailure> {
+    /// Four of the seven leave through a port with no product implementation.
+    /// `fs.read` and `fs.list` act on `std::fs` because neither can create a
+    /// path; `cmd.run` acts through [`Spawn`](crate::process::Spawn).
+    ///
+    /// The invocation is taken rather than the raw target because a `cmd.run`
+    /// has already been split, and splitting it a second time here would be
+    /// the same rule in two places — with a second set of refusals that could
+    /// disagree with the first.
+    async fn act(
+        &mut self,
+        invocation: &Invocation<'_>,
+        target: &str,
+    ) -> Result<Captured, PortFailure> {
+        let tool = invocation.tool();
         match tool {
             ToolName::FsRead => {
                 let resolved = self.working_directory.classify(target);
@@ -235,7 +266,19 @@ where
             }
             ToolName::FsWrite | ToolName::FsEdit => self.writes.apply(tool, target).await,
             ToolName::FsSearch => self.search.find(target).await,
-            ToolName::CmdRun => self.subprocess.run(target).await,
+            ToolName::CmdRun => match invocation.subject() {
+                Subject::Command(line) => self.subprocess.run(line).await,
+                // Unbuildable: `Invocation::running` is the only constructor
+                // that pairs `cmd.run` with a subject, and it takes a
+                // `CommandLine`. Reported as a port failure rather than
+                // panicked on, for the reason the `on_path` refusal above is:
+                // it would be the harness having built the wrong call, which
+                // is a defect rather than anything the user or the model did.
+                Subject::Path(_) | Subject::Url(_) => Err(PortFailure::new(
+                    "a cmd.run was described without its command line, which is a defect in the \
+                     harness rather than anything the call asked for",
+                )),
+            },
             ToolName::WebFetch => self.fetch.retrieve(target).await,
         }
     }
@@ -276,18 +319,45 @@ where
             }
         };
 
-        // The target is classified here, from the request, and the invocation
-        // is built from that classification. A caller cannot supply either.
-        let classified = self.working_directory.classify(&target);
-        let invocation = if tool.addresses_a_path() {
-            Invocation::on_path(tool, &classified).map_err(|refused| {
-                // A URL-addressing tool given a path subject is the harness
-                // having built the wrong call, which is a defect rather than
-                // anything the user or the model did.
-                PortFailure::new(refused.to_string())
-            })?
-        } else {
-            Invocation::fetching(&target)
+        // The subject is derived here, from the request, and the invocation is
+        // built from it. A caller cannot supply either. Both bindings are
+        // declared before the branch because the invocation borrows whichever
+        // one its arm produced.
+        let classified;
+        let line;
+        let invocation = match tool {
+            ToolName::WebFetch => Invocation::fetching(&target),
+            ToolName::CmdRun => {
+                // Split before the decision, because D4's transcript entry
+                // and D3's prompt both show the command, and a string that
+                // has not been split is not yet one. A shell construct is
+                // therefore refused before anything is recorded or asked.
+                line = match crate::process::line::CommandLine::split(&target) {
+                    Ok(line) => line,
+                    Err(because) => {
+                        let refused = NotACall::NotACommandLine { because };
+                        return Ok(ToolOutcome::Refused {
+                            decision: ToolDecision {
+                                statement: refused.to_string(),
+                                permitted: false,
+                            },
+                            id: request.id.clone(),
+                            because: refused.to_string(),
+                        });
+                    }
+                };
+                Invocation::running(&line)
+            }
+            _ => {
+                classified = self.working_directory.classify(&target);
+                Invocation::on_path(tool, &classified).map_err(|refused| {
+                    // A tool that does not address a path given a path
+                    // subject is the harness having built the wrong call,
+                    // which is a defect rather than anything the user or the
+                    // model did.
+                    PortFailure::new(refused.to_string())
+                })?
+            }
         };
 
         let decision = Decision::assess(self.mode, &invocation, self.allowlist, self.destructive);
@@ -317,7 +387,7 @@ where
                 // inside the act leaves a `Started` with nothing closing it —
                 // which is what ADR-0010 D4's `Interrupted` is derived from.
                 self.record(&Record::ToolCall(ToolCall::started(&entry)))?;
-                let captured = self.act(tool, &target).await?;
+                let captured = self.act(&invocation, &target).await?;
                 let presented = captured
                     .present(self.budget, self.redactor, Some(&mut *self.overflow))
                     .map_err(|refused| PortFailure::new(refused.to_string()))?;

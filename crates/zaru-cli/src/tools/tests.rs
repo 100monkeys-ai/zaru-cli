@@ -18,6 +18,7 @@
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
+use crate::process::line::CommandLine;
 use crate::redaction::HeldSecrets;
 use crate::tools::decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
@@ -757,11 +758,22 @@ fn the_prompting_rule_is_the_records_at_every_mode() {
         ),
         (
             Mode::Yolo,
-            ToolName::CmdRun,
+            ToolName::FsWrite,
             true,
             false,
             Requirement::Proceed,
-            "D4 removes the prompt at `yolo` and keeps the record; this row is the first half",
+            "D4 removes the prompt at `yolo` and keeps the record; this row is the first half. \
+          It was a `cmd.run` row until 2026-09-05, when a command stopped being measured \
+          against D4's boundary as though it were a path — a command's boundary is the \
+          working directory it starts in",
+        ),
+        (
+            Mode::Yolo,
+            ToolName::CmdRun,
+            false,
+            false,
+            Requirement::Proceed,
+            "`yolo` prompts for nothing at all, a command included",
         ),
         (
             Mode::Yolo,
@@ -773,10 +785,25 @@ fn the_prompting_rule_is_the_records_at_every_mode() {
         ),
     ];
 
+    // `cmd.run` addresses a command line rather than a path, so its rows are
+    // built through the constructor that takes one. A row that asked for a
+    // command *out of tree* is a staging error rather than a case: a command
+    // has no placement at all, and silently ignoring the flag would make the
+    // table read as covering something it cannot.
+    let command = CommandLine::split("printf hello").expect("a command line");
     let mut wrong = Vec::new();
     for (mode, tool, out_of_tree, allowlisted, expected, why) in &cases {
         let target = if *out_of_tree { &outside } else { &inside };
-        let invocation = Invocation::on_path(*tool, target).expect("these tools address paths");
+        let invocation = if *tool == ToolName::CmdRun {
+            assert!(
+                !*out_of_tree,
+                "the case {why:?} asks for a command line out of tree, and a command line has no \
+                 placement against the working directory"
+            );
+            Invocation::running(&command)
+        } else {
+            Invocation::on_path(*tool, target).expect("these tools address paths")
+        };
         let assessment = if *allowlisted { allowed } else { not_allowed };
         let got = Decision::reach(*mode, &invocation, assessment).requirement();
         if got != *expected {
@@ -805,7 +832,7 @@ fn the_prompting_rule_is_the_records_at_every_mode() {
     );
     assert_eq!(
         cases.len(),
-        15,
+        16,
         "the prompting table shrank; each row is a clause of D3 or D4"
     );
 }
@@ -1019,11 +1046,10 @@ fn an_out_of_tree_call_renders_differently_from_an_ordinary_one() {
 /// pattern list feels like it should stop something.
 #[test]
 fn a_destructive_match_annotates_and_raises_prominence_and_never_vetoes() {
-    let tree = ScratchTree::new();
-    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
-    let target = working.classify("inside/file");
-    let invocation =
-        Invocation::on_path(ToolName::CmdRun, &target).expect("cmd.run addresses a path");
+    // No working directory is staged: a command line is not measured against
+    // one, which is the whole of the 2026-09-05 correction.
+    let line = CommandLine::split("rm -rf inside").expect("a command line");
+    let invocation = Invocation::running(&line);
 
     let quiet = Decision::assess(
         Mode::Yolo,
@@ -1137,11 +1163,10 @@ fn the_prompt_states_what_the_transcript_will_record() {
 /// who approved reading one path has said nothing about running a command.
 #[test]
 fn the_allowlist_is_asked_about_the_tool_and_its_target_together() {
-    let tree = ScratchTree::new();
-    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
-    let target = working.classify("inside/file");
-    let invocation =
-        Invocation::on_path(ToolName::CmdRun, &target).expect("cmd.run addresses a path");
+    // No working directory is staged: a command line is not measured against
+    // one, which is the whole of the 2026-09-05 correction.
+    let line = CommandLine::split("printf inside/file").expect("a command line");
+    let invocation = Invocation::running(&line);
     let allowlist = StagedAllowlist::approving();
 
     let _ = Decision::assess(
@@ -1170,15 +1195,14 @@ fn the_allowlist_is_asked_about_the_tool_and_its_target_together() {
     );
 }
 
-/// `web.fetch` cannot be described as a call on a path, and a path tool
-/// cannot be described as a fetch.
+/// Two built-ins do not address a path, and a path tool is neither of them.
 ///
 /// ADR-0011 D4's boundary is about paths. Modelling a URL as one would make
 /// the classifier answer a question it has no rule for; no record defines a
 /// boundary for outbound destinations, and inventing one would be authoring a
 /// security vocabulary.
 #[test]
-fn a_url_is_not_a_path_and_carries_no_placement() {
+fn two_built_ins_do_not_address_a_path_and_carry_no_placement() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
     let target = working.classify("inside/file");
@@ -1199,9 +1223,30 @@ fn a_url_is_not_a_path_and_carries_no_placement() {
          no record states"
     );
 
+    let line = CommandLine::split("printf hello").expect("a command line");
+    let command = Invocation::running(&line);
+    assert_eq!(command.tool(), ToolName::CmdRun);
+    assert_eq!(
+        command.placement(),
+        None,
+        "a command line has no placement against the working directory: its boundary is the \
+         directory it is started in, which `Spawn` fixes at D4's root"
+    );
+    assert_eq!(
+        command.subject_text(),
+        "printf hello",
+        "a command's transcript subject is the command line itself, which is what makes \
+         ADR-0010's \"a rendered `cmd.run` line is a command line\" true"
+    );
+    assert!(
+        Invocation::on_path(ToolName::CmdRun, &target).is_err(),
+        "a command line was accepted as a path, which is the classification corrected on \
+         2026-09-05: D4 measures the paths a tool addresses, and a command addresses none"
+    );
+
     // The arm that discriminates: every other built-in does take a path.
     for tool in ToolName::ALL {
-        if tool == ToolName::WebFetch {
+        if matches!(tool, ToolName::WebFetch | ToolName::CmdRun) {
             continue;
         }
         assert!(

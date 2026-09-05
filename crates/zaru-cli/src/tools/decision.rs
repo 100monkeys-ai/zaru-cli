@@ -44,6 +44,7 @@
 //! only refusal this module can produce is a user answering no — or nobody
 //! being there to answer, which is not the harness deciding either.
 
+use crate::process::line::CommandLine;
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Question};
@@ -62,7 +63,9 @@ impl fmt::Display for InvocationRefused {
         write!(
             f,
             "the tool {} does not address a filesystem path, so it cannot be described as a call \
-             on one. ADR-0011 D4's boundary is about paths, and `web.fetch` addresses a URL",
+             on one. ADR-0011 D4's boundary is about paths, and two of D1's seven address \
+             something else: `web.fetch` addresses a URL and `cmd.run` addresses a command line, \
+             whose boundary is the working directory it is started in",
             self.tool
         )
     }
@@ -72,15 +75,27 @@ impl std::error::Error for InvocationRefused {}
 
 /// What a tool call is addressed to.
 ///
-/// Two variants, because ADR-0011 D4's boundary is about paths and one of
-/// D1's seven built-ins does not address one. A URL is carried as itself and
-/// is **not** classified: no record defines a boundary for outbound
-/// destinations, and inventing one would be authoring a security vocabulary.
-/// That gap is recorded on the record rather than filled here.
+/// Three variants, because ADR-0011 D4's boundary is about paths and two of
+/// D1's seven built-ins do not address one.
+///
+/// A URL is carried as itself and is **not** classified: no record defines a
+/// boundary for outbound destinations, and inventing one would be authoring a
+/// security vocabulary. That gap is recorded on the record rather than filled
+/// here.
+///
+/// A command line is carried as itself for a different reason. **Its boundary
+/// is the working directory it is started in**, which
+/// [`Spawn`](crate::process::Spawn) fixes at D4's root structurally, so there
+/// is nothing left for a path classification to decide. Measuring the command
+/// *text* against D4 is what this module did until 2026-09-05 and it was an
+/// accident — see
+/// [`ToolName::addresses_a_path`](crate::tools::ToolName::addresses_a_path).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject<'a> {
     /// A filesystem path, already classified against the working directory.
     Path(&'a Target),
+    /// A command line, already split into a program and its arguments.
+    Command(&'a CommandLine),
     /// A URL, which D4 says nothing about.
     Url(&'a str),
 }
@@ -98,7 +113,9 @@ impl<'a> Invocation<'a> {
     /// # Errors
     ///
     /// [`InvocationRefused`] when `tool` does not address a path, which is
-    /// `web.fetch` alone.
+    /// `web.fetch` and `cmd.run`. Those two have their own constructors,
+    /// [`Invocation::fetching`] and [`Invocation::running`], each taking the
+    /// subject that tool actually addresses.
     pub fn on_path(tool: ToolName, target: &'a Target) -> Result<Self, InvocationRefused> {
         if !tool.addresses_a_path() {
             return Err(InvocationRefused { tool });
@@ -121,6 +138,21 @@ impl<'a> Invocation<'a> {
         }
     }
 
+    /// The one built-in that addresses a command line.
+    ///
+    /// The tool is not a parameter for the reason
+    /// [`Invocation::fetching`]'s is not: there is exactly one, and this is
+    /// the only constructor that produces [`Subject::Command`], so a
+    /// `cmd.run` paired with any other subject is not a value this crate can
+    /// build.
+    #[must_use]
+    pub const fn running(line: &'a CommandLine) -> Self {
+        Self {
+            tool: ToolName::CmdRun,
+            subject: Subject::Command(line),
+        }
+    }
+
     /// Which built-in this is.
     #[must_use]
     pub const fn tool(&self) -> ToolName {
@@ -135,23 +167,30 @@ impl<'a> Invocation<'a> {
 
     /// Which of ADR-0011 D4's classes the target falls in, where D4 applies.
     ///
-    /// `None` for a URL. A caller that treats `None` as in-tree is not wrong
-    /// — D4's rule is about the working directory and a URL is not measured
-    /// against it — but saying so is the reason this is an `Option` rather
-    /// than a default.
+    /// `None` for a URL and for a command line. A caller that treats `None`
+    /// as in-tree is not wrong — D4's rule is about the working directory,
+    /// a URL is not measured against it, and a command line's working
+    /// directory *is* it — but saying so is the reason this is an `Option`
+    /// rather than a default.
     #[must_use]
     pub const fn placement(&self) -> Option<Placement> {
         match self.subject {
             Subject::Path(target) => Some(target.placement()),
-            Subject::Url(_) => None,
+            Subject::Command(_) | Subject::Url(_) => None,
         }
     }
 
     /// What the target is called wherever this call is shown.
+    ///
+    /// For a command line this is the command itself, quoted exactly as
+    /// [`CommandLine::split`] would accept it back — which is what makes
+    /// ADR-0010's sentence that "a rendered `cmd.run` line **is** a command
+    /// line" true rather than approximately true.
     #[must_use]
     pub fn subject_text(&self) -> String {
         match self.subject {
             Subject::Path(target) => target.resolved().display().to_string(),
+            Subject::Command(line) => line.render(),
             Subject::Url(url) => url.to_owned(),
         }
     }

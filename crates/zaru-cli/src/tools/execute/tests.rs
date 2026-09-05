@@ -82,7 +82,10 @@ impl Search for Unbuilt {
     }
 }
 impl Subprocess for Unbuilt {
-    async fn run(&self, _command: &str) -> Result<Captured, PortFailure> {
+    async fn run(
+        &self,
+        _line: &crate::process::line::CommandLine,
+    ) -> Result<Captured, PortFailure> {
         Err(PortFailure::new(format!("cmd.run {UNBUILT}")))
     }
 }

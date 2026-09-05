@@ -129,18 +129,33 @@ pub trait Confirm {
     fn confirm(&self, question: &Question) -> bool;
 }
 
-/// Executes a shell command. `cmd.run`.
+/// Executes a command line. `cmd.run`.
 ///
-/// **No product implementation**, and nothing in this workspace spawns a
-/// process outside a test tree. It is also the tool ADR-0011 D6's four
-/// destructive categories are mostly about, and
-/// [`DestructiveMatch`] has no implementation either — so a
-/// `cmd.run` that acted could not be given the prompt prominence D6 requires.
+/// # It takes a [`CommandLine`](crate::process::CommandLine) and not a
+/// string, and that is the no-shell rule
+///
+/// Splitting text into a program and arguments is
+/// [`crate::process::line`]'s, and it happens **before** the permission
+/// decision, because [ADR-0011] D4's transcript entry and D3's prompt both
+/// show the command and a string that has not been split is not yet one. So
+/// by the time this port is reached the shell constructs are already refused
+/// and the program is already separated from its arguments; an implementation
+/// has nothing left to interpret, which is what makes "the harness runs no
+/// shell" a property of this signature.
+///
+/// The product implementation is [`Spawn`](crate::process::Spawn), which is
+/// the first thing in this workspace to start a child process. It is also the
+/// tool ADR-0011 D6's four destructive categories are mostly about, and
+/// [`DestructiveMatch`] still has no implementation — so a `cmd.run` cannot
+/// yet be given the prompt prominence D6 requires, which is a gap in the
+/// prompt rather than in the act.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub trait Subprocess {
-    /// Run the command and capture what it produced.
+    /// Run the command line and capture what it produced.
     fn run(
         &self,
-        command: &str,
+        line: &crate::process::line::CommandLine,
     ) -> impl core::future::Future<
         Output = Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure>,
     > + Send;

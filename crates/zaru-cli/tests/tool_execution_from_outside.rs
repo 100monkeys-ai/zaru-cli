@@ -21,6 +21,7 @@
 use core::time::Duration;
 use std::sync::Mutex;
 use zaru_cli::failure::{Class, Presentation};
+use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
@@ -191,7 +192,7 @@ impl zaru_cli::tools::Search for Unbuilt {
     }
 }
 impl Subprocess for Unbuilt {
-    async fn run(&self, _command: &str) -> Result<Captured, PortFailure> {
+    async fn run(&self, _line: &CommandLine) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("cmd.run has no implementation"))
     }
 }
