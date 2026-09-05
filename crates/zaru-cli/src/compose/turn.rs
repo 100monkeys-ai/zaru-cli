@@ -643,6 +643,15 @@ pub fn prepare(
 /// here would restart at one every turn". [`task`] passes `1`; a shell counts
 /// up.
 ///
+/// `start` is what the turn is about, and it is the **caller's** for the same
+/// reason `n` is. [`task`] passes [`Start::Task`]; a shell passes that for a
+/// line the user typed and [`Start::Resumed`] for the one turn a session
+/// resumed over an interrupted transcript owes the model first — [ADR-0010]
+/// D4's "the model is told it did not complete". It is a required parameter
+/// rather than a defaulted one so that the compiler names every call site that
+/// should have been asked which of the two this is (library
+/// [Verification lessons] §14).
+///
 /// `confirmer` is [ADR-0011] D3's `ask`. `None` refuses a call that needed one
 /// rather than performing it, which is `Decision::permit`'s own rule.
 ///
@@ -662,8 +671,10 @@ pub fn prepare(
 /// own answer.
 ///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -682,7 +693,7 @@ pub async fn run_one(
     prepared: &Prepared,
     session: &crate::session::Session,
     n: u32,
-    task: &str,
+    start: Start<'_>,
     confirmer: Option<&(dyn crate::tools::Confirm + Sync)>,
     extra: &mut [&mut dyn zaru_core::tool_call::EventSink],
     narrator: Option<&dyn crate::compose::Narrator>,
@@ -885,7 +896,7 @@ pub async fn run_one(
         }
         let ran = tool_call::run(
             n,
-            Start::Task(task),
+            start,
             layers::tool_call_ceiling(),
             prepared.witness,
             Ports {
@@ -1037,7 +1048,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         &prepared,
         &session,
         1,
-        task,
+        Start::Task(task),
         confirmer
             .as_ref()
             .map(|prompt| prompt as &(dyn crate::tools::Confirm + Sync)),

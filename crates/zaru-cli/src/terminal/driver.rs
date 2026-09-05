@@ -24,6 +24,7 @@ use crate::tools::port::Question;
 use core::time::Duration;
 use zaru_core::iteration::Interruption;
 use zaru_core::redaction::Redactor;
+use zaru_core::tool_call::Start;
 use zaru_tui::shell::port::{Confirmation, Line, Register};
 use zaru_tui::shell::{Action, Command, Shell};
 
@@ -813,10 +814,20 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     entries: &dyn zaru_tui::composer::Entries,
     now: &mut Duration,
     turns: &mut Turns<'_>,
-    task: &str,
+    start: Start<'_>,
 ) -> Turned {
     let n = turns.next;
     turns.next += 1;
+
+    // What [ADR-0013] D1's layer 6 records as this turn's own side of the
+    // exchange, taken off the start rather than from a second argument: the
+    // task the user typed, or the interrupted call's own rendered line, which
+    // is the same bytes `compose::context` assembled the prompt over. A second
+    // string here would be a second description of one turn.
+    let said = match &start {
+        Start::Task(task) => (*task).to_owned(),
+        Start::Resumed(interrupted) => interrupted.call().to_owned(),
+    };
 
     let mut tools = crate::compose::ToolLines::default();
     let raced = {
@@ -843,7 +854,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
                 turns.prepared,
                 turns.session,
                 n,
-                task,
+                start,
                 Some(&confirm as &(dyn crate::tools::Confirm + Sync)),
                 &mut extra,
                 Some(&narrator as &dyn crate::compose::Narrator),
@@ -873,7 +884,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         .context
         .record(crate::compose::boundary::exchange_of_turn(
             redactor,
-            task,
+            &said,
             &tool_lines,
             &ran.lines.join("\n"),
         ));
@@ -1130,7 +1141,14 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 let lines = match turns {
                     Turnable::Ready(turns) => {
                         match run_a_turn(
-                            shell, surface, source, pace, entries, &mut now, turns, &task,
+                            shell,
+                            surface,
+                            source,
+                            pace,
+                            entries,
+                            &mut now,
+                            turns,
+                            Start::Task(&task),
                         )
                         .await
                         {
