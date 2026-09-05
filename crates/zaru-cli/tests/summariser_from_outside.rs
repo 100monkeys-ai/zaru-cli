@@ -553,3 +553,138 @@ fn model_id(name: &str) -> zaru_cli::providers::ModelId {
         ResolvedModel::Unresolved => panic!("the alias was set above"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0013 clause 5 — the number on the status row, from outside both crates
+// ---------------------------------------------------------------------------
+
+/// A restored session's row carries what the checkpoint held.
+///
+/// **A seam check, and the seam is where it stops.** [ADR-0010] D3's
+/// checkpoint round-trips through `SessionContext::checkpoint` and
+/// `SessionContext::restored`, and this asserts the restored context reports
+/// the count the stored one did and that the count reaches a painted row.
+///
+/// **It is not a claim about `zaru --resume`.** `terminal::open` opens a
+/// *fresh* `SessionContext` and `SessionContext::restored` has no product
+/// caller, so on a real machine a resumed session's layer 6 is empty and its
+/// row shows the prefix alone. That gap is named on [ADR-0010] and
+/// [ADR-0013] rather than papered over here, and nothing below is quoted as
+/// evidence against the binary.
+///
+/// The mutant: `restored` ignoring the stored exchanges, which is exactly the
+/// failure that record's own documentation says would "look exactly like a
+/// session that had none".
+#[test]
+fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
+    use zaru_cli::terminal::driver::refresh_status;
+    use zaru_tui::shell::{Shell, Status};
+
+    let held = HeldSecrets::none();
+    let saved = session_carrying("nothing-here");
+    let stored = saved.checkpoint();
+    let expected = saved.usage(&held).used();
+
+    let restored = SessionContext::restored(prefix_for(), tight(), &stored)
+        .expect("the checkpoint this type wrote is one it can read");
+
+    assert_eq!(
+        restored.usage(&held).used(),
+        expected,
+        "ADR-0010 D3's checkpoint is what the model needs to continue, so a restored context must \
+         cost what the saved one cost"
+    );
+    assert!(
+        expected > 0,
+        "the staging must actually carry exchanges, or this check compares two empty contexts"
+    );
+
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    refresh_status(&mut shell, &restored, None, &held);
+
+    let segment = shell
+        .status()
+        .context
+        .clone()
+        .expect("a restored session has a context");
+    assert!(
+        segment.contains(&zaru_cli::cli::render::thousands(expected)),
+        "the restored count must reach the row; the segment was {segment:?}"
+    );
+
+    // The empty case, so the check above cannot be satisfied by a `restored`
+    // that returns whatever it likes: a checkpoint with no exchanges must
+    // report the prefix alone, and that is a smaller number than the one above.
+    let empty = SessionContext::opened(prefix_for(), tight());
+    assert!(
+        SessionContext::restored(prefix_for(), tight(), &empty.checkpoint())
+            .expect("an empty checkpoint is legal")
+            .usage(&held)
+            .used()
+            < expected,
+        "a checkpoint holding no exchanges must restore to less than one holding seven"
+    );
+}
+
+/// A held secret that reached layer 6 is measured by the row and printed by
+/// nothing.
+///
+/// **The status row is a rendering of layer 6, so it is a boundary.** The
+/// count comes from `Context::usage`, which measures the *redacted* text, and
+/// the number is a number — but "the number is a number" is an argument, and
+/// this record's own [ADR-0008] clause 6 obligations are checked rather than
+/// argued. So a real credential store holds a real bearer, a tool result in
+/// layer 6 carries it, and the painted row is asserted free of it **by value
+/// and by ASCII core** ([Verification lessons] §63).
+///
+/// The **accepting sibling** is in the same body and is what makes the absence
+/// mean anything: the same walk over the same row finds the count, so the
+/// instrument demonstrably reads a populated row rather than an empty one
+/// (§8, and `the_absence_walk_finds_the_value_when_nothing_is_held` above is
+/// the file's own general form).
+///
+/// The mutant: measuring the unredacted text in `Context::usage`, which does
+/// not put the value on the row — so this check is honest about what it can
+/// see, and what it can see is a renderer that put layer 6's text there.
+#[test]
+fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
+    use zaru_cli::terminal::driver::refresh_status;
+    use zaru_tui::shell::{Shell, Status};
+
+    let scratch = Scratch::new("status-row");
+    let planted = planted_bearer("row");
+    let held = holding(&scratch, &planted);
+    let context = session_carrying(&planted);
+
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    refresh_status(&mut shell, &context, None, &held);
+
+    let row = shell.status().painted();
+    let debugged = format!("{:?}", shell.status());
+
+    for (what, haystack) in [("the painted row", &row), ("the row's Debug", &debugged)] {
+        assert!(
+            !haystack.contains(&planted),
+            "{what} carries the planted bearer by value: {haystack}"
+        );
+        assert!(
+            !haystack.contains(ascii_core(&planted)),
+            "{what} carries the planted bearer's ASCII core, which no escaping scheme alters: \
+             {haystack}"
+        );
+    }
+
+    // The accepting sibling. Without it the two arms above pass on an empty
+    // row, which is the shape [Verification lessons] §8 is about.
+    let used = context.usage(&held).used();
+    assert!(
+        row.contains(&zaru_cli::cli::render::thousands(used)),
+        "the walk must be over a row that actually carries the count, or its absences say \
+         nothing; the row was {row:?}"
+    );
+    assert!(
+        used > 0 && !held.is_empty(),
+        "the staging must hold a secret and a populated context: {used} token(s), {} held",
+        held.len()
+    );
+}
