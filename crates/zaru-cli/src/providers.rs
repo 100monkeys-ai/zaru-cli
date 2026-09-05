@@ -50,11 +50,13 @@
 //! [Ubiquitous Language]: https://100monkeys-ai.cortex.page/zaru/p/architecture/ubiquitous-language
 
 pub mod alias;
+pub mod capability;
 pub mod endpoint;
 pub mod kind;
 pub mod resolution;
 
 pub use alias::ModelAlias;
+pub use capability::{CapabilityRefused, ProviderCapabilities};
 pub use endpoint::{EndpointRefused, ProviderEndpoint};
 pub use kind::ProviderKind;
 pub use resolution::{

@@ -9,10 +9,11 @@ use crate::config::environment::variable_name;
 use crate::config::{
     ConfigRefused, Contribution, Field, Key, Layer, Resolution, Schema, Source, Table, Value,
 };
+use crate::failure::{Class, Classified};
 use crate::providers::resolution::ModelTable;
 use crate::providers::{
-    EndpointRefused, ModelAlias, ProviderEndpoint, ProviderKind, ResolvedModel, TableRefused,
-    declare, endpoint_of, fields,
+    CapabilityRefused, EndpointRefused, ModelAlias, ModelIdRefused, ProviderCapabilities,
+    ProviderEndpoint, ProviderKind, ResolvedModel, TableRefused, declare, endpoint_of, fields,
 };
 use std::collections::BTreeSet;
 
@@ -666,4 +667,143 @@ fn nothing_outside_the_resolution_table_can_build_a_model_identifier() {
         "ADR-0012 D1 puts a model identifier in one place, and these would let it be built \
          anywhere: {found:?}"
     );
+}
+
+/// **ADR-0012 trigger clause 3, configuration-time half: a provider that
+/// cannot call tools is refused before anything runs, and the refusal says
+/// what to change.**
+///
+/// Both arms. A descriptor that *can* call tools is accepted, which is what
+/// separates this from a check that refuses everything, and the refusal names
+/// the alias, the kind and a remedy the reader can act on.
+#[test]
+fn a_provider_that_cannot_call_tools_is_refused_at_configuration_time() {
+    let able = ProviderCapabilities::declared(true, true, true);
+    for alias in ModelAlias::ALL {
+        for kind in ProviderKind::ALL {
+            assert_eq!(
+                able.require_tool_calling(alias, kind),
+                Ok(()),
+                "a provider that declares it calls tools must be taken"
+            );
+        }
+    }
+
+    let unable = ProviderCapabilities::declared(true, false, true);
+    for alias in ModelAlias::ALL {
+        for kind in ProviderKind::ALL {
+            assert_eq!(
+                unable.require_tool_calling(alias, kind),
+                Err(CapabilityRefused::ToolCallingUnavailable { alias, kind }),
+                "ADR-0012 D3 has a provider that cannot call tools say so at configuration time"
+            );
+        }
+    }
+}
+
+/// The refusal reaches the reader as ADR-0016's user-correctable class, with a
+/// remedy naming the alias, the provider and what to change.
+///
+/// Not the capability class: ADR-0016 D1's capability row is "the tier does not
+/// offer this. Says which tier does" and carries a `Tier`, and no tier is what
+/// is wrong here — every tier can reach a provider that calls tools.
+#[test]
+fn the_tool_calling_refusal_is_user_correctable_and_names_the_alias_the_kind_and_a_remedy() {
+    let refusal = CapabilityRefused::ToolCallingUnavailable {
+        alias: ModelAlias::Reasoning,
+        kind: ProviderKind::Ollama,
+    };
+    let classified = Classified::from(refusal);
+
+    assert_eq!(
+        classified.class(),
+        Class::UserCorrectable,
+        "the user can act: they can point the alias somewhere else"
+    );
+
+    let said = classified
+        .statement()
+        .expect("a user-correctable failure carries a statement")
+        .to_string();
+    for needed in ["reasoning", "ollama", "mid-loop"] {
+        assert!(
+            said.contains(needed),
+            "the statement must say {needed:?} so the reader knows what happened; it said {said:?}"
+        );
+    }
+
+    let remedy = classified
+        .remedy()
+        .expect("a user-correctable failure carries a remedy");
+    let lead = remedy
+        .actions()
+        .next()
+        .expect("a remedy always has a first action")
+        .lead()
+        .to_string();
+    for needed in ["model.reasoning", "ollama"] {
+        assert!(
+            lead.contains(needed),
+            "ADR-0016 D2 says exactly what to change, and this remedy does not name {needed:?}: \
+             {lead:?}"
+        );
+    }
+}
+
+/// Every refusal this module can raise reaches the reader classified, and the
+/// two that are ours are reported as defects rather than as the user's fault.
+///
+/// ADR-0016 D3: "Never present a defect as a user error." `NotText` fires only
+/// when a caller declared this record's own key as something other than text,
+/// and `NoSupplyingLayer` cannot be reached through ADR-0014 D3's explanation
+/// at all; both are this harness's.
+#[test]
+fn the_resolution_tables_own_refusals_are_classified_and_ours_are_defects() {
+    let ours = [
+        TableRefused::NotText {
+            alias: ModelAlias::Default,
+            found: "a whole number",
+        },
+        TableRefused::NoSupplyingLayer {
+            key: ModelAlias::Local.key(),
+        },
+    ];
+    for refusal in ours {
+        assert_eq!(
+            Classified::from(refusal.clone()).class(),
+            Class::Defect,
+            "{refusal:?} is this harness's and must not be presented as the user's"
+        );
+    }
+
+    let theirs = [
+        TableRefused::UnusableModelId {
+            alias: ModelAlias::Fast,
+            refusal: ModelIdRefused::Empty,
+        },
+        TableRefused::UnusableEndpoint {
+            kind: ProviderKind::Aegis,
+            refusal: EndpointRefused::Empty,
+        },
+    ];
+    for refusal in theirs {
+        let classified = Classified::from(refusal.clone());
+        assert_eq!(
+            classified.class(),
+            Class::UserCorrectable,
+            "{refusal:?} is a value the user configured"
+        );
+        let lead = classified
+            .remedy()
+            .expect("a user-correctable failure carries a remedy")
+            .actions()
+            .next()
+            .expect("a remedy always has a first action")
+            .lead()
+            .to_string();
+        assert!(
+            lead.contains("model.fast") || lead.contains("provider.aegis.endpoint"),
+            "the remedy must name the key the reader has to edit: {lead:?}"
+        );
+    }
 }

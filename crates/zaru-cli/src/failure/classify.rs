@@ -78,6 +78,7 @@ use crate::credentials::{AliasRefused, DescriptionRefused, SecretRefused};
 use crate::failure::classified::Classified;
 use crate::failure::defect::DefectReport;
 use crate::failure::remedy::{Action, Remedy, Statement};
+use crate::providers::{CapabilityRefused, EndpointRefused, ModelIdRefused, TableRefused};
 use crate::tools::{InvocationRefused, ModeRefused, TreeError};
 
 /// A remedy of one described action, built from a sentence.
@@ -337,5 +338,130 @@ impl From<InvocationRefused> for Classified {
             crate::failure::defect::Location::unknown(),
             crate::failure::defect::SessionEvidence::NoSessionExists,
         ))
+    }
+}
+
+/// ADR-0012 D5's endpoint. A value the user wrote into their own
+/// configuration, so D1 row 2.
+impl From<EndpointRefused> for Classified {
+    fn from(refusal: EndpointRefused) -> Self {
+        let remedy = Remedy::from(refusal.clone());
+        correctable(&refusal, remedy)
+    }
+}
+
+/// The remedy for an endpoint, reachable from the refusal itself and from the
+/// resolution table that wraps it.
+impl From<EndpointRefused> for Remedy {
+    fn from(refusal: EndpointRefused) -> Self {
+        match refusal {
+            EndpointRefused::Empty => act(
+                "give the provider an endpoint, or remove the key and let the provider's own \
+                 default stand"
+                    .to_owned(),
+            ),
+            EndpointRefused::Control { offered } => act(format!(
+                "remove the control character from the endpoint {offered:?}"
+            )),
+            EndpointRefused::SurroundingWhitespace { offered } => act(format!(
+                "remove the space at the start or end of the endpoint {offered:?}"
+            )),
+        }
+    }
+}
+
+/// ADR-0012 D1's model identifier. Whatever a layer resolved an alias to, which
+/// is text a person wrote.
+impl From<ModelIdRefused> for Classified {
+    fn from(refusal: ModelIdRefused) -> Self {
+        let remedy = Remedy::from(refusal.clone());
+        correctable(&refusal, remedy)
+    }
+}
+
+/// The remedy for a model identifier, reachable from both sites.
+impl From<ModelIdRefused> for Remedy {
+    fn from(refusal: ModelIdRefused) -> Self {
+        match refusal {
+            ModelIdRefused::Empty => act(
+                "name a model for that alias, or remove the key so the alias resolves to nothing"
+                    .to_owned(),
+            ),
+            ModelIdRefused::Control { offered } => act(format!(
+                "remove the control character from the model identifier {offered:?}"
+            )),
+            ModelIdRefused::SurroundingWhitespace { offered } => act(format!(
+                "remove the space at the start or end of the model identifier {offered:?}"
+            )),
+        }
+    }
+}
+
+/// ADR-0012 D3's capability descriptor, consulted at configuration time.
+///
+/// **Not [`Classified::Capability`]**, and the difference is worth stating:
+/// ADR-0016 D1's capability row is "the tier does not offer this. Says which
+/// tier does", and it carries a [`Tier`](crate::tools::Tier). A provider that
+/// cannot call tools is not a property of any tier — every tier can reach a
+/// provider that does — so naming one would be a lie the type would force. The
+/// user can act, and what they can do is point the alias somewhere else, so it
+/// is D1 row 2.
+impl From<CapabilityRefused> for Classified {
+    fn from(refusal: CapabilityRefused) -> Self {
+        let remedy = match &refusal {
+            CapabilityRefused::ToolCallingUnavailable { alias, kind } => act(format!(
+                "set `{key}` to a model whose provider calls tools, or configure a provider other \
+                 than `{kind}` for it; the alias `{alias}` is for {intent}",
+                key = alias.key(),
+                intent = alias.intent(),
+            )),
+        };
+        correctable(&refusal, remedy)
+    }
+}
+
+/// ADR-0012's resolution table.
+///
+/// Two of the four are ours for the reason ADR-0014's two are: `NotText` fires
+/// only when a caller built a schema declaring this record's own key as
+/// something other than text, and `NoSupplyingLayer` is unreachable through
+/// ADR-0014 D3's explanation, which marks the first row carrying a value.
+impl From<TableRefused> for Classified {
+    fn from(refusal: TableRefused) -> Self {
+        let remedy = match &refusal {
+            TableRefused::NotText { .. } | TableRefused::NoSupplyingLayer { .. } => {
+                return Classified::Defect(DefectReport::new(
+                    env!("CARGO_PKG_VERSION"),
+                    env!("CARGO_PKG_REPOSITORY"),
+                    crate::failure::defect::Location::unknown(),
+                    crate::failure::defect::SessionEvidence::NoSessionExists,
+                ));
+            }
+            TableRefused::UnusableModelId { alias, refusal } => {
+                let named = Remedy::from(refusal.clone());
+                act(format!(
+                    "`{key}` names a model, and {lead}",
+                    key = alias.key(),
+                    lead = named
+                        .actions()
+                        .next()
+                        .expect("a remedy always has a first action")
+                        .lead(),
+                ))
+            }
+            TableRefused::UnusableEndpoint { kind, refusal } => {
+                let named = Remedy::from(refusal.clone());
+                act(format!(
+                    "`{key}` names where `{kind}` is reached, and {lead}",
+                    key = kind.endpoint_key(),
+                    lead = named
+                        .actions()
+                        .next()
+                        .expect("a remedy always has a first action")
+                        .lead(),
+                ))
+            }
+        };
+        correctable(&refusal, remedy)
     }
 }
