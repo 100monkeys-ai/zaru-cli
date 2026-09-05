@@ -62,8 +62,29 @@ pub const API_VERSION: &str = "v1beta";
 
 /// The method this client calls.
 ///
-/// Not `streamGenerateContent`. See [`super`].
-pub const METHOD: &str = "generateContent";
+/// **`streamGenerateContent` since 2026-09-05, and it is the only method this
+/// client calls.** The non-streamed `generateContent` was not kept beside it:
+/// the harness is pre-alpha and two paths for one exchange would be two
+/// answers to what a request to this provider is, with no record asking for
+/// the second. A stream of one frame is exactly the old response, which
+/// `map::fold` makes true rather than merely likely, so nothing was lost by
+/// removing it.
+pub const METHOD: &str = "streamGenerateContent";
+
+/// The transport the streamed method is asked for.
+///
+/// Without this, `streamGenerateContent` returns a streamed **JSON array** --
+/// one document delivered in pieces, whose element boundaries a reader has to
+/// infer by tracking bracket depth and string escaping. With it the same
+/// content arrives pre-framed and the frame terminator is a blank line, which
+/// cannot occur inside a JSON scalar. The first is a boundary the transport
+/// states; the second is a boundary a reader has to guess, and guessing it
+/// means writing a partial JSON parser beside the real one.
+///
+/// It carries no secret and is not configuration: it names the wire format
+/// this client parses, so it belongs beside the method rather than in
+/// ADR-0014's layers.
+pub const ALT_SSE: &str = "alt=sse";
 
 /// The origin every request to this provider goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +125,7 @@ impl Endpoint {
     #[must_use]
     pub fn url_for(&self, model: &ModelId) -> String {
         format!(
-            "{origin}/{API_VERSION}/models/{model}:{METHOD}",
+            "{origin}/{API_VERSION}/models/{model}:{METHOD}?{ALT_SSE}",
             origin = self.origin,
         )
     }

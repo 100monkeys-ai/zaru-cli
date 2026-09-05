@@ -9,11 +9,11 @@
 //!
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 
-use super::endpoint::{API_VERSION, DEFAULT_ENDPOINT, Endpoint, METHOD};
+use super::endpoint::{ALT_SSE, API_VERSION, DEFAULT_ENDPOINT, Endpoint, METHOD};
 use super::failure::{DETAIL_WITHHELD, GeminiFailure};
 use super::wire;
 use super::{API_KEY_HEADER, map, stream};
-use crate::credentials::Alias;
+use crate::credentials::{Alias, Secret};
 use crate::credentials::fixtures::{ascii_core, provider_secret_nonce};
 use crate::providers::ProviderKind;
 use crate::providers::endpoint::ProviderEndpoint;
@@ -83,7 +83,7 @@ fn the_url_carries_no_key_and_there_is_no_parameter_one_could_arrive_through() {
 
     assert_eq!(
         url,
-        format!("{DEFAULT_ENDPOINT}/{API_VERSION}/models/gemini-3.6-flash:{METHOD}")
+        format!("{DEFAULT_ENDPOINT}/{API_VERSION}/models/gemini-3.6-flash:{METHOD}?{ALT_SSE}")
     );
     assert!(!url.contains(&key));
     assert!(!url.contains(ascii_core(&key)));
@@ -91,13 +91,42 @@ fn the_url_carries_no_key_and_there_is_no_parameter_one_could_arrive_through() {
         !url.contains("key="),
         "the URL carries a query parameter named `key`: {url}"
     );
-    assert!(
-        !url.contains('?'),
-        "the URL carries a query string at all, which is where a key would end up: {url}"
+
+    // **This check said the URL carries no query string at all until
+    // 2026-09-05**, and that was the strongest available statement while the
+    // method was `generateContent` and nothing needed one. `alt=sse` needs
+    // one, so the blunt assertion is replaced by the one it was standing in
+    // for rather than dropped: the query string holds exactly one parameter,
+    // and it is the wire format.
+    //
+    // The property is **more** load-bearing now, not less. A URL with no
+    // query string cannot carry a key by construction; a URL with one can, so
+    // what was a free consequence of the shape is now a thing to assert.
+    let (_, query) = url.split_once('?').expect("the URL carries its transport");
+    assert_eq!(
+        query, ALT_SSE,
+        "the query string carries something other than the wire format, which is where a key \
+         would end up: {url}"
     );
+    assert!(
+        !query.contains(&key),
+        "the query string carries the key: {url}"
+    );
+    assert!(!query.contains(ascii_core(&key)));
 
     // The header is where it goes, and the constant is what the client uses.
     assert_eq!(API_KEY_HEADER, "x-goog-api-key");
+
+    // **The method and the transport are pinned by literal, for the same
+    // reason the header above is.** The assertion on the whole URL builds its
+    // expectation *from* these constants, so it agrees with them whatever
+    // they say -- it pins the shape and cannot pin the contract. Reverting
+    // `METHOD` to `generateContent` left that assertion green when it was
+    // tried as a mutation on 2026-09-05, which is what these two lines exist
+    // to catch: a client that quietly stopped streaming while its descriptor
+    // still said it did.
+    assert_eq!(METHOD, "streamGenerateContent");
+    assert_eq!(ALT_SSE, "alt=sse");
 
     // A configured endpoint with a trailing slash does not produce a double
     // slash, which some gateways route differently.
@@ -105,7 +134,7 @@ fn the_url_carries_no_key_and_there_is_no_parameter_one_could_arrive_through() {
         ProviderEndpoint::new("https://example.invalid/proxy/").expect("a well-formed endpoint");
     assert_eq!(
         Endpoint::new(&configured).url_for(&model("m")),
-        format!("https://example.invalid/proxy/{API_VERSION}/models/m:{METHOD}")
+        format!("https://example.invalid/proxy/{API_VERSION}/models/m:{METHOD}?{ALT_SSE}")
     );
 }
 
@@ -1272,5 +1301,47 @@ fn a_stream_of_one_frame_folds_to_that_frame() {
     assert_eq!(
         direct, through_fold,
         "folding a single frame changed what it means"
+    );
+}
+
+// The capability descriptor, offline, because it is a statement about this
+// client rather than about a request. Streaming is `true` since 2026-09-05
+// and the flag is read through `Provider`; `Model::capabilities` is the same
+// statement through `From`, which is what `providers::capability` promises.
+//
+// **The mutant is the descriptor still saying `false`** -- a client that
+// streams and denies it, which is the one-field drift a capability descriptor
+// exists to prevent, and which nothing else here would catch.
+#[test]
+fn the_descriptor_says_this_client_streams_and_the_two_readings_agree() {
+    use crate::providers::port::Provider;
+
+    let secret = Secret::provider(ProviderKind::Gemini, provider_secret_nonce())
+        .expect("a provider secret is built from a nonce");
+    let client = super::GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model("gemini-3.6-flash"),
+        Alias::new("provider.gemini").expect("a well-formed alias"),
+        secret,
+    )
+    .expect("an HTTP client builds without touching the network");
+
+    let declared = Provider::capabilities(&client);
+    assert!(
+        declared.streaming(),
+        "this client calls streamGenerateContent and its descriptor must say so"
+    );
+    assert!(declared.tool_calling());
+    assert!(declared.token_accounting());
+
+    // ADR-0012 D3's descriptor is one statement read twice, so the two must
+    // not be able to disagree about a word.
+    let through_model = <super::GeminiClient as zaru_core::tool_call::Model>::capabilities(&client);
+    assert_eq!(through_model.tool_calling, declared.tool_calling());
+
+    // Nothing was sent: a descriptor is answered before any request.
+    assert!(
+        Provider::usage(&client).is_none(),
+        "asking what a client can do performed an exchange"
     );
 }

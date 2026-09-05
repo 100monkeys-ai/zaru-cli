@@ -32,14 +32,34 @@
 //! flags read twice, through [`From`], so there is one statement of what this
 //! client can do.
 //!
-//! # `streaming: false`, said honestly
+//! # `streaming: true` since 2026-09-05, and clause 2 still does not move
 //!
-//! This client does not stream and its descriptor says so. `respond` is one
-//! exchange because that is what the port is; `streamGenerateContent` is not
-//! called. ADR-0012 D3's streaming concern and its trigger clause 2 are
-//! **unmoved by this module**, and clause 2 is unmoved twice over: it asks
-//! for a *streaming* exchange against a stub for *each of five* kinds, and
-//! this is a non-streaming exchange against a real provider for one.
+//! **This section said `streaming: false`, said honestly until 2026-09-05.**
+//! It is corrected rather than left: this client now calls
+//! `streamGenerateContent?alt=sse` and nothing else, so the descriptor says
+//! `true` and the old sentence would be the drift a capability descriptor
+//! exists to prevent.
+//!
+//! **ADR-0012 trigger clause 2 is unmoved by this module, and it is unmoved
+//! twice over.** It asks for a streaming exchange *against a stub* for *each
+//! of the five* provider kinds. This is a streaming exchange against a **real
+//! provider** for **one**, and four kinds still have no client. What moved is
+//! D3's fourth capability becoming real for this kind — recorded as an
+//! amendment on that record, not as a clause.
+//!
+//! **No stream contract entered `zaru-core`, and that is the design rather
+//! than an omission.** `Model::respond` is unchanged, `Capabilities` is
+//! unchanged, and the event enum is unchanged. ADR-0012's own Status tracking
+//! withholds a stream contract because "a shape chosen by an implementation
+//! rather than by a record" ossifies early, and `tool-call-loop` withholds it
+//! while no provider is behind it. Putting the framing and the fold entirely
+//! inside this client satisfies both at once: the user sees text arrive, and
+//! no public interface was shaped by the one kind that happens to have a key.
+//!
+//! `respond` is still one exchange in, one response out. The frames are
+//! folded here — see [`map::fold`] — so the loop above this client cannot
+//! tell a streamed exchange from a non-streamed one, which is what keeps one
+//! exchange one answer.
 //!
 //! # The key
 //!
@@ -108,10 +128,17 @@ use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
 /// **A ceiling rather than a policy.** No record states a timeout, and one
 /// that a caller cannot see is a value chosen for a different caller — so
 /// this is a named constant a check can read, not a hidden default, and it is
-/// raised on ADR-0012 rather than settled here. Sixty seconds is the shape a
-/// single non-streaming completion needs: long enough that a large prompt on
-/// a slow link is not cut off, short enough that a hung socket is not a hung
-/// terminal.
+/// raised on ADR-0012 rather than settled here. Sixty seconds is long enough
+/// that a large prompt on a slow link is not cut off, short enough that a
+/// hung socket is not a hung terminal.
+///
+/// **It bounds the whole streamed exchange, first byte to last, and that is
+/// stated because it is the reading that changed on 2026-09-05.** This
+/// sentence said "the shape a single non-streaming completion needs" while
+/// the client made one request and read one body; a stream is still one
+/// request and one body, so the ceiling still applies to the same thing — but
+/// the body now arrives over the whole time the model is answering, so the
+/// budget is spent by generation rather than by latency.
 ///
 /// There is deliberately **no retry and no backoff**. A retry policy decides
 /// whether a request that may have had an effect is repeated, and no record
@@ -258,7 +285,7 @@ impl GeminiClient {
         };
         let url = self.endpoint.url_for(&self.model);
 
-        let response = self
+        let mut response = self
             .http
             .post(url)
             // The one place the key is attached, and a header rather than a
@@ -274,25 +301,73 @@ impl GeminiClient {
             })?;
 
         let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| GeminiFailure::Unavailable {
-                code: Some(status.as_u16()),
-                detail: error.to_string(),
-            })?;
 
+        // **A failure arrives as an ordinary response, not as frames.**
+        // Measured 2026-09-05 on this endpoint: a bad model name answered 404
+        // `NOT_FOUND`, a rejected key 400 `INVALID_ARGUMENT` word for word as
+        // the non-streamed endpoint does, and a malformed body 400 with
+        // `fieldViolations` -- each a plain JSON object, *despite* the
+        // `content-type: text/event-stream` header the error path also sets.
+        // So the body is taken whole here and `classify` is unchanged, which
+        // is why `recorded/rejected-key.json` still means what it meant.
         if !status.is_success() {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| GeminiFailure::Unavailable {
+                    code: Some(status.as_u16()),
+                    detail: error.to_string(),
+                })?;
             return Err(self.classify(status.as_u16(), &bytes));
         }
 
-        let answer: wire::Response =
-            serde_json::from_slice(&bytes).map_err(|error| GeminiFailure::Unreadable {
-                bytes: bytes.len(),
-                parser: error.to_string(),
-            })?;
+        // --- The stream, read as it arrives ------------------------------
+        //
+        // `chunk()` rather than `bytes_stream()`: the first carries no
+        // feature gate and the second is behind `stream`, so reading the body
+        // incrementally costs this workspace no feature, no row and no lock
+        // delta. Measured in the vendored source of `reqwest` 0.12.28.
+        let mut frames = stream::Frames::new();
+        let mut received: Vec<wire::Response> = Vec::new();
+        let mut bytes = 0usize;
 
-        let mapped = map::response_from(&answer, bytes.len())?;
+        loop {
+            // A stream that stops mid-way is a socket that stopped, which is
+            // neither the user's doing nor ours -- ADR-0016 D1's
+            // environmental class, reached through the same variant a refused
+            // connection reaches. There is no sentinel frame to miss: this
+            // producer sends none, so end-of-body is end-of-stream.
+            let chunk = response
+                .chunk()
+                .await
+                .map_err(|error| GeminiFailure::Unavailable {
+                    code: Some(status.as_u16()),
+                    detail: error.to_string(),
+                })?;
+            let Some(chunk) = chunk else { break };
+            bytes += chunk.len();
+            for payload in frames.feed(&chunk) {
+                received.push(parse_frame(&payload, bytes)?);
+            }
+        }
+        if let Some(payload) = frames.finish() {
+            received.push(parse_frame(&payload, bytes)?);
+        }
+
+        if received.is_empty() {
+            return Err(GeminiFailure::Unreadable {
+                bytes,
+                parser: "the stream carried no frames, which the API does not document as a \
+                         successful shape"
+                    .to_owned(),
+            });
+        }
+
+        // One exchange is one response. See `map::fold` for why the frames
+        // are folded before anything is mapped, and for the two-frame trap
+        // that makes folding load-bearing rather than tidy.
+        let answer = map::fold(&received);
+        let mapped = map::response_from(&answer, bytes)?;
         // A poisoned lock means a previous holder panicked while writing two
         // integers, which cannot happen; the value is replaced either way
         // rather than propagating a panic out of an exchange that succeeded.
@@ -364,6 +439,21 @@ impl GeminiClient {
     }
 }
 
+/// One frame's payload as a response, or the failure that says why not.
+///
+/// `bytes` is what the stream has delivered so far, because [ADR-0016] D2's
+/// rule for an unreadable body is that it is reported by its length and never
+/// by its content -- a body that will not parse is exactly where a key or a
+/// user's prompt would be quoted into an error message.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+fn parse_frame(payload: &str, bytes: usize) -> Result<wire::Response, GeminiFailure> {
+    serde_json::from_str(payload).map_err(|error| GeminiFailure::Unreadable {
+        bytes,
+        parser: error.to_string(),
+    })
+}
+
 impl Provider for GeminiClient {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Gemini
@@ -374,12 +464,23 @@ impl Provider for GeminiClient {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        // Streaming: false, and honestly. Tool calling: true, and proved by
-        // an exchange rather than asserted. Token accounting: true, because
-        // `usageMetadata` is on every successful response -- which is the
-        // half of the pairing `Provider::usage` owes, and it is answered
-        // below.
-        ProviderCapabilities::declared(false, true, true)
+        // Streaming: **true since 2026-09-05**, and for the same reason it
+        // read `false` before -- the descriptor says what this client does.
+        // `streamGenerateContent?alt=sse` is now the only method it calls, so
+        // a `false` here would be the drift `providers::capability` exists to
+        // prevent, one field wide.
+        //
+        // **This is D3's fourth capability becoming real for ONE kind, and it
+        // moves no clause.** ADR-0012 clause 2 asks for a streaming exchange
+        // "against a stub" for "each of the five provider kinds"; this is a
+        // real provider for one, and four kinds still have no client. What
+        // changed is that the flag stopped being a false `false`.
+        //
+        // Tool calling: true, and proved by an exchange rather than asserted.
+        // Token accounting: true, because `usageMetadata` is on every frame
+        // of every successful response -- which is the half of the pairing
+        // `Provider::usage` owes, and it is answered below.
+        ProviderCapabilities::declared(true, true, true)
     }
 
     fn usage(&self) -> Option<TokenUsage> {

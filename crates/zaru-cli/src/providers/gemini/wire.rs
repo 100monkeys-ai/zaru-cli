@@ -31,13 +31,25 @@
 //! `functionCall.id`, which is what [`ToolRequest::id`](zaru_core::tool_call::ToolRequest)
 //! exists for — and migrating is a later arc's when the record decides.
 //!
-//! # No streaming
+//! # These types are the streamed shape too, unchanged
 //!
-//! `streamGenerateContent` is not here. `Model::respond` is one exchange, the
-//! capability descriptor says `streaming: false`, and ADR-0012 D3's streaming
-//! concern and its trigger clause 2 stay open. A stream contract with one
-//! provider behind it would be a shape chosen by an implementation rather
-//! than by a record.
+//! **This section said `streamGenerateContent` is not here until
+//! 2026-09-05.** It is now the only method this client calls, and **not one
+//! type in this module changed for it** — which is a fact about the API worth
+//! recording rather than a coincidence. Each `data:` frame of an SSE stream
+//! deserialises as a whole [`Response`]: candidates, parts, `finishReason`,
+//! `usageMetadata`, `modelVersion`. So a streamed exchange is a sequence of
+//! these values folded into one, and the three recorded non-streamed fixtures
+//! keep their meaning as streams of length one.
+//!
+//! `Model::respond` is still one exchange, because [`super::map::fold`] folds
+//! the frames before anything is mapped. **ADR-0012 D3's trigger clause 2
+//! stays open**: it asks for a streaming exchange against a *stub* for *each
+//! of five* kinds, and this is a real provider for one. The capability
+//! descriptor says `streaming: true` because that is what this client now
+//! does, and **no stream contract entered `zaru-core`** — which is what keeps
+//! the shape from being one chosen by an implementation rather than by a
+//! record.
 //!
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 

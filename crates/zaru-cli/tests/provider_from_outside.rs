@@ -159,10 +159,16 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
     let client = GeminiClient::new(Endpoint::default_endpoint(), model, alias.clone(), secret)
         .expect("an HTTP client builds");
 
-    // The descriptor, before anything is sent. Streaming is false and said
-    // so; tool calling and token accounting are what the exchange proves.
+    // The descriptor, before anything is sent. **Streaming is true since
+    // 2026-09-05** -- this client calls `streamGenerateContent?alt=sse` and
+    // nothing else, so the assertion moved with the behaviour rather than
+    // being relaxed. Tool calling and token accounting are what the exchange
+    // proves.
     let declared = Provider::capabilities(&client);
-    assert!(!declared.streaming(), "this client does not stream");
+    assert!(
+        declared.streaming(),
+        "this client streams and its descriptor must say so"
+    );
     assert!(declared.tool_calling());
     assert!(declared.token_accounting());
     assert!(
