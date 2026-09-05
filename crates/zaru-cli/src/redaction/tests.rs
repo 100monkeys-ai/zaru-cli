@@ -362,7 +362,7 @@ impl crate::tools::Overflow for Preserving {
 /// written. It is four: the `redaction-seam` arc found a fourth by reading
 /// the code, and a coordinator ruling of 2026-09-05 put it in. The decision
 /// was amended on ADR-0008 to point at this check rather than at a count.
-const PATHS: [(&str, &str); 6] = [
+const PATHS: [(&str, &str); 7] = [
     (
         "zaru-core/src/iteration/refinement.rs",
         "the refinement prompt's four variable-length parts (ADR-0008 D4)",
@@ -386,6 +386,11 @@ const PATHS: [(&str, &str); 6] = [
     (
         "zaru-cli/src/session/resume.rs",
         "a resumed session's interrupted call (ADR-0010 D4)",
+    ),
+    (
+        "zaru-cli/src/terminal/driver.rs",
+        "a finished turn becoming the next turn's layer 6, in a session that \
+         holds a conversation (ADR-0013 D1)",
     ),
 ];
 

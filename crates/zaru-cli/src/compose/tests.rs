@@ -315,7 +315,7 @@ fn every_event_the_loop_emits_becomes_one_transcript_line() {
 /// It panics rather than looping if a future ever does yield, because that
 /// would mean an adapter had grown a real await and this helper had silently
 /// stopped being appropriate for it.
-fn futures_lite_block_on<F: core::future::Future>(future: F) -> F::Output {
+pub(crate) fn futures_lite_block_on<F: core::future::Future>(future: F) -> F::Output {
     use core::task::{Context as TaskContext, Poll, Waker};
 
     // `Waker::noop` rather than a hand-built `RawWaker`: this crate denies

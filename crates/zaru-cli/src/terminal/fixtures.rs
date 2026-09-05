@@ -10,17 +10,23 @@
 //! three system calls a check has no terminal to make.
 
 use crate::terminal::driver::{Restore, Surface};
-use core::cell::Cell;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use zaru_tui::shell::{Input, Key, Shell};
 
 /// How many times a restorer was asked to give the terminal back.
 ///
 /// Shared with the check rather than read off the surface afterwards, so a
 /// surface that was dropped can still be counted.
-pub(crate) type Restores = Rc<Cell<usize>>;
+///
+/// **`Arc<AtomicUsize>` rather than `Rc<Cell<usize>>` since 2026-09-05.** A
+/// turn borrows the shell and the terminal together behind a `Mutex`, which is
+/// `Sync` only if what it holds is `Send` — so the product's `Crossterm` and
+/// this fixture must both be, and an `Rc` is the one thing here that was not.
+/// Nothing about what this counts changed.
+pub(crate) type Restores = Arc<AtomicUsize>;
 
 /// A terminal made of a script and a buffer.
 pub(crate) struct Recording {
@@ -45,7 +51,7 @@ impl Recording {
 
 impl Restore for Recording {
     fn restore(&mut self) {
-        self.restores.set(self.restores.get() + 1);
+        self.restores.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -76,7 +82,7 @@ pub(crate) struct Counting(pub(crate) Restores);
 
 impl Restore for Counting {
     fn restore(&mut self) {
-        self.0.set(self.0.get() + 1);
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 

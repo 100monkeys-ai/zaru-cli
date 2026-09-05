@@ -3,16 +3,20 @@
 
 use crate::cli::invocation::{Overrides, Request};
 use crate::cli::namespace::Namespace;
+use crate::compose::tests::futures_lite_block_on;
 use crate::failure::Exit;
 use crate::session::Record;
-use crate::terminal::driver::{Guard, question_for_the_shell, request_for, run};
+use crate::terminal::driver::{
+    Guard, Pane as TurnPane, PaneConfirm, PaneSink, Turnable, question_for_the_shell, request_for,
+    run,
+};
 use crate::terminal::fixtures::{Counting, Recording, Restores, press, typed};
 use crate::terminal::open::is_a_session;
 use crate::terminal::trie::{NOTHING_CACHED, NotesTrie};
 use crate::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use crate::tools::port::Question;
-use core::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 use zaru_tui::shell::port::{CommandVocabulary, TranscriptSource};
 use zaru_tui::shell::{COMPOSER_ROWS, Key, Shell, Status};
@@ -21,6 +25,10 @@ const VERSION: &str = "0.0.0";
 
 /// The workspace the checks below attach their sessions to.
 const WORKSPACE: &str = "zaru";
+
+/// What the checks below have their shell say to a task, standing in for the
+/// refusal `terminal::open` resolves once when it opens a real session.
+const CANNOT: &str = "this check's shell resolved no provider";
 
 /// One cached entity in [`WORKSPACE`].
 fn entry(path: &str, title: &str, kind: CachedKind) -> CachedEntry {
@@ -61,17 +69,330 @@ fn pump(keys: Vec<zaru_tui::shell::Input>) -> (Shell, Recording, Exit) {
 
 /// The same pump over a fast tier a check chose.
 fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Recording, Exit) {
-    let restores: Restores = Rc::new(Cell::new(0));
-    let mut surface = Recording::of(keys, Rc::clone(&restores));
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(keys, Arc::clone(&restores));
     let mut shell = shell();
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
     };
     shell.composer_mut().set_absence(trie.absence());
-    let pumped = run(&mut shell, &mut surface, &runner, trie, &Vocabulary)
-        .expect("the recording terminal never fails");
+    let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
+        zaru_tui::shell::port::Register::Failed,
+        CANNOT.to_owned(),
+    )]);
+    let pumped = run(
+        &mut shell,
+        &mut surface,
+        &runner,
+        trie,
+        &Vocabulary,
+        &mut turns,
+    )
+    .expect("the recording terminal never fails");
     (shell, surface, pumped.exit)
+}
+
+// ------------------------------------------------- ADR-0008 clause 3, whole
+
+/// A clock the check sets, so every elapsed time is an exact value.
+#[derive(Debug, Default)]
+struct Ticking(std::sync::Mutex<core::time::Duration>);
+
+impl zaru_core::iteration::Clock for Ticking {
+    fn now(&self) -> core::time::Duration {
+        *self.0.lock().expect("clock poisoned")
+    }
+}
+
+/// A model that answers once, so the turn is one exchange and no tool runs.
+#[derive(Debug)]
+struct OneAnswer(&'static str);
+
+impl zaru_core::tool_call::Model for OneAnswer {
+    fn capabilities(&self) -> zaru_core::tool_call::Capabilities {
+        zaru_core::tool_call::Capabilities { tool_calling: true }
+    }
+
+    async fn respond(
+        &self,
+        _request: &zaru_core::tool_call::ModelRequest<'_>,
+    ) -> Result<zaru_core::tool_call::ModelResponse, zaru_core::iteration::PortFailure> {
+        Ok(zaru_core::tool_call::ModelResponse::Text {
+            text: self.0.to_owned(),
+            tokens: zaru_core::tool_call::TokenUsage {
+                prompt: 7,
+                completion: 3,
+            },
+        })
+    }
+}
+
+/// A tool surface that offers nothing, because this turn asks for nothing.
+#[derive(Debug, Default)]
+struct NoTools(Vec<zaru_core::tool_call::ToolDescriptor>);
+
+impl zaru_core::tool_call::ToolExecutor for NoTools {
+    fn descriptors(&self) -> &[zaru_core::tool_call::ToolDescriptor] {
+        &self.0
+    }
+
+    async fn execute(
+        &mut self,
+        _request: &zaru_core::tool_call::ToolRequest,
+    ) -> Result<zaru_core::tool_call::ToolOutcome, zaru_core::iteration::PortFailure> {
+        Err(zaru_core::iteration::PortFailure::new(
+            "this turn asks for no tool",
+        ))
+    }
+}
+
+/// A context policy that renders the task, holding nothing.
+#[derive(Debug, Default)]
+struct Plain;
+
+impl zaru_core::iteration::ContextPolicy for Plain {
+    async fn assemble(
+        &self,
+        turn: &zaru_core::iteration::Turn<'_>,
+    ) -> Result<zaru_core::iteration::Prompt, zaru_core::iteration::ContextRefusal> {
+        let rendered = match turn {
+            zaru_core::iteration::Turn::Initial { task } => (*task).to_owned(),
+            _ => "not this check's turn".to_owned(),
+        };
+        Ok(zaru_core::iteration::Prompt::new(
+            zaru_core::redaction::Redacted::by(&Nothing, &rendered),
+        ))
+    }
+}
+
+/// A redactor holding nothing, so a check can build a `Redacted`.
+#[derive(Debug, Default)]
+struct Nothing;
+
+impl zaru_core::redaction::Redactor for Nothing {
+    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// **ADR-0008 clause 3.** One emission, two consumers, on one slice.
+///
+/// The clause is "The event stream is consumed by both the terminal renderer
+/// and the transcript writer, **from one emission**". The transcript writer
+/// has been on the loop's slice since a provider client was wired to it, and
+/// the arc that put it there said what was missing: "the shell is handed a
+/// transcript rather than being a sink on that slice, and putting it there is
+/// the arc that owns `zaru-tui`".
+///
+/// Both are on the slice here and the loop is the emitter, so this is the
+/// clause rather than a restatement of it: `run` "constructs each event once
+/// and hands the same value to every registered sink in turn". Neither arm
+/// travels through the other — the file is read back off the filesystem with
+/// `std::fs` and the pane's lines are read off the shell — and both are
+/// compared against the events, so an implementation that painted the file
+/// rather than the emission could not satisfy it.
+#[test]
+fn one_emission_reaches_the_transcript_and_the_pane() {
+    use zaru_core::tool_call::{Ports, Start, ToolCalling};
+
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let path = scratch.store_root().join("transcript.jsonl");
+    std::fs::create_dir_all(path.parent().expect("the path has a parent"))
+        .expect("the scratch root is writable");
+
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Vec::new(), Arc::clone(&restores));
+    let mut written = crate::compose::Records::appending_to(&path).expect("the transcript opens");
+
+    let model = OneAnswer("the rehearsal number is 4173");
+    let mut tools = NoTools::default();
+    let policy = Plain;
+    let clock = Ticking::default();
+    let witness = ToolCalling::required(&model, "a-model").expect("the model calls tools");
+
+    let outcome = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let mut painted = PaneSink::over(&pane);
+        let mut sinks: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut written, &mut painted];
+        let ran = futures_lite_block_on(zaru_core::tool_call::run(
+            3,
+            Start::Task("say the number"),
+            crate::cli::layers::tool_call_ceiling(),
+            witness,
+            Ports {
+                model: &model,
+                tools: &mut tools,
+                context: &policy,
+                clock: &clock,
+                redactor: &Nothing,
+            },
+            Option::<&crate::compose::NoInnerLoop>::None,
+            &mut sinks,
+        ));
+        assert_eq!(
+            painted.contended(),
+            0,
+            "the pane's lock was contended, which a single-threaded turn cannot do; the sink \
+             dropped {} event(s)",
+            painted.contended()
+        );
+        ran
+    };
+    outcome.expect("the staged turn answers");
+
+    // The file, read back with `std::fs` rather than through the sink.
+    let bytes = std::fs::read_to_string(&path).expect("the transcript is there");
+    let recorded: Vec<zaru_core::tool_call::Event> = bytes
+        .lines()
+        .map(|line| match serde_json::from_str::<Record>(line) {
+            Ok(Record::TurnLoop(event)) => event,
+            other => panic!("a line is not one of the outer loop's events: {other:?}"),
+        })
+        .collect();
+    assert!(
+        !recorded.is_empty(),
+        "the turn wrote no event at all, so this check compared two empty lists"
+    );
+
+    // The pane, read off the shell.
+    let painted: Vec<String> = shell
+        .pane_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect();
+    assert_eq!(
+        painted.len(),
+        recorded.len(),
+        "the file holds {} event(s) and the pane holds {} line(s), so the two consumers did not \
+         see one emission:\n  file: {recorded:?}\n  pane: {painted:?}",
+        recorded.len(),
+        painted.len()
+    );
+    for (event, line) in recorded.iter().zip(painted.iter()) {
+        assert_eq!(
+            line,
+            &crate::terminal::vocabulary::turn_line(event).text,
+            "the pane's line is not this event's line: {event:?}"
+        );
+    }
+    // The first record is the turn this caller named, which is what makes the
+    // turn number the caller's rather than one the loop restarts.
+    assert!(
+        matches!(
+            recorded.first(),
+            Some(zaru_core::tool_call::Event::TurnStarted { n: 3, .. })
+        ),
+        "the loop did not start the turn the caller numbered: {:?}",
+        recorded.first()
+    );
+}
+
+// -------------------------------------------- ADR-0011 D3, answered in a pane
+
+/// The question is answered in the pane, and only `y` is a yes.
+///
+/// The accepting arm and the declining arms are in one check so that an
+/// implementation answering the same way to everything fails whichever way it
+/// answers. The declining set is `Shell::key`'s own — `n`, `Esc` and `Enter`,
+/// the last being the default the prompt renders as `N`.
+#[test]
+fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
+    use crate::tools::port::Confirm as _;
+
+    for (key, expected) in [
+        (Key::Char('y'), true),
+        (Key::Char('Y'), true),
+        (Key::Char('n'), false),
+        (Key::Char('N'), false),
+        (Key::Esc, false),
+        (Key::Enter, false),
+    ] {
+        let mut shell = shell();
+        let restores: Restores = Arc::new(AtomicUsize::new(0));
+        // A key the shell ignores first, so the loop is asserted to keep
+        // asking rather than to answer whatever it read.
+        let mut surface = Recording::of(vec![press(Key::Char('q')), press(key)], restores);
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let confirm = PaneConfirm::over(&pane);
+
+        let answered = confirm
+            .confirm(&Question {
+                statement: "run `rm -rf build` in /home/someone/project".to_owned(),
+                prominent: true,
+            })
+            .expect("the pane answered");
+        assert_eq!(
+            answered, expected,
+            "{key:?} was read as {answered} rather than {expected}"
+        );
+    }
+}
+
+/// A terminal that stops answering is a failure, never a `no`.
+///
+/// `crate::tools::prompt`'s own rule, stated for this surface: answering
+/// `false` would put "the user declined" in the transcript of a question
+/// nobody saw. **Its accepting sibling is the check above**, which answers.
+#[test]
+fn a_pane_that_runs_out_of_keys_refuses_rather_than_declining() {
+    use crate::tools::port::Confirm as _;
+
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Vec::new(), restores);
+    let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+    let confirm = PaneConfirm::over(&pane);
+
+    let outcome = confirm.confirm(&Question {
+        statement: "write build/out.txt".to_owned(),
+        prominent: false,
+    });
+    let failure = outcome.expect_err("a pane with no answer must not answer");
+    assert!(
+        failure.to_string().contains("stopped answering"),
+        "the failure does not say what happened: {failure}"
+    );
+}
+
+/// The question the pane paints is the statement it was handed, and the pane
+/// is what the user is looking at while it stands.
+#[test]
+fn the_question_reaches_the_painted_frame_before_a_key_is_read() {
+    use crate::tools::port::Confirm as _;
+
+    const STATEMENT: &str = "run `rm -rf build` in /home/someone/project";
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(vec![press(Key::Char('y'))], restores);
+    {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let confirm = PaneConfirm::over(&pane);
+        confirm
+            .confirm(&Question {
+                statement: STATEMENT.to_owned(),
+                prominent: true,
+            })
+            .expect("the pane answered");
+    }
+
+    let first = surface
+        .frames
+        .first()
+        .expect("no frame was painted")
+        .clone();
+    let rows: String = first.join("\n");
+    // The statement crosses unchanged, which is ADR-0011 D3's own rule; the
+    // frame is 72 columns wide, so the assertion is on the part that fits.
+    assert!(
+        rows.contains("run `rm -rf build`"),
+        "the question was not painted before the answer was read:\n{rows}"
+    );
+    assert!(
+        rows.contains(zaru_tui::shell::render::PROMINENT),
+        "ADR-0011 D6's prominence did not reach the frame:\n{rows}"
+    );
 }
 
 // ------------------------------------------- the terminal is always given back
@@ -80,17 +401,17 @@ fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Rec
 /// paths the author thought of. This one is a `Drop`.
 #[test]
 fn the_terminal_is_restored_on_an_ordinary_exit() {
-    let restores: Restores = Rc::new(Cell::new(0));
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
     {
-        let _guard = Guard::new(Counting(Rc::clone(&restores)));
+        let _guard = Guard::new(Counting(Arc::clone(&restores)));
         assert_eq!(
-            restores.get(),
+            restores.load(Ordering::SeqCst),
             0,
             "the guard restored before it was dropped"
         );
     }
     assert_eq!(
-        restores.get(),
+        restores.load(Ordering::SeqCst),
         1,
         "the terminal was not given back when the guard went out of scope"
     );
@@ -102,8 +423,8 @@ fn the_terminal_is_restored_on_an_ordinary_exit() {
 /// longer echoing or wrapping.
 #[test]
 fn the_terminal_is_restored_when_the_shell_panics() {
-    let restores: Restores = Rc::new(Cell::new(0));
-    let counted = Rc::clone(&restores);
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&restores);
 
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
@@ -118,7 +439,7 @@ fn the_terminal_is_restored_when_the_shell_panics() {
         "the panic did not happen, so this check asserted nothing"
     );
     assert_eq!(
-        restores.get(),
+        restores.load(Ordering::SeqCst),
         1,
         "the terminal was not given back when the shell panicked"
     );
@@ -129,15 +450,15 @@ fn the_terminal_is_restored_when_the_shell_panics() {
 /// which on a real terminal scrolls the user's own scrollback away.
 #[test]
 fn the_terminal_is_restored_exactly_once_when_it_is_also_restored_by_hand() {
-    let restores: Restores = Rc::new(Cell::new(0));
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
     {
-        let mut guard = Guard::new(Counting(Rc::clone(&restores)));
+        let mut guard = Guard::new(Counting(Arc::clone(&restores)));
         guard.restore_now();
-        assert_eq!(restores.get(), 1);
+        assert_eq!(restores.load(Ordering::SeqCst), 1);
         guard.restore_now();
     }
     assert_eq!(
-        restores.get(),
+        restores.load(Ordering::SeqCst),
         1,
         "the terminal was handed back more than once"
     );
@@ -371,7 +692,7 @@ fn a_task_is_answered_in_the_pane_and_mints_no_session() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        said.contains(crate::terminal::driver::NO_TASK_TURN_YET),
+        said.contains(CANNOT),
         "the pane does not carry the notice a task gets; it said {said:?}"
     );
     assert_eq!(exit.code(), 0);
@@ -635,8 +956,8 @@ fn a_question_crosses_to_the_shell_with_its_statement_unchanged() {
 /// shell's own unit check.
 #[test]
 fn a_confirmation_renders_its_default_through_the_pump() {
-    let restores: Restores = Rc::new(Cell::new(0));
-    let mut surface = Recording::of(vec![press(Key::Enter)], Rc::clone(&restores));
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(vec![press(Key::Enter)], Arc::clone(&restores));
     let mut shell = shell();
     shell.ask(question_for_the_shell(&Question {
         statement: "run `rm -rf build`".to_owned(),
@@ -652,6 +973,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         &runner,
         &NotesTrie::nothing_cached(WORKSPACE),
         &Vocabulary,
+        &mut Turnable::Cannot(Vec::new()),
     )
     .expect("pump");
 

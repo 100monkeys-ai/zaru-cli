@@ -137,18 +137,408 @@ pub fn question_for_the_shell(question: &Question) -> Confirmation {
 /// retyped.
 pub(crate) const UNAVAILABLE: &str = "needs something this harness does not have yet";
 
-/// What the pane says to a task, until the in-session turn is wired.
+/// Whether this shell can run a task, and what to say when it cannot.
 ///
-/// Named once so a check looks for this rather than for a phrase somebody
-/// retyped, exactly as [`UNAVAILABLE`] is.
-pub(crate) const NO_TASK_TURN_YET: &str =
-    "this session cannot run a task yet; `zaru \"<task>\"` runs one outside a session";
+/// # Two variants and no third, because a shell either has a turn or has a
+/// reason
+///
+/// [`crate::compose::turn::prepare`] runs **once**, when the shell opens: a
+/// session's tier, model, boundary, manifest, key, client and [ADR-0012]
+/// clause 3 witness do not change between two of its turns. It either
+/// resolves, and every turn is [`Turns`], or it refuses — and the refusal is
+/// the real one: no key for a kind that has a client, a key only for kinds
+/// that have none, a project that declared validators. Showing *that* is what
+/// makes the pane's answer to a task **the same answer** `zaru "<task>"`
+/// gives, rather than a second sentence about one fact.
+///
+/// The lines are carried rather than composed here, which is the rule
+/// [ADR-0011] D3 states for its own statement: what the user was told and
+/// what the harness believes it said cannot be allowed to drift apart.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[derive(Debug)]
+pub enum Turnable<'a> {
+    /// This session can run a turn, and this is what every one of them needs.
+    ///
+    /// Boxed because [`Turns`] carries a whole resolved session and this
+    /// variant sits beside a `Vec`; `clippy::large_enum_variant` refuses the
+    /// difference, and the value is constructed once per session.
+    Ready(Box<Turns<'a>>),
+    /// It cannot, and these are the lines that say why.
+    Cannot(Vec<Line>),
+}
 
 /// What one turn of the pump produced.
 #[derive(Debug)]
 pub struct Pump {
     /// What the process should exit with.
     pub exit: Exit,
+}
+
+/// Everything a turn needs to run inside the session this shell is in.
+///
+/// # Resolved once, at the door, and then held
+///
+/// [`crate::compose::turn::prepare`] is the half of a turn that does not
+/// change between two turns of one session — the tier, the model, the
+/// boundary, the manifest, the key, the client, and [ADR-0012] clause 3's
+/// witness, which that clause asks for "before the loop starts". The shell
+/// resolves it when it opens and hands it to every turn.
+///
+/// [`Owed`](crate::compose::Owed) and the context are the session's for the
+/// same reason and a stronger one: [ADR-0011] D2's notice is stated "once at
+/// session start", [ADR-0002] D8's recommendation "fires at most once ever",
+/// and [ADR-0013] D1's layer 6 is what a second turn assembles over. A turn
+/// that rebuilt any of the three would restate two lines and forget the
+/// conversation.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub struct Turns<'a> {
+    /// The binary's own version, for [ADR-0016] D3's report.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    pub version: &'a str,
+    /// Where a defect is reported.
+    pub report_at: &'a str,
+    /// [ADR-0014]'s five layers, folded once.
+    ///
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    pub resolution: &'a crate::config::Resolution,
+    /// What this session resolved before it existed.
+    pub prepared: &'a crate::compose::Prepared,
+    /// [ADR-0010] D1's directory, already open.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    pub session: &'a crate::session::Session,
+    /// The two lines this session owes once.
+    pub owed: crate::compose::Owed,
+    /// [ADR-0013]'s context, carried across turns.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    pub context: zaru_core::context::Context,
+    /// Which turn the next one is.
+    ///
+    /// [`zaru_core::tool_call::run`]'s `n` is "the caller's, because a session
+    /// spans many calls to this function and a number invented here would
+    /// restart at one every turn". This is the caller.
+    pub next: u32,
+}
+
+impl core::fmt::Debug for Turns<'_> {
+    /// Names what it holds and renders none of it.
+    ///
+    /// A `Debug` is what ends up in a panic message, and this value reaches a
+    /// credential store's redactor, a resolved configuration, and the whole of
+    /// what a model has been shown.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Turns")
+            .field("next", &self.next)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The shell and the terminal it paints on, borrowed together for one turn.
+///
+/// # Why the two are one value behind one lock
+///
+/// A turn wants both of them from two places at once. [ADR-0008] clause 3's
+/// second consumer is an [`EventSink`](zaru_core::tool_call::EventSink), whose
+/// `emit` takes `&mut self`; [ADR-0011] D3's confirmation is a
+/// [`Confirm`](crate::tools::port::Confirm), whose `confirm` takes `&self` and
+/// which [`Executor`](crate::tools::Executor) requires to be `Sync`. Neither
+/// can hold `&mut Shell` on its own and both must paint.
+///
+/// So the pair is one value behind a `Mutex`, which is exactly what
+/// [`crate::tools::prompt::Prompt`] already does with its two handles and for
+/// exactly the same reason: `Sync`. **The lock is never contended.** A turn is
+/// polled to completion on one thread by [`crate::compose::turn`]'s
+/// current-thread runtime, and the loop emits *around* a tool call rather than
+/// inside one, so a sink and a confirmer are never live at the same instant.
+/// `try_lock` rather than `lock` is what makes that a claim the code can
+/// report on: contention here would be a defect, and a defect that reports is
+/// better than one that hangs a user's terminal with no way out of it.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub struct Pane<'a, S: Surface + Send> {
+    shell: &'a mut Shell,
+    surface: &'a mut S,
+    /// The first paint that failed, kept rather than lost — the rule
+    /// [`crate::compose::Records`] follows for the same reason.
+    first_failure: Option<std::io::Error>,
+}
+
+impl<S: Surface + Send> core::fmt::Debug for Pane<'_, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pane")
+            .field("painted_failure", &self.first_failure.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, S: Surface + Send> Pane<'a, S> {
+    /// Borrow a shell and its terminal for the length of one turn.
+    pub fn of(shell: &'a mut Shell, surface: &'a mut S) -> Self {
+        Self {
+            shell,
+            surface,
+            first_failure: None,
+        }
+    }
+
+    /// Add a line and paint.
+    fn note(&mut self, line: Line) {
+        self.shell.notice(line);
+        self.paint();
+    }
+
+    /// Paint, keeping the first paint that failed.
+    fn paint(&mut self) {
+        if let Err(failure) = self.surface.draw(self.shell)
+            && self.first_failure.is_none()
+        {
+            self.first_failure = Some(failure);
+        }
+    }
+}
+
+/// [ADR-0008] clause 3's renderer half.
+///
+/// That clause asks for the stream to be "consumed by both the terminal
+/// renderer and the transcript writer, **from one emission**". The transcript
+/// writer is [`crate::compose::Records`] and has been on the loop's slice since
+/// a provider client was wired to it; this is the other consumer, and putting
+/// the two on one slice is what the clause is about — `run` "constructs each
+/// event once and hands the same value to every registered sink in turn".
+///
+/// The wording is [`crate::terminal::vocabulary`]'s `turn_line`, which is the
+/// same function the **resumed** pane renders a `Record::TurnLoop` through. So
+/// what a user watches while a turn runs and what they read back on `--resume`
+/// cannot disagree about a word.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+pub struct PaneSink<'m, 'a, S: Surface + Send> {
+    pane: &'m std::sync::Mutex<Pane<'a, S>>,
+    contended: usize,
+}
+
+impl<S: Surface + Send> core::fmt::Debug for PaneSink<'_, '_, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PaneSink")
+            .field("contended", &self.contended)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'m, 'a, S: Surface + Send> PaneSink<'m, 'a, S> {
+    /// A sink over a borrowed pane.
+    pub const fn over(pane: &'m std::sync::Mutex<Pane<'a, S>>) -> Self {
+        Self { pane, contended: 0 }
+    }
+
+    /// How many events the lock refused.
+    ///
+    /// Zero by construction — see [`Pane`] — and counted rather than assumed,
+    /// so a check can assert the zero instead of the argument for it.
+    #[must_use]
+    pub const fn contended(&self) -> usize {
+        self.contended
+    }
+}
+
+impl<S: Surface + Send> zaru_core::tool_call::EventSink for PaneSink<'_, '_, S> {
+    fn emit(&mut self, event: &zaru_core::tool_call::Event) {
+        match self.pane.try_lock() {
+            Ok(mut pane) => pane.note(crate::terminal::vocabulary::turn_line(event)),
+            Err(_) => self.contended += 1,
+        }
+    }
+}
+
+/// [ADR-0011] D3's question, asked and answered in the pane.
+///
+/// # It is a `Confirm`, so the shell owns no prompt of its own
+///
+/// The port is `zaru-cli`'s and the plain implementation over a tty is
+/// [`crate::tools::prompt::Prompt`]. This is a second implementation of the
+/// same port taking the same [`Question`], which
+/// [`question_for_the_shell`]'s own documentation anticipated: "a richer
+/// prominence … is `zaru-tui`'s, and it reaches this same `Confirm` port with
+/// the same `Question`". Nothing here reads a terminal's standard input and
+/// nothing here composes a sentence.
+///
+/// **`confirm` is synchronous, and that is what makes this work with no
+/// channel and no second thread.** The whole turn is polled on one thread by
+/// [`crate::compose::turn`]'s current-thread runtime, so this paints the
+/// question, pumps the terminal into [`Shell::key`] until the shell has an
+/// answer, and returns it — inside the call the executor is waiting on.
+///
+/// # Running out of keys is not an answer
+///
+/// A surface whose events end yields a failure, never `false`. That is
+/// [`crate::tools::prompt`]'s own rule stated for this surface: a default
+/// answer would be the silent default D3 forbids, and answering `false` would
+/// put "the user declined" in the transcript of a question nobody saw.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub struct PaneConfirm<'m, 'a, S: Surface + Send> {
+    pane: &'m std::sync::Mutex<Pane<'a, S>>,
+}
+
+impl<S: Surface + Send> core::fmt::Debug for PaneConfirm<'_, '_, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PaneConfirm").finish_non_exhaustive()
+    }
+}
+
+impl<'m, 'a, S: Surface + Send> PaneConfirm<'m, 'a, S> {
+    /// A confirmer over a borrowed pane.
+    pub const fn over(pane: &'m std::sync::Mutex<Pane<'a, S>>) -> Self {
+        Self { pane }
+    }
+}
+
+impl<S: Surface + Send> crate::tools::port::Confirm for PaneConfirm<'_, '_, S> {
+    fn confirm(&self, question: &Question) -> Result<bool, crate::tools::port::ConfirmFailure> {
+        let mut pane = self.pane.try_lock().map_err(|_| {
+            crate::tools::port::ConfirmFailure::new(
+                "the pane was already in use when the question was raised".to_owned(),
+            )
+        })?;
+
+        pane.shell.ask(question_for_the_shell(question));
+        pane.paint();
+
+        // A standing question takes every key: `Shell::key` gives the composer
+        // nothing while one stands, so this cannot be typed past.
+        let mut now = Duration::ZERO;
+        loop {
+            if let Some(answer) = pane.shell.answer() {
+                return Ok(answer);
+            }
+            let read = pane.surface.next().map_err(|failure| {
+                crate::tools::port::ConfirmFailure::new(format!(
+                    "the answer could not be read: {failure}"
+                ))
+            })?;
+            let Some(input) = read else {
+                return Err(crate::tools::port::ConfirmFailure::new(
+                    "the terminal stopped answering before the question was".to_owned(),
+                ));
+            };
+            now += Duration::from_millis(1);
+            let acted = pane.shell.key(input, now, &NoEntries, &NoVocabulary);
+            pane.paint();
+            // A question is not a prompt a user can leave past either: this
+            // call is what a tool is waiting on and there is nowhere for a
+            // `Leave` to be returned to. `Shell::key` absorbs everything but
+            // the keys it acts on while a question stands, so this is
+            // unreachable — and it is refused rather than ignored, because an
+            // unreachable branch that silently continues is how a reachable
+            // one arrives unnoticed.
+            if !matches!(acted, Action::Idle) {
+                return Err(crate::tools::port::ConfirmFailure::new(
+                    "the shell acted on a keystroke while a question stood".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
+/// The composer sees no keystroke while a question stands, so the entries it
+/// would search are never asked for.
+#[derive(Debug)]
+struct NoEntries;
+
+impl zaru_tui::composer::Entries for NoEntries {
+    fn matches(&self, _prefix: &str, _limit: usize) -> Vec<zaru_tui::composer::Entry> {
+        Vec::new()
+    }
+}
+
+/// The same, for the vocabulary: no line is submitted while a question stands.
+#[derive(Debug)]
+struct NoVocabulary;
+
+impl zaru_tui::shell::CommandVocabulary for NoVocabulary {
+    fn namespaces(&self) -> Vec<zaru_tui::shell::Namespace> {
+        Vec::new()
+    }
+
+    fn nearest(&self, _offered: &str) -> Option<&'static str> {
+        None
+    }
+
+    fn nearest_verb(&self, _slash: &str, _offered: &str) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Run one turn of this session for `task`, painting it as it happens.
+///
+/// Returns the lines to leave on the pane. The shell and the surface are
+/// borrowed for the length of the turn and given back when it ends.
+///
+/// # What does not repaint, said rather than smoothed
+///
+/// The pane paints when the loop emits and when a question is answered, and at
+/// no other moment. **During the provider's own await nothing repaints and no
+/// keystroke is read**, because this crate has no asynchronous terminal source
+/// — [`Surface::next`] blocks. A `Ctrl-C` pressed then is queued by raw mode,
+/// which disables the interrupt signal, and is seen when the await returns. A
+/// source that could be polled beside the turn is a real gap and is recorded
+/// on ADR-0005 and ADR-0008 as one rather than worked around here.
+pub fn run_a_turn<S: Surface + Send>(
+    shell: &mut Shell,
+    surface: &mut S,
+    turns: &mut Turns<'_>,
+    task: &str,
+) -> Vec<Line> {
+    let n = turns.next;
+    turns.next += 1;
+
+    let ran = {
+        let pane = std::sync::Mutex::new(Pane::of(shell, surface));
+        let confirm = PaneConfirm::over(&pane);
+        let mut sink = PaneSink::over(&pane);
+        let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 1] = [&mut sink];
+
+        crate::compose::turn::run_one(
+            turns.version,
+            turns.report_at,
+            turns.resolution,
+            turns.prepared,
+            turns.session,
+            n,
+            task,
+            Some(&confirm as &(dyn crate::tools::Confirm + Sync)),
+            &mut extra,
+            &mut turns.owed,
+            &mut turns.context,
+        )
+    };
+
+    // ADR-0013 D1's layer 6, so the next turn assembles over this one. **What
+    // an exchange holds is `context-summariser`'s to declare**, together with
+    // what `context.json` really carries; this is the caller that fills it,
+    // and it fills it with what this turn was about and what came back, through
+    // the one `Redactor` the session already holds — ADR-0008 clause 6's port,
+    // on every path from captured bytes into a model prompt.
+    let exchange = zaru_core::redaction::Redacted::by(
+        turns.prepared.redactor(),
+        &format!("user: {task}\nzaru: {}", ran.lines.join("\n")),
+    );
+    turns
+        .context
+        .record_exchange(zaru_core::context::Exchange::verbatim(
+            exchange.as_str().to_owned(),
+        ));
+
+    lines_of(&ran)
 }
 
 /// Run the shell against a terminal until the user leaves.
@@ -163,12 +553,13 @@ pub struct Pump {
 /// one operation rather than two things that agree today.
 ///
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-pub fn run(
+pub fn run<S: Surface + Send>(
     shell: &mut Shell,
-    surface: &mut impl Surface,
+    surface: &mut S,
     runner: &crate::cli::Run<'_>,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    turns: &mut Turnable<'_>,
 ) -> std::io::Result<Pump> {
     let mut now = Duration::ZERO;
     surface.draw(shell)?;
@@ -194,10 +585,15 @@ pub fn run(
                 }
             }
             Action::Task(task) => {
-                // The session stays open: the user asked for something this
-                // build cannot do yet, which is not a reason to close the
-                // thing they are inside.
-                for line in task_notice(&task) {
+                // ADR-0008 D1: turns are the outer loop's unit, so a second
+                // task in the same session is the next turn. The session stays
+                // open whatever the turn did -- a turn that failed is not a
+                // reason to close the thing the user is inside.
+                let lines = match turns {
+                    Turnable::Ready(turns) => run_a_turn(shell, surface, turns, &task),
+                    Turnable::Cannot(lines) => lines.clone(),
+                };
+                for line in lines {
                     shell.notice(line);
                 }
             }
@@ -316,11 +712,18 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
     }
 }
 
-/// What the pane says about a task, and it says it without running anything.
+/// The lines a [`crate::compose::Ran`] leaves on the pane.
+///
+/// Both halves come through here: the refusal a session that could not
+/// resolve a provider shows a task, and what a turn that ran produced.
+/// [ADR-0016] D1's classification is rendered through
+/// [`crate::failure::Presentation`], the same function the out-of-session
+/// surface writes to standard error, so the sentence a user reads in the pane
+/// is the sentence they would have read in a pipe.
 ///
 /// # It takes no runner, and that signature is the fix rather than a style
 ///
-/// Until 2026-09-05 this was `refuse_a_task(runner)`, which built a
+/// Until 2026-09-05 the pane's task arm was `refuse_a_task(runner)`, which built a
 /// `Request::Task { words: Vec::new() }` and **executed it** through
 /// [`crate::cli::Run`]. That was written by the arc that opened this shell,
 /// when `Request::Task` was itself a refusal and executing it was how the
@@ -334,12 +737,32 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
 /// So the seam is the same one [`request_for`] already uses against the same
 /// class of accident: **a function with nothing to execute cannot execute
 /// anything**. What a typed line *means* and what running it *does* are two
-/// things, and only the second belongs anywhere near a `Run`.
+/// things, and only the second belongs anywhere near a `Run`. What runs a turn
+/// now is [`run_a_turn`], over a session that already exists.
 ///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-pub(crate) fn task_notice(task: &str) -> Vec<Line> {
-    let _ = task;
-    vec![Line::new(Register::Failed, NO_TASK_TURN_YET.to_owned())]
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[must_use]
+pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
+    let mut lines: Vec<Line> = ran
+        .lines
+        .iter()
+        .map(|text| Line::new(Register::Plain, text.clone()))
+        .collect();
+    if let Exit::Failed(classified) = &ran.exit {
+        let presentation = crate::failure::Presentation::of(classified);
+        lines.push(Line::new(Register::Failed, presentation.headline));
+        lines.extend(presentation.lines.into_iter().map(|line| {
+            Line::new(
+                Register::Plain,
+                match line.lead {
+                    Some(lead) => format!("{lead} {}", line.text),
+                    None => line.text,
+                },
+            )
+        }));
+    }
+    lines
 }
 
 /// The product terminal: `ratatui` over crossterm, reached through `ratatui`'s

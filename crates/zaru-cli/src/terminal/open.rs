@@ -30,7 +30,7 @@ use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::failure::{Exit, SessionEvidence};
 use crate::runtime::ResolvedTier;
 use crate::session::{MetaFile, SessionId, SessionStore};
-use crate::terminal::driver::{Crossterm, Guard};
+use crate::terminal::driver::{Crossterm, Guard, Turnable, Turns};
 use crate::terminal::trie::NotesTrie;
 use crate::terminal::vocabulary::{Transcript, Vocabulary};
 use std::io::IsTerminal;
@@ -149,6 +149,48 @@ pub fn open(
 ) -> Result<Exit, Box<Exit>> {
     let (mut shell, _, trie) = shell_for(id, version, report_at, overrides)?;
 
+    // ADR-0008 D1's turns, resolved once for the whole session. Everything
+    // below happens **before** the terminal is taken, so a refusal is written
+    // to a terminal that is still echoing.
+    let classify = Classify::new(version, report_at);
+    let resolution = crate::cli::layers::resolve_from_process(overrides)
+        .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
+    let prepared = crate::compose::turn::prepare(version, report_at, &resolution);
+    let root = SessionStore::default_root()
+        .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
+    let store = SessionStore::reading(root);
+    let session = store
+        .existing(id)
+        .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
+
+    let mut turns = match &prepared {
+        Ok(prepared) => Turnable::Ready(Box::new(Turns {
+            version,
+            report_at,
+            resolution: &resolution,
+            prepared,
+            session: &session,
+            owed: crate::compose::Owed::of(prepared),
+            // ADR-0013 D1's layers, opened once for the session. Layer 6 is
+            // empty at the first turn and is what every turn after it
+            // assembles over.
+            context: zaru_core::context::Context::opened(
+                crate::compose::prefix_for(),
+                crate::cli::layers::context_limits(),
+            ),
+            // ADR-0008 D1's turn number. One is the session's first turn in
+            // this process; a session resumed a second time restarts the
+            // count, which is recorded on ADR-0010 rather than guessed at,
+            // because nothing on disk says how many turns a session has had.
+            next: 1,
+        })),
+        // The real refusal, shown when the user types a task rather than at
+        // the door: a person who resumed a session to read it back is not
+        // asking for a provider, and refusing before they ask would answer a
+        // question they did not put.
+        Err(refused) => Turnable::Cannot(crate::terminal::driver::lines_of(refused)),
+    };
+
     let crossterm = Crossterm::take().map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
     let runner = crate::cli::Run { version, report_at };
@@ -157,7 +199,7 @@ pub fn open(
     // returning, an I/O error, a panic unwinding through it -- drops it.
     let pumped = {
         let surface: &mut Crossterm = guard.get_mut().expect("the guard was just constructed");
-        crate::terminal::driver::run(&mut shell, surface, &runner, &trie, &Vocabulary)
+        crate::terminal::driver::run(&mut shell, surface, &runner, &trie, &Vocabulary, &mut turns)
     };
     guard.restore_now();
 

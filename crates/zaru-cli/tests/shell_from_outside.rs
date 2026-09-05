@@ -30,7 +30,7 @@ use ratatui::backend::TestBackend;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, ToolCall, Transcript};
-use zaru_cli::terminal::driver::{Restore, Surface, run};
+use zaru_cli::terminal::driver::{Restore, Surface, Turnable, run};
 use zaru_cli::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use zaru_cli::terminal::{NOTHING_CACHED, NotesTrie};
 use zaru_notes::trie::{CachedEntry, EntryKind};
@@ -197,7 +197,15 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
-    let pumped = run(&mut shell, &mut surface, &runner, &trie, &Vocabulary).expect("the pump");
+    let pumped = run(
+        &mut shell,
+        &mut surface,
+        &runner,
+        &trie,
+        &Vocabulary,
+        &mut Turnable::Cannot(Vec::new()),
+    )
+    .expect("the pump");
 
     let opened = surface
         .frames
@@ -423,7 +431,15 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
             version: env!("CARGO_PKG_VERSION"),
             report_at: env!("CARGO_PKG_REPOSITORY"),
         };
-        run(&mut shell, &mut surface, &runner, &trie, &Vocabulary).expect("the pump");
+        run(
+            &mut shell,
+            &mut surface,
+            &runner,
+            &trie,
+            &Vocabulary,
+            &mut Turnable::Cannot(Vec::new()),
+        )
+        .expect("the pump");
 
         let frame = surface.frames.last().expect("a frame was painted").clone();
         println!("-- {label}: the frame after typing {typing:?} --");

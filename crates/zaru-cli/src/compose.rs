@@ -111,4 +111,4 @@ impl zaru_core::tool_call::InnerLoop for NoInnerLoop {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

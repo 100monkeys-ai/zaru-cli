@@ -168,7 +168,7 @@ fn line_for(record: &Record) -> Line {
 /// `Phase::Refused` is `Announced`, for the same reason.
 ///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
+pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
     use zaru_core::tool_call::{Event, TurnEnding};
 
     match event {
