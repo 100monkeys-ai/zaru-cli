@@ -56,6 +56,7 @@ pub mod entry;
 pub mod notes;
 pub mod port;
 pub mod projection;
+pub mod sealing;
 pub mod secret;
 pub mod store;
 
@@ -67,6 +68,10 @@ pub use entry::{
 pub use notes::{Cached, Refreshed, ScopeError, bearer_for_dispatch};
 pub use port::{Confirm, SealFailure, SecretStore};
 pub use projection::{NAMESPACE_PREFIX, Namespace};
+pub use sealing::{
+    CREDENTIAL_KEY_VARIABLE, FromKeyring, HarnessKeys, KeyStore, Keyring, OsKeyring, Sealed,
+    SealingError, SealingKey,
+};
 pub use secret::{Kind, REDACTED, Secret, SecretRefused};
 pub use store::{CredentialStore, Record, StoreError, StoredReach};
 

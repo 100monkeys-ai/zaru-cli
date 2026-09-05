@@ -104,6 +104,42 @@ tui-textarea = { version = "0.7.0", default-features = false, features = [
     "no-backend",
 ] }
 
+# `aes-gcm` and `keyring` are D2's rows for ADR-0007 D3, accepted 2026-09-05
+# under directive 20, and they arrive here in the arc that has a caller.
+#
+# **Both are at their current major and that pairing is the reason for each
+# version.** `keyring` 4 is built on `keyring-core` and its default `v1`
+# feature reaches the Secret Service through `zbus`, which is pure Rust; the
+# alternative measured on 2026-09-05 was `keyring` 3 with `sync-secret-service`,
+# 43 packages smaller but linking `libdbus-1`, a C system library. This
+# repository has none, D2's table contemplates none, and ADR-0003 D7 promises a
+# default install that is "zaru alone" -- a binary that will not start on a box
+# without a system library is not that. `aes-gcm` 0.11 rather than 0.10 follows
+# from it: 0.10 is built on the `cipher` 0.4 stack and `keyring` 4's is `cipher`
+# 0.5, so pairing 0.10 with `keyring` 4 puts two `aes`, two `cipher` and two
+# `crypto-common` in one tree -- the same duplication `ratatui` is pinned to
+# 0.29 to avoid, measured the same way with `cargo tree`.
+#
+# Default features off on `aes-gcm`, then three named. `aes` is what makes it
+# AES rather than a generic AEAD. `alloc` is what gives `Payload`, which is how
+# associated data is passed. `getrandom` is what gives the nonce and the key,
+# and it is the one place this crate's randomness differs from the ULID's
+# `/dev/urandom` -- see `credentials::sealing::key::SealingKey::mint` for why
+# that precedent deliberately does not transfer. The remaining features are
+# `arrayvec`, `bytes`, `hazmat`, `rand_core` and `zeroize`; none has a caller.
+#
+# `keyring` takes its defaults, and that is deliberate rather than an omission:
+# `default = ["v1"]` and the crate carries `compile_error!("At least one of the
+# features 'v1' or 'cli' must be enabled")`, so there is no way to take it
+# without a real backend. That matters because `keyring` 3, in the same
+# position, silently falls back to an in-memory mock.
+aes-gcm = { version = "0.11.1", default-features = false, features = [
+    "aes",
+    "alloc",
+    "getrandom",
+] }
+keyring = { version = "4.2.0" }
+
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
 # turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-

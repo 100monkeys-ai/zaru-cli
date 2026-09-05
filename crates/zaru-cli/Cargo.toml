@@ -24,6 +24,10 @@ zaru-seal = { path = "../zaru-seal" }
 zaru-tui = { path = "../zaru-tui" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# ADR-0007 D3's at-rest half. See `[workspace.dependencies]` for why these
+# two versions and not their neighbours.
+aes-gcm = { workspace = true }
+keyring = { workspace = true }
 
 [dev-dependencies]
 # The two halves of the outside-caller check in `tests/notes_scope_from_outside.rs`,
