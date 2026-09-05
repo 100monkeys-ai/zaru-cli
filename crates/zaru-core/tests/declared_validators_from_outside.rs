@@ -115,6 +115,10 @@ impl ContextPolicy for Echo {
         Ok(Prompt::new(match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
+            Turn::Resumed { interrupted } => format!(
+                "the previous session was interrupted and this call never completed: {}",
+                interrupted.call()
+            ),
         }))
     }
 }

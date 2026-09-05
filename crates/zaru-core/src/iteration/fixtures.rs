@@ -29,12 +29,12 @@ pub(super) const NONCE: &str = "zaru-nonce-9f2a";
 
 /// A clock that moves only when a test moves it.
 #[derive(Debug, Default)]
-pub(super) struct ManualClock {
+pub(crate) struct ManualClock {
     elapsed: Mutex<Duration>,
 }
 
 impl ManualClock {
-    pub(super) fn advance(&self, by: Duration) {
+    pub(crate) fn advance(&self, by: Duration) {
         *self.elapsed.lock().expect("manual clock poisoned") += by;
     }
 }
@@ -394,6 +394,10 @@ impl ContextPolicy for PassThroughContext {
         let text = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
+            Turn::Resumed { interrupted } => format!(
+                "the previous session was interrupted and this call never completed: {}",
+                interrupted.call()
+            ),
         };
         let n = {
             let mut calls = self.calls.lock().expect("calls poisoned");

@@ -25,6 +25,7 @@
 
 pub mod context;
 pub mod iteration;
+pub mod tool_call;
 
 /// The name of this crate, read from its `Cargo.toml` at compile time.
 pub const NAME: &str = env!("CARGO_PKG_NAME");

@@ -108,6 +108,43 @@ pub struct ValidatorReport {
     pub detail: String,
 }
 
+/// A tool call that was in flight when a previous process died.
+///
+/// # This exists so that ADR-0010 D4's second half has something to travel in
+///
+/// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
+/// is told it did not complete**." The first half is `zaru-cli`'s and is
+/// built — a `Started` line with no matching `Completed` or `Refused`, derived
+/// on resume, because a killed process writes nothing. The second half is
+/// this crate's, because the model is reached through
+/// [`ContextPolicy::assemble`] and that takes a [`Turn`].
+///
+/// The datum is the **rendered line**, not a structure. ADR-0011 D4 calls
+/// `TranscriptEntry::render()`'s output "the line a transcript shows", and
+/// ADR-0010 D2's replayability claim is that "re-rendering it reproduces what
+/// the user saw" — so the line *is* what the user saw, and handing the model
+/// anything else would be a second description of one call. It also keeps
+/// this crate ignorant of tools: a string it does not parse, exactly as
+/// [`crate::tool_call::ToolRequest`]'s arguments are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interruption {
+    call: String,
+}
+
+impl Interruption {
+    /// Take the rendered line of a call that never completed.
+    #[must_use]
+    pub fn of(call: impl Into<String>) -> Self {
+        Self { call: call.into() }
+    }
+
+    /// The line, as whatever recorded it rendered it.
+    #[must_use]
+    pub fn call(&self) -> &str {
+        &self.call
+    }
+}
+
 /// What the loop asks the context policy to assemble a prompt from.
 #[derive(Debug)]
 pub enum Turn<'a> {
@@ -120,6 +157,24 @@ pub enum Turn<'a> {
     Refinement {
         /// The refinement prompt, built from the previous iteration.
         refinement: &'a RefinementPrompt,
+    },
+    /// The first turn of a resumed session, carrying the call that was in
+    /// flight when the previous process died.
+    ///
+    /// [ADR-0010] D4's "the model is told it did not complete", as data. It
+    /// carries the interruption and nothing else: a resumed session's task
+    /// and its conversation are what the policy restored from the checkpoint,
+    /// and re-supplying them here would be the loop telling the policy
+    /// something the policy already holds.
+    ///
+    /// **This variant is the answer to the open question ADR-0008's Status
+    /// tracking raised on 2026-09-04** — "`Turn` has no variant that carries
+    /// an interruption" — and to the matching bullet on `operations/adr-status`.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    Resumed {
+        /// The call that never completed.
+        interrupted: &'a Interruption,
     },
 }
 

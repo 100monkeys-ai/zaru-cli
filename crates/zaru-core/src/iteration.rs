@@ -56,7 +56,7 @@ pub use limits::{Ceiling, ConfigurationError, Limits, TruncationBudget};
 pub use machine::{Outcome, State, run};
 pub use port::{
     Clock, ContextPolicy, ContextRefusal, ExecutionOutcome, Executor, Generated, Generator,
-    PortFailure, Ports, Prompt, SystemClock, Turn, ValidatorReport, Validators,
+    Interruption, PortFailure, Ports, Prompt, SystemClock, Turn, ValidatorReport, Validators,
 };
 pub use refinement::{RefinementInput, RefinementPrompt};
 
@@ -66,7 +66,13 @@ pub use refinement::{RefinementInput, RefinementPrompt};
 // whose whole content is currently ADR-0008's. A caller reaches them as
 // `iteration::validator::Plan`, which says which record it is holding.
 
+// `pub(crate)` rather than private, for the reason `zaru-cli`'s
+// `credentials::fixtures` and `tools::fixtures` already are: the tool-call
+// loop's checks need the same manual clock this module's do, and a second
+// declaration of it would be one fixture in two places -- which is a fixture
+// that diverges, and the divergence would be in the instrument every elapsed
+// assertion in the crate is measured against.
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;
