@@ -17,6 +17,7 @@ use crate::providers::{
     Placement, ProviderCapabilities, ProviderEndpoint, ProviderKind, ResolvedModel, TableRefused,
     declare, endpoint_of, fields, inference_of,
 };
+use crate::providers::{Cost, CostRefused, Provider, RemoteModelId, TokenUsage, disagreements};
 use std::collections::BTreeSet;
 
 /// The schema every resolution check below resolves against.
@@ -1006,5 +1007,268 @@ fn an_inference_axis_naming_neither_column_is_refused() {
         classified.class(),
         Class::UserCorrectable,
         "the user wrote it and the user can fix it"
+    );
+}
+
+/// A provider a check implements, because nothing in the product tree does.
+///
+/// The one place in this file that stands in for what an adapter would be, and
+/// it is what the accounting invariant below is checked over.
+struct StagedProvider {
+    kind: ProviderKind,
+    endpoint: ProviderEndpoint,
+    capabilities: ProviderCapabilities,
+    usage: Option<TokenUsage>,
+}
+
+impl Provider for StagedProvider {
+    fn kind(&self) -> ProviderKind {
+        self.kind
+    }
+
+    fn endpoint(&self) -> &ProviderEndpoint {
+        &self.endpoint
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        self.capabilities
+    }
+
+    fn usage(&self) -> Option<TokenUsage> {
+        self.usage.clone()
+    }
+}
+
+/// ADR-0012 D7's three quantities, with a cost that is reported and never
+/// computed.
+///
+/// The second half is the one that matters: the module must contain no rate, no
+/// multiplication and no currency, because D7 makes cost conditional on "the
+/// provider publishing pricing" and no provider exists to publish any. A number
+/// invented here would reach a user's status line looking like one somebody
+/// chose.
+#[test]
+fn usage_carries_what_a_provider_reported_and_computes_no_cost() {
+    let counted = TokenUsage::counted(1_200, 340);
+    assert_eq!(counted.prompt_tokens(), 1_200);
+    assert_eq!(counted.completion_tokens(), 340);
+    assert_eq!(
+        counted.cost(),
+        None,
+        "D7 makes cost conditional, so the ordinary case reports none"
+    );
+
+    let cost = Cost::reported(4_500, "USD micros").expect("a unit the caller named");
+    let priced = TokenUsage::counted(1_200, 340).priced(cost.clone());
+    assert_eq!(priced.cost(), Some(&cost));
+    assert_eq!(
+        priced.cost().map(Cost::amount),
+        Some(4_500),
+        "the amount is the caller's and nothing here scales it"
+    );
+    assert_eq!(
+        priced.cost().map(Cost::unit),
+        Some("USD micros"),
+        "the unit travels with the amount, because a bare number is a currency the reader guesses"
+    );
+
+    // Case-folded and declaration-shaped, and both halves were paid for. The
+    // first version used lower-case needles and a mutation adding `PER_1K_USD`
+    // walked straight past it; the second matched the bare word "rate" and
+    // reddened on this module's own prose explaining that no rate lives there.
+    // What an instrument can see is part of the rule it enforces, so the
+    // needles are spellings prose does not produce.
+    let body = include_str!("usage.rs").to_lowercase();
+    let arithmetic = [
+        "per_1k",
+        "per_1m",
+        "per_token",
+        "_rate",
+        "rate_",
+        "fn rate",
+        "usd",
+        "eur",
+        "gbp",
+        "dollar",
+        "fn total",
+        "0.000",
+    ];
+    let found: Vec<&str> = arithmetic
+        .iter()
+        .filter(|needle| body.contains(**needle))
+        .copied()
+        .collect();
+    assert!(
+        found.is_empty(),
+        "ADR-0012 D7 prices where the provider publishes pricing, and nothing publishes any; these \
+         would invent a number: {found:?}"
+    );
+}
+
+/// A cost a status line could not render is refused, saying why.
+#[test]
+fn a_cost_with_no_usable_unit_is_refused() {
+    assert_eq!(
+        Cost::reported(1, "  "),
+        Err(CostRefused::UnitMissing),
+        "a bare number is one the reader has to guess the currency of"
+    );
+    match Cost::reported(1, "US\u{7}D") {
+        Err(CostRefused::UnitControl { offered }) => assert!(
+            offered.contains("\\u{7}"),
+            "the refusal escapes the control character: {offered:?}"
+        ),
+        other => panic!("a control character in a unit must be refused, and was {other:?}"),
+    }
+    assert!(
+        Cost::reported(0, "credits").is_ok(),
+        "a zero cost in a unit the caller named is a real answer, not a refusal"
+    );
+}
+
+/// **The descriptor's accounting flag and the port's usage are two halves of
+/// one statement, and an implementation owes both.**
+///
+/// The trait cannot enforce it — there is nothing in the product tree to wrap —
+/// so the obligation is stated on the port and held here over the
+/// implementations that exist, which are this check's own. A provider that says
+/// it does not account must report nothing, and one that says it does must
+/// report something.
+#[test]
+fn a_providers_accounting_flag_and_its_usage_agree() {
+    let accounting = StagedProvider {
+        kind: ProviderKind::Anthropic,
+        endpoint: ProviderEndpoint::new("https://api.example").expect("well formed"),
+        capabilities: ProviderCapabilities::declared(true, true, true),
+        usage: Some(TokenUsage::counted(10, 20)),
+    };
+    let silent = StagedProvider {
+        kind: ProviderKind::Ollama,
+        endpoint: ProviderEndpoint::new("http://localhost:11434").expect("well formed"),
+        capabilities: ProviderCapabilities::declared(false, true, false),
+        usage: None,
+    };
+
+    for provider in [&accounting, &silent] {
+        assert_eq!(
+            provider.capabilities().token_accounting(),
+            provider.usage().is_some(),
+            "`{}` says it accounts {} and reports usage {}",
+            provider.kind(),
+            provider.capabilities().token_accounting(),
+            provider.usage().is_some(),
+        );
+    }
+
+    // And the port carries what a provider is configured to be, rather than a
+    // second way to ask a model something: a request method here would be two
+    // declarations of one exchange.
+    let body = include_str!("port.rs");
+    let requests = ["fn generate", "fn complete", "fn send", "fn stream("];
+    let found: Vec<&str> = requests
+        .iter()
+        .filter(|needle| body.contains(**needle))
+        .copied()
+        .collect();
+    assert!(
+        found.is_empty(),
+        "a prompt-in, response-out shape is the tool-call loop's port in `zaru-core`, and a second \
+         one here would be the rule in two places: {found:?}"
+    );
+}
+
+/// **ADR-0012 D6: a disagreement names both sides, and nothing can turn one
+/// into the other.**
+///
+/// The structural half is a compile error rather than an assertion — the two
+/// sides are different types, `ModelId` can be built only inside the resolution
+/// table, and there is no conversion in either direction — so what runs is the
+/// behaviour: the two sides are compared, only genuine differences are
+/// reported, and both are carried into the value a prompt would show.
+#[test]
+fn a_disagreement_names_both_sides_and_nothing_reconciles_it() {
+    let schema = schema();
+    let mut document = Table::new();
+    for alias in ModelAlias::ALL {
+        document.insert_path(&alias.key(), Value::Text(format!("ours-{alias}")));
+    }
+    let resolution = Resolution::resolve(
+        &schema,
+        [Contribution::new(
+            Layer::User,
+            Source::named("this harness"),
+            document,
+        )],
+    )
+    .expect("the fixture resolves");
+    let table = ModelTable::from_configuration(&resolution).expect("every value is text");
+
+    // The orchestrator agrees about two and disagrees about two; the fifth it
+    // does not carry at all, which D6 as written does not describe.
+    let remote = vec![
+        (
+            ModelAlias::Default,
+            RemoteModelId::reported("ours-default").expect("well formed"),
+        ),
+        (
+            ModelAlias::Fast,
+            RemoteModelId::reported("theirs-fast").expect("well formed"),
+        ),
+        (
+            ModelAlias::Smart,
+            RemoteModelId::reported("ours-smart").expect("well formed"),
+        ),
+        (
+            ModelAlias::Cheap,
+            RemoteModelId::reported("theirs-cheap").expect("well formed"),
+        ),
+    ];
+
+    let found = disagreements(&table, &remote);
+    assert_eq!(
+        found.iter().map(|d| d.alias).collect::<Vec<_>>(),
+        vec![ModelAlias::Fast, ModelAlias::Cheap],
+        "only the aliases the two sides resolve differently are disagreements; agreement is not \
+         one, and an alias the orchestrator does not carry is not one either"
+    );
+
+    for disagreement in &found {
+        assert_eq!(
+            disagreement.local.as_str(),
+            format!("ours-{}", disagreement.alias),
+            "the local side must be what this harness resolved, unaltered"
+        );
+        assert_eq!(
+            disagreement.remote.as_str(),
+            format!("theirs-{}", disagreement.alias),
+            "and the remote side must be what the orchestrator said, unaltered"
+        );
+        let shown = disagreement.to_string();
+        assert!(
+            shown.contains(disagreement.local.as_str())
+                && shown.contains(disagreement.remote.as_str()),
+            "D6 says a disagreement is shown naming both sides, and this one shows {shown:?}"
+        );
+    }
+
+    // Nothing in the module reconciles: no conversion between the two types,
+    // and no preference for either side. The needles are declaration-shaped.
+    let body = include_str!("negotiation.rs");
+    let reconcilers = [
+        "impl From<RemoteModelId> for ModelId",
+        "impl From<ModelId> for RemoteModelId",
+        "fn prefer",
+        "fn reconcile",
+        "fn resolve_conflict",
+    ];
+    let found: Vec<&str> = reconcilers
+        .iter()
+        .filter(|needle| body.contains(**needle))
+        .copied()
+        .collect();
+    assert!(
+        found.is_empty(),
+        "ADR-0012 D6: a disagreement is never silently reconciled, and these would reconcile one: \
+         {found:?}"
     );
 }
