@@ -33,9 +33,12 @@ zaru init                     # write ADR-0009 D1's manifest here, once, if ther
 carries for one run. `--resume <id>` and `--continue` restore a session and
 print its transcript. `--help` lists exactly what runs and nothing else.
 
-**It cannot run a task**, and it says so rather than letting you find out: no
-provider client exists anywhere in this workspace, so there is nothing for the
-agent loop to ask. A task invocation is refused, naming what is missing.
+**It cannot run a task**, and it says so rather than letting you find out. A
+provider client exists as of 2026-09-05 — the `gemini` kind, which is the one
+an issued key exists for — but **nothing wires a client to a loop**, and the
+other four of ADR-0012 D3's kinds have no client at all. What is missing is the
+wiring, and it is missing for every kind alike, which is why a task invocation
+is refused with the same sentence whichever alias resolves.
 
 Eleven pieces exist behind that binary and the command surface reaches seven of
 them. The iteration loop and the tool-call loop are in `zaru-core`, headless,
