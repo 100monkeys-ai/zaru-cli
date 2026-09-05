@@ -2945,3 +2945,119 @@ fn a_session_with_nothing_in_flight_owes_the_model_nothing() {
         "a session being minted owes an interruption, and nothing has happened in it yet",
     );
 }
+
+/// **The mechanism has a product caller, which for a day it did not.**
+///
+/// [ADR-0010]'s own Status tracking carried this, written by `session-restore`
+/// on 2026-09-05: "Nothing in `zaru-cli`'s product tree constructs
+/// `Turn::Resumed` … So 'the model is told it did not complete' is reachable
+/// from an outside caller and from no door a person can open." That is library
+/// [Verification lessons] §25's cheap companion in as many words — "a
+/// mechanism whose only callers are in the test suite is a mechanism nobody
+/// has been shown to reach, and one search over the production sources answers
+/// it without a run" — and it is a search rather than a run because no check
+/// in this repository can construct a [`Turns`]: it holds a `&Prepared`, whose
+/// fields are private and include a provider client, so there is no way to
+/// call `run_a_turn` without a key. What that costs is stated rather than
+/// glossed: **this says the call site exists and says nothing about what it
+/// does**, and the behaviour is held by the artefact on ADR-0010's Status
+/// tracking and by the checks above.
+///
+/// Two mutants: deleting the `Start::Resumed` call site in
+/// `turns_of_one_line`, and deleting `Pending::of`'s call site in
+/// `terminal::open`, which between them are the whole of the wiring.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn adr_0010_d4s_resumed_turn_is_started_by_product_source_and_not_only_by_a_check() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = 0usize;
+    let mut starts: Vec<String> = Vec::new();
+    let mut tellings: Vec<String> = Vec::new();
+    let mut carriers: Vec<String> = Vec::new();
+    let mut controls = 0usize;
+    let mut frontier = vec![src];
+
+    while let Some(directory) = frontier.pop() {
+        for entry in std::fs::read_dir(&directory).expect("a source directory is readable") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                frontier.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|kind| kind != "rs") {
+                continue;
+            }
+            // The checks and their fixtures are not the product, and the whole
+            // point of this check is that a call site in one of them is not a
+            // door a person can open.
+            if path
+                .file_name()
+                .is_some_and(|name| name == "tests.rs" || name == "fixtures.rs")
+            {
+                continue;
+            }
+            files += 1;
+            let source = std::fs::read_to_string(&path).expect("a source file is readable");
+            for (number, line) in source.lines().enumerate() {
+                let at = format!("{}:{}", path.display(), number + 1);
+                // Code rather than prose: every mention in this tree that is
+                // not a call is inside a doc comment or a link definition.
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                // `Start::Resumed(&` rather than `Start::Resumed(`, because
+                // the latter also matches the *pattern* `run_a_turn` uses to
+                // read the start it was handed — measured, not predicted: the
+                // looser spelling stayed green under a mutation that deleted
+                // the construction and left the pattern (library verification
+                // lessons §9). A construction takes a reference; the pattern
+                // binds a name.
+                if line.contains("Start::Resumed(&") {
+                    starts.push(at.clone());
+                }
+                if line.contains(".tell_once()") {
+                    tellings.push(at.clone());
+                }
+                if line.contains("Pending::of(") {
+                    carriers.push(at.clone());
+                }
+                // The liveness control: a spelling that must not be found, so
+                // "nothing found" is evidence the instrument could have found
+                // something (library verification lessons §8).
+                if line.contains("Start::NeverBuilt(") {
+                    controls += 1;
+                }
+            }
+        }
+    }
+
+    assert!(
+        files > 40,
+        "this scan read {files} product file(s), which is too few to have asserted anything about \
+         where a resumed turn is started"
+    );
+    assert_eq!(
+        controls, 0,
+        "the scan matched a variant that does not exist, so its matcher says nothing"
+    );
+    assert!(
+        !starts.is_empty(),
+        "no product source starts a turn with `Start::Resumed`, so ADR-0010 D4's second half is \
+         reachable from an outside caller and from no door a person can open"
+    );
+    assert!(
+        !tellings.is_empty(),
+        "no product source ever asks a session what it owes the model, so the interruption is \
+         carried and never told"
+    );
+    assert!(
+        !carriers.is_empty(),
+        "no product source builds the carrier a resumed session hands a turn, so `Pending` is a \
+         mechanism nobody has been shown to reach"
+    );
+    println!("  the resumed turn is started at: {starts:?}");
+    println!("  the interruption is told at: {tellings:?}");
+    println!("  the carrier is built at: {carriers:?}");
+}

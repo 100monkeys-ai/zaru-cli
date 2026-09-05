@@ -343,6 +343,13 @@ pub struct Turns<'a> {
     /// spans many calls to this function and a number invented here would
     /// restart at one every turn". This is the caller.
     pub next: u32,
+    /// What this session owes the model about a call that never completed.
+    ///
+    /// [ADR-0010] D4, and the same source as `next` above: `session::resume`
+    /// read the transcript once when the shell opened. See [`Pending`].
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    pub interrupted: Pending,
 }
 
 impl core::fmt::Debug for Turns<'_> {
@@ -354,6 +361,7 @@ impl core::fmt::Debug for Turns<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Turns")
             .field("next", &self.next)
+            .field("interrupted", &self.interrupted)
             .finish_non_exhaustive()
     }
 }
@@ -1140,15 +1148,8 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // is the one way out of this arm.
                 let lines = match turns {
                     Turnable::Ready(turns) => {
-                        match run_a_turn(
-                            shell,
-                            surface,
-                            source,
-                            pace,
-                            entries,
-                            &mut now,
-                            turns,
-                            Start::Task(&task),
+                        match turns_of_one_line(
+                            shell, surface, source, pace, entries, &mut now, turns, &task,
                         )
                         .await
                         {
@@ -1192,6 +1193,102 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
 fn exit_for(leaving: zaru_tui::shell::Leaving) -> Exit {
     debug_assert_eq!(leaving.code(), 0);
     Exit::Succeeded
+}
+
+/// The turns one typed line causes.
+///
+/// # Why a line can cause two of them
+///
+/// [ADR-0010] D4: "An interrupted tool call is recorded as `Interrupted` **and
+/// the model is told it did not complete**." [`Start::Resumed`] carries no
+/// task — a resumed session is not a new instruction — so telling the model
+/// cannot be folded into the turn the user asked for: making a user's first
+/// typed line a resumed turn would **drop the task**, which is what
+/// `shell-task-turns` measured and refused. The telling is therefore a turn of
+/// its own, and it goes first.
+///
+/// **It happens here rather than when the shell opens, and that was the
+/// ruling.** ADR-0010's own Status tracking held "whether a shell opened over
+/// a session whose last call was interrupted owes the model a task-less turn
+/// before the user's first one" as a question for its author; it was decided
+/// on 2026-09-05 under directive 20, open to Jeshua's veto, and the amendment
+/// is on that record. Running it at the door would spend a provider call on a
+/// `--resume` somebody opened to read their session back — and would move the
+/// refusal [`crate::terminal::open`] deliberately defers, whose reason it
+/// states in its own words: "a person who resumed a session to read it back is
+/// not asking for a provider, and refusing before they ask would answer a
+/// question they did not put." Here, a session with no provider is still
+/// [`Turnable::Cannot`] and no resumed turn ever runs.
+///
+/// **Once**, because [`Pending::tell_once`] empties itself. The second turn
+/// after a resume is [`Start::Task`] again, and so is every turn after that.
+///
+/// A user who leaves during the resumed turn gets the same three arms every
+/// turn has, and the interruption is not lost: nothing closed the pair on
+/// disk, so the next `--resume` derives it again from the transcript's own
+/// shape. Authoring a record for a call that never finished is what [ADR-0010]
+/// D2's replayability claim forbids.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[allow(
+    clippy::too_many_arguments,
+    reason = "\
+    the list `run_a_turn` takes, which is the list `run` takes minus two. \
+    Every one is a port or a value some record owns, and bundling them would \
+    be a second name for the same list -- the argument \
+    `compose::turn::run_one` already makes for its own"
+)]
+async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
+    shell: &mut Shell,
+    surface: &mut S,
+    source: &Source,
+    pace: &P,
+    entries: &dyn zaru_tui::composer::Entries,
+    now: &mut Duration,
+    turns: &mut Turns<'_>,
+    task: &str,
+) -> Turned {
+    let mut lines = Vec::new();
+
+    if let Some(interrupted) = turns.interrupted.tell_once() {
+        match run_a_turn(
+            shell,
+            surface,
+            source,
+            pace,
+            entries,
+            now,
+            turns,
+            Start::Resumed(&interrupted),
+        )
+        .await
+        {
+            Turned::Ran(told) => lines.extend(told),
+            // The user left, or the terminal stopped answering, during the
+            // telling. Both are the pump's way out and neither is this
+            // function's to interpret.
+            other => return other,
+        }
+    }
+
+    match run_a_turn(
+        shell,
+        surface,
+        source,
+        pace,
+        entries,
+        now,
+        turns,
+        Start::Task(task),
+    )
+    .await
+    {
+        Turned::Ran(answered) => {
+            lines.extend(answered);
+            Turned::Ran(lines)
+        }
+        other => other,
+    }
 }
 
 /// Map one slash command onto the request its subcommand spelling produces.

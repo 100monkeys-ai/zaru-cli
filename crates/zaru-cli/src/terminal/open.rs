@@ -251,6 +251,14 @@ pub fn open(
             // Update of 2026-09-05, and `session::resume`'s `turns_so_far`
             // carries why it is the greatest rather than the count.
             next: resumed.turns + 1,
+            // ADR-0010 D4's second half, from the same read of the same
+            // transcript as `next` above and `said` beside it. It is built
+            // *here*, inside the arm that resolved a provider, and told at
+            // the first thing the user asks rather than at the door -- see
+            // `driver::turns_of_one_line`, which carries the ruling and its
+            // reason. A session with no provider builds no `Turns` at all,
+            // so it tells nothing and spends nothing.
+            interrupted: crate::terminal::driver::Pending::of(&resumed, prepared.redactor()),
         })),
         // The real refusal, shown when the user types a task rather than at
         // the door: a person who resumed a session to read it back is not
