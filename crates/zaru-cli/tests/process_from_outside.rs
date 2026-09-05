@@ -35,6 +35,7 @@ use zaru_cli::credentials::{
 use zaru_cli::process::{Environment, ProcessCeiling, Spawn};
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
+use zaru_cli::terminal::driver::Pending;
 use zaru_cli::tools::{
     Captured, ELISION_PREFIX, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget,
     SessionOverflow, Verdict, Verdicts, WorkingDirectory,
@@ -1012,6 +1013,7 @@ fn a_command_in_flight_when_the_harness_dies_resumes_as_interrupted() {
 
     let interrupted = restored
         .interrupted
+        .as_ref()
         .expect("a `cmd.run` was in flight when the process was killed, so ADR-0010 D4 derives an interruption");
     assert_eq!(
         interrupted.call.phase,
@@ -1035,13 +1037,114 @@ fn a_command_in_flight_when_the_harness_dies_resumes_as_interrupted() {
 
     // What the model is told, which is ADR-0010 D4's second half and passes
     // ADR-0008 clause 6's port because a rendered `cmd.run` line is a command
-    // line.
-    let told = interrupted.for_the_model(&HeldSecrets::none());
+    // line. **Through the product's own carrier since 2026-09-05**: `Pending`
+    // is what `terminal::open` builds and what the shell's first turn is
+    // started from, so this is the same value a person at a terminal gets
+    // rather than a conversion an outside caller performed for itself.
+    let mut pending = Pending::of(&restored, &HeldSecrets::none());
+    let told = pending
+        .tell_once()
+        .expect("a resumed session owes the model the command that was in flight");
     println!("  the model would be told: {}", told.call());
     assert!(
         told.call().contains(IN_FLIGHT),
         "the model is not told which call did not complete: {}",
         told.call()
+    );
+    assert!(
+        pending.tell_once().is_none(),
+        "the interruption is still owed after being told, so a second turn of the resumed session \
+         would be told about the same killed command again"
+    );
+}
+
+/// **The security corpus: a held bearer in the line of a call that never
+/// completed.**
+///
+/// ADR-0010 D4's carrier passes ADR-0008 clause 6's port, which was a
+/// coordinator ruling of 2026-09-05 rather than one of the three paths that
+/// decision names: "a rendered `cmd.run` line **is** a command line, and that
+/// is where a `--token=` argument lives". `Pending` is a new hop on that path
+/// and adds no seam of its own — it calls `Interrupted::for_the_model` and
+/// nothing else, which is why `no_captured_bytes_reach_a_prompt_except_through_the_port`
+/// still enumerates eight paths and not nine. This is what makes that true
+/// rather than believed.
+///
+/// **And the record keeps the raw line**, which is ADR-0010's rule and the
+/// other half of the assertion: the transcript "contains whatever the session
+/// contained".
+///
+/// The discriminating arm is the same staging with nothing held, where the
+/// value reaches the carrier byte for byte — without it, a carrier that erased
+/// everything would satisfy every absence above.
+#[test]
+fn a_held_bearer_in_an_interrupted_command_line_is_absent_from_the_carrier_and_its_debug() {
+    println!("== a planted bearer in a call that never completed ==");
+    let scratch = Scratch::new("interrupted-secret");
+    let value = format!("nn_mcp_{}", nonce("in-flight"));
+    let (store, keys, alias) = store_holding(&scratch, "planted", &value);
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
+    assert_eq!(held.len(), 1, "staging: the store held nothing to redact");
+
+    let line = format!("cmd.run `deploy --token={value}`");
+    // One session, held: `Scratch::session` mints a new one on every call.
+    let session = scratch.session();
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("the transcript opens");
+    transcript
+        .record(&Record::ToolCall(zaru_cli::session::ToolCall {
+            line: line.clone(),
+            out_of_tree: false,
+            destructive: false,
+            phase: Phase::Started,
+        }))
+        .expect("the started line is written");
+
+    let restored = zaru_cli::session::resume(session.directory(), 8).expect("the session resumes");
+    assert!(
+        restored.interrupted.is_some(),
+        "staging: nothing was left in flight, so nothing below was measured"
+    );
+
+    let mut pending = Pending::of(&restored, &held);
+    let shape = format!("{pending:?}");
+    let told = pending.tell_once().expect("the interruption is carried");
+
+    assert!(
+        !told.call().contains(&value) && !told.call().contains(ascii_core(&value)),
+        "the harness would hand a model its own bearer value from a call that never completed: {}",
+        told.call()
+    );
+    assert!(
+        told.call().contains(&marker(&alias)),
+        "the model is given no marker where the value was removed, so it cannot tell that \
+         anything was: {}",
+        told.call()
+    );
+    assert!(
+        !shape.contains(&value) && !shape.contains(ascii_core(&value)),
+        "the carrier's `Debug` renders a session's own command line, which is what ends up in a \
+         panic message: {shape:?}"
+    );
+
+    // ADR-0010's record is deliberately outside the port. Read with `std::fs`
+    // rather than through `Transcript::read`, so neither arm of the comparison
+    // travels through the product's own reader.
+    let on_disk =
+        std::fs::read_to_string(session.transcript_path()).expect("the transcript is on disk");
+    assert!(
+        on_disk.contains(&value),
+        "the transcript does not carry the call as it was made: {on_disk:?}"
+    );
+
+    // The discriminating arm.
+    let mut carried = Pending::of(&restored, &HeldSecrets::none());
+    let raw = carried.tell_once().expect("the interruption is carried");
+    assert!(
+        raw.call().contains(&value),
+        "with nothing held the value did not reach the carrier either, so the absence above is \
+         about this check rather than about the redactor: {}",
+        raw.call()
     );
 }
 

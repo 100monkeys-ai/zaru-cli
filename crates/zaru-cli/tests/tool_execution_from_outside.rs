@@ -24,6 +24,7 @@ use zaru_cli::failure::{Class, Presentation};
 use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
+use zaru_cli::terminal::driver::Pending;
 use zaru_cli::tools::{
     Captured, ConfirmFailure, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question,
     SessionOverflow, Subprocess, ToolName, Verdict, Verdicts, WorkingDirectory,
@@ -431,19 +432,53 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
     );
 }
 
-/// ADR-0010 D4 end to end: a session with a call in flight is resumed, and
-/// the interruption reaches what the model is shown.
+/// **ADR-0010 D4, end to end, through the carrier a resumed session hands the
+/// shell.**
+///
+/// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
+/// is told it did not complete**." Every part of that is the product's here:
+/// `session::resume` derives the interruption, `terminal::driver::Pending`
+/// carries it through `Interrupted::for_the_model`, and the loop turns it into
+/// the `Turn::Resumed` the policy is handed. Nothing in this check builds an
+/// `Interruption` by hand, which is what it did until 2026-09-05 — and while
+/// it did, the only thing it showed was that *an outside caller* could do it.
+///
+/// Three arms, and the third is the one that discriminates:
+///
+/// 1. The first turn of the resumed session is `Resumed` and carries that
+///    call's own line.
+/// 2. The turn after it is `Initial` and carries the task. An interruption is
+///    told once.
+/// 3. **Nothing was re-executed.** The resumed turn requested no tool, the
+///    transcript gained no `tool_call` record, and the file the interrupted
+///    `fs.write` named is not on disk. Its accepting sibling is the last turn,
+///    where a model that *does* ask for that write gets it — so the arm is not
+///    a check that a file never appears (library verification lessons §4).
+///
+/// The name this check had until 2026-09-05 was
+/// `an_interrupted_call_reaches_the_model_on_the_next_turn`, which stated a
+/// weaker rule than the one held here.
 #[tokio::test]
-async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
+async fn a_resumed_session_tells_the_model_once_and_re_executes_nothing() {
     println!("== a resumed session with a call in flight ==");
     let scratch = Scratch::new("tcl-resumed");
+    let tree = Tree::new("tcl-resumed-tree");
+    let working = WorkingDirectory::at(tree.project()).expect("resolves");
+    // A path with nothing at it, so "was it re-executed" is a question the
+    // filesystem can answer. `src/main.rs` is staged by `Tree` and would be
+    // there whatever happened.
+    let written = tree.project().join("src").join("fresh.rs");
+    assert!(
+        !written.exists(),
+        "staging: the file the interrupted call names is already on disk, so the arm below could \
+         not fail"
+    );
+
     // A `Started` with nothing closing it is what a killed process leaves.
     {
         let mut transcript =
             Transcript::append_to(scratch.session.transcript_path()).expect("opens");
-        let tree = Tree::new("tcl-resumed-tree");
-        let working = WorkingDirectory::at(tree.project()).expect("resolves");
-        let target = working.classify("src/main.rs");
+        let target = working.classify("src/fresh.rs");
         let invocation =
             zaru_cli::tools::Invocation::on_path(ToolName::FsWrite, &target).expect("a path tool");
         let decision =
@@ -454,39 +489,73 @@ async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
             )))
             .expect("the started line is written");
     }
+    let records_before = records_in(&scratch.session.transcript_path());
 
     let restored = zaru_cli::session::resume(scratch.session.directory(), 32).expect("resumes");
-    let interrupted = restored
+    let line = restored
         .interrupted
         .as_ref()
-        .expect("a started call with nothing closing it is the interruption");
-    println!("  interrupted: {:?}", interrupted.call.line);
+        .expect("a started call with nothing closing it is the interruption")
+        .call
+        .line
+        .clone();
+    println!("  interrupted: {line:?}");
+
+    // The product's carrier, not this check's. `Pending::of` is the one thing
+    // that turns what a resume derived into what a turn starts with.
+    let mut pending = Pending::of(&restored, &HeldSecrets::none());
+    let carried: Interruption = pending
+        .tell_once()
+        .expect("a resumed session owes the model the call that never completed");
 
     let clock = Ticking::default();
     let policy = Policy::default();
     let mut sink = Printing::default();
     let model = Provider(Mutex::new(
-        [ModelResponse::Text {
-            text: String::from("that write did not finish and I will not repeat it"),
-            tokens: TokenUsage::default(),
-        }]
+        [
+            // The resumed turn: the model answers and asks for nothing.
+            ModelResponse::Text {
+                text: String::from("that write did not finish and I will not repeat it"),
+                tokens: TokenUsage::default(),
+            },
+            // The turn the user asked for.
+            ModelResponse::Text {
+                text: String::from("nothing else to do"),
+                tokens: TokenUsage::default(),
+            },
+            // The accepting sibling: a model that does ask for the write.
+            ModelResponse::Calls {
+                calls: vec![ToolRequest {
+                    id: String::from("c1"),
+                    name: String::from("fs.write"),
+                    arguments: serde_json::json!({
+                        "path": "src/fresh.rs",
+                        "contents": "// written on purpose\n",
+                    })
+                    .to_string(),
+                }],
+                tokens: TokenUsage::default(),
+            },
+            ModelResponse::Text {
+                text: String::from("written"),
+                tokens: TokenUsage::default(),
+            },
+        ]
         .into(),
     ));
-    let tree = Tree::new("tcl-resumed-second");
-    let working = WorkingDirectory::at(tree.project()).expect("resolves");
     let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
     let mut overflow = SessionOverflow::in_session(scratch.session.directory());
     let nothing = Nothing;
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
 
-    // The conversion `zaru-cli` owns, into the datum `zaru-core` carries.
-    let carried: Interruption = interrupted.for_the_model(&HeldSecrets::none());
-
     {
         let mut executor = Executor {
             working_directory: &working,
-            mode: Mode::Ask,
+            // `yolo`, so the last turn's write is not refused for want of a
+            // confirmer. It is the same surface for all three turns, which is
+            // what makes the third one evidence about the first two.
+            mode: Mode::Yolo,
             allowlist: &nothing,
             destructive: &nothing,
             confirmer: None,
@@ -499,34 +568,192 @@ async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
-        run::<_, _, _, _, _, NeverIterates>(
-            2,
-            Start::Resumed(&carried),
-            ToolCallCeiling::new(2).expect("a usable ceiling"),
-            ToolCalling::required(&model, "outside-caller").expect("it can call tools"),
-            Ports {
-                model: &model,
-                tools: &mut executor,
-                context: &policy,
-                clock: &clock,
-                redactor: &HeldSecrets::none(),
-            },
-            None,
-            &mut [&mut sink],
-        )
-        .await
-        .expect("no port failed");
+        // Three turns over one surface, written out rather than folded into a
+        // helper: what makes the third one evidence about the first two is
+        // that they are the same executor, the same policy and the same model,
+        // and a helper would hide exactly that.
+        macro_rules! turn {
+            ($n:expr, $start:expr) => {
+                run::<_, _, _, _, _, NeverIterates>(
+                    $n,
+                    $start,
+                    ToolCallCeiling::new(3).expect("a usable ceiling"),
+                    ToolCalling::required(&model, "outside-caller").expect("it can call tools"),
+                    Ports {
+                        model: &model,
+                        tools: &mut executor,
+                        context: &policy,
+                        clock: &clock,
+                        redactor: &HeldSecrets::none(),
+                    },
+                    None,
+                    &mut [&mut sink],
+                )
+                .await
+                .expect("no port failed")
+            };
+        }
+
+        // Turn 2 of this session: the one a resumed shell owes the model.
+        turn!(2, Start::Resumed(&carried));
+
+        assert!(
+            pending.tell_once().is_none(),
+            "the interruption is still owed after the resumed turn, so the next turn would be \
+             told it again; an interruption is told once"
+        );
+
+        // Turn 3: the line the user typed.
+        turn!(3, Start::Task("what else is left"));
+
+        // Turn 4, the accepting sibling: the same surface, asked for the write.
+        turn!(4, Start::Task("write the file after all"));
     }
 
     let shown = policy.0.lock().expect("poisoned").clone();
     println!("  the model was shown: {shown:?}");
-    assert_eq!(shown.len(), 1);
+    assert_eq!(shown.len(), 3, "three turns were driven");
     assert!(
-        shown[0].contains(&interrupted.call.line),
+        shown[0].starts_with("[resumed]") && shown[0].contains(&line),
         "ADR-0010 D4: the model is told it did not complete. The interrupted call's own line \
          must reach what the model sees, and what reached it was {:?}",
         shown[0]
     );
+    assert!(
+        shown[1].starts_with("[initial]") && shown[1].contains("what else is left"),
+        "the turn after a resumed one is the user's own, and an interruption is told once; what \
+         reached the model was {:?}",
+        shown[1]
+    );
+
+    // Arm 3. Read off the disk and off the loop's own events, neither of
+    // which travels through `Pending` (library verification lessons §11).
+    let requested: Vec<&Event> = sink
+        .0
+        .iter()
+        .take_while(|event| !matches!(event, Event::TurnStarted { n: 3, .. }))
+        .filter(|event| matches!(event, Event::ToolRequested { .. }))
+        .collect();
+    assert!(
+        requested.is_empty(),
+        "the resumed turn requested {} tool call(s); a resume never re-runs one: {requested:?}",
+        requested.len()
+    );
+    assert_eq!(
+        records_in(&scratch.session.transcript_path())
+            .iter()
+            .filter(|line| line.contains("\"tool_call\""))
+            .count(),
+        records_before
+            .iter()
+            .filter(|line| line.contains("\"tool_call\""))
+            .count()
+            + 2,
+        "the interrupted call was re-executed, or the sibling's write was not recorded: the \
+         transcript's tool-call records are {:?}",
+        records_in(&scratch.session.transcript_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&written).expect("the sibling's write reached the disk"),
+        "// written on purpose\n",
+        "the accepting sibling did not write the file, so the arm above asserted that a file \
+         nothing could have created was absent"
+    );
+}
+
+/// **A resumed session whose last event is an *iteration*'s owes the model
+/// nothing, and this pins that answer without giving it one.**
+///
+/// `process-async` measured, from outside both crates and over the product's
+/// own loop, that a `Ctrl-C` while a declared validator's command was running
+/// leaves the transcript holding exactly `iteration_started`,
+/// `candidate_generated`, `execution_completed` — that is ADR-0010 D2's "at
+/// most the event in flight" honoured exactly, and it means **a resume can
+/// name the `cmd.run` that did not finish and cannot name the iteration that
+/// did not finish**. Whether an interrupted iteration is derivable at all is
+/// an open question on `operations/adr-status-questions`, and giving a
+/// validator a started-and-completed pair would add a producer to D2's list,
+/// which is ADR-0010's decision and not an implementer's.
+///
+/// So this check **answers nothing**. It holds what is true today —
+/// `session::resume` scans `Record::ToolCall` and nothing else, so a session
+/// whose last loop event is `execution_completed` reports no interruption and
+/// its resumed first turn is `Initial`, exactly as a clean resume's — which is
+/// what that question's own "checkable by" asks for. Deciding it either way
+/// reddens this check rather than passing unnoticed.
+///
+/// The accepting sibling is the same transcript with a lone tool-call
+/// `Started` appended: that one does owe the model a telling, so the check
+/// cannot pass against a carrier that owes nothing for everything.
+#[test]
+fn a_session_interrupted_inside_an_iteration_owes_the_model_nothing() {
+    println!("== a transcript that ends inside an iteration ==");
+    let scratch = Scratch::new("tcl-iteration");
+    let tree = Tree::new("tcl-iteration-tree");
+    let working = WorkingDirectory::at(tree.project()).expect("resolves");
+
+    let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
+    for event in [
+        zaru_core::iteration::Event::IterationStarted { n: 1, of: 3 },
+        zaru_core::iteration::Event::CandidateGenerated {
+            tokens: 42,
+            elapsed: Duration::from_millis(7),
+        },
+        zaru_core::iteration::Event::ExecutionCompleted {
+            exit_code: 0,
+            stdout_bytes: 3,
+            stderr_bytes: 0,
+            elapsed: Duration::from_millis(11),
+        },
+    ] {
+        transcript
+            .record(&Record::Loop(event))
+            .expect("a loop record is appended");
+    }
+
+    let restored = zaru_cli::session::resume(scratch.session.directory(), 32).expect("resumes");
+    assert!(
+        !restored.tail.is_empty(),
+        "staging: the transcript holds no records, so nothing below was measured"
+    );
+    assert_eq!(
+        restored.interrupted, None,
+        "a session whose last record is an iteration's own event reported an interrupted tool \
+         call; D4's `Interrupted` is a tool call's marker and the loop's events are not that shape"
+    );
+    assert!(
+        !Pending::of(&restored, &HeldSecrets::none()).is_owed(),
+        "a session interrupted inside an iteration owes the model a telling, which would be a \
+         telling about a call the transcript does not name"
+    );
+
+    // The accepting sibling, on the same transcript: a tool call in flight is
+    // still derived, so the carrier is not one that owes nothing for
+    // everything.
+    let target = working.classify("src/main.rs");
+    let invocation =
+        zaru_cli::tools::Invocation::on_path(ToolName::FsRead, &target).expect("a path tool");
+    let decision = zaru_cli::tools::Decision::assess(Mode::Yolo, &invocation, &Nothing, &Nothing);
+    transcript
+        .record(&Record::ToolCall(zaru_cli::session::ToolCall::started(
+            decision.entry(),
+        )))
+        .expect("the started line is written");
+    let after = zaru_cli::session::resume(scratch.session.directory(), 32).expect("resumes");
+    assert!(
+        Pending::of(&after, &HeldSecrets::none()).is_owed(),
+        "a tool call left in flight after the loop's events owes the model nothing, so the arm \
+         above holds for a carrier that never owes anything"
+    );
+}
+
+/// Every complete line of a transcript, off the filesystem.
+fn records_in(path: &std::path::PathBuf) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// ADR-0004's seam, from outside: a denying membrane refuses at `yolo`, and
