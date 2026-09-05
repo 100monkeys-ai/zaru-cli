@@ -23,8 +23,9 @@
 //!
 //! Everything below renders into a `ratatui::Frame` and reads
 //! `tui_textarea::Input`, both backend-agnostic. The terminal itself — raw
-//! mode, the alternate screen, the crossterm event loop, and the panic hook
-//! that restores the terminal — is `zaru-cli`'s, because it is the
+//! mode, the alternate screen, the thread that reads crossterm's events, and
+//! the panic hook that restores the terminal — is `zaru-cli`'s, because it is
+//! the
 //! composition root and because [ADR-0003] D8 lets this crate name only
 //! `zaru-core`. So every check here drives `ratatui`'s `TestBackend` and reads
 //! cells out of the buffer, and a rendered line quoted from one of them is

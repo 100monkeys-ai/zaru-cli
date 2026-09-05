@@ -53,10 +53,21 @@ validators. What the session cannot do it says once, in the same words
 `zaru "<task>"` uses: no key for a provider this build can reach, no client for
 the ones you hold keys for, or a project that declared validators.
 
-One thing it does not do, said rather than left to be discovered: **while the
-model is thinking, the pane does not repaint and no keystroke is read.** There
-is no asynchronous terminal source yet, so a `Ctrl-C` pressed then is queued
-and acted on when the model answers.
+**Since 2026-09-05 the pane stays alive while the model thinks.** The terminal
+is read on a thread of its own, so a turn and your keyboard are two things the
+shell waits on at once: what you type during a turn appears as you type it, a
+standing tip yields on that first keystroke, and the permission prompt is
+answerable while the pane keeps painting. Nothing new is painted on the tick —
+there is no spinner and no running clock, because no decision record gives
+either one, and that is named as a gap rather than invented.
+
+`Ctrl-C` during a turn leaves, exactly as it does at the prompt, and leaving
+is what interrupts the turn: whatever the turn had already written is in the
+transcript and nothing after it is, so resuming that session tells the model
+which call did not complete. **One thing is still not interruptible**, said
+rather than left to be discovered: while a `cmd.run` or a declared validator's
+command is running, the harness is inside a blocking wait, so nothing repaints
+and nothing is read until that child exits.
 
 Outside a session, `zaru "<task>"` runs one turn and exits:
 
