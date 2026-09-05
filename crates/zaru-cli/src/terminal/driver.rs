@@ -713,7 +713,69 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         &redacted(&format!("zaru: {}", ran.lines.join("\n"))),
     ));
 
+    // ADR-0013 clause 5 and ADR-0012 clause 6, both on ADR-0001 D2's row.
+    // **After the record above**, so the number the user reads is the context
+    // the *next* turn will assemble over rather than the one this turn saw --
+    // which is what D6's "a number that has been visible all along" means for
+    // somebody about to type again. A compaction made at the next turn's
+    // boundary shows here at the end of that turn, by the same rule.
+    refresh_status(
+        shell,
+        &turns.context,
+        turns.prepared.usage().as_ref(),
+        redactor,
+    );
+
     Turned::Ran(lines_of(&ran))
+}
+
+/// Put [ADR-0013] D6's and [ADR-0012] D7's numbers on the status row.
+///
+/// # The one place the row's two segments are set
+///
+/// Two records want a number on [ADR-0001] D2's row and ADR-0012's own
+/// proposed Update says whoever settles that should settle it in one change
+/// rather than "leave two arcs writing to one line". This is that one place:
+/// both segments are written here, together, from the two data the session
+/// already holds, so neither can be updated without the other being
+/// considered.
+///
+/// # When it is called, and why nothing changes mid-turn
+///
+/// At session open, and at the end of every turn. Those are the moments the
+/// numbers can change, and each is a record's:
+///
+/// - **Context usage changes only at a turn boundary.** [ADR-0013] D7:
+///   "Compaction happens at turn boundaries only". `ContextPolicy::assemble`
+///   takes `&self` and `Context::compact` takes `&mut self`, so a context
+///   *cannot* change while a turn is in flight — the number would be the same
+///   number however often it were re-read.
+/// - **Token usage is D7's "per turn in the status line".** The client
+///   replaces its slot on every exchange, so a mid-turn read would show a
+///   per-*exchange* number where the record says per-turn, which is a reading
+///   an implementation would be making rather than a record.
+///
+/// So the beat repaints these values without recomputing them, and
+/// [`crate::terminal::source::TICK`]'s "nothing on the pane changes on a bare
+/// tick" stays true of the status row as well.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub fn refresh_status(
+    shell: &mut Shell,
+    context: &crate::compose::SessionContext,
+    tokens: Option<&crate::providers::TokenUsage>,
+    redactor: &(dyn zaru_core::redaction::Redactor + Sync),
+) {
+    shell.set_context_usage(Some(crate::cli::render::context_usage(
+        context.usage(redactor),
+    )));
+    // `render::usage` and not a second spelling: this is the same function the
+    // session prints on exit, so the row and that line cannot disagree about a
+    // word -- the argument `terminal::vocabulary::turn_line` already makes for
+    // the pane and the resumed transcript.
+    shell.set_token_usage(tokens.map(crate::cli::render::usage));
 }
 
 /// What the race broke out with, before the borrow of the pane ends.

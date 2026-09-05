@@ -192,6 +192,20 @@ pub fn open(
         Err(refused) => Turnable::Cannot(crate::terminal::driver::lines_of(refused)),
     };
 
+    // ADR-0013 D6's number, on the row from the session's very first frame:
+    // "it is a number that has been visible all along". A session whose
+    // composition could not resolve a provider has no context at all, so the
+    // segment stays absent there rather than showing a zero -- and the token
+    // segment is absent in both cases, because no exchange has happened.
+    if let Turnable::Ready(turns) = &turns {
+        crate::terminal::driver::refresh_status(
+            &mut shell,
+            &turns.context,
+            None,
+            turns.prepared.redactor(),
+        );
+    }
+
     // **One runtime for the session, built before the terminal is taken.**
     // Every turn of this session is polled on it, where until 2026-09-05 each
     // turn built and dropped one of its own; and it is what lets the pump race

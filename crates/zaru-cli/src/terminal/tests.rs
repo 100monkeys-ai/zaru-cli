@@ -2092,3 +2092,205 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
     // ADR-0016 D5's `0`, through the one function the pump uses.
     assert_eq!(zaru_tui::shell::Leaving::Interrupt.code(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0013 clause 5 and ADR-0012 clause 6 — the two numbers on ADR-0001 D2's row
+// ---------------------------------------------------------------------------
+
+/// Limits a check can actually cross, so the threshold is reachable.
+///
+/// The product's window is `CONTEXT_WINDOW_TOKENS`, 1,048,576, and its
+/// threshold three quarters of that. A check that filled 786 KB of layer 6 to
+/// watch a number move would be measuring the machine. These are
+/// `summariser_from_outside`'s own numbers, for the same reason it chose them.
+fn crossable() -> zaru_core::context::ContextLimits {
+    zaru_core::context::ContextLimits::new(
+        zaru_core::context::ContextWindow::new(8_000).expect("not zero"),
+        zaru_core::context::PressureThreshold::new(900).expect("not zero"),
+    )
+    .expect("the threshold is below the window")
+}
+
+/// A summariser that answers a fixed sentence, so a compaction can be driven
+/// with no provider.
+struct Staged;
+
+impl zaru_core::context::Summariser for Staged {
+    async fn summarise(
+        &self,
+        _span: &zaru_core::context::Span,
+    ) -> Result<String, zaru_core::iteration::PortFailure> {
+        Ok("the constraints so far".to_owned())
+    }
+}
+
+/// The context number rises as a session holds more, and falls when a
+/// compaction relieves it.
+///
+/// **A seam check, and it says so.** It drives `SessionContext` and
+/// `refresh_status` directly rather than the binary: `terminal::open` opens a
+/// context with the product's own limits and nothing a person types crosses
+/// 786k, so the crossing this asserts is reachable at this seam and is *not*
+/// claimed of `zaru --resume`.
+///
+/// **One arm of every comparison is outside the renderer.** The expected
+/// numbers are read off `SessionContext::usage` itself and abbreviated by
+/// `render::thousands`, so a renderer that agreed with itself could not
+/// satisfy this (\[Verification lessons\] §10 and §11). What the check adds is
+/// that the painted row carries them, and that the second number is *smaller*.
+///
+/// The mutant: caching the first usage, so the row never moves.
+#[test]
+fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction() {
+    use zaru_core::context::Exchange;
+
+    let redactor = Nothing;
+    let mut context =
+        crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable());
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+    let opened = context.usage(&redactor).used();
+
+    for nth in 0..8 {
+        context.record(Exchange::verbatim(format!(
+            "exchange {nth}: {}",
+            "detail ".repeat(30)
+        )));
+    }
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+    let loaded = context.usage(&redactor).used();
+    let before = painted_row(&shell);
+
+    assert!(
+        loaded > opened,
+        "the staging must actually load the context: it went {opened} -> {loaded}"
+    );
+    assert!(
+        loaded > 900,
+        "the staging must cross the pressure threshold of 900, or the compaction below is a \
+         no-op and this check passes having compacted nothing; it reached {loaded}"
+    );
+    assert!(
+        before.contains(&crate::cli::render::thousands(loaded)),
+        "the row must carry what the context now holds; it was {before:?}"
+    );
+
+    let compaction = futures_lite_block_on(context.at_turn_boundary(&Staged, &redactor))
+        .expect("the staged summariser answers");
+    assert!(
+        !compaction.announcements.is_empty(),
+        "a compaction that announced nothing did not happen, and the fall below would be measuring \
+         nothing"
+    );
+
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+    let relieved = context.usage(&redactor).used();
+    let after = painted_row(&shell);
+
+    assert!(
+        relieved < loaded,
+        "ADR-0013 D2 replaces the oldest span with a summary, so the number must fall: it went \
+         {loaded} -> {relieved}"
+    );
+    assert!(
+        after.contains(&crate::cli::render::thousands(relieved)),
+        "the row must carry the relieved number after the compaction; it was {after:?}"
+    );
+    assert_ne!(
+        before, after,
+        "a row that reads the same before and after a compaction is not carrying the number"
+    );
+}
+
+/// ADR-0012 D7's token line reaches the row, and it is the same string the
+/// session prints on exit.
+///
+/// D7 asks for the numbers "per turn in the status line, per session on exit",
+/// and two spellings of one register are two things that can disagree. So the
+/// row's segment is asserted to be `render::usage`'s own output for the same
+/// datum — not a lookalike composed beside it.
+///
+/// **What the value is, said rather than rounded up:** `Provider::usage`
+/// reports the *last exchange*, so a turn that made six model calls puts the
+/// sixth on this row. That is this record's own **proposed** Update of
+/// 2026-09-05 and it is human-owned; nothing here sums.
+///
+/// The mutant: composing a second spelling in `refresh_status`.
+#[test]
+fn the_token_segment_is_the_line_the_session_prints_on_exit_and_not_a_second_spelling() {
+    let redactor = Nothing;
+    let context = crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable());
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    let usage = crate::providers::TokenUsage::counted(390, 79);
+
+    crate::terminal::driver::refresh_status(&mut shell, &context, Some(&usage), &redactor);
+
+    assert_eq!(
+        shell.status().tokens.as_deref(),
+        Some(crate::cli::render::usage(&usage).as_str()),
+        "the row's token segment must BE the exit line, so the two cannot disagree about a word"
+    );
+    assert!(
+        painted_row(&shell).contains("tokens: 390 prompt + 79 completion = 469"),
+        "and it must reach the painted buffer; the row was {:?}",
+        painted_row(&shell)
+    );
+}
+
+/// Before any exchange the token segment is absent, and the context segment is
+/// not.
+///
+/// The two are absent for different reasons and only one of them clears: a
+/// session has a context from the moment it opens, which is D6's "visible all
+/// along", while `Provider::usage` answers `None` until a request has been
+/// made because "a client that had made no request and reported a zero would
+/// be inventing a datum".
+///
+/// The mutant: rendering a zero token line when there is no usage.
+#[test]
+fn a_session_that_has_not_asked_anything_shows_a_context_and_no_tokens() {
+    let redactor = Nothing;
+    let context = crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable());
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+
+    assert_eq!(
+        shell.status().tokens,
+        None,
+        "no exchange has happened, so there is no token count to report and a zero would be \
+         invented"
+    );
+    assert!(
+        shell.status().context.is_some(),
+        "a session has a context from the frame it opens on, which is D6's 'visible all along'"
+    );
+    let row = painted_row(&shell);
+    assert!(
+        row.contains("context ") && !row.contains("tokens:"),
+        "the row must carry the context segment and no token segment; it was {row:?}"
+    );
+}
+
+/// The status row as a person would see it, out of a painted frame.
+///
+/// Read from `TestBackend` rather than from `Status::painted`, because the
+/// claim every check above makes is that a *user* meets the number: a row
+/// composed correctly and dropped by the renderer would satisfy a string
+/// comparison against the formatter.
+fn painted_row(shell: &Shell) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut terminal = Terminal::new(TestBackend::new(200, 8)).expect("test terminal");
+    terminal
+        .draw(|frame| shell.render(frame, frame.area()))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, 0)].symbol())
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}

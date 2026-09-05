@@ -257,6 +257,25 @@ impl Prepared {
         &self.held
     }
 
+    /// What the last exchange cost, for [ADR-0012] D7's status-line half.
+    ///
+    /// **The last exchange, and not the turn and not the session.** That is
+    /// what `Provider::usage` reports — one slot every response replaces — and
+    /// saying so here rather than at the call site is deliberate: this record's
+    /// **proposed** Update of 2026-09-05 raises an accumulating total, is
+    /// explicitly *not taken*, and is on this record's human-owned list. A
+    /// caller that summed here would settle it silently.
+    ///
+    /// `None` before the first exchange, which is the client's own answer and
+    /// not a zero invented on its behalf.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    #[must_use]
+    pub fn usage(&self) -> Option<crate::providers::TokenUsage> {
+        use crate::providers::Provider as _;
+        self.client.usage()
+    }
+
     /// Whether this project declared no manifest, so [ADR-0002] D8's line is
     /// owed.
     ///
