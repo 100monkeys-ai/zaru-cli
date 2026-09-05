@@ -169,6 +169,27 @@ impl SessionStore {
         Ok(store)
     }
 
+    /// Reach the store under `root` **without creating anything**.
+    ///
+    /// [ADR-0014]'s port carries the argument this exists for: "a loader that
+    /// created a directory in order to find nothing in it would be creating
+    /// state to read state". A user asking `zaru sessions list` on a machine
+    /// that has never run a session is owed an empty listing, not a `~/.zaru`
+    /// they did not ask for and an inode ADR-0010 D6's own Negative section
+    /// counts.
+    ///
+    /// **The mode is not asserted here, and that is the trade.** [`open`]
+    /// re-asserts `0700` on every call because it is about to write; this
+    /// never writes, so it has nothing to protect and nothing to fix. A caller
+    /// that is going to write calls [`open`].
+    ///
+    /// [`open`]: SessionStore::open
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    #[must_use]
+    pub fn reading(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
     /// The `~/.zaru`-equivalent directory this store sits under.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -231,11 +252,23 @@ impl SessionStore {
     /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
     pub fn ids(&self) -> Result<Vec<SessionId>, SessionError> {
         let directory = self.sessions_directory();
-        let entries = fs::read_dir(&directory).map_err(|source| SessionError::Io {
-            action: "list the sessions directory",
-            path: directory.clone(),
-            source,
-        })?;
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            // A directory that was never created holds no sessions, which is
+            // a different statement from a directory that cannot be read. A
+            // store reached through `reading` has created nothing, so this is
+            // the ordinary case on a machine that has never run a session.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(source) => {
+                return Err(SessionError::Io {
+                    action: "list the sessions directory",
+                    path: directory.clone(),
+                    source,
+                });
+            }
+        };
 
         let mut ids = Vec::new();
         for entry in entries {

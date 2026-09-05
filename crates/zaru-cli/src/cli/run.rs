@@ -29,8 +29,9 @@ use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::cli::{help, layers, render};
 use crate::config::{Key, Resolution};
 use crate::failure::{Classified, Exit, SessionEvidence};
-use crate::providers::ModelTable;
+use crate::providers::{ModelAlias, ModelTable, ResolvedModel};
 use crate::runtime::{ResolvedTier, Runtime};
+use crate::session::{SessionId, SessionStore};
 
 /// What one run produced.
 ///
@@ -107,16 +108,158 @@ impl Run<'_> {
             Request::ConfigExplain { key } => {
                 self.configured(&line.overrides, |resolution| explain(resolution, key))
             }
-            Request::SessionsList
-            | Request::SessionsRemove { .. }
-            | Request::NotesTokens
-            | Request::Resume { .. }
-            | Request::Continue
-            | Request::Task { .. } => Outcome::printed(vec![
+            Request::SessionsList => self.sessions_list(),
+            Request::SessionsRemove { id } => self.sessions_remove(id),
+            Request::Resume { id } => self.resume(id, &line.overrides),
+            Request::Continue => self.resume_latest(&line.overrides),
+            Request::NotesTokens | Request::Task { .. } => Outcome::printed(vec![
                 "not reached in this commit; the surrounding arms land with their own checks"
                     .to_owned(),
             ]),
         }
+    }
+
+    /// Reach the session store without creating anything.
+    ///
+    /// [`SessionStore::reading`] rather than `open`, so asking what sessions
+    /// exist on a machine that has never had one creates neither `~/.zaru` nor
+    /// `~/.zaru/sessions`.
+    fn store(&self) -> Result<SessionStore, Box<Outcome>> {
+        let surface = Surface::new(self.version, self.report_at);
+        SessionStore::default_root()
+            .map(SessionStore::reading)
+            .map_err(|failure| Box::new(Outcome::failed(surface.session(&failure))))
+    }
+
+    /// [ADR-0010] D1's directory, listed.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    fn sessions_list(&self) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let store = match self.store() {
+            Ok(store) => store,
+            Err(outcome) => return *outcome,
+        };
+        match store.ids() {
+            Ok(ids) => Outcome::printed(render::sessions(&ids)),
+            Err(failure) => Outcome::failed(surface.session(&failure)),
+        }
+    }
+
+    /// [ADR-0010] D6's deletion, from outside a session.
+    ///
+    /// **Nothing is spared.** D6's guard is for the session a user is inside,
+    /// and outside one there is none — this binary starts no session, so the
+    /// `current` a `prune` would pass is `None` and there is no id to compare
+    /// against. `/session rm` inside a session is where that guard bites, and
+    /// it is `zaru-tui`'s.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    fn sessions_remove(&self, id: &SessionId) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let store = match self.store() {
+            Ok(store) => store,
+            Err(outcome) => return *outcome,
+        };
+        match crate::session::remove(&store, id) {
+            Ok(()) => Outcome::printed(vec![format!("removed {id}")]),
+            Err(failure) => Outcome::failed(surface.prune(&failure)),
+        }
+    }
+
+    /// [ADR-0010] D4's resume, for a named session.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    fn resume(&self, id: &SessionId, overrides: &Overrides) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let store = match self.store() {
+            Ok(store) => store,
+            Err(outcome) => return *outcome,
+        };
+        let directory = store.sessions_directory().join(id.as_str());
+
+        // The whole transcript. See `render::resumed` for why no number is
+        // invented here.
+        match crate::session::resume(&directory, usize::MAX) {
+            Ok(restored) => {
+                let mut lines = render::resumed(id, &restored);
+                lines.push(String::new());
+                let mut outcome = self.no_provider(overrides);
+                outcome.lines = lines;
+                outcome
+            }
+            Err(failure) => {
+                Outcome::failed(surface.resume(&failure, SessionEvidence::NoSessionExists))
+            }
+        }
+    }
+
+    /// D4's `--continue`: the most recent session in this directory.
+    fn resume_latest(&self, overrides: &Overrides) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let store = match self.store() {
+            Ok(store) => store,
+            Err(outcome) => return *outcome,
+        };
+        let ids = match store.ids() {
+            Ok(ids) => ids,
+            Err(failure) => return Outcome::failed(surface.session(&failure)),
+        };
+        // A ULID sorts lexically by creation time and `ids` sorts, so the last
+        // is the most recent -- D1's own reason for choosing a ULID over a
+        // UUID, rather than a second reading of any clock.
+        match ids.last() {
+            Some(id) => self.resume(id, overrides),
+            None => Outcome::failed(surface.no_session_to_continue()),
+        }
+    }
+
+    /// The refusal every path that would need a provider ends in.
+    ///
+    /// **Two arms, and they are different classes**, because what is missing
+    /// differs and [ADR-0016] D2 says an error whose reader cannot act is a
+    /// stack trace with better grammar.
+    ///
+    /// If `model.default` resolves to nothing, the user has not configured a
+    /// provider and the remedy is the key and the variable — user-correctable,
+    /// exit 2, and this is the arm every machine with no configuration
+    /// reaches.
+    ///
+    /// If it *does* resolve, the user has done their half and this harness
+    /// still cannot act, because [ADR-0012] D3's provider trait has no
+    /// implementation in any product tree. That is presented as D1's
+    /// **capability** class, exit 4, under a delegated coordinator ruling of
+    /// 2026-09-05 open to Jeshua's veto. **The class does not fit and the
+    /// misfit is the finding**: `Classified::Capability` carries a [`Tier`],
+    /// D1's row for it is "the tier does not offer this", and *no* tier in
+    /// this build offers a provider. The tier named is `bare`, which is the
+    /// tier at which ADR-0001 D1 says a model provider is reached — so the
+    /// line is true of the design and not of this binary. **D1 has no row for
+    /// "not built yet"**, and that missing row is raised as an open question
+    /// on ADR-0016 rather than answered here;
+    /// `the_two_halves_of_a_missing_provider_are_different_classes` pins the
+    /// reading built so that deciding it the other way reddens a check.
+    ///
+    /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    /// [`Tier`]: crate::runtime::Tier
+    fn no_provider(&self, overrides: &Overrides) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        self.configured(
+            overrides,
+            |resolution| match ModelTable::from_configuration(resolution) {
+                Err(refusal) => Outcome::failed(Classified::from(refusal)),
+                Ok(table) => match table.row(ModelAlias::Default) {
+                    ResolvedModel::Unresolved => {
+                        Outcome::failed(Surface::no_model_for_the_default_alias())
+                    }
+                    ResolvedModel::Resolved { model, .. } => {
+                        Outcome::failed(surface.no_provider_client(model))
+                    }
+                },
+            },
+        )
     }
 
     /// Fold the configuration, then do something with it.

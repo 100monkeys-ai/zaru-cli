@@ -381,3 +381,214 @@ fn asking_the_binary_a_question_writes_nothing_to_the_users_home() {
         zaru_home.display()
     );
 }
+
+/// Stage a session under a scratch home, through the crate's own door.
+///
+/// The store is opened for **writing** here, because a check that stages a
+/// session is doing what the product does when it starts one. What the binary
+/// under test does is read, and it reads through `SessionStore::reading`.
+fn stage_a_session(home: &Home, minted_at: u64) -> zaru_cli::session::SessionId {
+    use zaru_cli::session::{Millis, Record, SessionId, SessionStore, Transcript};
+
+    let store = SessionStore::open(home.path().join(".zaru")).expect("a scratch session store");
+    // The minting time is named rather than read off the machine's clock, so
+    // the order `--continue` picks from is this check's rather than the
+    // scheduler's.
+    let id = SessionId::from_parts(Millis::new(minted_at), [1, 2, 3, 4, 5, 6, 7, 8, 9, 0])
+        .expect("a well-formed ULID");
+    let session = store.start(id.clone()).expect("a session directory");
+
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    for n in 1..=2u32 {
+        transcript
+            .record(&Record::Loop(
+                zaru_core::iteration::Event::IterationStarted { n, of: 3 },
+            ))
+            .expect("could not append");
+    }
+    id
+}
+
+/// ADR-0010 D6's deletion, reached from a command, with no tombstone.
+///
+/// **This is the clause moving.** That record's Status tracking has said
+/// "what is missing is `sessions rm` as a command" since 2026-09-04.
+///
+/// Asserted four ways as the pruning check already is — the directory gone,
+/// the parent listing, the command's own second listing, and **a sibling
+/// session that must survive**, which is the reading that discriminates: a
+/// remover that deleted everything passes the first three and fails the
+/// fourth.
+#[test]
+fn adr_0010_d6s_sessions_rm_removes_the_directory_and_spares_its_neighbour() {
+    let home = Home::new("sessions-rm");
+    let doomed = stage_a_session(&home, 1_700_000_000_000);
+    let sibling = stage_a_session(&home, 1_700_000_001_000);
+    assert_ne!(doomed, sibling, "the two staged sessions must be distinct");
+
+    let listed = zaru(&home, &["sessions", "list"]);
+    assert_eq!(listed.code, 0);
+    assert_eq!(
+        listed.lines().len(),
+        2,
+        "both sessions listed: {:?}",
+        listed.lines()
+    );
+
+    let removed = zaru(&home, &["sessions", "rm", doomed.as_str()]);
+    assert_eq!(removed.code, 0);
+    assert!(removed.stdout.contains(doomed.as_str()));
+
+    let directory = home
+        .path()
+        .join(".zaru")
+        .join("sessions")
+        .join(doomed.as_str());
+    assert!(
+        !directory.exists(),
+        "D6 removes the directory rather than marking it deleted: {} is still there",
+        directory.display()
+    );
+
+    let remaining: Vec<String> = std::fs::read_dir(home.path().join(".zaru").join("sessions"))
+        .expect("the sessions directory")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        remaining,
+        vec![sibling.as_str().to_owned()],
+        "the neighbour must survive, or a remover that deletes everything passes"
+    );
+
+    let after = zaru(&home, &["sessions", "list"]);
+    assert_eq!(after.lines().len(), 1);
+    assert!(after.stdout.contains(sibling.as_str()));
+
+    let again = zaru(&home, &["sessions", "rm", doomed.as_str()]);
+    assert_eq!(
+        again.code, 2,
+        "removing a session that is not there is the user's, and the remedy is the listing"
+    );
+}
+
+/// `sessions list` on a machine that has never had one creates nothing.
+///
+/// Both halves: the answer is a sentence rather than silence, because an empty
+/// listing and a listing that failed look identical; and `~/.zaru` is not
+/// created in order to find nothing in it.
+#[test]
+fn listing_sessions_on_a_fresh_machine_says_so_and_creates_nothing() {
+    let home = Home::new("sessions-empty");
+
+    let ran = zaru(&home, &["sessions", "list"]);
+    assert_eq!(ran.code, 0);
+    assert_eq!(ran.lines(), vec!["no sessions"]);
+    assert!(
+        home.path().is_dir(),
+        "the scratch home must survive, or this reports absence for everything"
+    );
+    assert!(
+        !home.path().join(".zaru").exists(),
+        "listing sessions created ~/.zaru, which is creating state in order to read state"
+    );
+}
+
+/// ADR-0010 D4's resume restores, prints the transcript, and does not continue.
+///
+/// The lines printed are the transcript's **own bytes**, read back off the file
+/// by this check rather than through the binary, so the two sides of the
+/// comparison do not travel through one code path.
+#[test]
+fn adr_0010_d4s_resume_prints_the_transcripts_own_bytes_and_then_refuses() {
+    let home = Home::new("resume");
+    let id = stage_a_session(&home, 1_700_000_002_000);
+
+    let on_disk: Vec<String> = std::fs::read_to_string(
+        home.path()
+            .join(".zaru")
+            .join("sessions")
+            .join(id.as_str())
+            .join("transcript.jsonl"),
+    )
+    .expect("the staged transcript")
+    .lines()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(on_disk.len(), 2, "the staging wrote two records");
+
+    let ran = zaru(&home, &["--resume", id.as_str()]);
+    assert_eq!(
+        ran.code, 2,
+        "a resume restores and then refuses to continue, because continuing needs a provider"
+    );
+    for line in &on_disk {
+        assert!(
+            ran.stdout.contains(line.as_str()),
+            "the transcript's own bytes must reach the reader: {line:?} is not in {:?}",
+            ran.stdout
+        );
+    }
+    assert!(
+        ran.stdout.contains("2 record(s) in the transcript"),
+        "the restore says what it restored: {}",
+        ran.stdout
+    );
+    assert!(
+        ran.stderr.contains("no model is configured"),
+        "and then says what it cannot do next: {}",
+        ran.stderr
+    );
+
+    let continued = zaru(&home, &["--continue"]);
+    assert_eq!(continued.code, 2);
+    assert!(
+        continued.stdout.contains(id.as_str()),
+        "`--continue` takes the most recent session, which a ULID's own order decides: {}",
+        continued.stdout
+    );
+}
+
+/// `--continue` with no sessions says so rather than failing obscurely.
+#[test]
+fn continuing_with_no_sessions_says_there_is_nothing_to_continue() {
+    let home = Home::new("continue-empty");
+    let ran = zaru(&home, &["--continue"]);
+    assert_eq!(ran.code, 2);
+    assert!(
+        ran.stderr.contains("no session to continue"),
+        "the refusal must say what is missing: {}",
+        ran.stderr
+    );
+}
+
+/// `--continue` takes the most recent session and not merely the last listed.
+///
+/// Staged out of order on purpose: the older session is created *second*, so a
+/// resume that took whatever `read_dir` happened to yield, or the one it
+/// created last, answers differently from one that reads the ULID's own order.
+#[test]
+fn continue_takes_the_most_recent_session_by_the_ulids_own_order() {
+    let home = Home::new("continue-order");
+    let newer = stage_a_session(&home, 1_700_000_009_000);
+    let older = stage_a_session(&home, 1_700_000_003_000);
+    assert!(older < newer, "the ULIDs must sort by their minting time");
+
+    let ran = zaru(&home, &["--continue"]);
+    assert!(
+        ran.stdout.contains(newer.as_str()),
+        "`--continue` must take the most recent session: {}",
+        ran.stdout
+    );
+    assert!(
+        !ran.stdout.contains(older.as_str()),
+        "and not the one created last: {}",
+        ran.stdout
+    );
+}

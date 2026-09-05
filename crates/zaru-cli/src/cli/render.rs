@@ -139,3 +139,70 @@ pub fn models(table: &ModelTable) -> Vec<String> {
         })
         .collect()
 }
+
+/// Every session on this machine, as lines.
+///
+/// The id and nothing else. [ADR-0010] D1 makes a ULID sort lexically by
+/// creation time — "so listing sessions in order costs a directory read" — and
+/// [`SessionStore::ids`](crate::session::SessionStore::ids) sorts, so the
+/// order is the record's rather than a second reading of the clock. A machine
+/// with no sessions is told so, because an empty listing and a listing that
+/// failed look identical.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[must_use]
+pub fn sessions(ids: &[crate::session::SessionId]) -> Vec<String> {
+    if ids.is_empty() {
+        return vec!["no sessions".to_owned()];
+    }
+    ids.iter().map(|id| format!("  {id}")).collect()
+}
+
+/// What a resumed session restored, as lines.
+///
+/// **The transcript's own bytes.** [ADR-0010] D1's argument for plain files is
+/// that "a harness that shows its work should not store the record of that
+/// work somewhere only it can read", so what this shows is the file, not a
+/// rendering of the parsed records — which would be a second description of
+/// one line. D4's *re-render* is a different act and belongs to [ADR-0005]'s
+/// terminal.
+///
+/// The whole transcript rather than a tail, because no record names a number
+/// and a number invented by the thing it bounds is not a number anybody chose.
+/// The terminal will pick its own when it re-renders.
+///
+/// A trailing fragment is reported rather than hidden: D2's promise is that a
+/// crash costs at most the event in flight, and a resume that silently dropped
+/// it would be the invisible truncation [ADR-0011] D5 forbids one layer up.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[must_use]
+pub fn resumed(id: &crate::session::SessionId, resumed: &crate::session::Resumed) -> Vec<String> {
+    let mut lines = vec![format!("session {id}")];
+
+    lines.push(match &resumed.checkpoint {
+        Some(_) => "  checkpoint restored".to_owned(),
+        None => "  no checkpoint was written".to_owned(),
+    });
+    lines.push(format!(
+        "  {} record(s) in the transcript",
+        resumed.tail.len()
+    ));
+    if let Some(bytes) = resumed.fragment {
+        lines.push(format!(
+            "  and {bytes} byte(s) of an event that was in flight when the process died"
+        ));
+    }
+    if let Some(interrupted) = &resumed.interrupted {
+        lines.push(format!(
+            "  one tool call did not complete: {}",
+            interrupted.call.line
+        ));
+    }
+
+    lines.push(String::new());
+    lines.extend(resumed.tail_lines.iter().cloned());
+    lines
+}

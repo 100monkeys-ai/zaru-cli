@@ -69,6 +69,7 @@ use crate::credentials::StoreError;
 use crate::failure::{
     Action, Classified, DefectReport, Location, Remedy, SessionEvidence, Statement,
 };
+use crate::providers::{ModelAlias, ModelId};
 use crate::runtime::TierRefused;
 use crate::session::{PruneFailure, ResumeFailure, SessionError, SessionIdRefused};
 
@@ -238,6 +239,68 @@ impl<'a> Surface<'a> {
         match failure {
             LoadFailure::Refused(refusal) => Classified::from(refusal.clone()),
             LoadFailure::Source(_) => undecided(self.version, self.report_at, session, line!()),
+        }
+    }
+
+    /// Nothing configured a model for the alias every task starts from.
+    ///
+    /// The user's, and the remedy is real: setting `model.default` or
+    /// `ZARU_MODEL_DEFAULT` moves the refusal to the next honest one.
+    ///
+    /// **ADR-0016 D2's own worked remedy is deliberately not reused.** It
+    /// offers `zaru config set provider.anthropic.key <key>` -- a command this
+    /// harness does not have, and whose existence is an open question against
+    /// ADR-0014 D4 -- and `ZARU_ANTHROPIC_KEY`, which that record's transform
+    /// cannot produce from `provider.anthropic.key`. Both are raised on
+    /// ADR-0016's Status tracking for its author; neither is quoted here.
+    #[must_use]
+    pub fn no_model_for_the_default_alias() -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(format!(
+                "no model is configured for the alias `{}`, so there is no provider to ask",
+                ModelAlias::Default
+            )),
+            remedy: act(format!(
+                "set `{}` in ~/.zaru/config.toml, or `{}` in the environment, or give `--model \
+                 <identifier>` for one run",
+                ModelAlias::Default.key(),
+                crate::config::environment::variable_name(&ModelAlias::Default.key())
+            )),
+        }
+    }
+
+    /// A model resolved and this build carries no client that can reach it.
+    ///
+    /// See [`crate::cli::run::Run`]'s own documentation for why this is D1's
+    /// capability class, why the class does not fit, and where the missing row
+    /// is raised.
+    #[must_use]
+    pub fn no_provider_client(&self, model: &ModelId) -> Classified {
+        Classified::Capability {
+            statement: Statement::sanitised(format!(
+                "the alias `{}` resolves to {:?}, and this harness carries no provider client \
+                 that can reach it: ADR-0012 D3's provider trait has no implementation in any \
+                 product tree",
+                ModelAlias::Default,
+                model.as_str()
+            )),
+            offered_by: crate::runtime::Tier::Bare,
+        }
+    }
+
+    /// `--continue` on a machine with no sessions at all.
+    #[must_use]
+    pub fn no_session_to_continue(&self) -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(
+                "there is no session to continue: nothing on this machine has ever started one"
+                    .to_owned(),
+            ),
+            remedy: act(
+                "a session is written the first time this harness runs a task, and it cannot run \
+                 one yet"
+                    .to_owned(),
+            ),
         }
     }
 

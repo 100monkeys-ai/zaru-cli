@@ -195,13 +195,40 @@ pub fn prune(
             pruned.kept.push(id);
             continue;
         }
-        let directory = store.sessions_directory().join(id.as_str());
-        fs::remove_dir_all(&directory).map_err(|source| PruneFailure::NotRemoved {
-            id: id.clone(),
-            source,
-        })?;
+        remove(store, &id)?;
         pruned.removed.push(id);
     }
 
     Ok(pruned)
+}
+
+/// Remove one session's directory. [ADR-0010] D6.
+///
+/// **The one deletion path in this crate**, called by [`prune`] as well as by
+/// `zaru sessions rm`, so D6's "deletion removes the directory rather than
+/// marking it deleted" is one implementation rather than two that agree today.
+///
+/// It takes no `current` and spares nothing. D6's guard belongs to the caller
+/// that knows whether a session is the one it is inside — which, outside a
+/// session, is nobody: the `zaru sessions rm` entry point has no current
+/// session to spare, and `/session rm` inside one does. See
+/// [`prune`]'s `current`.
+///
+/// # Errors
+///
+/// [`PruneFailure::Store`] when there is no such session, and
+/// [`PruneFailure::NotRemoved`] when the directory will not go.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+pub fn remove(store: &SessionStore, id: &SessionId) -> Result<(), PruneFailure> {
+    let directory = store.sessions_directory().join(id.as_str());
+    if !directory.is_dir() {
+        return Err(PruneFailure::Store(SessionError::NoSuchSession {
+            id: id.clone(),
+        }));
+    }
+    fs::remove_dir_all(&directory).map_err(|source| PruneFailure::NotRemoved {
+        id: id.clone(),
+        source,
+    })
 }

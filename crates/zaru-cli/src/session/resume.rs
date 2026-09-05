@@ -147,6 +147,13 @@ pub struct Resumed {
     /// depends only on `zaru-core`, so it reaches this through a port its own
     /// crate declares — the dependency inversion ADR-0005's composer uses.
     pub tail: Vec<Record>,
+    /// The same lines as the bytes they are on disk.
+    ///
+    /// What the out-of-session `--resume` prints, because D1's promise is that
+    /// the user can read every byte the harness stored with `cat` and the
+    /// honest way to show a transcript is to show the file. D4's *re-render*
+    /// is the terminal's and is a different act.
+    pub tail_lines: Vec<String>,
     /// A call that was in flight when the process died, if one was.
     pub interrupted: Option<Interrupted>,
     /// How many bytes of a partial line the transcript ends with, if any.
@@ -186,6 +193,7 @@ pub fn resume(directory: &Path, tail: usize) -> Result<Resumed, ResumeFailure> {
     Ok(Resumed {
         interrupted: unfinished_call(&reading.records),
         tail: reading.tail(tail).to_vec(),
+        tail_lines: reading.tail_lines(tail).to_vec(),
         fragment: reading.fragment,
         checkpoint,
     })

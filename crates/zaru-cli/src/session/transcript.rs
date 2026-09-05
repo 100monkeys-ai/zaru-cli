@@ -122,6 +122,19 @@ impl std::error::Error for TranscriptError {
 pub struct Reading {
     /// Every complete line, in the order it was appended.
     pub records: Vec<Record>,
+    /// The same lines as the bytes they are on disk, one per record.
+    ///
+    /// **Carried rather than re-serialised**, and that is the point. D1's
+    /// argument for a directory of plain files is that "a harness that shows
+    /// its work should not store the record of that work somewhere only it can
+    /// read", so what a caller showing a transcript shows is the file. Handing
+    /// it the parsed records and letting it write them back out would be a
+    /// second rendering of one line, and the two would agree until a field was
+    /// added.
+    ///
+    /// Parallel to [`Reading::records`] by construction: both are pushed in
+    /// the same loop, so an index into one is an index into the other.
+    pub lines: Vec<String>,
     /// How many bytes followed the last newline, if any did.
     ///
     /// `Some` is the event that was in flight when the process died — D2's
@@ -137,6 +150,13 @@ impl Reading {
     pub fn tail(&self, n: usize) -> &[Record] {
         let from = self.records.len().saturating_sub(n);
         &self.records[from..]
+    }
+
+    /// The same `n` records as the bytes they are on disk.
+    #[must_use]
+    pub fn tail_lines(&self, n: usize) -> &[String] {
+        let from = self.lines.len().saturating_sub(n);
+        &self.lines[from..]
     }
 }
 
@@ -255,6 +275,7 @@ impl Transcript {
         };
 
         let mut records = Vec::new();
+        let mut lines = Vec::new();
         for (index, line) in complete
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
@@ -267,10 +288,16 @@ impl Transcript {
                     detail: error.to_string(),
                 })?;
             records.push(record);
+            // Lossy is right here and unreachable in practice: the line has
+            // just parsed as JSON, which `serde_json` only does for valid
+            // UTF-8. Converting fallibly would add an error variant for a
+            // state the parse above has already excluded.
+            lines.push(String::from_utf8_lossy(line).into_owned());
         }
 
         Ok(Reading {
             records,
+            lines,
             fragment: (fragment > 0).then_some(fragment),
         })
     }
