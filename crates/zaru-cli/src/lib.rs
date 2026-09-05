@@ -46,7 +46,9 @@
 //! `process` also implements ADR-0009 D3's `ValidatorRunner`, so a declared
 //! validator's command runs. The other four built-ins sit behind ports with
 //! no implementation in this product tree, as do the prompt, the allowlist,
-//! the destructive matcher, the credential store's sealing, ADR-0014's file
+//! the destructive matcher, the credential store's apex confirmer — its
+//! *sealing* left this list on 2026-09-05 and is now ordinary code over the OS
+//! keyring — ADR-0014's file
 //! layers **2 and 3** — layer 5 has a reader as of 2026-09-05,
 //! [`cli::layers::Flags`], the first implementation of that port in this
 //! product tree — `meta.toml`'s writer, ADR-0009's manifest reader,

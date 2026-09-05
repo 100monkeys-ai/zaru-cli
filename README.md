@@ -44,10 +44,14 @@ a port and a request/response pair that nothing implements either — **nothing
 this binary prints goes through it**; the terminal is unbuilt and every command
 above writes plain lines to standard output.
 
-The credential store is in `zaru-cli`, holding named tokens on disk with no
-bearer value among them — sealing is a port with no implementation, so no
-secret is written anywhere, and so `zaru notes tokens` lists nothing on a
-machine that has not been given one by a test. The configuration hierarchy is
+The credential store is in `zaru-cli`, holding named tokens on disk with the
+bearer value **sealed**: AES-256-GCM, a fresh nonce per seal, and the alias
+bound in so a sealed value moved between entries will not open. The key comes
+from the OS keyring where there is one and from `ZARU_CREDENTIAL_KEY` where
+there is not — which is the ordinary case on a headless machine, not just in
+CI. `zaru notes tokens` still lists nothing on any real machine, because
+nothing here can *add* a token: that surface needs a Nuclear Notes server to
+authenticate against. The configuration hierarchy is
 in `zaru-cli`, resolving five layers over a schema whose keys arrive from the
 records that own them; **three of the five layers have readers** — the built-in
 one, `ZARU_*`, and the command line — and the two that read files wait on a
@@ -137,12 +141,13 @@ cargo test --workspace
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
-build needs a registry: `Cargo.lock` resolves 109 packages, six of which are
+build needs a registry: `Cargo.lock` resolves 203 packages, six of which are
 this workspace's own. The third-party set is `rmcp` for the Nuclear Notes
 client, `ratatui` and `tui-textarea` for the composer, `serde` and `serde_json`
-for the credential store, `tokio` for the client's channels, for the
+for the credential store, `aes-gcm` and `keyring` for sealing that store,
+`tokio` for the client's channels, for the
 binary crate's own check that drives a session end to end, and for polling the
-loop's futures under `#[tokio::test]`, and what those six pull in. Which dependencies the harness may carry is ADR-0003 D2's
+loop's futures under `#[tokio::test]`, and what those eight pull in. Which dependencies the harness may carry is ADR-0003 D2's
 to decide, and `[workspace.dependencies]` is where each arrives once it has a
 caller.
 

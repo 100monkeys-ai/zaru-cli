@@ -220,9 +220,14 @@ pub fn resumed(id: &crate::session::SessionId, resumed: &crate::session::Resumed
 /// wherever it appears, and a second spelling is how three renderings come to
 /// differ.
 ///
-/// **No secret is reachable from here by construction**: the type this walks
-/// has no field one could go in, which is D3 as a property of the store rather
-/// than as a rule this renderer follows.
+/// **No bearer value is reachable from here by construction.** Until
+/// 2026-09-05 that was because the type this walks had no field one could go
+/// in; since sealing landed it has exactly one, and the argument narrows
+/// rather than lapsing. [`Record::sealed`](crate::credentials::Record) is
+/// AES-256-GCM ciphertext whose type has no accessor yielding a plaintext
+/// without a key and an alias, this renderer holds neither, and the row it
+/// builds does not name that field at all. D3 stays a property of the store
+/// rather than a rule this renderer follows.
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 #[must_use]
@@ -232,8 +237,14 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
     if store.is_empty() {
         return vec![
             "no tokens".to_owned(),
-            "  nothing in this harness can add one yet: ADR-0007 D3's sealing is a port with no \
-             implementation, so no secret is written anywhere"
+            // Rewritten 2026-09-05: this said sealing was a port with no
+            // implementation and that no secret is written anywhere, which
+            // stopped being true the day sealing landed. A line telling a user
+            // why they cannot do something has to name the reason that is
+            // actually stopping them, and that reason is now the surface
+            // rather than the store.
+            "  nothing in this harness can add one yet: ADR-0007 D7's `notes tokens add` is not \
+             built, and it needs a Nuclear Notes server to authenticate against"
                 .to_owned(),
         ];
     }
