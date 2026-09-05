@@ -508,3 +508,49 @@ pub fn thousands(tokens: u64) -> String {
     let tenth = (tokens % 1_000) / 100;
     format!("{whole}.{tenth}k")
 }
+
+/// [ADR-0013] D6's context usage, as the status line carries it.
+///
+/// D6: "The status line carries context usage continuously. Approaching the
+/// threshold is not an event to announce — it is a number that has been
+/// visible all along." Trigger clause 5 is the same sentence as a check:
+/// "Context usage is present in the status line throughout."
+///
+/// # Both numbers, because one of them cannot be approached
+///
+/// [`Usage`] carries what is used and the window it is measured against, and
+/// **both are rendered**. D6's whole claim is that a user can see pressure
+/// building before it becomes an event, and a bare count of what is used is a
+/// number nobody can read as near or far — approaching is a relation, so it
+/// needs the thing being approached.
+///
+/// **The pressure threshold itself is deliberately not shown.** It is
+/// [`crate::cli::layers::PRESSURE_THRESHOLD_TOKENS`], it is not on `Usage`,
+/// and putting it here would be a third number on a row two records already
+/// share. What D6 asks for is that the number be visible and rising; where
+/// compaction begins is [ADR-0013] D3's announcement's job, which says so at
+/// the moment it happens. Ruled 2026-09-05 under directive 20, open to
+/// Jeshua's veto.
+///
+/// # The abbreviation is D3's and the unit is D3's word
+///
+/// [`thousands`] is the record's own, read off `18.2k` and `2.1k`, and
+/// `tokens` is the word D3's line uses. **Nothing here is authored except the
+/// separator** between the two numbers and the leading word `context`, which
+/// name which of the row's segments this is — the row carries two.
+///
+/// The count is honest about what it counted: `compose::count::ByteCounter`
+/// measures **bytes** against a window stated in tokens, deliberately and with
+/// its reasons in that module. This renders the number the harness actually
+/// holds rather than one it would like to.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [`Usage`]: zaru_core::context::Usage
+#[must_use]
+pub fn context_usage(usage: zaru_core::context::Usage) -> String {
+    format!(
+        "context {}/{} tokens",
+        thousands(usage.used()),
+        thousands(usage.window())
+    )
+}

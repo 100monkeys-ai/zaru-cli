@@ -1477,3 +1477,89 @@ fn the_process_ceiling_is_longer_than_the_providers_exchange_timeout() {
     );
     assert_eq!(ceiling, crate::cli::layers::PROCESS_CEILING);
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0013 D6 and clause 5 — the context segment's register
+// ---------------------------------------------------------------------------
+
+/// The abbreviation is ADR-0013 D3's, and it truncates rather than rounds.
+///
+/// **Both arms are the record's, not this module's.** D3 renders `18.2k` and
+/// `2.1k`; the reading taken off those two examples is that a count at or
+/// above a thousand carries one decimal place and truncates, "so the line
+/// never reports more than was measured". The values below are chosen so that
+/// rounding and truncating give different answers, which is the only way this
+/// check can see the difference at all.
+///
+/// The mutant: rounding instead of truncating in `render::thousands`.
+#[test]
+fn the_context_segment_abbreviates_as_adr_0013_d3_does_and_never_rounds_up() {
+    use zaru_core::context::Usage;
+
+    assert_eq!(
+        render::context_usage(Usage::new(12_390, 1_048_576)),
+        "context 12.3k/1048.5k tokens",
+        "12,390 truncates to 12.3k and 1,048,576 to 1048.5k; rounding would give 12.4k and \
+         1048.6k, and D3's reading is that the line never reports more than was measured"
+    );
+
+    assert_eq!(
+        render::context_usage(Usage::new(999, 1_048_576)),
+        "context 999/1048.5k tokens",
+        "below a thousand D3's abbreviation is the integer itself, so a session that has barely \
+         started shows what it really holds rather than 0.9k"
+    );
+}
+
+/// D6 needs both numbers, because approaching is a relation.
+///
+/// D6: "Approaching the threshold is not an event to announce — it is a number
+/// that has been visible all along." A bare count of what is used cannot be
+/// read as near or far, so the window it is measured against is on the row
+/// too. Asserted as a property of the rendering rather than by comparing it
+/// with itself: the two numbers are read out of the `Usage` the check built,
+/// and both must appear.
+///
+/// The mutant: rendering `usage.used()` alone and dropping the window.
+#[test]
+fn the_context_segment_carries_the_window_and_not_only_what_is_used() {
+    use zaru_core::context::Usage;
+
+    let usage = Usage::new(300_000, 1_048_576);
+    let rendered = render::context_usage(usage);
+
+    assert!(
+        rendered.contains(&render::thousands(usage.used())),
+        "what is used must be on the row; it was {rendered:?}"
+    );
+    assert!(
+        rendered.contains(&render::thousands(usage.window())),
+        "ADR-0013 D6's 'approaching the threshold' is a relation, so the window must be on the \
+         row beside what is used; it was {rendered:?}"
+    );
+}
+
+/// The pressure threshold is deliberately absent, and this pins the decision.
+///
+/// Ruled 2026-09-05 under directive 20 and open to Jeshua's veto: `Usage` does
+/// not carry the threshold, and a third number would be authored onto a row
+/// two records already share. Pinned so that adding one is a decision somebody
+/// makes rather than a line that drifts onto the row — the same discipline
+/// `providers::usage`'s no-arithmetic check uses.
+#[test]
+fn the_pressure_threshold_is_not_on_the_status_row() {
+    use zaru_core::context::Usage;
+
+    let rendered = render::context_usage(Usage::new(
+        300_000,
+        crate::cli::layers::CONTEXT_WINDOW_TOKENS,
+    ));
+    let threshold = render::thousands(crate::cli::layers::PRESSURE_THRESHOLD_TOKENS);
+
+    assert!(
+        !rendered.contains(&threshold),
+        "the threshold {threshold} is not on `Usage` and is not this row's third number; where \
+         compaction begins is ADR-0013 D3's announcement, which says so as it happens. The row \
+         was {rendered:?}"
+    );
+}
