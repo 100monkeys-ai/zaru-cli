@@ -74,7 +74,24 @@
 //!
 //! Under a delegated coordinator ruling of 2026-09-04 **D4's first sentence
 //! takes the count**: once, and never again. That is the stricter of the two
-//! readings and the one D4 states in its own voice.
+//! readings and the one D4 states in its own voice. **All three were answered
+//! on 2026-09-05 under directive 20 by choosing one of D8's two kinds**: this
+//! line is the **event-anchored** one, appended to the end of the first turn,
+//! fired at most once ever, spending the session's one recommendation, and
+//! **not** subject to the three-display suppression, which is the standing
+//! tip's rule. D4 and ADR-0002 D8 were rewritten in the same change and the
+//! two records now describe one mechanism.
+//!
+//! # "At most once ever" outlives the process, since 2026-09-05
+//!
+//! This type is rebuilt when a process opens, so a session resumed a second
+//! time stated the line again and "once ever" was true of a session and not
+//! of a session reopened. [`MissingManifest::for_manifest_in_session`] is the
+//! rule that closes it, reading
+//! [`AlreadySaid`](crate::session::AlreadySaid) off the session's own
+//! transcript — where ADR-0002's Status tracking rules the counter belongs —
+//! and **there is no second store**: `crate::session::Record::Said` is the
+//! sixth producer of ADR-0010 D2's stream and the only thing that remembers.
 //!
 //! [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
 //! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
@@ -84,6 +101,7 @@
 
 use crate::failure::Statement;
 use crate::manifest::document::Manifest;
+use crate::session::AlreadySaid;
 use core::fmt;
 
 /// [ADR-0009] D4's single line, as its two named halves.
@@ -145,6 +163,46 @@ impl MissingManifest {
                 how_to_get_it,
             }),
         })
+    }
+
+    /// What this project owes a session that has already said what it has.
+    ///
+    /// # This is D8's rule, and it is not [ADR-0011] D2's
+    ///
+    /// **The recommendation is a line in the pane.** [ADR-0002] D8 anchors it
+    /// to a turn — "appended to the end of the triggering turn, in the
+    /// transcript" — and says "the transcript is permanent and scrollable, so
+    /// one showing is a real showing". So what "already in the transcript"
+    /// means for this line is literally *this line was shown*, which is what
+    /// [`crate::session::Record::Said`] records and what
+    /// [`AlreadySaid::recommendation`] reports.
+    ///
+    /// **D4's own condition is re-read on every process, and it has to be.**
+    /// [`Self::for_manifest`]'s refusal above still decides first: a project
+    /// that gained a `zaru.toml` between two processes is **not owed the line
+    /// at all** rather than owed it and suppressed, because D4 is about "a
+    /// project with no `zaru.toml`" and that project runs the iteration loop
+    /// instead. The converse is the case that makes "a turn has happened" the
+    /// wrong derivation: a project that *had* a manifest on turn one and lost
+    /// it before the resume was never owed the line, and is owed it now.
+    ///
+    /// [`SessionNotice::for_tier_in_session`](crate::tools::SessionNotice) is
+    /// the other line's rule and reads a different field of the same witness
+    /// for a different reason; see there.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    #[must_use]
+    pub fn for_manifest_in_session(
+        manifest: Option<&Manifest>,
+        unavailable: Statement,
+        how_to_get_it: Statement,
+        said: &AlreadySaid,
+    ) -> Option<Self> {
+        if said.recommendation() {
+            return None;
+        }
+        Self::for_manifest(manifest, unavailable, how_to_get_it)
     }
 
     /// The recommendation, the first time it is asked for, and never again.

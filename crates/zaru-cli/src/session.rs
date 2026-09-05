@@ -117,6 +117,6 @@ pub use store::{
 pub use transcript::{Reading, Transcript, TranscriptError};
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;

@@ -14,6 +14,8 @@
 
 use crate::session::id::{Millis, SessionId, WallClock};
 use crate::session::meta::{Meta, MetaFailure, MetaStore};
+use crate::session::record::{Record, Said, SaidOnce};
+use crate::session::resume::AlreadySaid;
 use std::cell::RefCell;
 
 pub(crate) use crate::credentials::fixtures::{ScratchRoot, ascii_core, nonce};
@@ -166,4 +168,29 @@ pub(crate) fn listing(directory: &std::path::Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// A witness that a session has said one, both or neither of the two
+/// once-ever lines.
+///
+/// **Built through the product's own derivation** rather than by setting two
+/// fields: `AlreadySaid`'s fields are private and this walks records exactly
+/// as `session::resume` does, so a check that uses this cannot be green
+/// against a derivation that is wrong. The text is a nonce, because nothing
+/// in either rule reads it.
+pub(crate) fn already_said(notice: bool, recommendation: bool) -> AlreadySaid {
+    let mut records = Vec::new();
+    if notice {
+        records.push(Record::Said(Said {
+            line: SaidOnce::Notice,
+            text: nonce("notice-said"),
+        }));
+    }
+    if recommendation {
+        records.push(Record::Said(Said {
+            line: SaidOnce::Recommendation,
+            text: nonce("recommendation-said"),
+        }));
+    }
+    crate::session::resume::said_so_far(&records)
 }

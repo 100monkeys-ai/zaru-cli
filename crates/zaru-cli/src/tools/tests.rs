@@ -2727,3 +2727,72 @@ fn a_prompt_without_a_terminal_is_no_confirmer_at_all() {
          this decision does to everything"
     );
 }
+
+/// **ADR-0011 D2's line is once per *session*, and a session outlives a
+/// process.**
+///
+/// The two mutants this catches, and they are the two ways the rule can be
+/// wrong. **Ignoring the witness** makes "once at session start" mean once per
+/// process, which is what `--resume` did until 2026-09-05. **Reading the other
+/// line's field** decides the two lines by one rule, the shape ADR-0002's
+/// Status tracking names — and the arm that separates them is a session that
+/// has said the recommendation and never the notice, which is an ordinary
+/// session whose first process ran with a membrane.
+///
+/// The tier is still re-read, and the last two arms are why it must be: this
+/// sentence is false where there is a membrane, so a session started at
+/// `contained` and resumed at `bare` is owed it **for the first time** even
+/// though it has already had a turn.
+#[test]
+fn the_session_notice_is_owed_once_per_session_and_the_tier_is_read_again() {
+    use crate::session::fixtures::already_said;
+    let sentence = nonce("not-a-sandbox");
+
+    assert!(
+        SessionNotice::for_tier_in_session(
+            Tier::Bare,
+            sentence.clone(),
+            &crate::session::AlreadySaid::none()
+        )
+        .is_some(),
+        "a session that has said nothing is owed D2's line at the tier where it is true",
+    );
+    assert!(
+        SessionNotice::for_tier_in_session(
+            Tier::Bare,
+            sentence.clone(),
+            &already_said(true, false)
+        )
+        .is_none(),
+        "this session's transcript says it already stated D2's line, and D2 says once at session \
+         start",
+    );
+    // The arm that tells the two rules apart: the *other* line was said and
+    // this one was not.
+    assert!(
+        SessionNotice::for_tier_in_session(
+            Tier::Bare,
+            sentence.clone(),
+            &already_said(false, true)
+        )
+        .is_some(),
+        "a session that stated ADR-0002 D8's recommendation has not been told it is not in a \
+         sandbox; deciding this line by that one's witness is two rules in one place",
+    );
+    // The tier half, which the transcript never overrides in either direction.
+    assert!(
+        SessionNotice::for_tier_in_session(
+            Tier::Contained,
+            sentence.clone(),
+            &crate::session::AlreadySaid::none()
+        )
+        .is_none(),
+        "D2's table gives `contained` a membrane, so the sentence would be false there",
+    );
+    assert!(
+        SessionNotice::for_tier_in_session(Tier::Bare, sentence, &already_said(false, false))
+            .is_some(),
+        "a session resumed at `bare` after running at `contained` has said nothing and is owed \
+         the line for the first time, however many turns it has had",
+    );
+}

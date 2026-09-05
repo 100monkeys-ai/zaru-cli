@@ -369,7 +369,7 @@ fn turns_so_far(records: &[Record]) -> u32 {
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
-fn said_so_far(records: &[Record]) -> AlreadySaid {
+pub(crate) fn said_so_far(records: &[Record]) -> AlreadySaid {
     let mut said = AlreadySaid::none();
     for record in records {
         if let Record::Said(spoken) = record {

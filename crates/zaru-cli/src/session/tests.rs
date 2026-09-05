@@ -1757,8 +1757,31 @@ fn no_network_call_can_originate_from_session_storage() {
     .expect("the module declaration is there");
     for excluded in NOT_THE_PRODUCT {
         let stem = excluded.trim_end_matches(".rs");
-        assert!(
-            declaration.contains(&format!("#[cfg(test)]\nmod {stem};")),
+        // The subject is the `#[cfg(test)]`, not the visibility beside it: a
+        // fixtures module another module's checks use is `pub(crate)`, as
+        // `credentials` and `tools` already spell theirs, and it is compiled
+        // only under `cfg(test)` either way. So the line that declares the
+        // module is found and the line above it must be the attribute, rather
+        // than one spelling of the pair being matched whole -- which named a
+        // visibility the exclusion does not depend on and fired on a change
+        // that did not touch what this asserts.
+        let lines: Vec<&str> = declaration.lines().collect();
+        let declared_at = lines
+            .iter()
+            .position(|line| {
+                line.trim_end() == format!("mod {stem};")
+                    || line.trim_end() == format!("pub(crate) mod {stem};")
+                    || line.trim_end() == format!("pub mod {stem};")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{excluded} is excluded from this scan, and nothing in \
+                 the module declaration declares it"
+                )
+            });
+        assert_eq!(
+            declared_at.checked_sub(1).map(|above| lines[above].trim()),
+            Some("#[cfg(test)]"),
             "{excluded} is excluded from this scan on the grounds that it is #[cfg(test)], and \
              the module declaration does not say so",
         );

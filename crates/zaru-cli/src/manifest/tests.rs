@@ -340,6 +340,94 @@ fn a_project_with_a_manifest_is_owed_no_line_at_all() {
     );
 }
 
+/// **ADR-0002 D8's "at most once ever" outlives the process, and D4's
+/// condition is still re-read.**
+///
+/// The two mutants this catches are the two ways the rule can be wrong.
+/// **Ignoring the witness** makes "once ever" mean once per process, which is
+/// what `--resume` did until 2026-09-05. **Reading the other line's field**
+/// decides the two lines by one rule, and the arm that separates them is a
+/// session that has said ADR-0011 D2's notice and never this one — which is
+/// every session that has run a turn at `bare` in a project that had a
+/// manifest.
+///
+/// D4's own condition is re-read on every process, and the last two arms are
+/// why it must be. A project that **gained** a `zaru.toml` between processes
+/// is not owed the line at all rather than owed it and suppressed, because D4
+/// is about "a project with no `zaru.toml`" and that project runs the
+/// iteration loop instead. A project that **lost** one is owed it for the
+/// first time, however many turns it has had — which is what makes "a turn has
+/// happened" the wrong derivation.
+#[test]
+fn the_missing_manifest_line_is_owed_once_per_session_and_the_manifest_is_read_again() {
+    use crate::session::fixtures::already_said;
+    let unavailable = || Statement::new("the iteration loop is unavailable").expect("a statement");
+    let how = || Statement::new("declare validators in ./zaru.toml").expect("a statement");
+
+    assert!(
+        MissingManifest::for_manifest_in_session(
+            None,
+            unavailable(),
+            how(),
+            &crate::session::AlreadySaid::none()
+        )
+        .is_some(),
+        "a project with no manifest, in a session that has said nothing, is owed D4's line"
+    );
+    assert!(
+        MissingManifest::for_manifest_in_session(
+            None,
+            unavailable(),
+            how(),
+            &already_said(false, true)
+        )
+        .is_none(),
+        "this session's transcript says it already showed the line, and D8 says at most once ever"
+    );
+    // The arm that tells the two rules apart: the *other* line was said and
+    // this one was not.
+    assert!(
+        MissingManifest::for_manifest_in_session(
+            None,
+            unavailable(),
+            how(),
+            &already_said(true, false)
+        )
+        .is_some(),
+        "a session told that `bare` is not a sandbox has not been told its project declares no \
+         validators; deciding this line by that one's witness is two rules in one place"
+    );
+
+    // The manifest half, which the transcript never overrides in either
+    // direction. A project that gained one is owed nothing; a project that
+    // lost one is owed the line for the first time.
+    let tree = ScratchTree::new();
+    let working_directory = WorkingDirectory::at(tree.project()).expect("the tree is staged");
+    let manifest = Manifest::build(Table::new(), Table::new(), Vec::new(), &working_directory)
+        .expect("an empty manifest is a manifest");
+    assert!(
+        MissingManifest::for_manifest_in_session(
+            Some(&manifest),
+            unavailable(),
+            how(),
+            &crate::session::AlreadySaid::none()
+        )
+        .is_none(),
+        "a project WITH a manifest must not be told it has none, whatever its session has said"
+    );
+    assert!(
+        MissingManifest::for_manifest_in_session(
+            None,
+            unavailable(),
+            how(),
+            &already_said(false, false)
+        )
+        .is_some(),
+        "a project that had a manifest on turn one and lost it before the resume was never owed \
+         this line and is owed it now, however many turns the session has had"
+    );
+}
+
 // --- ADR-0009 D6 -----------------------------------------------------------
 
 #[test]
