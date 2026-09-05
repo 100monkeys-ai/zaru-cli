@@ -223,6 +223,13 @@ use crate::config::fixtures::{at, document, schema};
 use crate::config::{ConfigRefused, Layer, Resolution, Value};
 use crate::runtime::resolve::{KEY, ResolvedTier, TierRefused, key};
 
+/// A document setting one key to one text value.
+fn document_at(key: &crate::config::Key, value: &str) -> crate::config::Table {
+    let mut table = crate::config::Table::new();
+    table.insert_path(key, Value::Text(value.to_owned()));
+    table
+}
+
 /// One contribution setting the tier at a named layer.
 fn tier_at(layer: Layer, tier: &str) -> crate::config::Contribution {
     at(
@@ -446,7 +453,7 @@ fn the_key_is_runtime_tier_and_the_field_refuses_the_project_layer() {
 // D3 — iteration defaults, per tier and per provider
 // ---------------------------------------------------------------------------
 
-use crate::runtime::defaults::{Inference, InferenceRefused, Placement, ceiling, iterations};
+use crate::runtime::defaults::{Inference, Placement, ceiling, iterations};
 
 /// [ADR-0001] D3's table, transcribed beside the code that answers it.
 ///
@@ -668,108 +675,100 @@ fn every_populated_cell_converts_to_a_ceiling_zaru_core_accepts() {
     }
 }
 
-/// D3's column is **read** from configuration, not guessed.
+/// D3's column is **read** from configuration, not guessed, and the reader is
+/// [`crate::providers`]'.
 ///
 /// Under Jeshua's directive of 2026-09-05, as amended the same day, the axis is
-/// declared per alias at `inference.<alias>` — **a sibling of `model.<alias>`
-/// rather than a child**, because the nested spelling would make one key both a
-/// value and a table and ADR-0014 D2's merge would resolve that by write order.
-/// The key belongs to [ADR-0012] and this module declares no `Field` for it —
-/// only the reading is ADR-0001 D3's.
+/// declared per alias at `inference.<alias>` — a sibling of `model.<alias>`
+/// rather than a child, for the reason that module's own check measures. This
+/// module **indexes D3's table by the axis and does not read it**: the key is
+/// ADR-0012's, the reader is `providers::inference_of`, and a second reader
+/// here would be the duplication this module exists to remove.
 ///
-/// The mutant: defaulting an unset key to `Local`, which would silently give
-/// every alias `contained`'s 3 rather than its 5.
+/// What this check holds is the seam: the value that reader produces is the
+/// value D3's table is indexed by, for both axes and for every alias.
 ///
-/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// The mutant: `Inference::of` returning `Frontier` for `ollama`, which
+/// reddens the unset arm.
 #[test]
-fn the_inference_axis_is_read_from_configuration_for_an_alias() {
-    let inference_key = crate::config::Key::new("inference.default").expect("a key");
-    assert_eq!(
-        Inference::key_for("default").expect("a key").as_str(),
-        inference_key.as_str(),
-        "the key this module reads is not `inference.<alias>`",
-    );
+fn the_axis_d3s_table_is_indexed_by_is_the_one_providers_resolves() {
+    use crate::providers::{ModelAlias, ProviderKind, inference_of};
 
-    let with_the_key = schema().with(
-        inference_key,
-        crate::config::Field::free(crate::config::FieldKind::Text),
-    );
+    let schema = crate::providers::declare(schema());
 
-    for planted in Inference::ALL {
-        let resolved = Resolution::resolve(
-            &with_the_key,
-            vec![at(
-                Layer::User,
-                "user config",
-                document([(
-                    "inference.default",
-                    Value::Text(planted.as_str().to_owned()),
-                )]),
-            )],
-        )
-        .expect("a declared key resolves");
+    for alias in ModelAlias::ALL {
+        let key = crate::providers::Inference::key(alias);
 
+        // A layer that sets it: the axis is what was set, and D3's table takes
+        // it directly.
+        for planted in Inference::ALL {
+            let resolved = Resolution::resolve(
+                &schema,
+                vec![at(
+                    Layer::User,
+                    "user config",
+                    document_at(&key, planted.as_str()),
+                )],
+            )
+            .expect("a declared key resolves");
+
+            let read =
+                inference_of(&resolved, alias, ProviderKind::Anthropic).expect("the axis was set");
+            assert_eq!(
+                read, planted,
+                "{alias}: the axis read back is not the one planted"
+            );
+            assert!(
+                iterations(Tier::Contained, read, Placement::Local).is_some(),
+                "{alias}: D3's table has no cell for an axis its own reader produced",
+            );
+        }
+
+        // No layer set it: the kind's default, which is the ruling's
+        // "`ollama` defaulting to local".
+        let empty = Resolution::resolve(&schema, Vec::new()).expect("an empty fold resolves");
         assert_eq!(
-            Inference::resolved_for(&resolved, "default").expect("the key was set"),
-            planted,
-            "the axis read back is not the one the check planted",
+            inference_of(&empty, alias, ProviderKind::Ollama).expect("a default applies"),
+            Inference::Local,
+            "{alias}: `ollama` is the local-model column of D3's table",
+        );
+        assert_eq!(
+            inference_of(&empty, alias, ProviderKind::Anthropic).expect("a default applies"),
+            Inference::Frontier,
+            "{alias}: a frontier key is D3's other column",
         );
     }
-
-    // Unset is refused rather than defaulted: a default here would be this
-    // record choosing another record's configuration.
-    let empty = Resolution::resolve(&with_the_key, Vec::new()).expect("an empty fold resolves");
-    let refusal = Inference::resolved_for(&empty, "default")
-        .expect_err("no layer set the key, so there is no column to read");
-    assert!(
-        matches!(refusal, InferenceRefused::NotSet { .. }),
-        "{refusal:?}"
-    );
-    println!("{refusal}");
-
-    // And a value naming neither column is refused naming both.
-    let wrong = Resolution::resolve(
-        &with_the_key,
-        vec![at(
-            Layer::Flag,
-            "flag",
-            document([("inference.default", Value::Text("cloud".to_owned()))]),
-        )],
-    )
-    .expect("the fold takes any text for this key");
-    let refusal = Inference::resolved_for(&wrong, "default").expect_err("`cloud` names no column");
-    let rendered = refusal.to_string();
-    for inference in Inference::ALL {
-        assert!(
-            rendered.contains(inference.as_str()),
-            "the refusal does not offer {inference}: {rendered}",
-        );
-    }
-    println!("{rendered}");
 }
 
-/// Placement is local unless ADR-0012 D3's `aegis` kind resolved.
+/// Placement is local unless ADR-0012 D3's `aegis` kind resolved, and D3's
+/// table has a cell for whatever it produces.
 ///
-/// The directive of 2026-09-05 stated exactly. The one string this module
-/// spells from that record is `aegis`, and a `ProviderKind` type will convert
-/// into this rather than this growing a second list of kinds.
+/// [`Placement`] is `providers`' too. What is asserted here is the same seam:
+/// every kind maps to a placement, and every placement indexes D3's table.
 ///
-/// The mutant: treating any kind as offloading, which reddens on the three
-/// that are not `aegis`.
+/// The mutant: `Placement::of` treating another kind as offloading, which
+/// reddens on that kind.
 #[test]
-fn work_is_local_unless_the_aegis_provider_kind_resolved() {
-    assert_eq!(
-        Placement::for_resolved_provider_kind("aegis"),
-        Placement::Offloaded,
-    );
-    for local in ["anthropic", "openai-compatible", "ollama", "", "AEGIS"] {
+fn every_provider_kind_places_work_somewhere_d3s_table_has_a_cell_for() {
+    use crate::providers::ProviderKind;
+
+    for kind in ProviderKind::ALL {
+        let placement = Placement::of(kind);
         assert_eq!(
-            Placement::for_resolved_provider_kind(local),
-            Placement::Local,
-            "the provider kind {local:?} was read as offloading, and only `aegis` offloads",
+            placement == Placement::Offloaded,
+            kind == ProviderKind::Aegis,
+            "{kind}: only ADR-0012 D3's `aegis` kind hands work to something else",
         );
+
+        // `linked` is the tier that can offload, so every placement has a cell
+        // there — which is what makes the two records meet.
+        for inference in Inference::ALL {
+            assert!(
+                iterations(Tier::Linked, inference, placement).is_some(),
+                "{kind} / {inference} / {placement}: D3's `linked` row has no cell",
+            );
+        }
     }
-    assert_eq!(Placement::OFFLOADING_PROVIDER_KIND, "aegis");
 }
 
 // ---------------------------------------------------------------------------
@@ -968,74 +967,5 @@ fn nothing_in_the_runtime_module_prints() {
         "{} line(s) in the runtime module print. ADR-0001 D2's status line is `zaru-tui`'s and \
          `/runtime` is ADR-0015 D2's; this module builds the datum and no renderer: {printing:#?}",
         printing.len(),
-    );
-}
-
-/// Why the inference axis is a **sibling** of `model.<alias>` and not a child.
-///
-/// The directive of 2026-09-05 first put it at `model.<alias>.inference` and
-/// was amended the same day because `provider-aliases` measured that the
-/// nested spelling makes one key both a value and a table. This check pins the
-/// measurement, so the reason for the spelling survives in code rather than
-/// only in a ruling somebody has to find.
-///
-/// **Measured here, and it is worse than "one order drops the setting":
-/// both orders drop one.** `Table::insert_path` replaces a non-table sitting
-/// where a table is needed, so writing the model id first loses the id when
-/// the nested key arrives, and writing the nested key first loses the
-/// inference when the id arrives. Which setting is lost depends on write
-/// order, and nothing reports either loss — [ADR-0014] D5's silent-typo
-/// failure arriving through the schema's shape rather than through a typo.
-///
-/// The mutant: none is needed on the product, because this is a measurement of
-/// a shape rather than a rule. What would redden it is `insert_path` learning
-/// to refuse a collision, which would be a change to ADR-0014's own merge.
-///
-/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
-#[test]
-fn the_inference_axis_is_a_sibling_because_the_nested_spelling_loses_a_setting() {
-    let model = crate::config::Key::new("model.default").expect("a key");
-    let nested = crate::config::Key::new("model.default.inference").expect("a key");
-    let sibling = Inference::key_for("default").expect("a key");
-
-    assert_eq!(
-        sibling.as_str(),
-        "inference.default",
-        "the axis is read from a sibling of `model.<alias>`",
-    );
-
-    // The model id first, then the nested axis: the id is gone.
-    let mut first = crate::config::Table::new();
-    first.insert_path(&model, Value::Text("a-model".to_owned()));
-    first.insert_path(&nested, Value::Text("frontier".to_owned()));
-    assert_eq!(
-        first.get_path(&model).and_then(Value::as_text),
-        None,
-        "the nested spelling kept the model id, so this check no longer measures the collision \
-         it was written for",
-    );
-
-    // The nested axis first, then the model id: the axis is gone.
-    let mut second = crate::config::Table::new();
-    second.insert_path(&nested, Value::Text("frontier".to_owned()));
-    second.insert_path(&model, Value::Text("a-model".to_owned()));
-    assert_eq!(
-        second.get_path(&nested).and_then(Value::as_text),
-        None,
-        "the nested spelling kept the inference axis under the other write order",
-    );
-
-    // The sibling spelling keeps both, under either order.
-    let mut both = crate::config::Table::new();
-    both.insert_path(&model, Value::Text("a-model".to_owned()));
-    both.insert_path(&sibling, Value::Text("frontier".to_owned()));
-    assert_eq!(
-        both.get_path(&model).and_then(Value::as_text),
-        Some("a-model"),
-    );
-    assert_eq!(
-        both.get_path(&sibling).and_then(Value::as_text),
-        Some("frontier"),
-        "the sibling spelling is the one that holds both settings, which is why it was chosen",
     );
 }

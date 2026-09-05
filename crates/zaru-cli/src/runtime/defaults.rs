@@ -61,12 +61,12 @@
 //! Under Jeshua's directive of 2026-09-05 the axis is decided rather than
 //! inferred: [`Inference`] is **declared per alias in configuration**, at
 //! `inference.<alias>` — a sibling of `model.<alias>` rather than a child, so
-//! that one key is never both a value and a table — and
-//! [`Inference::resolved_for`] reads it.
-//! [`Placement`] is [`Placement::Local`] unless ADR-0012 D3's `aegis` kind is
-//! the resolved provider kind. Neither is guessed from a model name and
-//! neither has a default in this module — a default here would be this
-//! record choosing another record's configuration.
+//! that one key is never both a value and a table. [`Placement`] is
+//! [`Placement::Local`] unless ADR-0012 D3's `aegis` kind is the resolved
+//! provider kind. **Both types are [`crate::providers`]', re-exported here**;
+//! this module indexes D3's table by them and declares neither, so there is
+//! one spelling of each and one place that decides what a provider kind
+//! implies.
 //!
 //! # Nothing here names a tier to `zaru-core`
 //!
@@ -82,242 +82,30 @@
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use crate::config::{Key, KeyRefused, Resolution};
 use crate::runtime::tier::Tier;
-use core::fmt;
 use zaru_core::iteration::Ceiling;
 
-/// [ADR-0001] D3's column axis: where the model runs.
+/// [ADR-0001] D3's column axis, and where the work runs.
 ///
-/// The record's own two columns, named from its own words. **Not**
-/// [ADR-0012] D3's provider kind — see the module documentation.
+/// **Declared once, in [`crate::providers`], and re-exported here.** Both this
+/// module and that one need them: D3's table is indexed by them and ADR-0012's
+/// resolution produces them. This module declared its own until the
+/// `provider-aliases` arc landed on 2026-09-05, at which point there were two
+/// of each — the one-rule-in-two-places shape [Verification lessons] §27 names
+/// and the very thing this module's own header records `Tier` moving to avoid.
 ///
-/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
-/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Inference {
-    /// D3's "Local model" column.
-    Local,
-    /// D3's "BYO frontier key" column.
-    Frontier,
-}
-
-impl Inference {
-    /// Both of D3's columns.
-    pub const ALL: [Self; 2] = [Self::Local, Self::Frontier];
-
-    /// The value this axis is written as in configuration.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Frontier => "frontier",
-        }
-    }
-
-    /// D3's own column heading, for a reader rather than a config file.
-    #[must_use]
-    pub const fn column(self) -> &'static str {
-        match self {
-            Self::Local => "Local model",
-            Self::Frontier => "BYO frontier key",
-        }
-    }
-
-    /// The value named exactly as configuration spells it, if it names one.
-    #[must_use]
-    pub fn named(offered: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|inference| inference.as_str() == offered)
-    }
-
-    /// The key one alias declares this axis at.
-    ///
-    /// `inference.<alias>`, per Jeshua's directive of 2026-09-05 as amended
-    /// the same day. **A sibling of `model.<alias>` rather than a child of
-    /// it**, and the amendment is a measurement rather than a preference: the
-    /// nested spelling `model.<alias>.inference` makes `model.<alias>` both a
-    /// value and a table, and [ADR-0014] D2's merge resolves that by write
-    /// order, so one order silently drops the setting. `provider-aliases`
-    /// measured it.
-    ///
-    /// The key is [ADR-0012]'s to declare, with `ollama` defaulting to local;
-    /// **this module declares no [`Field`](crate::config::Field) for it and no
-    /// schema**, because only its *reading* belongs to ADR-0001 D3.
-    ///
-    /// # Errors
-    ///
-    /// [`KeyRefused`] when `alias` is a spelling no configuration key can
-    /// carry — an empty segment, a control character, surrounding whitespace.
-    /// An alias arrives from configuration, so it is a boundary and is checked
-    /// rather than assumed.
-    ///
-    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-    pub fn key_for(alias: &str) -> Result<Key, KeyRefused> {
-        Key::new(&format!("inference.{alias}"))
-    }
-
-    /// Read this axis for one alias out of a resolved configuration.
-    ///
-    /// **Read rather than chosen**, which is the whole point: D3's column is a
-    /// property of what the user configured, and a module that guessed it from
-    /// a model name would be inventing the axis this record leaves to
-    /// configuration.
-    ///
-    /// # Errors
-    ///
-    /// [`InferenceRefused`], naming the key. An unset key is refused rather
-    /// than defaulted — a built-in default belongs in [ADR-0014] D1's layer 1
-    /// with the record that owns the key, not here.
-    ///
-    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
-    pub fn resolved_for(resolution: &Resolution, alias: &str) -> Result<Self, InferenceRefused> {
-        let key = Self::key_for(alias).map_err(|refusal| InferenceRefused::UnusableAlias {
-            refusal: Box::new(refusal),
-        })?;
-
-        let Some(value) = resolution.get(&key) else {
-            return Err(InferenceRefused::NotSet { key });
-        };
-        let Some(text) = value.as_text() else {
-            return Err(InferenceRefused::WrongShape {
-                key,
-                found: value.shape(),
-            });
-        };
-        Self::named(text).ok_or_else(|| InferenceRefused::NoSuchInference {
-            key,
-            offered: text.escape_debug().to_string(),
-        })
-    }
-}
-
-impl fmt::Display for Inference {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Why D3's column could not be read for an alias.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InferenceRefused {
-    /// The alias is a spelling no configuration key can carry.
-    UnusableAlias {
-        /// Why the key could not be built. Boxed so this enum stays small.
-        refusal: Box<KeyRefused>,
-    },
-    /// No layer set the key.
-    NotSet {
-        /// The key that was looked for.
-        key: Key,
-    },
-    /// The key held something other than text.
-    WrongShape {
-        /// The key.
-        key: Key,
-        /// What shape it held. **Never the value.**
-        found: &'static str,
-    },
-    /// The value named neither of D3's columns.
-    NoSuchInference {
-        /// The key.
-        key: Key,
-        /// The value offered, escaped.
-        offered: String,
-    },
-}
-
-impl fmt::Display for InferenceRefused {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnusableAlias { refusal } => write!(
-                f,
-                "a model alias does not spell a configuration key: {refusal}"
-            ),
-            Self::NotSet { key } => write!(
-                f,
-                "no configuration layer set {key}, so ADR-0001 D3's iteration default cannot be \
-                 read for that alias. Set it to \"local\" or \"frontier\""
-            ),
-            Self::WrongShape { key, found } => write!(
-                f,
-                "{key} holds {found}, and ADR-0001 D3's column is the text \"local\" or \
-                 \"frontier\""
-            ),
-            Self::NoSuchInference { key, offered } => write!(
-                f,
-                "the key {key} was set to {offered:?}, which names neither of ADR-0001 D3's \
-                 columns: \"local\" is its Local model column and \"frontier\" its BYO frontier \
-                 key column"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for InferenceRefused {}
-
-/// Whether the work runs on this machine or is offloaded.
-///
-/// D3's `linked` row is the only one that names both — "3 local, 8 offloaded"
-/// — and [ADR-0001] D1's Loop column is why: `linked` is the only tier whose
-/// loop is "local, offloadable".
+/// The declarations that stay are `providers`', because they are typed over
+/// [`ProviderKind`](crate::providers::ProviderKind) — `Inference::of` and
+/// `Placement::of` take a resolved kind, which is stronger than the text this
+/// module was matching, and `Inference::key` takes a
+/// [`ModelAlias`](crate::providers::ModelAlias) rather than any string. This is
+/// a **delegated coordinator ruling of 2026-09-05**, the same shape as `Tier`'s
+/// and `Layer`'s, recorded on ADR-0001's Status tracking and open to Jeshua's
+/// veto.
 ///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Placement {
-    /// On the user's own machine.
-    Local,
-    /// Accepted by cloud Zaru or AEGIS.
-    Offloaded,
-}
-
-impl Placement {
-    /// Both placements.
-    pub const ALL: [Self; 2] = [Self::Local, Self::Offloaded];
-
-    /// [ADR-0012] D3's provider kind that means the work is offloaded.
-    ///
-    /// The one place that word is spelled in this module. It is that record's
-    /// vocabulary, transcribed under Jeshua's directive of 2026-09-05, and a
-    /// `ProviderKind` type will convert into this rather than this growing a
-    /// second list of kinds.
-    ///
-    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-    pub const OFFLOADING_PROVIDER_KIND: &'static str = "aegis";
-
-    /// Where work runs, given the provider kind that resolved.
-    ///
-    /// **Local unless the `aegis` kind resolved**, which is the directive of
-    /// 2026-09-05 stated exactly. Nothing here consults the tier: a tier that
-    /// cannot offload makes the *ceiling* unavailable, which is [`iterations`]'
-    /// answer rather than this one's, so the two questions stay separable and
-    /// a caller asking for an impossible pair is told so instead of being
-    /// quietly corrected.
-    #[must_use]
-    pub fn for_resolved_provider_kind(kind: &str) -> Self {
-        if kind == Self::OFFLOADING_PROVIDER_KIND {
-            Self::Offloaded
-        } else {
-            Self::Local
-        }
-    }
-
-    /// The placement's name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Offloaded => "offloaded",
-        }
-    }
-}
-
-impl fmt::Display for Placement {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+pub use crate::providers::{Inference, InferenceRefused, Placement};
 
 /// [ADR-0001] D3's iteration default, as a plain count.
 ///
