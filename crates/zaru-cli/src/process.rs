@@ -33,14 +33,17 @@
 //! neither, which is the same dependency inversion the composer and the tool
 //! surface already use — and no [ADR-0003] D8 edge moves.
 //!
-//! # No dependency
+//! # No new dependency
 //!
-//! `std::process`, `std::thread` and `std::time`, plus
-//! `std::os::unix::process::ExitStatusExt` for a signal number, which is safe
-//! and leaves the workspace's `unsafe_code = "deny"` untouched. A timeout
-//! crate, `libc`, and any shell-word crate are each outside [ADR-0003] D2's
-//! table and none is taken; the ceiling is a poll and two threads, and the
-//! splitter is [`mod@line`].
+//! `std::process` for the pipes and the exit status, `std::time`, and
+//! `std::os::unix::process::ExitStatusExt` for a signal number — safe, so the
+//! workspace's `unsafe_code = "deny"` is untouched — plus `tokio::process`
+//! and `tokio::time` since 2026-09-05, which is the `process` feature of a
+//! crate [ADR-0003] D2's table already names and costs **zero packages** by
+//! both instruments. A timeout crate, `libc`, and any shell-word crate are
+//! each outside that table and none is taken; the ceiling is a `select!` arm,
+//! the readers are two futures rather than two threads, and the splitter is
+//! [`mod@line`].
 //!
 //! # The four pieces
 //!
@@ -49,7 +52,7 @@
 //! | [`mod@line`] | a command as a program and arguments, and the one door text comes through |
 //! | [`environment`] | exactly what a child is given, with [ADR-0014] D1's layer 4 unable to be in it |
 //! | [`ceiling`] | how long a child may run, refused at zero, no number chosen here |
-//! | [`spawn`] | the child itself, at the boundary's root, under the ceiling |
+//! | [`spawn`] | the child itself, at the boundary's root, under the ceiling, on the session's runtime |
 //!
 //! [`ports`] holds the two trait implementations, so that "two ports, one
 //! process" is legible in the file list.

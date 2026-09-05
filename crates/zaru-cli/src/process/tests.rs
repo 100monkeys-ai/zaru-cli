@@ -393,8 +393,8 @@ fn a_ceiling_of_zero_is_refused_and_carries_its_reason() {
 /// `PWD` for `pwd` to report instead of the real one.
 ///
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-#[test]
-fn a_child_starts_at_the_boundarys_root() {
+#[tokio::test]
+async fn a_child_starts_at_the_boundarys_root() {
     let tree = ScratchTree::new();
     // Deliberately the symlinked spelling: a root that was not canonicalised
     // at construction would put the child somewhere else with the same name.
@@ -407,6 +407,7 @@ fn a_child_starts_at_the_boundarys_root() {
 
     let outcome = spawn
         .execute(&CommandLine::split("pwd").expect("`pwd` is a command line"))
+        .await
         .unwrap_or_else(|failure| panic!("`pwd` did not run: {failure}"));
 
     assert_eq!(
@@ -424,8 +425,8 @@ fn a_child_starts_at_the_boundarys_root() {
 }
 
 /// The work's exit code is the work's, and it is an `i32`.
-#[test]
-fn a_childs_exit_code_is_the_works_own() {
+#[tokio::test]
+async fn a_childs_exit_code_is_the_works_own() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
@@ -436,9 +437,11 @@ fn a_childs_exit_code_is_the_works_own() {
 
     let succeeded = spawn
         .execute(&CommandLine::split("true").expect("a command line"))
+        .await
         .expect("`true` ran");
     let failed = spawn
         .execute(&CommandLine::split("false").expect("a command line"))
+        .await
         .expect("`false` ran");
 
     assert_eq!(succeeded.ended.exit_code(), 0, "`true` did not report zero");
@@ -451,8 +454,8 @@ fn a_childs_exit_code_is_the_works_own() {
 
 /// Both streams are captured, separately, and neither is merged into the
 /// other.
-#[test]
-fn stdout_and_stderr_are_captured_separately() {
+#[tokio::test]
+async fn stdout_and_stderr_are_captured_separately() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
@@ -465,6 +468,7 @@ fn stdout_and_stderr_are_captured_separately() {
     // can to stdout, so one command exercises both streams.
     let outcome = spawn
         .execute(&CommandLine::split("printf 'out-marker'").expect("a command line"))
+        .await
         .expect("`printf` ran");
     assert_eq!(
         outcome.stdout, "out-marker",
@@ -478,6 +482,7 @@ fn stdout_and_stderr_are_captured_separately() {
 
     let failing = spawn
         .execute(&CommandLine::split("cat /nonexistent-for-this-check").expect("a command line"))
+        .await
         .expect("`cat` ran");
     assert!(
         failing.stdout.is_empty(),
@@ -492,13 +497,14 @@ fn stdout_and_stderr_are_captured_separately() {
 
 /// A capture larger than a pipe buffer completes rather than deadlocking.
 ///
-/// **This is the check the two reader threads exist for.** A `Spawn` that
-/// polled `try_wait` without draining would block the child in `write` at the
+/// **This is the check the concurrent readers exist for.** A `Spawn` that
+/// waited for the child without draining would block it in `write` at the
 /// first full pipe — 64 KiB on Linux — and neither would ever move, so the
 /// ceiling would kill a child that had done nothing wrong. One megabyte is
-/// sixteen buffers.
-#[test]
-fn a_capture_larger_than_a_pipe_buffer_completes() {
+/// sixteen buffers. It was two reader threads until 2026-09-05 and is two
+/// futures in a `select!` now; the property is the same and so is the mutant.
+#[tokio::test]
+async fn a_capture_larger_than_a_pipe_buffer_completes() {
     const BYTES: usize = 1_000_000;
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
@@ -510,6 +516,7 @@ fn a_capture_larger_than_a_pipe_buffer_completes() {
 
     let outcome = spawn
         .execute(&CommandLine::split(&format!("printf %0{BYTES}d 0")).expect("a command line"))
+        .await
         .expect("`printf` ran");
 
     assert_eq!(
@@ -529,14 +536,14 @@ fn a_capture_larger_than_a_pipe_buffer_completes() {
 ///
 /// **Two mutants, both bounded and both deterministic** ([Verification
 /// lessons] §57). Reporting the kill as an ordinary exit reddens on
-/// `was_killed_at_the_ceiling`. Removing the kill itself leaves `wait`
-/// blocking until the child ends on its own, which reddens on the elapsed
+/// `was_killed_at_the_ceiling`. Removing the kill itself leaves the wait
+/// running until the child ends on its own, which reddens on the elapsed
 /// assertion — which is why the child sleeps for a fixed span it can be
 /// measured against rather than forever.
 ///
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-#[test]
-fn the_ceiling_kills_a_child_that_outlasts_it() {
+#[tokio::test]
+async fn the_ceiling_kills_a_child_that_outlasts_it() {
     const CHILD_SLEEPS: Duration = Duration::from_secs(20);
     let ceiling = ProcessCeiling::new(Duration::from_millis(200)).expect("not zero");
     let tree = ScratchTree::new();
@@ -549,6 +556,7 @@ fn the_ceiling_kills_a_child_that_outlasts_it() {
 
     let outcome = spawn
         .execute(&CommandLine::split("sleep 20").expect("a command line"))
+        .await
         .expect("`sleep` ran");
 
     assert!(
@@ -571,8 +579,8 @@ fn the_ceiling_kills_a_child_that_outlasts_it() {
 }
 
 /// A program that does not exist is user-correctable and names the command.
-#[test]
-fn a_program_that_will_not_start_names_itself() {
+#[tokio::test]
+async fn a_program_that_will_not_start_names_itself() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
@@ -584,6 +592,7 @@ fn a_program_that_will_not_start_names_itself() {
 
     let failure = spawn
         .execute(&CommandLine::of(&missing, []).expect("a program with no arguments"))
+        .await
         .expect_err("a program that does not exist cannot start");
 
     assert!(
@@ -608,8 +617,8 @@ fn a_program_that_will_not_start_names_itself() {
 ///
 /// At `contained` the membrane is ADR-0004's, and it is the answer that does
 /// not depend on a process being well behaved.
-#[test]
-fn nothing_contains_a_child_at_bare_and_the_check_says_so() {
+#[tokio::test]
+async fn nothing_contains_a_child_at_bare_and_the_check_says_so() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
@@ -636,6 +645,7 @@ fn nothing_contains_a_child_at_bare_and_the_check_says_so() {
             &CommandLine::of("touch", [outside.display().to_string()])
                 .expect("a program and one argument"),
         )
+        .await
         .unwrap_or_else(|failure| panic!("`touch` did not run: {failure}"));
 
     assert_eq!(
@@ -751,9 +761,9 @@ fn the_harnesss_own_configuration_never_reaches_a_child() {
 }
 
 /// The child half of the check above. Never run on its own.
-#[test]
+#[tokio::test]
 #[ignore = "re-invoked by `the_harnesss_own_configuration_never_reaches_a_child`"]
-fn the_environment_checks_child_reports_what_its_grandchild_saw() {
+async fn the_environment_checks_child_reports_what_its_grandchild_saw() {
     let root = std::env::var(CHILD_ROOT)
         .unwrap_or_else(|_| panic!("{CHILD_ROOT} names the working directory this child uses"));
     assert!(
@@ -769,6 +779,7 @@ fn the_environment_checks_child_reports_what_its_grandchild_saw() {
     );
     let outcome = spawn
         .execute(&CommandLine::split("env").expect("a command line"))
+        .await
         .unwrap_or_else(|failure| panic!("`env` did not run: {failure}"));
 
     for line in outcome.stdout.lines() {

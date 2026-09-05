@@ -13,17 +13,34 @@
 //! trait implementations over one private `execute`, so the *decision* stays
 //! in two places and only the *mechanism* is shared.
 //!
-//! # Both futures are already finished
+//! # Both futures are real, since 2026-09-05
 //!
 //! Each port's method returns `impl Future + Send`, and each implementation
-//! here does the whole thing synchronously and hands back a future that is
-//! already resolved. **So the calling thread blocks for as long as the child
-//! runs, up to the ceiling.** `zaru-cli`'s product tree carries no async
-//! runtime — `tokio` is a dev-dependency — and taking one to make this
-//! genuinely asynchronous is a reactor in the binary, which is a decision with
-//! a record's name on it rather than an import. Recorded on [ADR-0008]'s and
-//! [ADR-0009] D3's Status tracking under the coordinator's ruling of
-//! 2026-09-05 rather than left for a reader to discover from a stall.
+//! here used to do the whole thing synchronously and hand back a future that
+//! was already resolved — so the calling thread blocked for as long as the
+//! child ran, up to the ceiling, and the session's one current-thread runtime
+//! went with it. **Neither does now**: [`Spawn::execute`] is `async` and the
+//! child, its two pipes and the ceiling are futures the runtime polls, so a
+//! turn racing this against a terminal keeps repainting and stays
+//! interruptible while `cmd.run` or a declared validator's command runs.
+//! **Neither trait declaration moved**, which is the measure of how much of
+//! this was a body rather than a contract.
+//!
+//! The reason recorded for not doing it earlier was that closing the gap
+//! needed `tokio::task::spawn_blocking` and therefore "a runtime with a
+//! blocking pool, which is a second runtime". **Measured on 2026-09-05, that
+//! is wrong twice over.** A current-thread runtime *has* a blocking pool —
+//! `Builder::new_current_thread().enable_all()` runs a blocking closure on a
+//! `tokio-rt-worker` thread while the beat keeps firing — so no second runtime
+//! was ever needed. And `spawn_blocking` is nonetheless the wrong shape, for a
+//! reason nothing had stated: **a blocking task is not cancellable.** Dropping
+//! its handle, which is exactly what dropping the turn's future does, does not
+//! stop the closure; measured against a three-second child, the interrupt
+//! returned in 334 ms with the child still running, and `Runtime::drop` then
+//! blocked for **2.67 s** waiting for it — which against this workspace's
+//! two-minute process ceiling is a `Ctrl-C` that leaves the build running and
+//! hangs the harness on exit. The corrections are on [ADR-0011], [ADR-0009]
+//! and [ADR-0008]'s D2 amendment in those records' own words.
 //!
 //! # What both output types cannot say, which is a finding
 //!
@@ -59,11 +76,12 @@ impl Spawn<'_> {
     /// [`ValidatorRunner`]'s contract calls **the declaration being
     /// unusable** — the same register as a pattern that is not a regular
     /// expression — rather than a validator that failed.
-    fn declared(&self, command: &Run) -> Result<ValidatorOutput, PortFailure> {
+    async fn declared(&self, command: &Run) -> Result<ValidatorOutput, PortFailure> {
         let line = CommandLine::split(command.as_str())
             .map_err(|refused| PortFailure::new(refused.to_string()))?;
         let outcome = self
             .execute(&line)
+            .await
             .map_err(|failure| PortFailure::new(failure.to_string()))?;
         Ok(ValidatorOutput {
             exit_code: outcome.ended.exit_code(),
@@ -78,20 +96,19 @@ impl ValidatorRunner for Spawn<'_> {
         &self,
         command: &Run,
     ) -> impl Future<Output = Result<ValidatorOutput, PortFailure>> + Send {
-        core::future::ready(self.declared(command))
+        self.declared(command)
     }
 }
 
 impl Subprocess for Spawn<'_> {
-    fn run(
-        &self,
-        line: &CommandLine,
-    ) -> impl Future<Output = Result<Captured, PortFailure>> + Send {
-        core::future::ready(
-            self.execute(line)
-                .map(captured)
-                .map_err(|failure| PortFailure::new(failure.to_string())),
-        )
+    /// `async fn` against a trait that declares `impl Future + Send`, which is
+    /// the same signature: the compiler checks the `Send` bound on the future
+    /// this produces, so nothing is weakened by spelling it the short way.
+    async fn run(&self, line: &CommandLine) -> Result<Captured, PortFailure> {
+        self.execute(line)
+            .await
+            .map(captured)
+            .map_err(|failure| PortFailure::new(failure.to_string()))
     }
 }
 

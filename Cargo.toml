@@ -35,10 +35,18 @@ repository = "https://github.com/100monkeys-ai/zaru-cli"
 # `gemini` client arrived: a client that opens a socket needs a reactor, and
 # `reqwest`'s futures need one to be polled on. That is a caller arriving for
 # a crate this table already names rather than a new dependency, which is
-# ADR-0003 clause 7's own distinction. `zaru-cli` names `rt` and `macros` for
-# its own code and `reqwest` names what it needs on top; the features here are
-# still `rt` and `macros` and nothing else, because that is what this
-# workspace's own code uses.
+# ADR-0003 clause 7's own distinction.
+#
+# **The features here are `rt` and `macros` and nothing else, and that is a
+# statement about this row rather than about the workspace.** Each crate names
+# what its own code uses on top, and Cargo unifies them: `zaru-cli` names
+# `net`, `time`, `sync` and `process` on its own line, `reqwest` and `rmcp`
+# name what they need, and this row carries only what a crate taking `tokio =
+# { workspace = true }` with no features of its own gets. The sentence here
+# said "`zaru-cli` names `rt` and `macros` for its own code" until 2026-09-05,
+# which stopped being true the day the composition built the reactor; it is
+# corrected rather than left, because a comment that names the wrong crate's
+# feature set is worse than none.
 tokio = { version = "1.53.1", default-features = false, features = [
     "rt",
     "macros",

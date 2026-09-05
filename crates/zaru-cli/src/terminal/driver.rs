@@ -606,17 +606,23 @@ pub enum Turned {
 /// **An interrupted turn records no exchange.** [ADR-0013] D1's layer 6 is
 /// what came back, and nothing came back.
 ///
-/// # What is not interruptible, named rather than smoothed
+/// # A child process is interruptible too, since 2026-09-05
 ///
-/// [`crate::process::Spawn::execute`] is blocking — a `std::process::Command`,
-/// `try_wait` and a sleep — and it is called from the asynchronous
-/// `Subprocess` port. **While `cmd.run` or a declared validator's command is
-/// running the current-thread runtime is blocked**, so no beat fires, no
-/// keystroke is read and an interrupt is not seen until the child returns. The
-/// provider's await and `web.fetch`'s are `reqwest` futures and do yield, so
-/// those are interruptible. Closing it needs `spawn_blocking` and therefore a
-/// runtime with a blocking pool, which is a second runtime; it is recorded on
-/// ADR-0011 and ADR-0009 as the next gap rather than taken here.
+/// [`crate::process::Spawn::execute`] was blocking — a `std::process::Command`,
+/// `try_wait` and a sleep, with two reader threads joined at the end — and it
+/// is called from the asynchronous `Subprocess` port, so **while `cmd.run` or
+/// a declared validator's command was running the current-thread runtime was
+/// blocked**: no beat fired, no keystroke was read, and an interrupt was not
+/// seen until the child returned. It is `async` now — the wait, the two pipes
+/// and the ceiling are futures on this same runtime — so the two branches
+/// below are polled during a child exactly as they are during a provider's
+/// await. **And leaving ends the child**: the child is a value the turn's
+/// future owns and `kill_on_drop` is set, so the drop that makes this an
+/// interruption sends it the same `SIGKILL` the ceiling does. The gap this
+/// paragraph used to name is closed on ADR-0011 and ADR-0009, with the reason
+/// each recorded for not closing it corrected: a current-thread runtime does
+/// have a blocking pool, and what disqualifies `spawn_blocking` is that a
+/// blocking task cannot be cancelled at all.
 ///
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop

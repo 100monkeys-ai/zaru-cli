@@ -66,7 +66,39 @@ reqwest = { workspace = true }
 # --prefix none`, deduplicated), because `reqwest` already enables `sync` on
 # this same crate. Declared rather than inherited for the reason the paragraph
 # above gives.
-tokio = { workspace = true, features = ["rt", "macros", "net", "time", "sync"] }
+#
+# **`process` was added on 2026-09-05 when a child process became a future**,
+# for the same reason and by the same rule. `crate::process::Spawn::execute`
+# ran a `std::process::Command` on the calling thread until then -- `try_wait`,
+# a sleep, and two reader threads joined at the end -- and it is reached from
+# two asynchronous ports, so for the whole of a `cmd.run` or a declared
+# validator's command the session's one current-thread runtime was blocked: no
+# beat fired, no keystroke was read, and a `Ctrl-C` was not seen until the
+# child returned. `tokio::process::Child` is what makes the wait and the two
+# reads futures that yield, and `kill_on_drop` is what makes dropping the
+# turn's future end the child rather than orphan it. **The io driver is
+# load-bearing rather than incidental**: `tokio::process` panics with *"A Tokio
+# 1.x context was found, but IO is disabled"* on a runtime built without it,
+# which `compose::turn::runtime`'s `enable_all` supplies and a check pins.
+#
+# **Measured with both instruments on 2026-09-05: zero and zero.** The lock
+# stays at 314 packages (`grep -c '^\[\[package\]\]' Cargo.lock`) and the
+# `zaru-cli` closure at 242 unique packages (`cargo tree -p zaru-cli -e normal
+# --prefix none`, deduplicated); `cargo tree -e normal -d` is byte-identical at
+# 294 lines, so no crate is duplicated by it. The whole `Cargo.lock` delta is
+# ONE line -- `signal-hook-registry` joining `tokio`'s dependency list, a
+# package already resolved for `crossterm`'s `signal-hook`. A feature of a crate
+# ADR-0003 D2's table already names is that record's clause 7 caller-arrives
+# case, which is the shape D2 already blessed for `rmcp`'s transport and for
+# `ratatui`'s `crossterm`.
+tokio = { workspace = true, features = [
+    "rt",
+    "macros",
+    "net",
+    "time",
+    "sync",
+    "process",
+] }
 # ADR-0009 D3's third `expect` kind. See `[workspace.dependencies]` for why
 # this crate and not `zaru-core`, and for what the two features buy.
 regex = { workspace = true }
