@@ -421,6 +421,17 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
         self.paint();
     }
 
+    /// Add to the answer arriving and paint, so a reader watches it grow.
+    ///
+    /// The provisional line is the shell's; this is the beat that makes it
+    /// visible. It is taken away by [`Shell::clear_streaming`] when the turn
+    /// ends and the turn's own rendered lines arrive — see that method for
+    /// why the answer is painted once, from one place.
+    fn stream(&mut self, text: &str) {
+        self.shell.stream_delta(text);
+        self.paint();
+    }
+
     /// Paint, keeping the first paint that failed.
     fn paint(&mut self) {
         if let Err(failure) = self.surface.draw(self.shell)
@@ -428,6 +439,29 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
         {
             self.first_failure = Some(failure);
         }
+    }
+}
+
+/// Ending the turn's borrow takes the provisional streamed line away.
+///
+/// # Why this is a `Drop` and not a line in [`run_a_turn`]
+///
+/// It was a line in `run_a_turn` first, and a mutation deleting it reddened
+/// **nothing**: `run_a_turn` needs a real provider to reach, so no offline
+/// check can drive it, and the shell-level check could only prove that
+/// `clear_streaming` works — never that anything called it. A property whose
+/// only guarantee is that somebody remembered to write one line is the shape
+/// this workspace keeps replacing with a shape that cannot be forgotten.
+///
+/// A [`Pane`] borrows the shell for exactly the length of one turn, so the
+/// end of that borrow *is* the end of the turn. Clearing here means the
+/// provisional line cannot outlive the turn that produced it, and the
+/// ordering the answer depends on — cleared **before** the turn's rendered
+/// lines are added — is the borrow checker's rather than a comment's, because
+/// those lines cannot be added while the pane still holds the shell.
+impl<S: Surface + Send> Drop for Pane<'_, S> {
+    fn drop(&mut self) {
+        self.shell.clear_streaming();
     }
 }
 
@@ -838,6 +872,14 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     };
 
     let mut tools = crate::compose::ToolLines::default();
+
+    // The answer's text on its way to the pane. Handed to the client here
+    // rather than at `prepare`, because this is the first moment there is
+    // somewhere to paint: `zaru "<task>"` builds the same client, never calls
+    // this, and streams nothing.
+    let (sender, mut deltas) = tokio::sync::mpsc::unbounded_channel();
+    turns.prepared.client().stream_deltas_to(sender);
+
     let raced = {
         let pane = std::sync::Mutex::new(Pane::of(shell, surface));
         let confirm = PaneConfirm::over(&pane, source, pace);
@@ -855,6 +897,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
             pace,
             entries,
             now,
+            Some(&mut deltas),
             crate::compose::turn::run_one(
                 turns.version,
                 turns.report_at,
@@ -872,6 +915,10 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         )
         .await
     };
+    // The provisional streamed line is already gone: `Pane`'s `Drop` took it
+    // when the block above ended the turn's borrow of the shell. See that
+    // impl for why it is there rather than here, and `Shell::stream_delta`
+    // for why the line is cleared rather than promoted.
     let tool_lines = tools.taken();
     let redactor = turns.prepared.redactor();
 
@@ -1014,9 +1061,11 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
     now: &mut Duration,
+    deltas: Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
     running: impl Future<Output = T>,
 ) -> Raced<T> {
     let mut running = core::pin::pin!(running);
+    let mut deltas = deltas;
     loop {
         tokio::select! {
             biased;
@@ -1032,6 +1081,24 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
                 read_while_busy(pane, input, *now, entries);
             }
 
+            // The answer's text, as the provider hands it over.
+            //
+            // **Below the terminal in the biased order, deliberately.** A
+            // model that answers in many small frames would otherwise be able
+            // to starve a keystroke, and a person who cannot type while the
+            // answer scrolls past has a worse terminal than one whose text
+            // lags a beat. Above the beat, because a delta is a reason to
+            // repaint and the beat is what happens when there is none.
+            Some(delta) = next_delta(&mut deltas) => {
+                // A pane the delta could not lock is text the reader misses
+                // for one beat, not a turn that fails: `try_lock` for the
+                // same reason the beat uses it, and the answer is painted
+                // whole at the turn's end regardless.
+                if let Ok(mut pane) = pane.try_lock() {
+                    pane.stream(&delta);
+                }
+            }
+
             () = pace.elapse() => {
                 // The beat. Nothing on the pane changes because of it -- see
                 // `TICK` -- and it is what turns a suspended future into a
@@ -1042,6 +1109,21 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
                 }
             }
         }
+    }
+}
+
+/// The next delta, or a future that never completes when nothing is watching.
+///
+/// `select!` needs a future on every branch every time round, and a surface
+/// with no provider streaming to it has no receiver to wait on. A pending
+/// future is the branch saying "not me, ever" without the loop needing a
+/// shape for its absence.
+async fn next_delta(
+    deltas: &mut Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
+) -> Option<String> {
+    match deltas {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
     }
 }
 

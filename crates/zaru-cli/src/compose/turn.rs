@@ -293,6 +293,18 @@ impl Prepared {
         self.manifest.as_ref()
     }
 
+    /// The provider client this session's turns go through.
+    ///
+    /// Exposed so a surface with somewhere to paint can hand it a channel for
+    /// the answer's text — see
+    /// [`GeminiClient::stream_deltas_to`](crate::providers::gemini::GeminiClient::stream_deltas_to).
+    /// A surface with no pane never calls it, and the client then builds no
+    /// delta at all.
+    #[must_use]
+    pub const fn client(&self) -> &GeminiClient {
+        &self.client
+    }
+
     /// Where [ADR-0010] D1's session directory lives.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript

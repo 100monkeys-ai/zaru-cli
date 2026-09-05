@@ -2242,6 +2242,7 @@ fn the_pane_repaints_while_a_turn_is_suspended() {
             &pace,
             &trie,
             &mut now,
+            None,
             staged.turn(),
         ))
     };
@@ -2313,6 +2314,7 @@ fn a_keystroke_during_a_turn_is_neither_lost_nor_executed_as_a_task() {
             &pace,
             &trie,
             &mut now,
+            None,
             staged.turn(),
         ))
     };
@@ -2402,6 +2404,7 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
             &pace,
             &trie,
             &mut now,
+            None,
             staged.turn(),
         ))
     };
@@ -3060,4 +3063,93 @@ fn adr_0010_d4s_resumed_turn_is_started_by_product_source_and_not_only_by_a_chec
     println!("  the resumed turn is started at: {starts:?}");
     println!("  the interruption is told at: {tellings:?}");
     println!("  the carrier is built at: {carriers:?}");
+}
+
+/// The answer's text is painted while the turn is still running.
+///
+/// This is the property a stream exists for and the one no earlier check
+/// could make: `the_pane_repaints_while_a_turn_is_suspended` asserts the beat
+/// still fires, and nothing on the pane changes on a bare beat. Here the
+/// deltas arrive on the channel the driver races, so the frames captured
+/// *during* the turn carry text that grows — and the turn has not ended, so
+/// the answer cannot have come from `Ran::lines`.
+///
+/// The mutant: remove the delta branch from the `select!`, or paint the delta
+/// without adding it to the shell.
+#[test]
+fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
+    let (source, sent) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, sent);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    // The provider's side of the channel, filled before the race starts so
+    // every delta is waiting: the assertion is about the driver painting
+    // them during the turn, not about when a socket delivers them.
+    let (sender, mut deltas) = tokio::sync::mpsc::unbounded_channel();
+    for delta in ["One", "\nTwo", "\nThree"] {
+        sender.send(delta.to_owned()).expect("the receiver is alive");
+    }
+    drop(sender);
+
+    let raced = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            Some(&mut deltas),
+            staged.turn(),
+        ))
+    };
+
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Ran("the turn finished")
+    );
+
+    // What a reader saw: frames captured DURING the turn, carrying text that
+    // grows. The turn had not ended, so this cannot have come from `Ran`.
+    let painted: Vec<String> = surface
+        .frames
+        .iter()
+        .map(|rows| rows.join("\n"))
+        .collect();
+
+    // The answer's text grew across the frames: a frame carrying only the
+    // first delta comes before one carrying all three. That ordering is the
+    // whole claim — a client that handed the answer over in one piece would
+    // produce the last frame and never the first.
+    let first_only = painted
+        .iter()
+        .position(|frame| frame.contains("One") && !frame.contains("Three"));
+    let all_three = painted.iter().position(|frame| frame.contains("Three"));
+    assert!(
+        first_only.is_some(),
+        "no frame painted during the turn carried only the first delta, so the answer did not \
+         arrive in pieces"
+    );
+    assert!(
+        all_three.is_some(),
+        "the last delta never reached a frame, so the deltas did not reach the shell through \
+         the driver's own loop"
+    );
+    assert!(
+        first_only < all_three,
+        "the whole answer was painted before a piece of it: {first_only:?} then {all_three:?}"
+    );
+
+    // And the provisional line did not outlive the turn: `Pane`'s `Drop` took
+    // it when the block above ended the borrow. This is the assertion the
+    // mutation of 2026-09-05 showed a remembered call could not support.
+    assert_eq!(
+        shell.streaming(),
+        None,
+        "the provisional streamed line outlived the turn, so the answer will be painted twice"
+    );
 }
