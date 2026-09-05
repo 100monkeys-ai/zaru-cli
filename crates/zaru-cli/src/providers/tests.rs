@@ -7,13 +7,15 @@
 
 use crate::config::environment::variable_name;
 use crate::config::{
-    ConfigRefused, Contribution, Field, Key, Layer, Resolution, Schema, Source, Table, Value,
+    ConfigRefused, Contribution, Field, FieldKind, Key, Layer, Resolution, Schema, Source, Table,
+    Value,
 };
 use crate::failure::{Class, Classified};
 use crate::providers::resolution::ModelTable;
 use crate::providers::{
-    CapabilityRefused, EndpointRefused, ModelAlias, ModelIdRefused, ProviderCapabilities,
-    ProviderEndpoint, ProviderKind, ResolvedModel, TableRefused, declare, endpoint_of, fields,
+    CapabilityRefused, EndpointRefused, Inference, InferenceRefused, ModelAlias, ModelIdRefused,
+    Placement, ProviderCapabilities, ProviderEndpoint, ProviderKind, ResolvedModel, TableRefused,
+    declare, endpoint_of, fields, inference_of,
 };
 use std::collections::BTreeSet;
 
@@ -51,8 +53,9 @@ fn planted(layer: Layer, key: &Key) -> String {
 fn the_alias_set_is_adr_0012_d2s_four_and_no_more() {
     assert_eq!(
         ModelAlias::ALL.len(),
-        4,
-        "ADR-0012 D2 names four aliases and says adding one is an ADR-level change"
+        5,
+        "ADR-0012 D2, as amended under directive 20, names the platform's five aliases and says \
+         adding one is an ADR-level change"
     );
 
     // A wildcard-free match, so a fifth variant stops this file compiling
@@ -61,7 +64,8 @@ fn the_alias_set_is_adr_0012_d2s_four_and_no_more() {
         let expected = match alias {
             ModelAlias::Default => "default",
             ModelAlias::Fast => "fast",
-            ModelAlias::Reasoning => "reasoning",
+            ModelAlias::Smart => "smart",
+            ModelAlias::Cheap => "cheap",
             ModelAlias::Local => "local",
         };
         assert_eq!(
@@ -107,10 +111,11 @@ fn an_aliass_configuration_key_is_model_dot_the_alias() {
         vec![
             "model.default".to_owned(),
             "model.fast".to_owned(),
-            "model.reasoning".to_owned(),
+            "model.smart".to_owned(),
+            "model.cheap".to_owned(),
             "model.local".to_owned(),
         ],
-        "ADR-0012 owns these four keys and ADR-0014 says each record owns its own"
+        "ADR-0012 owns these five keys and ADR-0014 says each record owns its own"
     );
 }
 
@@ -140,7 +145,8 @@ fn adr_0012_d4s_environment_variable_is_what_adr_0014s_transform_produces() {
         vec![
             "ZARU_MODEL_DEFAULT".to_owned(),
             "ZARU_MODEL_FAST".to_owned(),
-            "ZARU_MODEL_REASONING".to_owned(),
+            "ZARU_MODEL_SMART".to_owned(),
+            "ZARU_MODEL_CHEAP".to_owned(),
             "ZARU_MODEL_LOCAL".to_owned(),
         ],
         "ADR-0012 D4 prints ZARU_MODEL_DEFAULT, and ADR-0014's transform must produce it from \
@@ -153,8 +159,8 @@ fn adr_0012_d4s_environment_variable_is_what_adr_0014s_transform_produces() {
 fn the_provider_kinds_are_adr_0012_d3s_four_and_no_more() {
     assert_eq!(
         ProviderKind::ALL.len(),
-        4,
-        "ADR-0012 D3 names four provider kinds"
+        5,
+        "ADR-0012 D3, as amended under directive 20, names five provider kinds"
     );
 
     for kind in ProviderKind::ALL {
@@ -162,6 +168,7 @@ fn the_provider_kinds_are_adr_0012_d3s_four_and_no_more() {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAiCompatible => "openai-compatible",
             ProviderKind::Ollama => "ollama",
+            ProviderKind::Gemini => "gemini",
             ProviderKind::Aegis => "aegis",
         };
         assert_eq!(
@@ -224,6 +231,7 @@ fn an_endpoint_key_is_provider_dot_the_kind_dot_endpoint() {
             "provider.anthropic.endpoint".to_owned(),
             "provider.openai_compatible.endpoint".to_owned(),
             "provider.ollama.endpoint".to_owned(),
+            "provider.gemini.endpoint".to_owned(),
             "provider.aegis.endpoint".to_owned(),
         ],
         "the key segment is the kind's, with the one hyphen ADR-0014's transform cannot carry \
@@ -710,7 +718,7 @@ fn a_provider_that_cannot_call_tools_is_refused_at_configuration_time() {
 #[test]
 fn the_tool_calling_refusal_is_user_correctable_and_names_the_alias_the_kind_and_a_remedy() {
     let refusal = CapabilityRefused::ToolCallingUnavailable {
-        alias: ModelAlias::Reasoning,
+        alias: ModelAlias::Smart,
         kind: ProviderKind::Ollama,
     };
     let classified = Classified::from(refusal);
@@ -725,7 +733,7 @@ fn the_tool_calling_refusal_is_user_correctable_and_names_the_alias_the_kind_and
         .statement()
         .expect("a user-correctable failure carries a statement")
         .to_string();
-    for needed in ["reasoning", "ollama", "mid-loop"] {
+    for needed in ["smart", "ollama", "mid-loop"] {
         assert!(
             said.contains(needed),
             "the statement must say {needed:?} so the reader knows what happened; it said {said:?}"
@@ -741,7 +749,7 @@ fn the_tool_calling_refusal_is_user_correctable_and_names_the_alias_the_kind_and
         .expect("a remedy always has a first action")
         .lead()
         .to_string();
-    for needed in ["model.reasoning", "ollama"] {
+    for needed in ["model.smart", "ollama"] {
         assert!(
             lead.contains(needed),
             "ADR-0016 D2 says exactly what to change, and this remedy does not name {needed:?}: \
@@ -806,4 +814,197 @@ fn the_resolution_tables_own_refusals_are_classified_and_ours_are_defects() {
             "the remedy must name the key the reader has to edit: {lead:?}"
         );
     }
+}
+
+/// **The measurement that decided where the inference key lives.**
+///
+/// Directive 20 spelled it `model.<alias>.inference`. `model.<alias>` holds the
+/// model identifier, so a document carrying both needs one key to be text and a
+/// table at once. Both orders are staged here because they fail differently and
+/// the silent one is the dangerous one: written second, the nested key is
+/// refused loudly; written *first*, the later write replaces the table
+/// wholesale and the setting is gone with nothing reported — which is
+/// ADR-0014 D5's worst outcome arriving without even a typo.
+///
+/// The sibling spelling `inference.<alias>` keeps every property the directive
+/// wanted, and this check is what stops the nested one being re-proposed.
+#[test]
+fn an_inference_key_and_a_model_key_cannot_be_nested_inside_one_another() {
+    let nested = Key::new("model.default.inference").expect("well formed");
+    let model = ModelAlias::Default.key();
+    let hypothetical = Schema::new()
+        .with(model.clone(), Field::free(FieldKind::Text))
+        .with(nested.clone(), Field::free(FieldKind::Text));
+
+    let mut model_last = Table::new();
+    model_last.insert_path(&nested, Value::Text("local".to_owned()));
+    model_last.insert_path(&model, Value::Text("a-model".to_owned()));
+    let resolution = Resolution::resolve(
+        &hypothetical,
+        [Contribution::new(
+            Layer::User,
+            Source::named("a document carrying both"),
+            model_last,
+        )],
+    )
+    .expect("writing the model key last leaves a document that resolves");
+    assert_eq!(
+        resolution.get(&nested),
+        None,
+        "the nested key must be gone without a word — that is why the spelling is a sibling"
+    );
+
+    let mut nested_last = Table::new();
+    nested_last.insert_path(&model, Value::Text("a-model".to_owned()));
+    nested_last.insert_path(&nested, Value::Text("local".to_owned()));
+    match Resolution::resolve(
+        &hypothetical,
+        [Contribution::new(
+            Layer::User,
+            Source::named("a document carrying both"),
+            nested_last,
+        )],
+    ) {
+        Err(ConfigRefused::WrongShape { key, expected, .. }) => {
+            assert_eq!(key, model, "the refusal names the key that cannot be both");
+            assert_eq!(expected, "text");
+        }
+        other => panic!("the other order must be refused outright, and was {other:?}"),
+    }
+
+    // And the spelling actually used is a sibling, so both resolve together.
+    let schema = schema();
+    let axis = crate::providers::Inference::key(ModelAlias::Default);
+    let mut both = Table::new();
+    both.insert_path(&model, Value::Text("a-model".to_owned()));
+    both.insert_path(&axis, Value::Text("local".to_owned()));
+    let resolution = Resolution::resolve(
+        &schema,
+        [Contribution::new(Layer::User, Source::named("both"), both)],
+    )
+    .expect("a model and its axis are two keys and resolve together");
+    assert!(
+        resolution.get(&model).is_some() && resolution.get(&axis).is_some(),
+        "both must survive, which is the whole reason the key is spelled this way"
+    );
+}
+
+/// Every alias's inference axis resolves through the layers, and where no layer
+/// sets it the provider kind decides.
+///
+/// Both arms: the configured value must win, and the default must be the kind's
+/// rather than a constant. A defaults-only implementation passes the second arm
+/// and fails the first; one that ignored the kind passes the first and fails
+/// the second.
+#[test]
+fn an_aliass_inference_axis_is_configured_or_defaults_to_the_provider_kinds() {
+    let schema = schema();
+
+    // Configured wins, for every alias and against every kind's default.
+    for alias in ModelAlias::ALL {
+        let key = crate::providers::Inference::key(alias);
+        for axis in Inference::ALL {
+            let resolution =
+                Resolution::resolve(&schema, [at(Layer::Project, &key, axis.as_str())])
+                    .expect("an axis is text");
+            for kind in ProviderKind::ALL {
+                assert_eq!(
+                    inference_of(&resolution, alias, kind).expect("the value names an axis"),
+                    axis,
+                    "a configured `{key}` must win over the default `{kind}` implies"
+                );
+            }
+        }
+    }
+
+    // Unset falls back to the kind, and ollama is the only local one.
+    let empty = Resolution::resolve(&schema, []).expect("an empty configuration resolves");
+    let mut wrong: Vec<(ProviderKind, Inference)> = Vec::new();
+    for kind in ProviderKind::ALL {
+        let expected = match kind {
+            ProviderKind::Ollama => Inference::Local,
+            ProviderKind::Anthropic
+            | ProviderKind::OpenAiCompatible
+            | ProviderKind::Gemini
+            | ProviderKind::Aegis => Inference::Frontier,
+        };
+        let got = inference_of(&empty, ModelAlias::Default, kind).expect("nothing is set");
+        if got != expected {
+            wrong.push((kind, got));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "directive 20 makes ollama local and every other kind frontier, and these disagree: \
+         {wrong:?}"
+    );
+}
+
+/// Work is placed locally unless the `aegis` kind is what resolved.
+///
+/// ADR-0001 D3's `linked` row splits each cell into local and offloaded, and
+/// this is the predicate that decides which. It is not configurable: ADR-0012
+/// D6 has the harness negotiate before offloading, so a key declaring "this is
+/// offloaded" would answer a question that record settles by asking.
+#[test]
+fn work_is_placed_locally_unless_the_aegis_kind_resolved() {
+    let offloading: Vec<ProviderKind> = ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| Placement::of(*kind) == Placement::Offloaded)
+        .collect();
+    assert_eq!(
+        offloading,
+        vec![ProviderKind::Aegis],
+        "only `aegis` hands work to something else; every other kind is this machine calling an \
+         API, which is a network request rather than an offload"
+    );
+
+    let sources = [("inference.rs", include_str!("inference.rs"))];
+    let found: Vec<&str> = sources
+        .iter()
+        .flat_map(|(_, body)| {
+            ["Url::", "parse_url", ".host(", "starts_with(\"http"]
+                .iter()
+                .filter(move |needle| body.contains(**needle))
+                .copied()
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "neither axis is guessed from an endpoint — a localhost address is not a promise that \
+         inference is local — and these would guess: {found:?}"
+    );
+}
+
+/// A value naming neither axis is refused, saying what the two are.
+#[test]
+fn an_inference_axis_naming_neither_column_is_refused() {
+    let schema = schema();
+    let key = crate::providers::Inference::key(ModelAlias::Cheap);
+    let resolution =
+        Resolution::resolve(&schema, [at(Layer::User, &key, "cloudy")]).expect("text resolves");
+
+    match inference_of(&resolution, ModelAlias::Cheap, ProviderKind::Ollama) {
+        Err(TableRefused::UnusableInference { alias, refusal }) => {
+            assert_eq!(alias, ModelAlias::Cheap, "the refusal names the alias");
+            let said = refusal.to_string();
+            for needed in ["local", "frontier", "inference.cheap"] {
+                assert!(
+                    said.contains(needed),
+                    "the refusal must name {needed:?} so the reader can act; it said {said:?}"
+                );
+            }
+        }
+        other => panic!("a value naming neither axis must be refused, and was {other:?}"),
+    }
+
+    let classified = Classified::from(InferenceRefused::NoSuchAxis {
+        key: key.clone(),
+        offered: "cloudy".to_owned(),
+    });
+    assert_eq!(
+        classified.class(),
+        Class::UserCorrectable,
+        "the user wrote it and the user can fix it"
+    );
 }

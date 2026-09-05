@@ -52,15 +52,18 @@
 pub mod alias;
 pub mod capability;
 pub mod endpoint;
+pub mod inference;
 pub mod kind;
 pub mod resolution;
 
 pub use alias::ModelAlias;
 pub use capability::{CapabilityRefused, ProviderCapabilities};
 pub use endpoint::{EndpointRefused, ProviderEndpoint};
+pub use inference::{Inference, InferenceRefused, Placement};
 pub use kind::ProviderKind;
 pub use resolution::{
     ModelId, ModelIdRefused, ModelTable, ResolvedModel, TableRefused, declare, endpoint_of, fields,
+    inference_of,
 };
 
 #[cfg(test)]

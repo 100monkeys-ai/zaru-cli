@@ -78,7 +78,9 @@ use crate::credentials::{AliasRefused, DescriptionRefused, SecretRefused};
 use crate::failure::classified::Classified;
 use crate::failure::defect::DefectReport;
 use crate::failure::remedy::{Action, Remedy, Statement};
-use crate::providers::{CapabilityRefused, EndpointRefused, ModelIdRefused, TableRefused};
+use crate::providers::{
+    CapabilityRefused, EndpointRefused, InferenceRefused, ModelIdRefused, TableRefused,
+};
 use crate::tools::{InvocationRefused, ModeRefused, TreeError};
 
 /// A remedy of one described action, built from a sentence.
@@ -449,6 +451,18 @@ impl From<TableRefused> for Classified {
                         .lead(),
                 ))
             }
+            TableRefused::UnusableInference { alias, refusal } => {
+                let named = Remedy::from(refusal.clone());
+                act(format!(
+                    "`{key}` names which kind of model runs `{alias}`, and {lead}",
+                    key = crate::providers::Inference::key(*alias),
+                    lead = named
+                        .actions()
+                        .next()
+                        .expect("a remedy always has a first action")
+                        .lead(),
+                ))
+            }
             TableRefused::UnusableEndpoint { kind, refusal } => {
                 let named = Remedy::from(refusal.clone());
                 act(format!(
@@ -463,5 +477,25 @@ impl From<TableRefused> for Classified {
             }
         };
         correctable(&refusal, remedy)
+    }
+}
+
+/// ADR-0001 D3's two columns, named in configuration. A value the user wrote.
+impl From<InferenceRefused> for Classified {
+    fn from(refusal: InferenceRefused) -> Self {
+        let remedy = Remedy::from(refusal.clone());
+        correctable(&refusal, remedy)
+    }
+}
+
+/// The remedy for an inference axis, reachable from both sites.
+impl From<InferenceRefused> for Remedy {
+    fn from(refusal: InferenceRefused) -> Self {
+        match refusal {
+            InferenceRefused::NoSuchAxis { key, .. } => act(format!(
+                "set `{key}` to \"local\" or \"frontier\", or remove it and let the provider's \
+                 kind decide"
+            )),
+        }
     }
 }

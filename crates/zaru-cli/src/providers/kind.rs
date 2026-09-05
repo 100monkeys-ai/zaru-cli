@@ -1,16 +1,26 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! [ADR-0012] D3's four provider kinds.
+//! [ADR-0012] D3's five provider kinds.
 //!
-//! D3: "`anthropic`, `openai-compatible`, `ollama`, and `aegis`. Everything
-//! OpenAI-shaped — vLLM, LM Studio, most gateways — uses the compatible kind
-//! rather than earning its own."
+//! D3 as originally written: "`anthropic`, `openai-compatible`, `ollama`, and
+//! `aegis`. Everything OpenAI-shaped — vLLM, LM Studio, most gateways — uses
+//! the compatible kind rather than earning its own."
 //!
-//! Closed, for the reason [`ModelAlias`](super::ModelAlias) is: D3 names four
-//! and the record's own Negative consequence is that "four provider kinds will
-//! not cover everything, and each addition is a maintenance surface with its
-//! own streaming quirks and error taxonomy". A fifth is that record's to add.
+//! **`gemini` is a fifth, under directive 20 of 2026-09-05, and D3 is amended
+//! to say so.** The platform's own [ADR-009] shipped a Gemini adapter beside
+//! its OpenAI, Ollama and Anthropic ones — its Status Update calls it "a bonus
+//! `GeminiAdapter` not in the ADR" — so the harness matching D3 as written
+//! would be the same drift D2's alias set had. It is also the kind the issued
+//! test credential serves, which is what makes the difference reachable rather
+//! than theoretical.
+//!
+//! Closed on the harness side, for the reason [`ModelAlias`](super::ModelAlias)
+//! is, and the record's own Negative consequence still applies: "each addition
+//! is a maintenance surface with its own streaming quirks and error taxonomy".
+//! A sixth is that record's to add.
+//!
+//! [ADR-009]: https://100monkeys-ai.cortex.page/aegis-architecture/p/adrs/009-byollm-provider-system
 //!
 //! # A kind's name and a kind's key segment are two strings, and they have to be
 //!
@@ -34,7 +44,7 @@
 use crate::config::Key;
 use core::fmt;
 
-/// One of [ADR-0012] D3's four provider kinds.
+/// One of [ADR-0012] D3's five provider kinds.
 ///
 /// **Closed.** This is the data that selects a provider implementation, and
 /// there is no implementation of the provider trait anywhere in this
@@ -50,6 +60,11 @@ pub enum ProviderKind {
     OpenAiCompatible,
     /// D3's third — a local Ollama server.
     Ollama,
+    /// The Google Gemini API.
+    ///
+    /// Added under directive 20 of 2026-09-05 to match the platform's own
+    /// adapter set; see the module documentation.
+    Gemini,
     /// D3's fourth — the AEGIS orchestrator, reached across a process boundary
     /// per [ADR-0003] D5.
     ///
@@ -60,12 +75,13 @@ pub enum ProviderKind {
 impl ProviderKind {
     /// Every kind D3 names, in the record's own order.
     ///
-    /// The length is annotated, so a fifth variant fails to compile here as
+    /// The length is annotated, so a sixth variant fails to compile here as
     /// well as in every exhaustive match below.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Anthropic,
         Self::OpenAiCompatible,
         Self::Ollama,
+        Self::Gemini,
         Self::Aegis,
     ];
 
@@ -82,6 +98,7 @@ impl ProviderKind {
             Self::Anthropic => "anthropic",
             Self::OpenAiCompatible => "openai-compatible",
             Self::Ollama => "ollama",
+            Self::Gemini => "gemini",
             Self::Aegis => "aegis",
         }
     }
@@ -97,6 +114,7 @@ impl ProviderKind {
             Self::Anthropic => "anthropic",
             Self::OpenAiCompatible => "openai_compatible",
             Self::Ollama => "ollama",
+            Self::Gemini => "gemini",
             Self::Aegis => "aegis",
         }
     }

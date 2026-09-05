@@ -61,6 +61,7 @@
 use crate::config::{Explanation, Field, FieldKind, Key, Layer, Resolution, Schema, Value};
 use crate::providers::alias::ModelAlias;
 use crate::providers::endpoint::{EndpointRefused, ProviderEndpoint};
+use crate::providers::inference::{Inference, InferenceRefused};
 use crate::providers::kind::ProviderKind;
 use core::fmt;
 
@@ -208,6 +209,13 @@ pub enum TableRefused {
         /// Why.
         refusal: ModelIdRefused,
     },
+    /// A key named neither inference axis.
+    UnusableInference {
+        /// Which alias.
+        alias: ModelAlias,
+        /// Why.
+        refusal: InferenceRefused,
+    },
     /// A key resolved to an endpoint the listing could not render.
     UnusableEndpoint {
         /// Which kind.
@@ -241,6 +249,12 @@ impl fmt::Display for TableRefused {
             Self::UnusableModelId { alias, refusal } => {
                 write!(f, "the alias `{alias}` resolved to a model, and {refusal}")
             }
+            Self::UnusableInference { alias, refusal } => {
+                write!(
+                    f,
+                    "the alias `{alias}` names an inference axis, and {refusal}"
+                )
+            }
             Self::UnusableEndpoint { kind, refusal } => {
                 write!(f, "the provider `{kind}` names an endpoint, and {refusal}")
             }
@@ -271,6 +285,17 @@ pub fn fields() -> Vec<(Key, Field)> {
         // different model is the mechanism working.
         .map(|alias| (alias.key(), Field::free(FieldKind::Text)))
         .collect();
+
+    // Beside `model.<alias>` rather than beneath it -- see
+    // `crate::providers::inference` for the measurement that decided the
+    // spelling. Free at every layer, because a project choosing to run its
+    // work on a local model is choosing less reach rather than more, and
+    // ADR-0014 D6 constrains escalation rather than choice.
+    declared.extend(
+        ModelAlias::ALL
+            .into_iter()
+            .map(|alias| (Inference::key(alias), Field::free(FieldKind::Text))),
+    );
 
     declared.extend(ProviderKind::ALL.into_iter().map(|kind| {
         (
@@ -375,6 +400,32 @@ pub fn endpoint_of(
         Some(text) => ProviderEndpoint::new(&text)
             .map(Some)
             .map_err(|refusal| TableRefused::UnusableEndpoint { kind, refusal }),
+    }
+}
+
+/// Which inference axis an alias runs on.
+///
+/// The configured value where a layer set one, and otherwise the default the
+/// provider kind implies — `ollama` local, every other kind frontier. The kind
+/// is a parameter because **no record maps an alias to a provider kind**:
+/// ADR-0012 D4 resolves an alias to a model identifier and D3 names the kinds,
+/// and nothing says which kind serves which alias. That gap is raised on the
+/// record rather than filled with a key invented here.
+///
+/// # Errors
+///
+/// [`TableRefused::UnusableInference`] when a layer set a value naming neither
+/// axis.
+pub fn inference_of(
+    resolution: &Resolution,
+    alias: ModelAlias,
+    kind: ProviderKind,
+) -> Result<Inference, TableRefused> {
+    let key = Inference::key(alias);
+    match supplied_text(resolution, &key) {
+        None => Ok(Inference::of(kind)),
+        Some(text) => Inference::parse(&key, &text)
+            .map_err(|refusal| TableRefused::UnusableInference { alias, refusal }),
     }
 }
 
