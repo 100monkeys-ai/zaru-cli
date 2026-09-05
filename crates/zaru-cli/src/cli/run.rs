@@ -30,7 +30,7 @@ use crate::cli::{help, layers, render};
 use crate::config::{Key, Resolution};
 use crate::credentials::{CredentialStore, Description, Entry, HarnessKeys, OsKeyring, Secret};
 use crate::failure::{Classified, Exit, SessionEvidence};
-use crate::providers::{ModelAlias, ModelTable, ProviderKind, ResolvedModel};
+use crate::providers::{ModelTable, ProviderKind};
 use crate::runtime::{ResolvedTier, Runtime};
 use crate::session::{SessionId, SessionStore};
 
@@ -112,8 +112,8 @@ impl Run<'_> {
             Request::Init => self.init(),
             Request::SessionsList => self.sessions_list(),
             Request::SessionsRemove { id } => self.sessions_remove(id),
-            Request::Resume { id } => self.resume(id, &line.overrides),
-            Request::Continue => self.resume_latest(&line.overrides),
+            Request::Resume { id } => self.resume(id),
+            Request::Continue => self.resume_latest(),
             Request::NotesTokens => self.notes_tokens(),
             Request::ProviderKeys => self.provider_keys(),
             Request::ProviderKeysAdd { kind } => self.provider_keys_add(*kind),
@@ -202,7 +202,7 @@ impl Run<'_> {
     /// [ADR-0010] D4's resume, for a named session.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-    fn resume(&self, id: &SessionId, overrides: &Overrides) -> Outcome {
+    fn resume(&self, id: &SessionId) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
         let store = match self.store() {
             Ok(store) => store,
@@ -214,11 +214,27 @@ impl Run<'_> {
         // invented here.
         match crate::session::resume(&directory, usize::MAX) {
             Ok(restored) => {
-                let mut lines = render::resumed(id, &restored);
-                lines.push(String::new());
-                let mut outcome = self.no_provider(overrides);
-                outcome.lines = lines;
-                outcome
+                // **A bare resume that printed what it was asked for
+                // succeeded.** It exited with the no-provider refusal's `2` or
+                // `4` until 2026-09-05, which is the asymmetry ADR-0010 D4's
+                // own Update recorded: "the refusal's sentence is about
+                // *running a task*, and a bare `--resume` asks for no task, so
+                // the code was arguably always slightly wrong for it and is now
+                // visibly so". Nothing was asked of a provider, so a refusal
+                // about there being none is an answer to a question nobody put
+                // — and ADR-0016 D5's reader is a wrapper, for which a non-zero
+                // code means the thing it asked for did not happen. It did.
+                //
+                // The terminal path has exited `0` on `/exit` since the shell
+                // landed; this is the same operation reaching the other kind of
+                // reader, and the two now agree. Decided under Jeshua's
+                // directive of 2026-09-05 and written as an accepted Update on
+                // ADR-0010 D4, open to his veto.
+                //
+                // `--resume` naming a session that does not exist is untouched
+                // and still fails: that one *is* a refusal, and it is what
+                // `a_resume_of_a_session_that_is_not_there_...` holds.
+                Outcome::printed(render::resumed(id, &restored))
             }
             Err(failure) => {
                 // **The session exists**, and until 2026-09-05 this passed
@@ -240,7 +256,7 @@ impl Run<'_> {
     }
 
     /// D4's `--continue`: the most recent session in this directory.
-    fn resume_latest(&self, overrides: &Overrides) -> Outcome {
+    fn resume_latest(&self) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
         let store = match self.store() {
             Ok(store) => store,
@@ -254,7 +270,7 @@ impl Run<'_> {
         // is the most recent -- D1's own reason for choosing a ULID over a
         // UUID, rather than a second reading of any clock.
         match ids.last() {
-            Some(id) => self.resume(id, overrides),
+            Some(id) => self.resume(id),
             None => Outcome::failed(surface.no_session_to_continue()),
         }
     }
@@ -463,46 +479,6 @@ impl Run<'_> {
                 exit: ran.exit,
             }
         })
-    }
-
-    /// What a bare `--resume` or `--continue` ends with, having restored.
-    ///
-    /// **A resume is not a task**, and since 2026-09-05 this is the only
-    /// caller: `Request::Task` runs a turn. It restores, prints the
-    /// transcript's own bytes, and then stops, because `resume` holds no ports
-    /// and there is no task for a turn to be about.
-    ///
-    /// **The exit code it stops with is an open question and this arc did not
-    /// answer it.** [ADR-0010] D4's own Update names it: "the non-terminal
-    /// path still exits with the no-provider refusal's `2` or `4` … the
-    /// refusal's sentence is about *running a task*, and a bare `--resume`
-    /// asks for no task, so the code was arguably always slightly wrong for it
-    /// and is now visibly so. It is pinned by an assertion in
-    /// `tests/shell_from_outside.rs` so that deciding it the other way reddens
-    /// something, and **it wants a person's answer**." It is left exactly as
-    /// that arc left it, and the pin is what will redden when somebody decides
-    /// it.
-    ///
-    /// What *has* changed is the sentence: it no longer says nothing wires a
-    /// client to a loop, because something does.
-    ///
-    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-    fn no_provider(&self, overrides: &Overrides) -> Outcome {
-        let surface = Surface::new(self.version, self.report_at);
-        self.configured(
-            overrides,
-            |resolution| match ModelTable::from_configuration(resolution) {
-                Err(refusal) => Outcome::failed(Classified::from(refusal)),
-                Ok(table) => match table.row(ModelAlias::Default) {
-                    ResolvedModel::Unresolved => {
-                        Outcome::failed(Surface::no_model_for_the_default_alias())
-                    }
-                    ResolvedModel::Resolved { model, .. } => {
-                        Outcome::failed(surface.no_provider_client(model))
-                    }
-                },
-            },
-        )
     }
 
     /// Fold the configuration, then do something with it.

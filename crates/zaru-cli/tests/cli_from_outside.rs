@@ -512,13 +512,20 @@ fn listing_sessions_on_a_fresh_machine_says_so_and_creates_nothing() {
     );
 }
 
-/// ADR-0010 D4's resume restores, prints the transcript, and does not continue.
+/// ADR-0010 D4's resume restores, prints the transcript, and stops.
 ///
 /// The lines printed are the transcript's **own bytes**, read back off the file
 /// by this check rather than through the binary, so the two sides of the
 /// comparison do not travel through one code path.
+///
+/// **This was named `..._and_then_refuses` and asserted `2` until
+/// 2026-09-05**, when D4's recorded asymmetry was answered: a bare `--resume`
+/// asks for no task, so a refusal about there being no provider was an answer
+/// to a question nobody put, and the run exits `0`. The name changed with the
+/// behaviour, because a check whose name states the old rule is a second
+/// statement of it that nothing keeps true.
 #[test]
-fn adr_0010_d4s_resume_prints_the_transcripts_own_bytes_and_then_refuses() {
+fn adr_0010_d4s_resume_prints_the_transcripts_own_bytes_and_stops() {
     let home = Home::new("resume");
     let id = stage_a_session(&home, 1_700_000_002_000);
 
@@ -537,8 +544,9 @@ fn adr_0010_d4s_resume_prints_the_transcripts_own_bytes_and_then_refuses() {
 
     let ran = zaru(&home, &["--resume", id.as_str()]);
     assert_eq!(
-        ran.code, 2,
-        "a resume restores and then refuses to continue, because continuing needs a provider"
+        ran.code, 0,
+        "a resume that printed the transcript it was asked for did what it was asked; ADR-0010 \
+         D4 asks it for no task, so there is nothing left for it to have failed at"
     );
     for line in &on_disk {
         assert!(
@@ -553,13 +561,19 @@ fn adr_0010_d4s_resume_prints_the_transcripts_own_bytes_and_then_refuses() {
         ran.stdout
     );
     assert!(
-        ran.stderr.contains("no model is configured"),
-        "and then says what it cannot do next: {}",
+        ran.stderr.is_empty(),
+        "a resume that succeeded wrote to standard error, and ADR-0016 D5 keeps that channel for \
+         refusals so a wrapper can tell one from the other: {}",
         ran.stderr
     );
 
+    // `--continue` is the same operation reaching the same reader, so it ends
+    // the same way. D4 names both spellings and gives them one behaviour.
     let continued = zaru(&home, &["--continue"]);
-    assert_eq!(continued.code, 2);
+    assert_eq!(
+        continued.code, 0,
+        "`--continue` is `--resume` on the most recent session and must not end differently"
+    );
     assert!(
         continued.stdout.contains(id.as_str()),
         "`--continue` takes the most recent session, which a ULID's own order decides: {}",

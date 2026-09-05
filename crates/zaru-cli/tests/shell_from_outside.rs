@@ -304,20 +304,35 @@ fn the_binary_prints_the_transcripts_bytes_when_nobody_is_watching() {
         stdout.contains("2 record(s) in the transcript"),
         "the resume did not read the two records the check wrote"
     );
-    // ADR-0016 D5's shape: data to standard output, the refusal to standard
-    // error. **The exit code is unchanged by this arc** and is the
-    // no-provider refusal the surface has printed since 2026-09-05 -- see the
-    // finding recorded on ADR-0010's Update, which this check pins so that
-    // deciding it the other way reddens something.
-    assert!(
-        code == 2 || code == 4,
-        "the non-tty path's exit code changed; it is the no-provider refusal's and this arc did \
-         not touch it, so a change here is a decision somebody made without recording it — got \
-         {code}"
+    // **This asserted `2` or `4` until 2026-09-05, and the assertion was doing
+    // its job when it changed.** It was written by the `tui-shell` arc to pin
+    // an asymmetry it had found and could not settle: the terminal path exits
+    // `0` on `/exit` while the non-terminal path exited with the no-provider
+    // refusal's code, over a command that asks for no provider. ADR-0010 D4's
+    // Update recorded it as wanting a person's answer; it was answered on
+    // 2026-09-05 under Jeshua's directive of that day, as an accepted Update
+    // on D4 and open to his veto, and the answer is `0`.
+    //
+    // The reason, which is what this comment exists to carry rather than the
+    // number: **a bare `--resume` that printed the transcript did what it was
+    // asked.** ADR-0016 D5's reader here is a wrapper — "CI wraps this
+    // harness" — and to a wrapper a non-zero code means the thing it asked for
+    // did not happen. It happened; the bytes are on standard output and this
+    // check has just read them. A refusal about there being no provider is an
+    // answer to a question nobody put.
+    //
+    // So the pin is kept and inverted rather than deleted: deciding it back
+    // reddens here, exactly as deciding it forward reddened here.
+    assert_eq!(
+        code, 0,
+        "a bare `--resume` printed the transcript it was asked for and then exited {code}. \
+         ADR-0010 D4: a resume asks for no task, so a refusal about running one is not what it \
+         ended with. If this was deliberate it is a decision, and D4 is where it goes"
     );
     assert!(
-        !stderr.is_empty(),
-        "the refusal did not reach standard error, so a wrapper cannot tell data from a refusal"
+        stderr.is_empty(),
+        "a resume that succeeded wrote to standard error, so a wrapper reading it cannot tell \
+         this run from a failed one: {stderr:?}"
     );
 }
 
