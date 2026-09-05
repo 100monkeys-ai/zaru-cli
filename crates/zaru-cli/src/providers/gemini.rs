@@ -273,7 +273,8 @@ impl GeminiClient {
     ///
     /// Called by a surface that has somewhere to paint. Until it is, and in
     /// every surface that never calls it, the client builds no delta and
-    /// sends nothing — see [`GeminiClient::deltas`].
+    /// sends nothing: `zaru "<task>"` builds the same client, never calls
+    /// this, and streams nothing.
     ///
     /// `&self` rather than `&mut self` because the caller holds the client
     /// through a shared reference by the time it has a pane: the composition

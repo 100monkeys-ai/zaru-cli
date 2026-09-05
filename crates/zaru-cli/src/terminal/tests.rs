@@ -3091,7 +3091,9 @@ fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
     // them during the turn, not about when a socket delivers them.
     let (sender, mut deltas) = tokio::sync::mpsc::unbounded_channel();
     for delta in ["One", "\nTwo", "\nThree"] {
-        sender.send(delta.to_owned()).expect("the receiver is alive");
+        sender
+            .send(delta.to_owned())
+            .expect("the receiver is alive");
     }
     drop(sender);
 
@@ -3115,11 +3117,7 @@ fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
 
     // What a reader saw: frames captured DURING the turn, carrying text that
     // grows. The turn had not ended, so this cannot have come from `Ran`.
-    let painted: Vec<String> = surface
-        .frames
-        .iter()
-        .map(|rows| rows.join("\n"))
-        .collect();
+    let painted: Vec<String> = surface.frames.iter().map(|rows| rows.join("\n")).collect();
 
     // The answer's text grew across the frames: a frame carrying only the
     // first delta comes before one carrying all three. That ordering is the

@@ -13,8 +13,8 @@ use super::endpoint::{ALT_SSE, API_VERSION, DEFAULT_ENDPOINT, Endpoint, METHOD};
 use super::failure::{DETAIL_WITHHELD, GeminiFailure};
 use super::wire;
 use super::{API_KEY_HEADER, map, stream};
-use crate::credentials::{Alias, Secret};
 use crate::credentials::fixtures::{ascii_core, provider_secret_nonce};
+use crate::credentials::{Alias, Secret};
 use crate::providers::ProviderKind;
 use crate::providers::endpoint::ProviderEndpoint;
 use crate::providers::resolution::{ModelId, ModelTable};
@@ -1222,7 +1222,10 @@ fn a_streamed_answer_is_folded_into_the_whole_text() {
 
     match mapped {
         ModelResponse::Text { text, .. } => {
-            assert!(text.starts_with("One\nTwo"), "the first frame's text is kept");
+            assert!(
+                text.starts_with("One\nTwo"),
+                "the first frame's text is kept"
+            );
             assert!(text.ends_with("Eight"), "the last frame's text is kept");
             assert_eq!(
                 text.lines().count(),
@@ -1248,13 +1251,20 @@ fn the_folded_usage_is_the_last_frames_and_is_not_a_sum() {
         .filter_map(|frame| frame.usage_metadata)
         .map(|usage| usage.candidates_token_count)
         .collect();
-    assert_eq!(counts, vec![13, 15, 15], "the recorded counts are cumulative");
+    assert_eq!(
+        counts,
+        vec![13, 15, 15],
+        "the recorded counts are cumulative"
+    );
 
     let folded = map::fold(&frames);
     let usage = folded
         .usage_metadata
         .expect("the fold carries the last frame's usage");
-    assert_eq!(usage.prompt_token_count, 13, "the prompt count is not summed");
+    assert_eq!(
+        usage.prompt_token_count, 13,
+        "the prompt count is not summed"
+    );
     assert_eq!(usage.candidates_token_count, 15);
 }
 
@@ -1392,7 +1402,11 @@ fn the_answers_text_reaches_a_watcher_as_each_frame_arrives() {
     client
         .absorb_last(&mut frames, body.len(), &mut received)
         .expect("the recorded stream ends cleanly");
-    assert_eq!(received.len(), 3, "the recorded text stream is three frames");
+    assert_eq!(
+        received.len(),
+        3,
+        "the recorded text stream is three frames"
+    );
 
     let mut deltas = Vec::new();
     while let Ok(delta) = receiver.try_recv() {
@@ -1486,7 +1500,12 @@ fn a_stream_that_ends_without_a_terminator_still_delivers_its_last_frame() {
     let mut frames = stream::Frames::new();
     let mut received = Vec::new();
     client
-        .absorb(&mut frames, trimmed.as_bytes(), trimmed.len(), &mut received)
+        .absorb(
+            &mut frames,
+            trimmed.as_bytes(),
+            trimmed.len(),
+            &mut received,
+        )
         .expect("every recorded frame parses");
     assert_eq!(
         received.len(),

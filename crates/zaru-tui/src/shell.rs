@@ -426,7 +426,9 @@ impl Shell {
     /// So what a reader sees is text that grows across beats and then stops
     /// growing, never text that appears twice.
     pub fn stream_delta(&mut self, text: &str) {
-        self.streaming.get_or_insert_with(String::new).push_str(text);
+        self.streaming
+            .get_or_insert_with(String::new)
+            .push_str(text);
     }
 
     /// Take the streamed answer off the pane, at the end of the turn.
