@@ -108,7 +108,7 @@ pub fn request_from(request: &ModelRequest<'_>) -> Result<wire::Request, GeminiF
         declarations.push(wire::FunctionDeclaration {
             name: tool.name.clone(),
             description: tool.description.clone(),
-            parameters,
+            parameters: within_geminis_subset(parameters),
         });
     }
 
@@ -240,4 +240,103 @@ fn usage_from(metadata: Option<wire::UsageMetadata>) -> TokenUsage {
             .candidates_token_count
             .saturating_add(metadata.thoughts_token_count),
     }
+}
+
+/// The keywords Gemini's `FunctionDeclaration.parameters` accepts.
+///
+/// **Not a JSON Schema.** Google documents that field as a subset of OpenAPI
+/// 3.0's Schema object, and it refuses an unknown key outright rather than
+/// ignoring it. The eight below are what that subset admits for the shapes
+/// [ADR-0011] D1's seven tools use; anything else is dropped here rather than
+/// sent.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+const GEMINI_SCHEMA_KEYWORDS: [&str; 8] = [
+    "type",
+    "format",
+    "description",
+    "nullable",
+    "enum",
+    "items",
+    "properties",
+    "required",
+];
+
+/// Narrow a JSON Schema to the subset Gemini's tool declarations accept.
+///
+/// # This was measured against the live API rather than read
+///
+/// [ADR-0011] D1's argument contract emits `"additionalProperties": false`,
+/// which is correct JSON Schema and is the half of that contract that says a
+/// request carrying an unexpected field is not a call. Gemini's schema is an
+/// **OpenAPI 3.0 subset** and rejects the keyword by name:
+///
+/// ```text
+/// Invalid JSON payload received. Unknown name "additionalProperties" at
+/// 'tools[0].function_declarations[0].parameters': Cannot find field.
+/// ```
+///
+/// — HTTP 400 `INVALID_ARGUMENT`, once per tool, so **all seven declarations
+/// were refused and every turn failed**. Measured 2026-09-05 by the first
+/// composition that handed these descriptors to a provider; nothing before it
+/// ever had, which is why a contract landed on 2026-09-05 and a client landed
+/// on 2026-09-05 could both be right and still not work together.
+///
+/// It is the same shape [ADR-0011]'s own Update already recorded once: "an
+/// empty string is not JSON … the seven empty schemas this surface offered
+/// would have been refused, all seven, by the first provider client handed
+/// them." That was fixed by giving them real schemas. This is the second
+/// reason the same seven were refused, and it could only be found by sending
+/// them.
+///
+/// # Why the mapping narrows rather than the contract
+///
+/// ADR-0011 D1's schema is **the harness's** wire contract, offered to every
+/// provider kind; `additionalProperties: false` is part of what that contract
+/// says and a provider that accepts it should be told it. Narrowing here is
+/// what a provider mapping is for — this module already maps every other part
+/// of the request to Google's shape — and it keeps the contract intact for the
+/// four kinds that have no client yet.
+///
+/// **It drops rather than translates.** There is no equivalent keyword in
+/// Gemini's subset, so the closed-object constraint is simply not expressible
+/// to this provider; the parser on the way back in is what actually enforces
+/// it, and that is unchanged. Recursive, because `properties` holds schemas
+/// and a nested object would carry the same keyword.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+fn within_geminis_subset(schema: Value) -> Value {
+    let Value::Object(fields) = schema else {
+        // A schema is an object. Anything else is a leaf this function has no
+        // business rewriting -- `required`'s array of names, `enum`'s array of
+        // values, a `description` string.
+        return schema;
+    };
+    let mut kept = serde_json::Map::new();
+    for (name, value) in fields {
+        if !GEMINI_SCHEMA_KEYWORDS.contains(&name.as_str()) {
+            continue;
+        }
+        // **`properties` is a map of field NAMES to schemas, not a schema.**
+        // Recursing into it as one would filter out every field whose name is
+        // not a keyword -- which is every field -- and send Gemini a tool
+        // whose parameters have no properties at all. Its values are schemas
+        // and are narrowed; its keys are the contract's own field names and
+        // are untouched. Found by writing the recursion the obvious way first.
+        let narrowed = if name == "properties" {
+            match value {
+                Value::Object(properties) => Value::Object(
+                    properties
+                        .into_iter()
+                        .map(|(field, schema)| (field, within_geminis_subset(schema)))
+                        .collect(),
+                ),
+                other => other,
+            }
+        } else {
+            within_geminis_subset(value)
+        };
+        kept.insert(name, narrowed);
+    }
+    Value::Object(kept)
 }

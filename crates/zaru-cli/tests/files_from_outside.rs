@@ -39,9 +39,24 @@ use zaru_cli::tools::WorkingDirectory;
 
 /// A value that exists nowhere else, so that finding it means something.
 fn nonce(label: &str) -> String {
+    // **A counter, not only a clock.** The process id is shared by every check
+    // in this binary and they run in parallel, so the timestamp was the only
+    // thing separating two scratch roots -- and two threads reading the clock
+    // in the same tick get the same one. Observed once on 2026-09-05 under a
+    // machine carrying several builds: two checks shared a root, one wrote the
+    // `zaru.toml` whose `shape` validator points out of the tree (its own
+    // security-corpus case), and the other read it as ADR-0014 layer 3 and
+    // failed with that refusal -- a red in a check that had nothing to do with
+    // it. Three targeted re-runs passed, which is what a shared-state flake
+    // looks like from the outside.
+    //
+    // The counter makes two roots distinct whatever the clock does; the
+    // timestamp stays so a leftover directory still says when it was made.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     format!(
-        "{label}-{}-{}",
+        "{label}-{}-{}-{}",
         std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("the system clock is before the unix epoch")

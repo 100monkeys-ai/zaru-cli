@@ -623,3 +623,131 @@ fn the_recorded_refusal_of_a_bad_key_is_classified_as_the_users() {
         envelope.error.message
     );
 }
+
+/// Gemini's tool schema is an OpenAPI subset, and `additionalProperties` is
+/// not in it.
+///
+/// # This is a regression check for a defect only a real request could find
+///
+/// [ADR-0011] D1's argument contract emits `"additionalProperties": false` on
+/// every one of the seven built-ins, which is correct JSON Schema. Google's
+/// `FunctionDeclaration.parameters` is a subset of OpenAPI 3.0's Schema object
+/// and refuses an unknown key by name rather than ignoring it, so **every one
+/// of the seven declarations was rejected** and every turn failed with HTTP
+/// 400 `INVALID_ARGUMENT`, correctly classified as this harness's defect.
+///
+/// Measured 2026-09-05 against the live endpoint by the first composition that
+/// handed these descriptors to a provider. It is the second time the same
+/// seven descriptors have been refused wholesale by this API — that record's
+/// own Update carries the first, "an empty string is not JSON" — and both were
+/// invisible until something sent them.
+///
+/// The check drives the **real** descriptors rather than a fixture, because a
+/// fixture would be asserting about a schema this harness does not send.
+///
+/// Watched red by mapping the parameters through unchanged, which printed
+/// *"the request carries `additionalProperties`, which Gemini's schema subset
+/// refuses by name: every tool declaration would be rejected"*.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn no_tool_declaration_carries_a_keyword_geminis_schema_subset_refuses() {
+    use zaru_core::iteration::Prompt;
+    use zaru_core::redaction::{Redacted, Redactor};
+    use zaru_core::tool_call::ModelRequest;
+
+    struct Nothing;
+    impl Redactor for Nothing {
+        fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+            std::borrow::Cow::Borrowed(text)
+        }
+    }
+
+    let descriptors = crate::tools::descriptors();
+    assert!(
+        !descriptors.is_empty(),
+        "no descriptors were offered, so this check asserted nothing"
+    );
+    // The staging is asserted: the contract really does emit the keyword, so
+    // an implementation that stopped emitting it would make this check pass
+    // for a reason that has nothing to do with the mapping.
+    assert!(
+        descriptors
+            .iter()
+            .all(|tool| tool.parameters.contains("additionalProperties")),
+        "ADR-0011 D1's contract no longer emits `additionalProperties`, so this check is about \
+         nothing: {descriptors:?}"
+    );
+
+    let prompt = Prompt::new(Redacted::by(&Nothing, "read a file"));
+    let request = super::map::request_from(&ModelRequest {
+        prompt: &prompt,
+        tools: &descriptors,
+        results: &[],
+    })
+    .expect("the seven descriptors map");
+
+    let wire = serde_json::to_string(&request).expect("the request serialises");
+    assert!(
+        !wire.contains("additionalProperties"),
+        "the request carries `additionalProperties`, which Gemini's schema subset refuses by \
+         name: every tool declaration would be rejected. {wire}"
+    );
+    // The discriminating arm: a mapping that dropped everything would satisfy
+    // the absence above and send seven tools with no parameters at all.
+    for tool in &descriptors {
+        assert!(
+            wire.contains(&format!("\"{}\"", tool.name)),
+            "the tool `{}` is not in the request at all: {wire}",
+            tool.name
+        );
+    }
+    // **Read the properties themselves rather than the whole request.** A
+    // first version asserted `wire.contains("\"path\"")`, which is satisfied by
+    // the field's name appearing in `required` -- so the mutation that recursed
+    // into `properties` as though it were a schema, stripping every field name
+    // out of it, **survived**. Parsing is what separates "the name is
+    // somewhere" from "the model is told the tool takes it".
+    let sent: serde_json::Value = serde_json::from_str(&wire).expect("the request is JSON");
+    let declared = sent["tools"][0]["functionDeclarations"]
+        .as_array()
+        .expect("one Tool entry carrying every declaration");
+    assert_eq!(
+        declared.len(),
+        descriptors.len(),
+        "the request carries {} of the {} tools this surface offers",
+        declared.len(),
+        descriptors.len()
+    );
+    for (sent_tool, offered) in declared.iter().zip(descriptors.iter()) {
+        let properties = sent_tool["parameters"]["properties"]
+            .as_object()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the tool `{}` was sent with no `properties` object, so the model is told \
+                     nothing about what it takes: {sent_tool}",
+                    offered.name
+                )
+            });
+        assert!(
+            !properties.is_empty(),
+            "the tool `{}` was sent with an empty `properties`, which is the narrowing having \
+             recursed into a map of field NAMES as though it were a schema: {sent_tool}",
+            offered.name
+        );
+        // Every field the contract declares survives, by name.
+        let contract: serde_json::Value =
+            serde_json::from_str(&offered.parameters).expect("the contract's schema is JSON");
+        for field in contract["properties"]
+            .as_object()
+            .expect("the contract declares properties")
+            .keys()
+        {
+            assert!(
+                properties.contains_key(field),
+                "the tool `{}` lost the field `{field}` on the way to the wire: {sent_tool}",
+                offered.name
+            );
+        }
+    }
+}
