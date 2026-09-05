@@ -67,6 +67,7 @@ pub mod credentials;
 pub mod failure;
 pub mod manifest;
 pub mod providers;
+pub mod redaction;
 pub mod runtime;
 pub mod session;
 pub mod tools;
