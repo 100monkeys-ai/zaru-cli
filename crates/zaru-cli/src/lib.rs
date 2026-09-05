@@ -23,9 +23,10 @@
 //! crate "Binary, configuration, session lifecycle, the credential store, the
 //! local tool surface and its permission model".
 //!
-//! Ten things are built here. Read off this crate's own module list rather
+//! Eleven things are built here. Read off this crate's own module list rather
 //! than off a commit log — `cli`, `config`, `credentials`, `failure`,
-//! `manifest`, `providers`, `redaction`, `runtime`, `session` and `tools`.
+//! `manifest`, `providers`, `redaction`, `runtime`, `session`, `tools` and
+//! `validators`.
 //!
 //! [`redaction`] is the **only** product implementation of [ADR-0008] trigger
 //! clause 6's port, decided on 2026-09-05: the harness removes from what it
@@ -127,3 +128,4 @@ pub mod redaction;
 pub mod runtime;
 pub mod session;
 pub mod tools;
+pub mod validators;

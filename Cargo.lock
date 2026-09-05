@@ -2651,6 +2651,7 @@ version = "0.0.0"
 dependencies = [
  "aes-gcm",
  "keyring",
+ "regex",
  "reqwest",
  "rmcp",
  "serde",

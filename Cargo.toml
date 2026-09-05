@@ -223,6 +223,42 @@ reqwest = { version = "0.12.28", default-features = false, features = [
     "rustls-tls",
 ] }
 
+# `regex` is D2's row for [ADR-0009] D3's third `expect` kind, `matches =
+# "<regex>"`, accepted 2026-09-05 under directive 20 as amendment 4, and this
+# is the arc that gives it a caller.
+#
+# **It costs zero packages in `Cargo.lock` and three in the build tree**,
+# measured 2026-09-05 against the 206-package lock and the 162-package
+# `zaru-cli` closure of that morning: the resolution already carries `regex`
+# 1.13.1 for `keyring` 4's `windows-native-keyring-store`, which is
+# platform-gated and never compiled here. `regex-lite` was the alternative and
+# is the LARGER tree, not the smaller: `boon` below takes `regex`, so
+# `regex-lite` would put two engines in one tree -- the duplication `ratatui`
+# is pinned to 0.29 and `aes-gcm` to 0.11 to avoid, measured the same way.
+#
+# **`fancy-regex` was disqualified rather than merely measured.** A validator's
+# pattern arrives in a file from a repository the user cloned, and the
+# evaluator runs on the harness's own thread, which `ProcessCeiling` does not
+# bound -- that ceiling bounds a child. `regex` carries the guarantee that
+# makes an untrusted pattern safe there, in its own words: "all regex searches
+# in this crate have worst case `O(m * n)` time complexity", because "it lacks
+# several features that are not known how to implement efficiently. This
+# includes, but is not limited to, look-around and backreferences."
+#
+# Default features off, then two named. `std` is what gives `Regex` at all.
+# `unicode` is what lets a project's pattern spell `\d`, `\w` and `\p{...}`;
+# refusing them would be an implementation inventing a restriction ADR-0009
+# states nowhere. The pair costs NO package over `std` alone -- only
+# `perf-literal` costs one, `aho-corasick`, and it is off. **And while `boon`
+# is in the tree this declaration narrows nothing**, because `boon` takes
+# `regex` with default features and Cargo unifies them; it records what this
+# crate's own code needs, so that removing `boon` later cannot silently keep
+# the wider set. Said rather than claimed as a saving.
+regex = { version = "1.13.1", default-features = false, features = [
+    "std",
+    "unicode",
+] }
+
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
 # turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-

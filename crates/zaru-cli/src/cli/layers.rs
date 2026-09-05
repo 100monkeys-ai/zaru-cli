@@ -46,6 +46,7 @@ use crate::config::{
 use crate::manifest::{ManifestFile, ManifestSource};
 use crate::providers::ModelAlias;
 use crate::tools::WorkingDirectory;
+use crate::validators::PatternCeiling;
 use core::fmt;
 use std::path::Path;
 
@@ -199,6 +200,46 @@ pub const FILE_CEILING_BYTES: u64 = 1 << 20;
 #[must_use]
 pub fn file_ceiling() -> SizeCeiling {
     SizeCeiling::new(FILE_CEILING_BYTES).expect("a mebibyte is not zero")
+}
+
+/// How large a compiled `matches` pattern this binary will run, in bytes.
+///
+/// **Ten mebibytes, and this is the one place the number is written.** It sits
+/// beside [`FILE_CEILING_BYTES`] rather than in
+/// [`crate::validators`](crate::validators) for that constant's own reason:
+/// [`PatternCeiling`] takes it as a required argument with no default, because
+/// a default there would be a value chosen for a different caller
+/// ([Verification lessons] §14), and this module is where the numbers this
+/// binary chooses live.
+///
+/// The number is `regex`'s own default `size_limit`, taken deliberately rather
+/// than lowered. That crate's advice for untrusted patterns is to "configure
+/// `RegexBuilder::size_limit` to something small and then expand it as
+/// needed", and *needed* is the word this binary cannot yet evaluate: no
+/// command declares a validator, so no real pattern has ever been compiled
+/// here and a smaller number would be a bound chosen against no evidence. No
+/// record names one either, so this is a delegated coordinator ruling of
+/// 2026-09-05 recorded on [ADR-0009] and open to Jeshua's veto. **No
+/// configuration key is declared for it**, for the reason
+/// [`crate::process::ceiling`] gives: each record owns its own keys and
+/// ADR-0009 names none.
+///
+/// **Nothing passes it yet.** Like the two numbers
+/// [`crate::process::Spawn`] takes, it waits for the composition that wires a
+/// task through the loop.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+pub const PATTERN_CEILING_BYTES: usize = 10 * (1 << 20);
+
+/// [`PATTERN_CEILING_BYTES`] as the evaluator takes it.
+///
+/// # Panics
+///
+/// Never. [`PATTERN_CEILING_BYTES`] is not zero.
+#[must_use]
+pub fn pattern_ceiling() -> PatternCeiling {
+    PatternCeiling::new(PATTERN_CEILING_BYTES).expect("ten mebibytes is not zero")
 }
 
 /// [ADR-0014] D1's layer 2: `~/.zaru/config.toml`.
