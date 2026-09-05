@@ -10,9 +10,16 @@
 //!
 //! [ADR-0014] D6: "A project may lower its own iteration ceiling, name its
 //! workspace, and declare validators. It may **not** raise the permission
-//! mode, disable SEAL, widen a token scope, or move the runtime tier upward.
-//! **A repository the user cloned must not be able to configure its way to
-//! more privilege than the user granted.**"
+//! mode, disable SEAL, widen a token scope, move the runtime tier upward,
+//! name a provider endpoint, or supply the tool-surface allowlist. **A
+//! repository the user cloned must not be able to configure its way to more
+//! privilege than the user granted.**"
+//!
+//! *That quotation carried D6's original four until 2026-09-05 and is now the
+//! clause's six; the fifth and sixth were added that day and the permission
+//! mode has been the **first** since the record was written. Declaring a key
+//! for it adds no escalation — it gives D6's first one the name ADR-0014's
+//! own Status tracking says it has been waiting for.*
 //!
 //! D6 forbids *raising*, and this module refuses the project layer **any**
 //! mode at all. That is wider than D6 asks, and it is wider for a stated
@@ -24,18 +31,116 @@
 //! of the boundary. The wider gate settles nothing and is recorded as a
 //! proposed Update on ADR-0011 rather than left for a reader to infer.
 //!
-//! # No configuration key is invented here
+//! # The key, and why it is spelled `tools.mode`
 //!
-//! [ADR-0014]'s Neutral consequence says "Nothing here specifies the schema.
-//! Each record owns its own keys", and ADR-0011 names no key for the
-//! permission mode. So [`Mode::from_layer`] takes the key as a parameter and
-//! quotes back whatever it was handed. A key invented by the thing that reads
-//! it is a name nobody chose, and this module chooses none.
+//! This module said "no configuration key is invented here" until 2026-09-05,
+//! and it was right to: [ADR-0014]'s Neutral consequence leaves each record
+//! its own keys, ADR-0011 named none, and a key chosen by the thing that reads
+//! it is a name nobody decided. **ADR-0011 D3 now names one**, by an accepted
+//! Update of 2026-09-05 under Jeshua's directive of that day and open to his
+//! veto, so this module spells it — once, in [`KEY`] — rather than inventing
+//! it. [`Mode::from_layer`] still takes the key as a parameter, because a
+//! caller holding a resolution built some other way names its own.
 //!
+//! `tools.mode`, and the spelling was settled a day before the key existed:
+//! [`crate::tools::allowlist`] chose `tools.allowlist` over `tools.allow`
+//! precisely so that "a future `tools.mode = \"allow\"` sitting beside a
+//! `tools.allow` list" would not be two things a reader has one word for.
+//! This is that future.
+//!
+//! # What a user can now say, and where
+//!
+//! Layers 1, 2, 4 and 5 of [ADR-0014] D1. **Layer 3 is refused** — see above,
+//! and [`field`] for the arm the fold runs. **Layer 1 declares no default**:
+//! `Mode::default()` is `Ask` because D3's table says "Default", and a
+//! compiled-in layer-1 value would be a second statement of D3 that could
+//! disagree with the first. `runtime.tier` is the one key with a layer-1
+//! default, and it has one because [ADR-0001] D2 gained it by an Update for a
+//! reason that does not apply here: an unset tier was *refused*, where an
+//! unset mode has always had D3's own answer.
+//!
+//! Layer 4 arrives free. [ADR-0014] D1's transform is mechanical — `ZARU_`
+//! plus the dotted key upper-cased with dots turned into underscores — so
+//! declaring the key is what makes `ZARU_TOOLS_MODE` work, and no alias table
+//! is written for it.
+//!
+//! # A project's refusal is shadowed, and that is measured rather than assumed
+//!
+//! `tools.mode` sits under `[tools]`, which [ADR-0009] D1's manifest
+//! vocabulary does not declare — its top level is closed to `[project]`,
+//! `[runtime]` and `[[validator]]`. So a real `./zaru.toml` setting this key
+//! is refused by the **manifest reader**, one step before [`field`]'s
+//! declaration is reached, with a message about a table name rather than
+//! about privilege. Nothing is weakened — the project still cannot set it,
+//! twice over — but the reason the user is told is ADR-0009's rather than
+//! ADR-0014 D6's. That was already true of `tools.allowlist` and
+//! `provider.<kind>.endpoint`; this key makes it **three**, and
+//! `the_escalation_ceiling_is_shadowed_by_adr_0009s_manifest_vocabulary`
+//! holds all of them so that widening ADR-0009's vocabulary reddens.
+//!
+//! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+//! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [Autonomous Development]: https://100monkeys-ai.cortex.page/project-management/p/process/autonomous-development
 
+use crate::config::{Field, FieldKind, Key, Schema};
 use core::fmt;
+
+/// The configuration key [ADR-0011] D3's permission mode is read from.
+///
+/// Spelled here and nowhere else. See the module documentation for why it is
+/// `tools.mode`, and for why it did not exist until 2026-09-05.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub const KEY: &str = "tools.mode";
+
+/// Why a project may not set [`KEY`], in the words the refusal carries.
+///
+/// One string, read by [`field`] and by [`ModeRefused`], so the fold's
+/// refusal and this module's cannot give a user two different reasons for one
+/// rule — the shape [`crate::tools::allowlist`] already uses. [ADR-0016] D2
+/// wants an error whose reader can act, so it names where the mode *does*
+/// belong.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub const PROJECT_REFUSAL: &str = "how much the harness prompts is the user's own choice, and a \
+                                   repository they cloned must not be able to grant itself fewer \
+                                   prompts; set it in ~/.zaru/config.toml, ZARU_TOOLS_MODE or \
+                                   --mode instead";
+
+/// [`KEY`] as a [`Key`].
+///
+/// # Panics
+///
+/// Never. [`KEY`] is a literal this module owns and is well formed.
+#[must_use]
+pub fn key() -> Key {
+    Key::new(KEY).expect("tools.mode is a well-formed key")
+}
+
+/// What [`KEY`] holds, and what the project layer may do to it.
+///
+/// Text, because a mode is one of three words — and
+/// [`ProjectPolicy::Refused`](crate::config::ProjectPolicy::Refused) rather
+/// than `LowerOnly`, which is the whole of the module documentation's first
+/// section in one call: `LowerOnly` is defined on whole numbers and would need
+/// an ordering over `ask`, `allow` and `yolo` that no record states.
+#[must_use]
+pub fn field() -> Field {
+    Field::refused_to_projects(FieldKind::Text, PROJECT_REFUSAL)
+}
+
+/// Declare [ADR-0011] D3's configuration key into a caller's schema.
+///
+/// The shape [`crate::tools::allowlist::declare`] already uses, so a caller
+/// building a schema asks each record for its own keys rather than
+/// transcribing them.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[must_use]
+pub fn declare(schema: Schema) -> Schema {
+    schema.with(key(), field())
+}
 
 /// [ADR-0001] D1's three runtime tiers.
 ///

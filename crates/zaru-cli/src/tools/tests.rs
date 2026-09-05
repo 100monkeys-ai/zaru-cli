@@ -34,7 +34,7 @@ use crate::tools::fixtures::{
     FailingConfirmer, RecordedConfirmer, RefusingOverflow, ScratchOverflow, ScratchTree,
     StagedAllowlist, StagedDestructive, nonce,
 };
-use crate::tools::mode::{Layer, Mode, ModeRefused, Tier};
+use crate::tools::mode::{self, Layer, Mode, ModeRefused, Tier};
 use crate::tools::name::{Effect, ToolName};
 use crate::tools::notice::SessionNotice;
 use crate::tools::output::{
@@ -1666,6 +1666,106 @@ fn the_allowlist_key_is_declared_once_holds_a_list_and_is_refused_to_a_project()
             "ADR-0014 D6's sixth escalation must refuse the project layer outright, and the \
              policy is {other:?}"
         ),
+    }
+}
+
+/// **`tools.mode` is declared once, holds text, and is refused to a project.**
+///
+/// The mirror of the check above, for [ADR-0011] D3's other key — the one
+/// that arrived on 2026-09-05 and gave [ADR-0014] D6's **first** escalation
+/// the name it had been waiting for since the record was written.
+///
+/// The declaration is asked of [`mode::field`] and the binary's own
+/// [`crate::cli::layers::schema`], so this is the key a user actually writes.
+///
+/// Three mutants. Dropping `tools::mode::declare` from `schema()` fails the
+/// first assertion. Declaring it [`FieldKind::Array`] fails the second, which
+/// would put the mode out of reach of layers 4 and 5 — the two that supply
+/// text and the two that make `ZARU_TOOLS_MODE` and `--mode` work at all.
+/// Declaring it `Free` or `LowerOnly` fails the third: `LowerOnly` is defined
+/// on whole numbers and would need an ordering over `ask`, `allow` and `yolo`
+/// that no record states.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[test]
+fn the_mode_key_is_declared_once_holds_text_and_is_refused_to_a_project() {
+    let schema = crate::cli::layers::schema();
+    let key = mode::key();
+
+    assert_eq!(
+        key.as_str(),
+        "tools.mode",
+        "the key ADR-0011 D3's permission mode is read from moved; it is user-facing and is \
+         spelled in the record"
+    );
+
+    let field = schema
+        .field(&key)
+        .expect("the binary's schema must declare ADR-0011 D3's permission mode key");
+
+    assert_eq!(
+        field.kind,
+        FieldKind::Text,
+        "the mode must hold text: it is one of three words, and text is the one kind layers 4 and \
+         5 can carry, which is what makes ZARU_TOOLS_MODE and --mode reach it at all"
+    );
+
+    match &field.project {
+        ProjectPolicy::Refused { reason } => assert_eq!(
+            reason,
+            mode::PROJECT_REFUSAL,
+            "the fold's reason and the module's reason must be one string, or a user gets two \
+             different explanations of one rule"
+        ),
+        other => panic!(
+            "ADR-0014 D6's first escalation must refuse the project layer outright, and the \
+             policy is {other:?}"
+        ),
+    }
+}
+
+/// **The two keys under `[tools]` are siblings, and `tools` itself is not a
+/// key.**
+///
+/// [Verification lessons] §62 is a leaf-and-branch collision: one name held
+/// as both a value and a table, where the write order decides which survives
+/// and nothing is reported. `tools::allowlist`'s module documentation said
+/// "`tools.allowlist` is the only key under that table" until 2026-09-05,
+/// which was true and is no longer; what makes §62 unreachable is not the
+/// count but that **`tools` is declared by nothing**, and that is asserted
+/// here rather than remembered in a comment.
+///
+/// The mutant is declaring `tools` itself.
+#[test]
+fn tools_is_a_table_and_never_a_key_however_many_keys_sit_under_it() {
+    let schema = crate::cli::layers::schema();
+
+    let table = allowlist::KEY
+        .split_once('.')
+        .expect("ADR-0011 D3's allowlist key is a dotted path")
+        .0;
+    assert_eq!(
+        table,
+        mode::KEY
+            .split_once('.')
+            .expect("ADR-0011 D3's mode key is a dotted path")
+            .0,
+        "both of ADR-0011 D3's keys are expected under one table"
+    );
+
+    let branch = crate::config::Key::new(table).expect("`tools` is a well-formed key");
+    assert!(
+        schema.field(&branch).is_none(),
+        "`{table}` is declared as a key as well as a table, which is Verification lessons section 62: \
+         one write order keeps the value and the other keeps the table, and nothing is reported"
+    );
+
+    for key in [allowlist::key(), mode::key()] {
+        assert!(
+            schema.field(&key).is_some(),
+            "`{key}` sits under `{table}` and the schema does not declare it"
+        );
     }
 }
 

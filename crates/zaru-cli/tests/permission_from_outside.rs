@@ -37,7 +37,9 @@ use std::path::PathBuf;
 
 use zaru_cli::cli::layers::{LoadFailure, ProjectFile, UserFile};
 use zaru_cli::config::{LayerSource, Resolution, gather};
-use zaru_cli::tools::{Allowed, Allowlist, Invocation, ToolName, WorkingDirectory, allowlist};
+use zaru_cli::tools::{
+    Allowed, Allowlist, Invocation, ToolName, WorkingDirectory, allowlist, mode,
+};
 
 /// A tree this check owns, with the two files ADR-0014 D1's layers 2 and 3
 /// are read from and a sibling that must survive its removal.
@@ -228,14 +230,20 @@ fn a_project_may_not_grant_itself_an_allowlist_and_the_user_may() {
 ///
 /// Measured 2026-09-05. `runtime.tier` sits inside `[runtime]`, which the
 /// manifest declares, so a project setting it reaches the fold and is refused
-/// with D6's own sentence. `tools.allowlist` and
-/// `provider.<kind>.endpoint` — ADR-0014 D6's sixth and fifth escalations —
-/// sit under tables the manifest does not declare, so both are refused one
-/// step earlier, by ADR-0009's vocabulary, with a message about a table name
-/// and a spelling suggestion rather than about privilege.
+/// with D6's own sentence. `tools.allowlist`, `tools.mode` and
+/// `provider.<kind>.endpoint` sit under tables the manifest does not declare,
+/// so all three are refused one step earlier, by ADR-0009's vocabulary, with
+/// a message about a table name and a spelling suggestion rather than about
+/// privilege.
 ///
-/// **Nothing is weakened by that**: a project still cannot set either key,
-/// which is what D6 requires. What is lost is the *reason the user is told*,
+/// **Three rather than two since 2026-09-05**, when `tools.mode` was declared
+/// and D6's *first* escalation — the permission mode, named in the clause
+/// since it was written — got the key it had been waiting for. It landed
+/// under `[tools]` beside the allowlist, so it is shadowed on arrival, and
+/// this check's population grew rather than its finding changing.
+///
+/// **Nothing is weakened by that**: a project still cannot set any of the
+/// three, which is what D6 requires. What is lost is the *reason the user is told*,
 /// and a security refusal that presents as a typo is the kind of thing nobody
 /// notices until it matters. It is recorded on ADR-0011 and ADR-0014 for
 /// their authors rather than fixed here, because widening ADR-0009 D1's
@@ -261,15 +269,30 @@ fn the_escalation_ceiling_is_shadowed_by_adr_0009s_manifest_vocabulary() {
         "a key inside ADR-0009's vocabulary must reach ADR-0014 D6's own refusal: {rendered:?}"
     );
 
-    // Outside it: two of D6's escalations, both refused by the manifest's
-    // vocabulary instead. Two rather than one, so a check that happened to
+    // Outside it: three of D6's escalations, all refused by the manifest's
+    // vocabulary instead. More than one table, so a check that happened to
     // pass on `[tools]` alone cannot be mistaken for a statement about this
-    // record only.
+    // record only -- and both of `[tools]`'s keys, because the mode arrived
+    // under a table the allowlist had already made shadowed and a check
+    // staging one of them would not notice the other going missing.
     let entries = format!("[{}]\n{} = [\"cmd.run cargo test\"]\n", table(), leaf());
+    // Spelled from the key rather than typed, so renaming it reddens here.
+    let staged_mode = format!(
+        "[{}]\n{} = \"yolo\"\n",
+        mode::KEY
+            .split_once('.')
+            .expect("ADR-0011 D3's mode key is a dotted path")
+            .0,
+        mode::KEY
+            .split_once('.')
+            .expect("ADR-0011 D3's mode key is a dotted path")
+            .1,
+    );
     for (label, body) in [
-        (table(), entries.as_str()),
+        (allowlist::KEY, entries.as_str()),
+        (mode::KEY, staged_mode.as_str()),
         (
-            "provider",
+            "provider.anthropic.endpoint",
             "[provider]\nanthropic = { endpoint = \"https://elsewhere.example\" }\n",
         ),
     ] {

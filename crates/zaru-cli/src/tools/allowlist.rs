@@ -13,9 +13,14 @@
 //! future `tools.mode = "allow"` sitting beside a `tools.allow` list would be
 //! two different things a reader has one word for.
 //!
-//! Nothing else in this workspace declares `tools` or anything under it, so
-//! the leaf-and-branch collision [Verification lessons] §62 describes cannot
-//! arise here: `tools.allowlist` is the only key under that table.
+//! **`tools.mode` joined it under that table on 2026-09-05**, which is the
+//! future the paragraph above was written against, and the leaf-and-branch
+//! collision [Verification lessons] §62 describes still cannot arise: §62's
+//! collision is a *leaf against a branch* — one name held as both a value and
+//! a table — and two sibling leaves under one table are not that. `tools`
+//! itself is declared by nothing, which is the property that matters, and it
+//! is the property the schema refuses to break rather than one this comment
+//! remembers.
 //!
 //! # Which layer may set it, and the two arms that hold it
 //!
