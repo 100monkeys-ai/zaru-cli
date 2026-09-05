@@ -323,6 +323,9 @@ pub struct Shell {
     /// command's output. Kept apart from `transcript` so a refresh cannot
     /// lose them and so nothing here can be mistaken for the record on disk.
     notices: Vec<Line>,
+    /// The answer being streamed, painted below everything else until the
+    /// turn ends. See [`Shell::stream_delta`].
+    streaming: Option<String>,
     asking: Option<Confirmation>,
     answered: Option<bool>,
 }
@@ -336,6 +339,7 @@ impl Shell {
             status,
             transcript: Vec::new(),
             notices: Vec::new(),
+            streaming: None,
             asking: None,
             answered: None,
         }
@@ -402,12 +406,55 @@ impl Shell {
         self.status.tokens = rendered;
     }
 
+    /// Add to the answer being streamed, painting it as it arrives.
+    ///
+    /// # A provisional line, cleared rather than promoted
+    ///
+    /// This is what a reader watches grow while the model is answering. It is
+    /// **not** the answer: when the turn ends, [`Self::clear_streaming`]
+    /// takes it away and the turn's own rendered lines are added through
+    /// [`Self::notice`] like every other line the session produced.
+    ///
+    /// **Cleared rather than promoted, and that is the whole design.**
+    /// Keeping this line and having the turn omit its answer would make the
+    /// answer's bytes come from two places — this accumulator on the streamed
+    /// path, and the renderer everywhere else — and two renderings of one
+    /// answer are two things that can disagree about a word. Clearing costs
+    /// one repaint of text the reader has already read; the alternative costs
+    /// a second source of truth for what the model said.
+    ///
+    /// So what a reader sees is text that grows across beats and then stops
+    /// growing, never text that appears twice.
+    pub fn stream_delta(&mut self, text: &str) {
+        self.streaming.get_or_insert_with(String::new).push_str(text);
+    }
+
+    /// Take the streamed answer off the pane, at the end of the turn.
+    ///
+    /// Idempotent: a turn that streamed nothing clears nothing.
+    pub fn clear_streaming(&mut self) {
+        self.streaming = None;
+    }
+
+    /// What is being streamed right now, if anything.
+    #[must_use]
+    pub fn streaming(&self) -> Option<&str> {
+        self.streaming.as_deref()
+    }
+
     /// Everything the pane would show, oldest first: the transcript, then this
-    /// session's own notices.
+    /// session's own notices, then the answer still arriving.
+    ///
+    /// The streamed line is **last** because it is the newest thing on the
+    /// pane and because it is the only line that will be replaced rather than
+    /// kept — anywhere else, the lines below it would shift as it grew.
     #[must_use]
     pub fn pane_lines(&self) -> Vec<Line> {
         let mut lines = self.transcript.clone();
         lines.extend(self.notices.iter().cloned());
+        if let Some(streaming) = self.streaming.as_ref() {
+            lines.push(Line::new(Register::Plain, streaming.clone()));
+        }
         lines
     }
 

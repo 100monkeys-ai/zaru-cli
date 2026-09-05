@@ -958,3 +958,89 @@ fn a_refresh_replaces_the_transcript_and_keeps_the_notices() {
         ]
     );
 }
+
+// ---------------------------------------------------- the streamed answer
+
+// The answer grows on the pane as it arrives, which is the whole point of a
+// stream to a person waiting. Read out of `TestBackend` rather than off
+// `pane_lines`, because the claim is about what a reader sees.
+//
+// **The mutant is `stream_delta` replacing rather than appending** -- a pane
+// that shows only the newest piece, which looks like it is working right up
+// until an answer arrives in more than one frame.
+#[test]
+fn a_streamed_answer_grows_on_the_pane_as_it_arrives() {
+    let mut shell = shell();
+    let mut widths = Vec::new();
+    let mut frames = Vec::new();
+
+    for delta in ["One", "\nTwo", "\nThree"] {
+        shell.stream_delta(delta);
+        let (rows, _) = painted(&shell, WIDTH, HEIGHT);
+        let painted_text = rows.join("\n");
+        widths.push(
+            shell
+                .streaming()
+                .expect("something is being streamed")
+                .len(),
+        );
+        frames.push(painted_text);
+    }
+
+    assert!(
+        widths.windows(2).all(|pair| pair[1] > pair[0]),
+        "the streamed answer did not grow on every delta: {widths:?}"
+    );
+    assert!(
+        frames[2].contains("Three"),
+        "the newest piece did not reach the buffer"
+    );
+    assert!(
+        frames[2].contains("One"),
+        "the earliest piece left the buffer, so the pane is replacing rather than accumulating"
+    );
+}
+
+// The provisional line is cleared at the end of the turn and the authoritative
+// answer is added like every other line, so the answer's bytes come from one
+// place. The mutant keeps the provisional line, which paints the answer twice.
+#[test]
+fn the_streamed_line_is_cleared_so_the_answer_is_painted_once() {
+    let mut shell = shell();
+    shell.stream_delta("the answer");
+
+    let (during, _) = painted(&shell, WIDTH, HEIGHT);
+    assert_eq!(
+        during.join("\n").matches("the answer").count(),
+        1,
+        "the answer appeared more than once while it was still arriving"
+    );
+
+    // The turn ends: the provisional line goes, the rendered line arrives.
+    shell.clear_streaming();
+    shell.notice(Line::new(Register::Plain, "the answer"));
+
+    let (after, _) = painted(&shell, WIDTH, HEIGHT);
+    assert_eq!(
+        after.join("\n").matches("the answer").count(),
+        1,
+        "the answer is painted twice: the provisional line was kept as well as the rendered one"
+    );
+    assert_eq!(
+        shell.streaming(),
+        None,
+        "the shell still believes something is streaming after the turn ended"
+    );
+}
+
+// Clearing what was never started is not an error: a turn whose model asked
+// for a tool and never spoke streams nothing, and the driver clears anyway.
+#[test]
+fn clearing_a_stream_that_never_started_changes_nothing() {
+    let mut shell = shell();
+    let (before, _) = painted(&shell, WIDTH, HEIGHT);
+    shell.clear_streaming();
+    let (after, _) = painted(&shell, WIDTH, HEIGHT);
+    assert_eq!(before, after);
+    assert_eq!(shell.streaming(), None);
+}
