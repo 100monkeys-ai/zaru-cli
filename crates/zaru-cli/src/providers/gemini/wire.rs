@@ -108,6 +108,26 @@ pub enum Part {
         /// The text.
         text: String,
     },
+    /// A part this client does not understand.
+    ///
+    /// # Measured, not defensive
+    ///
+    /// The first real `generateContent` response this client ever received —
+    /// recorded 2026-09-05 at `recorded/calls.json` — carried a
+    /// `thoughtSignature` beside the `functionCall`, a field the reference
+    /// documents nowhere. On that response it rode on the same part object as
+    /// the call, so `FunctionCall` matched it and nothing broke.
+    ///
+    /// **A part carrying only such a field would have failed every variant,
+    /// and an untagged enum with no fallback fails the whole response.** So
+    /// one unreadable part would have turned a perfectly good answer into
+    /// `Unreadable`, reported as this harness's defect. This arm makes an
+    /// unknown part something the mapping skips rather than something that
+    /// loses the answer — the same asymmetry `deny_unknown_fields` gets right
+    /// on our own file and wrong on somebody else's.
+    ///
+    /// It is last, so it is tried only after the three that mean something.
+    Other(Value),
 }
 
 /// A tool call, as the model asks for it.
@@ -233,10 +253,40 @@ pub struct UsageMetadata {
     /// Tokens the answer occupied.
     #[serde(default)]
     pub candidates_token_count: u64,
-    /// Both together, as Google totals them. Read but not relied on: this
-    /// client reports the two halves, and
-    /// [`TokenUsage`](zaru_core::tool_call::TokenUsage) computes its own
-    /// total.
+    /// Tokens the model spent thinking, which are **billed as output**.
+    ///
+    /// # This field is why the reported completion count is a sum
+    ///
+    /// Undocumented on the reference page and present on the first real
+    /// response this client received: `recorded/calls.json` reports
+    /// `promptTokenCount` 54, `candidatesTokenCount` 17,
+    /// `thoughtsTokenCount` 62 and `totalTokenCount` **133** — and 54 + 17 is
+    /// 71, not 133. The three that add up are prompt, candidates and
+    /// thoughts.
+    ///
+    /// Reporting `candidatesTokenCount` alone as the completion would
+    /// under-report what the user is billed by more than four times on that
+    /// exchange, which is precisely what [ADR-0012] D7 exists to prevent:
+    /// "nobody discovers their spend at the end of a month". So
+    /// [`super::map`] reports candidates **plus** thoughts as the completion,
+    /// and the arithmetic is checkable rather than asserted —
+    /// `TokenUsage::total()` then equals Google's own `totalTokenCount`
+    /// exactly, over a recorded response, which a check pins.
+    ///
+    /// **It is a reading and it is raised rather than settled.** D7 names
+    /// "prompt tokens, completion tokens" and knows nothing of a third
+    /// quantity; whether a thinking token is a completion token is that
+    /// record's to say. Recorded on ADR-0012 under directive 20, open to
+    /// Jeshua's veto, and pinned by a check so that deciding it the other way
+    /// reddens rather than passing quietly.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    #[serde(default)]
+    pub thoughts_token_count: u64,
+    /// Both together and then some, as Google totals them.
+    ///
+    /// Read and **checked against** rather than reported: it is what makes
+    /// the completion sum above a measurement instead of a guess.
     #[serde(default)]
     pub total_token_count: u64,
 }

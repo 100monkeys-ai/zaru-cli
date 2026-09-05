@@ -112,7 +112,16 @@ pub const API_KEY_HEADER: &str = "x-goog-api-key";
 
 /// [ADR-0012] D3's `gemini` provider, and `zaru-core`'s model behind it.
 ///
+/// # `Debug` is derived, and that is safe because of what the fields are
+///
+/// Every field either redacts itself or carries no secret: [`Secret`]'s
+/// `Debug` is hand-written to print a marker, and an endpoint, a model
+/// identifier and an alias are all types that refuse a credential-shaped
+/// value at construction. An outside check asserts the whole rendering is
+/// free of the key by value and by ASCII core.
+///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[derive(Debug)]
 pub struct GeminiClient {
     endpoint: Endpoint,
     configured: ProviderEndpoint,

@@ -235,7 +235,16 @@ pub fn resumed(id: &crate::session::SessionId, resumed: &crate::session::Resumed
 pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
     use crate::credentials::{Reach, Role, StoredReach};
 
-    if store.is_empty() {
+    // **The emptiness this asks about is the emptiness of the *listing*, not
+    // of the store**, and the difference is a defect found by running rather
+    // than by reading. `store.is_empty()` was the condition until 2026-09-05;
+    // once the store could hold a provider key, a machine holding one and no
+    // Notes token fell through to a row set that filtered down to nothing and
+    // printed **nothing at all** -- no rows, no explanation, exit 0. A
+    // command that answers a question with silence is indistinguishable from
+    // one that crashed quietly.
+    let listed = store.listed(Listing::Notes);
+    if listed.is_empty() {
         return vec![
             "no tokens".to_owned(),
             // Rewritten 2026-09-05: this said sealing was a port with no
@@ -258,8 +267,7 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
     // four empty cells under headings that do not apply to it. The other
     // listing is `zaru providers keys`, and the two share
     // `CredentialStore::listed`, which both listings are built from.
-    let rows: Vec<[String; 6]> = store
-        .listed(Listing::Notes)
+    let rows: Vec<[String; 6]> = listed
         .into_iter()
         .zip(store.records().filter(|(_, record)| record.is_notes()))
         .map(|(listed, (_, record))| {

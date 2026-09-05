@@ -173,7 +173,9 @@ pub fn response_from(
                 // the JSON text they arrived as.
                 arguments: function_call.args.to_string(),
             }),
-            wire::Part::Text { .. } | wire::Part::FunctionResponse { .. } => None,
+            wire::Part::Text { .. }
+            | wire::Part::FunctionResponse { .. }
+            | wire::Part::Other(_) => None,
         })
         .collect();
 
@@ -185,7 +187,9 @@ pub fn response_from(
         .iter()
         .filter_map(|part| match part {
             wire::Part::Text { text } => Some(text.as_str()),
-            wire::Part::FunctionCall { .. } | wire::Part::FunctionResponse { .. } => None,
+            wire::Part::FunctionCall { .. }
+            | wire::Part::FunctionResponse { .. }
+            | wire::Part::Other(_) => None,
         })
         .collect();
 
@@ -222,6 +226,18 @@ fn usage_from(metadata: Option<wire::UsageMetadata>) -> TokenUsage {
     let metadata = metadata.unwrap_or_default();
     TokenUsage {
         prompt: metadata.prompt_token_count,
-        completion: metadata.candidates_token_count,
+        // Candidates **plus** thoughts, because thinking tokens are billed as
+        // output and reporting the candidates alone under-reports what the
+        // user pays -- by more than four times on the first real response
+        // this client received. See `wire::UsageMetadata::thoughts_token_count`
+        // for the measurement, the reasoning, and the fact that it is a
+        // reading raised on ADR-0012 rather than a settled one.
+        //
+        // Saturating, because two counts a provider reported cannot be
+        // trusted not to overflow a sum and a panic here would lose an answer
+        // that already arrived.
+        completion: metadata
+            .candidates_token_count
+            .saturating_add(metadata.thoughts_token_count),
     }
 }

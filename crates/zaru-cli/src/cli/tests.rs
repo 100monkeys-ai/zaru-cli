@@ -1266,3 +1266,88 @@ fn a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it() {
     );
     println!("{refusal}");
 }
+/// A store holding a provider key and no Notes token still answers.
+///
+/// **Found by running rather than by reading**, on 2026-09-05: `notes tokens`
+/// asked whether the *store* was empty, and once the store could hold a
+/// provider key a machine holding one and no Notes token printed nothing at
+/// all and exited 0. A command that answers a question with silence is
+/// indistinguishable from one that crashed quietly, and this is the shape a
+/// filter added to a listing produces every time -- the emptiness test has to
+/// move to the filtered set with the filter.
+#[test]
+fn notes_tokens_answers_over_a_store_holding_only_a_provider_key() {
+    use crate::credentials::fixtures::{ScratchRoot, provider_secret_nonce};
+    use crate::credentials::sealing::fixtures::StagedKey;
+    use crate::credentials::{CredentialStore, Description, Entry, Listing, Secret};
+    use crate::providers::ProviderKind;
+
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("the store opens");
+    let value = provider_secret_nonce();
+    store
+        .add(
+            Entry::provider(
+                ProviderKind::credential_alias(ProviderKind::Gemini),
+                Description::new("the gemini API key").expect("a one-line description"),
+                Secret::provider(ProviderKind::Gemini, value.clone()).expect("well-formed"),
+            )
+            .expect("a provider secret builds a provider entry"),
+            &keys,
+            None,
+        )
+        .expect("it is added");
+
+    assert!(!store.is_empty(), "the store holds the provider key");
+    assert!(
+        store.listed(Listing::Notes).is_empty(),
+        "the Notes listing is what must be empty"
+    );
+
+    let lines = crate::cli::render::tokens(&store);
+    assert!(
+        !lines.is_empty(),
+        "`notes tokens` printed nothing at all over a store that is not empty"
+    );
+    assert!(
+        lines[0].contains("no tokens"),
+        "the listing must say there is no Notes token rather than going quiet: {lines:?}"
+    );
+    let rendered = lines.join("\n");
+    assert!(!rendered.contains(&value));
+    assert!(!rendered.contains(crate::credentials::fixtures::ascii_core(&value)));
+
+    // The other listing does answer, which is the discriminating arm: the
+    // silence above was about the filter, not about the store being unreadable.
+    let keys_lines = crate::cli::render::provider_keys(&store);
+    assert!(
+        keys_lines
+            .iter()
+            .any(|line| line.contains("provider.gemini"))
+    );
+    let rendered = keys_lines.join("\n");
+    assert!(!rendered.contains(&value), "the listing printed the key");
+    assert!(!rendered.contains(crate::credentials::fixtures::ascii_core(&value)));
+}
+
+/// `providers keys` over an empty store says how to add one.
+#[test]
+fn provider_keys_over_an_empty_store_names_the_command_and_the_kinds() {
+    use crate::credentials::CredentialStore;
+    use crate::credentials::fixtures::ScratchRoot;
+    use crate::providers::ProviderKind;
+
+    let scratch = ScratchRoot::new();
+    let store = CredentialStore::open(scratch.store_root()).expect("the store opens");
+    let lines = crate::cli::render::provider_keys(&store).join("\n");
+
+    assert!(lines.contains("no provider key is stored"));
+    assert!(lines.contains("zaru providers keys add"));
+    for kind in ProviderKind::ALL {
+        assert!(
+            lines.contains(kind.as_str()),
+            "the kind `{kind}` is missing from the empty listing: {lines}"
+        );
+    }
+}

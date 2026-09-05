@@ -205,6 +205,7 @@ fn a_response_becomes_one_of_the_ports_three_arms() {
     let usage = wire::UsageMetadata {
         prompt_token_count: 11,
         candidates_token_count: 7,
+        thoughts_token_count: 0,
         total_token_count: 18,
     };
 
@@ -433,4 +434,192 @@ fn a_rejected_key_is_told_apart_from_a_rejected_request() {
         "UNAVAILABLE",
         "overloaded"
     ));
+}
+
+// ---------------------------------------------------------------------------
+// The recorded exchanges. Three real bodies, captured once on 2026-09-05 from
+// `generativelanguage.googleapis.com` with the issued test key, scrubbed of
+// the `responseId` and of an opaque `thoughtSignature`, and checked for the
+// key's absence by value and by ASCII core before they were committed. The
+// key is wholly ASCII, so for these fixtures the core *is* the value and the
+// two arms coincide -- which is stated rather than left to be inferred, since
+// a reader could otherwise think the second arm had been exercised here.
+//
+// They are what makes the mapping's evidence about the real API rather than
+// about a body this arc invented. Every hand-built value above is a shape
+// somebody chose; these are shapes Google sent.
+// ---------------------------------------------------------------------------
+
+/// The recorded tool-call exchange.
+const RECORDED_CALLS: &str = include_str!("recorded/calls.json");
+
+/// The recorded text exchange.
+const RECORDED_TEXT: &str = include_str!("recorded/text.json");
+
+/// The recorded refusal of a key the provider does not know.
+const RECORDED_REJECTED: &str = include_str!("recorded/rejected-key.json");
+
+// No fixture in this repository carries the key, and this asserts it rather
+// than trusting the scrub. It is the cheapest check here and it is the one
+// whose failure would be worst.
+#[test]
+fn no_recorded_fixture_carries_a_credential() {
+    for (name, body) in [
+        ("calls.json", RECORDED_CALLS),
+        ("text.json", RECORDED_TEXT),
+        ("rejected-key.json", RECORDED_REJECTED),
+    ] {
+        assert!(
+            !body.contains("AIza"),
+            "{name} carries something shaped like a Google API key"
+        );
+        assert!(
+            !body.contains("x-goog-api-key"),
+            "{name} carries the header the key travels in"
+        );
+    }
+
+    // The success bodies carry a `responseId`, which identifies one request
+    // made by one account, and both must show it replaced. The error envelope
+    // carries none, so asserting a scrub marker across all three would be a
+    // check that passed for the wrong reason on one of them -- the shape a
+    // loop over unlike cases produces every time.
+    for (name, body) in [("calls.json", RECORDED_CALLS), ("text.json", RECORDED_TEXT)] {
+        assert!(
+            body.contains(r#""responseId": "<scrubbed>""#),
+            "{name} carries an unscrubbed responseId, so either the scrub did not run or the \
+             fixture was replaced with a raw capture"
+        );
+    }
+    assert!(
+        !RECORDED_REJECTED.contains("responseId"),
+        "the recorded error envelope grew a responseId, which is an identifier and must be \
+         scrubbed with the others"
+    );
+}
+
+// The tool-call arm, against what the API actually sent. Three things this
+// fixture settles that no hand-built body could:
+//
+//   1. `functionCall` really does carry an `id` for `gemini-3.6-flash`;
+//   2. `finishReason` is `STOP` on a turn that asks for a tool, so reading it
+//      before the calls would lose the call -- the ordering is load-bearing
+//      against the real API and not only against an invented one;
+//   3. a `thoughtSignature` rides beside the call, a field the reference
+//      documents nowhere.
+#[test]
+fn the_recorded_tool_call_maps_to_calls_with_the_providers_own_id() {
+    let answer: wire::Response =
+        serde_json::from_str(RECORDED_CALLS).expect("the recorded body parses");
+
+    assert_eq!(
+        answer.candidates[0].finish_reason.as_deref(),
+        Some(wire::FINISH_STOP),
+        "the recorded tool call came back with STOP, which is why calls are read first"
+    );
+
+    match map::response_from(&answer, RECORDED_CALLS.len()).expect("it maps") {
+        ModelResponse::Calls { calls, tokens } => {
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].name, "get_weather");
+            assert_eq!(
+                calls[0].id, "call_810804",
+                "the id Google sent was not carried through"
+            );
+            assert!(!calls[0].id.is_empty());
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&calls[0].arguments)
+                    .expect("the arguments are JSON")["city"],
+                "Zurich"
+            );
+            // The token arithmetic, checked against Google's own total rather
+            // than asserted. 54 + (17 + 62) = 133, which is `totalTokenCount`
+            // exactly; 54 + 17 is 71, which is not.
+            let reported = answer
+                .usage_metadata
+                .expect("the recorded body reports usage");
+            assert_eq!(tokens.prompt, reported.prompt_token_count);
+            assert_eq!(
+                tokens.completion,
+                reported.candidates_token_count + reported.thoughts_token_count
+            );
+            assert_eq!(
+                tokens.total(),
+                reported.total_token_count,
+                "the reported total does not match Google's own, so a billed quantity is being \
+                 dropped: candidates {} + thoughts {} + prompt {} against total {}",
+                reported.candidates_token_count,
+                reported.thoughts_token_count,
+                reported.prompt_token_count,
+                reported.total_token_count
+            );
+            assert!(
+                reported.thoughts_token_count > 0,
+                "the fixture no longer exercises the thinking-token case it was recorded for"
+            );
+        }
+        other => panic!("the recorded tool call became {other:?}"),
+    }
+}
+
+// The text arm, against what the API actually sent.
+#[test]
+fn the_recorded_text_exchange_maps_to_text() {
+    let answer: wire::Response =
+        serde_json::from_str(RECORDED_TEXT).expect("the recorded body parses");
+    match map::response_from(&answer, RECORDED_TEXT.len()).expect("it maps") {
+        ModelResponse::Text { text, tokens } => {
+            assert!(!text.trim().is_empty());
+            assert!(tokens.prompt > 0 && tokens.completion > 0);
+        }
+        other => panic!("the recorded text exchange became {other:?}"),
+    }
+}
+
+// A part this client does not understand does not lose the answer.
+//
+// The fallback arm exists because of what `recorded/calls.json` carries; this
+// asserts the consequence directly, over a part that is *only* the
+// undocumented field. Without `Part::Other` this body fails to deserialize
+// and a perfectly good answer is reported as this harness's defect.
+#[test]
+fn a_part_this_client_does_not_understand_does_not_lose_the_answer() {
+    let body = r#"{
+      "candidates": [{
+        "content": {"role": "model", "parts": [
+          {"thoughtSignature": "an opaque blob with no documented meaning"},
+          {"text": "the answer"}
+        ]},
+        "finishReason": "STOP"
+      }],
+      "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5}
+    }"#;
+    let answer: wire::Response = serde_json::from_str(body).expect("an unknown part still parses");
+    match map::response_from(&answer, body.len()).expect("it maps") {
+        ModelResponse::Text { text, .. } => assert_eq!(text, "the answer"),
+        other => panic!("an unknown part beside text produced {other:?}"),
+    }
+}
+
+// The refusal the real API gives for a key it does not know, measured on
+// 2026-09-05 rather than assumed: **HTTP 400, `INVALID_ARGUMENT`, "API key
+// not valid. Please pass a valid API key."** -- not 401 and not 403, which is
+// exactly the awkward case `is_credential_status` was written for and the
+// reason the 400 arm reads the message at all.
+#[test]
+fn the_recorded_refusal_of_a_bad_key_is_classified_as_the_users() {
+    let envelope: wire::ErrorEnvelope =
+        serde_json::from_str(RECORDED_REJECTED).expect("the recorded error parses");
+
+    assert_eq!(envelope.error.code, 400);
+    assert_eq!(envelope.error.status, "INVALID_ARGUMENT");
+    assert!(
+        GeminiFailure::is_credential_status(
+            envelope.error.code,
+            &envelope.error.status,
+            &envelope.error.message,
+        ),
+        "the real refusal of a real bad key is not recognised as the user's: {:?}",
+        envelope.error.message
+    );
 }
