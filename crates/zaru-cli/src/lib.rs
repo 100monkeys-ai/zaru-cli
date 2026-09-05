@@ -23,10 +23,24 @@
 //! crate "Binary, configuration, session lifecycle, the credential store, the
 //! local tool surface and its permission model".
 //!
-//! The credential store, ADR-0014's configuration hierarchy, ADR-0011's local
-//! tool surface and ADR-0016's error taxonomy are built. ADR-0010's session
-//! lifecycle is not, and the taxonomy takes it as an input rather than
-//! building any of it. None of the four is reachable from the `zaru` binary.
+//! Five things are built here, and the sentence that said ADR-0010's session
+//! lifecycle was not is corrected: it landed on 2026-09-04. Read off this
+//! crate's own module list rather than off a commit log — `config`,
+//! `credentials`, `failure`, `session` and `tools`.
+//!
+//! What that means for what acts. `session` writes a real directory, a real
+//! append-only transcript and a real checkpoint. `tools` decides, and **two
+//! of ADR-0011 D1's seven built-ins now act**: `fs.read` and `fs.list`,
+//! through `std::fs`, inside D4's working-directory boundary. The other five
+//! sit behind ports with no implementation in this product tree, as do the
+//! prompt, the allowlist, the destructive matcher, the credential store's
+//! sealing, ADR-0014's file layers, `meta.toml`'s writer and ADR-0004's
+//! membrane.
+//!
+//! **None of it is reachable from the `zaru` binary**, which takes no
+//! arguments, prints its version and its composition, and exits 0. Reaching
+//! any of it needs a command surface, which is ADR-0015's and sits behind
+//! ADR-0003 D2's undecided argument parser.
 //!
 //! [Bounded Contexts] names no crate for the tool surface. It is here under a
 //! delegated coordinator ruling of 2026-09-04, recorded on that page and on

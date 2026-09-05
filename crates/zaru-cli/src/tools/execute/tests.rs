@@ -755,3 +755,88 @@ async fn a_name_that_is_not_a_built_in_is_reported_to_the_model_and_is_not_an_er
         other => panic!("there is no eighth built-in to call: {other:?}"),
     }
 }
+
+/// ADR-0016 clause 7, reachable for the first time: a turn that ran some of
+/// its calls and had others refused reports what completed and what did not.
+///
+/// The mutant: counting a refused call as completed, which tells a reader the
+/// harness did something it was told not to do.
+#[test]
+fn a_turn_that_ran_some_calls_and_had_others_refused_reports_both() {
+    use zaru_core::tool_call::Event;
+
+    let stream = vec![
+        Event::TurnStarted { n: 1, of: 4 },
+        Event::ToolCompleted {
+            round: 1,
+            call: 1,
+            name: String::from("fs.read"),
+            failed: false,
+            content_bytes: 31,
+            elapsed: core::time::Duration::from_millis(2),
+        },
+        Event::ToolRefused {
+            round: 1,
+            call: 2,
+            name: String::from("cmd.run"),
+            because: String::from("the user was asked about the call and did not permit it"),
+            elapsed: core::time::Duration::from_millis(1),
+        },
+        Event::ToolCompleted {
+            round: 1,
+            call: 3,
+            name: String::from("fs.list"),
+            // A tool that ran and reported its own failure still completed as
+            // a step: the harness did what it was asked.
+            failed: true,
+            content_bytes: 0,
+            elapsed: core::time::Duration::from_millis(1),
+        },
+    ];
+
+    let report = crate::failure::Partial::of_a_turn(&stream).expect("this turn is partial");
+    let names = |steps: &[crate::failure::StepName]| {
+        steps
+            .iter()
+            .map(|step| step.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(report.completed()),
+        vec!["fs.read", "fs.list"],
+        "a call that ran completed, even one whose tool reported bad news"
+    );
+    assert_eq!(
+        names(report.not_completed()),
+        vec!["cmd.run"],
+        "a refused call is what is outstanding"
+    );
+
+    // Both ends refused, which is what makes this a *partial* report rather
+    // than a shape that would happily describe a success or a failure.
+    let all_done = vec![Event::ToolCompleted {
+        round: 1,
+        call: 1,
+        name: String::from("fs.read"),
+        failed: false,
+        content_bytes: 1,
+        elapsed: core::time::Duration::ZERO,
+    }];
+    assert_eq!(
+        crate::failure::Partial::of_a_turn(&all_done),
+        Err(crate::failure::PartialRefused::NothingOutstanding),
+        "a turn that ran every call succeeded"
+    );
+    let none_done = vec![Event::ToolRefused {
+        round: 1,
+        call: 1,
+        name: String::from("cmd.run"),
+        because: String::from("no"),
+        elapsed: core::time::Duration::ZERO,
+    }];
+    assert_eq!(
+        crate::failure::Partial::of_a_turn(&none_done),
+        Err(crate::failure::PartialRefused::NothingCompleted),
+        "a turn that ran none of its calls is not a partial success"
+    );
+}

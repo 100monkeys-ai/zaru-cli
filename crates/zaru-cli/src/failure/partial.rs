@@ -91,6 +91,20 @@ impl fmt::Display for PartialRefused {
 
 impl std::error::Error for PartialRefused {}
 
+impl From<StatementRefused> for PartialRefused {
+    /// A step whose name cannot be rendered is a step that completed nothing
+    /// this report can name.
+    ///
+    /// Unreachable from [`Partial::of_a_turn`], whose names come from
+    /// [`ToolName::as_str`](crate::tools::ToolName::as_str) and are seven
+    /// compile-time literals — but the conversion is needed for the `?` and
+    /// an `unwrap` on a path a model's input reaches is not a thing this
+    /// crate does.
+    fn from(_refused: StatementRefused) -> Self {
+        Self::NothingCompleted
+    }
+}
+
 /// ADR-0016 D6's report: what completed, by name, and what did not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Partial {
@@ -119,6 +133,54 @@ impl Partial {
             completed,
             not_completed,
         })
+    }
+
+    /// Report a turn that ran some of its tool calls and had others refused.
+    ///
+    /// # This is the first thing in the workspace with steps to report on
+    ///
+    /// D6's clause needs a task made of named parts, and until the tool-call
+    /// loop existed there was none: no command surface, no loop, nothing that
+    /// did several things one of which could fail. A turn is exactly that
+    /// shape — the model asks for several tools, the harness runs them, and
+    /// under [ADR-0011] D3 the user may decline any of them.
+    ///
+    /// The names are the tools' own, from the loop's own stream, so a step's
+    /// name is the thing the user was shown rather than a vocabulary invented
+    /// here. That matters because no record names a step vocabulary and this
+    /// crate still invents none.
+    ///
+    /// **A refused call is what is outstanding, and it is still not a
+    /// failure.** Under the ADR-0016 ruling of 2026-09-04 a declined prompt
+    /// is not one of D1's five classes, and nothing here makes it one: this
+    /// is a *report* about what a turn got through, and
+    /// [`Partial`] is not a [`Classified`](crate::failure::Classified).
+    ///
+    /// # Errors
+    ///
+    /// [`PartialRefused`] when the turn completed every call or none of them
+    /// — neither is partial, and see that type for why.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub fn of_a_turn(events: &[zaru_core::tool_call::Event]) -> Result<Self, PartialRefused> {
+        let mut completed = Vec::new();
+        let mut not_completed = Vec::new();
+        for event in events {
+            match event {
+                zaru_core::tool_call::Event::ToolCompleted { name, .. } => {
+                    // A tool that ran and reported its own failure still
+                    // completed as a *step*: the harness did what was asked
+                    // and the answer was bad news, which ADR-0016 D1 row 1
+                    // keeps out of the error register.
+                    completed.push(StepName::new(name.clone())?);
+                }
+                zaru_core::tool_call::Event::ToolRefused { name, .. } => {
+                    not_completed.push(StepName::new(name.clone())?);
+                }
+                _ => {}
+            }
+        }
+        Self::new(completed, not_completed)
     }
 
     /// What completed, by name.
