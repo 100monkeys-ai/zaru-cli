@@ -768,3 +768,202 @@ fn work_is_local_unless_the_aegis_provider_kind_resolved() {
     }
     assert_eq!(Placement::OFFLOADING_PROVIDER_KIND, "aegis");
 }
+
+// ---------------------------------------------------------------------------
+// D2 — the status-line and `/runtime` datum, with no renderer
+// ---------------------------------------------------------------------------
+
+use crate::runtime::datum::{Difference, Runtime};
+
+/// D2's datum carries the tier, D1's whole row for it, and every other tier.
+///
+/// Every other tier appears, including one that differed in no column — which
+/// would render as "nothing would change" and is a different answer from a
+/// tier missing from the list ([Verification lessons] §8).
+///
+/// The mutant: filtering the list to tiers that differ, which drops nothing
+/// today and would drop a tier silently the day D1 gains an identical row.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn the_datum_carries_the_tier_its_row_and_every_other_tier() {
+    for tier in Tier::ALL {
+        let datum = Runtime::of(ResolvedTier::supplied(tier, Layer::Flag));
+
+        assert_eq!(datum.tier, tier);
+        assert_eq!(datum.supplied_by, Layer::Flag);
+        assert_eq!(
+            datum.engagement,
+            tier.engagement(),
+            "the datum's row is not D1's row for its own tier",
+        );
+
+        let named: Vec<Tier> = datum.would_change.iter().map(|(other, _)| *other).collect();
+        let expected: Vec<Tier> = Tier::ALL
+            .into_iter()
+            .filter(|other| *other != tier)
+            .collect();
+        assert_eq!(
+            named, expected,
+            "the datum at {tier} does not name every other tier, in Tier::ALL's order",
+        );
+    }
+}
+
+/// "What changing it would alter" is the diff of D1's rows, cell by cell.
+///
+/// The expected differences are computed here from [`D1`] — the check's own
+/// transcription — rather than from `Tier::engagement`, so neither arm of the
+/// comparison travels through the code under test ([Verification lessons]
+/// §11). The mutant that changes a cell in `engagement` reddens this as well
+/// as the table check.
+///
+/// The mutant: comparing tiers rather than columns, which reports every column
+/// as different for every pair.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn what_changing_the_tier_would_alter_is_the_diff_of_d1s_rows() {
+    for here in Tier::ALL {
+        let datum = Runtime::of(ResolvedTier::supplied(here, Layer::BuiltIn));
+        let mine = D1
+            .iter()
+            .find(|row| row.0 == here.as_str())
+            .expect("every tier has a row");
+
+        for there in Tier::ALL {
+            if there == here {
+                assert!(
+                    datum.would_change_to(there).is_none(),
+                    "the datum offers a diff against its own tier",
+                );
+                continue;
+            }
+            let theirs = D1
+                .iter()
+                .find(|row| row.0 == there.as_str())
+                .expect("every tier has a row");
+
+            let expected: Vec<Difference> = [
+                ("Membrane", mine.1, theirs.1),
+                ("Loop", mine.2, theirs.2),
+                ("Cortex", mine.3, theirs.3),
+                ("Network", mine.4, theirs.4),
+            ]
+            .into_iter()
+            .filter(|(_, here, there)| here != there)
+            .map(|(column, here, there)| Difference {
+                column,
+                here,
+                there,
+            })
+            .collect();
+
+            assert_eq!(
+                datum.would_change_to(there).expect("every other tier"),
+                expected,
+                "moving from {here} to {there} does not alter what ADR-0001 D1's two rows differ \
+                 in",
+            );
+        }
+    }
+}
+
+/// The one worked case, spelled out, so the check above is not satisfied by
+/// two identically wrong derivations.
+///
+/// From `bare` to `contained`, D1 changes Membrane, Loop and Cortex and leaves
+/// Network alone — both rows say "model provider only". That last is the cell
+/// that discriminates: a diff that reported all four would pass a check
+/// comparing two computed lists and fails here.
+#[test]
+fn moving_from_bare_to_contained_alters_three_of_d1s_four_columns() {
+    let datum = Runtime::of(ResolvedTier::supplied(Tier::Bare, Layer::User));
+    let moving = datum
+        .would_change_to(Tier::Contained)
+        .expect("contained is another tier");
+
+    let columns: Vec<&str> = moving.iter().map(|change| change.column).collect();
+    assert_eq!(
+        columns,
+        vec!["Membrane", "Loop", "Cortex"],
+        "ADR-0001 D1 gives `bare` and `contained` the same Network cell, so a diff naming it is \
+         wrong and a diff missing one of the other three is too",
+    );
+
+    // Destructured, so a fourth field on `Difference` stops this compiling.
+    let Difference {
+        column,
+        here,
+        there,
+    } = moving[0];
+    assert_eq!(
+        (column, here, there),
+        ("Membrane", "none", "local containers")
+    );
+
+    // And the whole-row move, which alters all four.
+    let all_four = datum
+        .would_change_to(Tier::Linked)
+        .expect("linked is another tier");
+    assert_eq!(
+        all_four.len(),
+        4,
+        "every one of D1's columns differs between `bare` and `linked`",
+    );
+}
+
+/// Nothing in the runtime module prints, because D2's two surfaces are not
+/// this module's to build.
+///
+/// The status line is `zaru-tui`'s and `/runtime` is ADR-0015 D2's namespace;
+/// neither exists. A `println!` here would be this module deciding where the
+/// block goes, which is the caller's to decide — the same shape ADR-0014 D3's
+/// `Explanation` takes.
+///
+/// The mutant: a `println!` anywhere in the module, which this reports by path
+/// and line.
+#[test]
+fn nothing_in_the_runtime_module_prints() {
+    let module = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("runtime");
+    let mut printing: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+
+    for entry in std::fs::read_dir(&module).expect("the runtime module is a directory") {
+        let path = entry.expect("an entry").path();
+        if path.extension().is_none_or(|kind| kind != "rs") {
+            continue;
+        }
+        // This file is the checks and prints refusals on purpose.
+        if path.file_name().is_some_and(|name| name == "tests.rs") {
+            continue;
+        }
+        scanned += 1;
+        let source = std::fs::read_to_string(&path).expect("the source is readable");
+        for (number, line) in source.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            for macro_name in ["println!", "eprintln!", "print!", "eprint!"] {
+                if code.contains(macro_name) {
+                    printing.push(format!("{}:{}: {macro_name}", path.display(), number + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        scanned >= 3,
+        "the scan found {scanned} source files under {}, so it asserted almost nothing",
+        module.display(),
+    );
+    assert!(
+        printing.is_empty(),
+        "{} line(s) in the runtime module print. ADR-0001 D2's status line is `zaru-tui`'s and \
+         `/runtime` is ADR-0015 D2's; this module builds the datum and no renderer: {printing:#?}",
+        printing.len(),
+    );
+}
