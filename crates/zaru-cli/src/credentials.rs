@@ -53,6 +53,7 @@
 
 pub mod alias;
 pub mod entry;
+pub mod family;
 pub mod notes;
 pub mod port;
 pub mod projection;
@@ -62,9 +63,10 @@ pub mod store;
 
 pub use alias::{Alias, AliasRefused};
 pub use entry::{
-    COMPOSER_SCOPE, Description, DescriptionRefused, Entry, Instance, Reach, Role, ToolScope, Ttl,
-    TtlRefused,
+    COMPOSER_SCOPE, Description, DescriptionRefused, Entry, EntryRefused, Held, Instance, Reach,
+    Role, ToolScope, Ttl, TtlRefused,
 };
+pub use family::Family;
 pub use notes::{Cached, Refreshed, ScopeError, bearer_for_dispatch};
 pub use port::Confirm;
 pub use projection::{NAMESPACE_PREFIX, Namespace};
@@ -73,7 +75,7 @@ pub use sealing::{
     SealingError, SealingKey,
 };
 pub use secret::{Kind, REDACTED, Secret, SecretRefused};
-pub use store::{CredentialStore, Record, StoreError, StoredReach};
+pub use store::{CredentialStore, Record, StoreError, StoredHeld, StoredReach};
 
 // `pub(crate)` rather than private: `crate::config`'s checks plant the same
 // awkward nonces and assert the same ASCII core, and the reason that core

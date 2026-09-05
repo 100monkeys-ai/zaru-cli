@@ -159,12 +159,13 @@ fn store_holding(
     let mut store =
         CredentialStore::open(scratch.base.join("zaru")).expect("the credential store opens");
     let alias = Alias::new(alias).expect("a plain name is a legal alias");
-    let entry = Entry::new(
+    let entry = Entry::notes(
         alias.clone(),
         Description::new("the token this check plants").expect("one line"),
-        Secret::new(value.to_owned()).expect("nn_mcp_ names a kind"),
+        Secret::notes(value.to_owned()).expect("nn_mcp_ names a kind"),
         Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
     )
+    .expect("an nn_ value builds a Nuclear Notes entry")
     .with_tools(ToolScope::new(["pages.read"]));
     store.add(entry, &keys, None).expect("the entry is stored");
     (store, keys, alias)

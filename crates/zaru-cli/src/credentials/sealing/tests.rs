@@ -11,6 +11,7 @@
 //! `tests/sealing_from_outside.rs`.
 
 use crate::credentials::alias::Alias;
+use crate::credentials::family::Family;
 use crate::credentials::fixtures::{ascii_core, personal_secret_nonce};
 use crate::credentials::sealing::blob::{Sealed, VERSION};
 use crate::credentials::sealing::failure::SealingError;
@@ -28,7 +29,7 @@ fn alias(name: &str) -> Alias {
 fn secret() -> (Secret, String) {
     let value = personal_secret_nonce();
     (
-        Secret::new(value.clone()).expect("the fixture value has a kind"),
+        Secret::notes(value.clone()).expect("the fixture value has a kind"),
         value,
     )
 }
@@ -59,7 +60,7 @@ fn a_sealed_value_comes_back_and_the_bytes_are_not_the_value() {
     );
 
     let opened = sealed
-        .open(&key, &work)
+        .open(&key, &work, Family::Notes)
         .expect("it opens under its own key");
     assert_eq!(
         opened.expose_for_dispatch(),
@@ -111,12 +112,12 @@ fn a_blob_moved_to_another_alias_does_not_open() {
     let sealed = Sealed::seal(&key, &work, &value).expect("it seals under work");
 
     assert!(
-        sealed.open(&key, &work).is_ok(),
+        sealed.open(&key, &work, Family::Notes).is_ok(),
         "the blob does not open under its own alias, so this check would pass for the wrong \
          reason"
     );
     assert_eq!(
-        sealed.open(&key, &home).expect_err(
+        sealed.open(&key, &home, Family::Notes).expect_err(
             "a blob sealed against \"work\" opened against \"home\"; the alias is not bound into \
              the associated data, so one token's bearer is served under another token's name"
         ),
@@ -136,7 +137,7 @@ fn a_blob_does_not_open_under_a_different_key() {
 
     assert_eq!(
         sealed
-            .open(&offered, &work)
+            .open(&offered, &work, Family::Notes)
             .expect_err("a blob opened under a key it was not sealed with"),
         SealingError::WillNotOpen
     );
@@ -156,7 +157,7 @@ fn a_single_flipped_byte_is_refused_by_the_tag() {
 
     let tampered = Sealed::from_hex(&hex::encode(&bytes)).expect("the shape is still a blob");
     assert_eq!(
-        tampered.open(&key, &work).expect_err(
+        tampered.open(&key, &work, Family::Notes).expect_err(
             "a blob with one flipped byte opened; the authentication tag is not being checked"
         ),
         SealingError::WillNotOpen
@@ -178,7 +179,7 @@ fn the_version_byte_discriminates_a_defect_from_a_key_that_changed() {
     // Ours, and the key is the thing that changed: user-correctable.
     assert_eq!(
         sealed
-            .open(&SealingKey::mint(), &work)
+            .open(&SealingKey::mint(), &work, Family::Notes)
             .expect_err("a blob opened under a key it was not sealed with"),
         SealingError::WillNotOpen
     );

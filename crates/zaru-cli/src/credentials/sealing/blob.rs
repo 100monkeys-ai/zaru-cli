@@ -56,6 +56,7 @@
 //! [ADR-093]: https://100monkeys-ai.cortex.page/aegis-architecture/p/adrs/093-aegis-cli-authentication-flow
 
 use crate::credentials::alias::Alias;
+use crate::credentials::family::Family;
 use crate::credentials::sealing::failure::SealingError;
 use crate::credentials::sealing::hex;
 use crate::credentials::sealing::key::SealingKey;
@@ -122,7 +123,12 @@ impl Sealed {
     /// bytes this harness did not write, and [`SealingError::WillNotOpen`] when
     /// it did write them and the key is not the one they were sealed under. See
     /// [`SealingError`] for why the version byte is what tells those apart.
-    pub fn open(&self, key: &SealingKey, alias: &Alias) -> Result<Secret, SealingError> {
+    pub fn open(
+        &self,
+        key: &SealingKey,
+        alias: &Alias,
+        family: Family,
+    ) -> Result<Secret, SealingError> {
         let (nonce, body) = self.parts()?;
         // The slice is exactly `NONCE_BYTES` long because `parts` refused
         // anything shorter than a version, a nonce and a tag, so the conversion
@@ -142,7 +148,20 @@ impl Sealed {
             )
             .map_err(|_| SealingError::WillNotOpen)?;
         let text = String::from_utf8(opened).map_err(|_| SealingError::WillNotOpen)?;
-        Secret::new(text).map_err(|_| SealingError::WillNotOpen)
+        // The family comes from the record and the value comes from the
+        // ciphertext, and the two have to agree before a `Secret` exists.
+        // For a Notes token the kind is still *derived* -- `Secret::notes`
+        // reads it off the prefix, which is ADR-0007 D2 -- so a record
+        // claiming `notes` over a value with no Notes prefix does not open.
+        // For a provider key there is no prefix to derive from, so the
+        // record's declared kind is what the value is opened under; that is
+        // the same declaration the user made at `add` time, sealed beside it.
+        match family {
+            Family::Notes => Secret::notes(text).map_err(|_| SealingError::WillNotOpen),
+            Family::Provider(kind) => {
+                Secret::provider(kind, text).map_err(|_| SealingError::WillNotOpen)
+            }
+        }
     }
 
     /// The nonce and the ciphertext, once the version and the length agree.

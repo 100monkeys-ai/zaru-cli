@@ -50,12 +50,14 @@ compile_error!(
 );
 
 use crate::credentials::alias::Alias;
-use crate::credentials::entry::{Entry, Reach, Role, ToolScope};
+use crate::credentials::entry::{Entry, Held, Reach, Role, ToolScope};
+use crate::credentials::family::Family;
 use crate::credentials::port::Confirm;
 use crate::credentials::sealing::blob::Sealed;
 use crate::credentials::sealing::failure::SealingError;
 use crate::credentials::sealing::key::KeyStore;
 use crate::credentials::secret::Secret;
+use crate::providers::ProviderKind;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -109,6 +111,12 @@ pub enum StoreError {
     UnknownAlias {
         /// The alias asked for.
         alias: Alias,
+    },
+    /// A provider record names a kind this build does not have.
+    UnknownProviderKind {
+        /// The kind as the file spells it. **Not a value** — a provider kind
+        /// is `gemini` or `anthropic`, never a credential.
+        offered: String,
     },
     /// An apex token was offered with no way to ask the user about it.
     ApexNeedsConfirmation {
@@ -201,6 +209,18 @@ impl fmt::Display for StoreError {
                  says it could do more. What the server actually granted is ADR-0135's three \
                  gates to enforce and not the harness's to verify"
             ),
+            Self::UnknownProviderKind { offered } => write!(
+                f,
+                "the credential store holds a provider key under the kind {offered:?}, and \
+                 ADR-0012 D3 names no such kind in this build: {}. A credential this harness \
+                 cannot classify is one it cannot redact from a prompt, so it is reported here \
+                 rather than skipped",
+                ProviderKind::ALL
+                    .iter()
+                    .map(|kind| format!("`{kind}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
             Self::Sealing(failure) => write!(f, "{failure}"),
         }
     }
@@ -226,11 +246,51 @@ pub enum StoredReach {
     Apex,
 }
 
-/// One token as the store keeps it.
+/// The half of a record that belongs to one family and not the other.
 ///
-/// Seven fields. Six are [ADR-0007] D2's metadata and the seventh is the
-/// bearer value, sealed — see the module documentation for why it is not
-/// optional and why its type cannot be built from a plaintext.
+/// [`Held`](crate::credentials::Held)'s on-disk form. Externally tagged
+/// rather than internally tagged, so the file reads
+/// `"held": {"notes": {…}}` — a shape a person opening
+/// `~/.zaru/credentials.json` can classify at a glance, and one
+/// `deny_unknown_fields` covers on both the wrapper and each variant.
+///
+/// **A provider record has no `reach`, no `tools` and no `workspace`, and a
+/// Notes record has no provider kind.** That is the whole reason this is an
+/// enum; see [`Held`](crate::credentials::Held).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum StoredHeld {
+    /// A Nuclear Notes token.
+    Notes {
+        /// D2's `kind` for a Notes token: `personal` or `app`. Written down
+        /// so a reader of the file can see it, and still derived from the
+        /// secret at every use, so the file is a report rather than a source
+        /// of truth.
+        kind: String,
+        /// D8's instance boundary, or its absence.
+        reach: StoredReach,
+        /// D2's `role`. `None` is D2's "unset". Only a Notes token can carry
+        /// one: ADR-0007 D4's composer role is a Nuclear Notes pointer's.
+        role: Option<String>,
+        /// D6's cached tool names.
+        tools: Vec<String>,
+        /// D2's `workspace`, "informational only".
+        workspace: Option<String>,
+    },
+    /// A model provider's API key.
+    Provider {
+        /// The provider kind this key authenticates against, as
+        /// [ADR-0012](https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction)
+        /// D3 spells it.
+        kind: String,
+    },
+}
+
+/// One credential as the store keeps it.
+///
+/// Three fields: [ADR-0007] D2's `description`, the family-specific half, and
+/// the bearer value, sealed — see the module documentation for why the last is
+/// not optional and why its type cannot be built from a plaintext.
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,23 +298,93 @@ pub enum StoredReach {
 pub struct Record {
     /// ADR-0007 D2's `description`.
     pub description: String,
-    /// D2's `kind`, written down so a reader of the file can see it. It is
-    /// still derived from the secret at every use, so the file is a report
-    /// rather than a source of truth.
-    pub kind: String,
-    /// D8's instance boundary, or its absence.
-    pub reach: StoredReach,
-    /// D2's `role`. `None` is D2's "unset".
-    pub role: Option<String>,
-    /// D6's cached tool names.
-    pub tools: Vec<String>,
-    /// D2's `workspace`, "informational only".
-    pub workspace: Option<String>,
+    /// Everything that belongs to this credential's family and not the other.
+    pub held: StoredHeld,
     /// D2's `secret`, at rest.
     ///
     /// The only field in this crate a bearer value is inside, and the only one
     /// whose type refuses to be built from one.
     pub sealed: Sealed,
+}
+
+impl Record {
+    /// The kind, whichever family this is.
+    ///
+    /// One accessor for both, because both are rendered into the same column
+    /// of the same two listings.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        match &self.held {
+            StoredHeld::Notes { kind, .. } | StoredHeld::Provider { kind } => kind,
+        }
+    }
+
+    /// Whether this is a Nuclear Notes token.
+    ///
+    /// The predicate both listings are filtered by, so ADR-0007 D7's
+    /// `notes tokens` lists Notes tokens and nothing else.
+    #[must_use]
+    pub const fn is_notes(&self) -> bool {
+        matches!(self.held, StoredHeld::Notes { .. })
+    }
+
+    /// D2's `role`, which only a Notes token can carry.
+    #[must_use]
+    pub fn role(&self) -> Option<&str> {
+        match &self.held {
+            StoredHeld::Notes { role, .. } => role.as_deref(),
+            StoredHeld::Provider { .. } => None,
+        }
+    }
+
+    /// D6's cached tool names, which only a Notes token has.
+    #[must_use]
+    pub fn tools(&self) -> &[String] {
+        match &self.held {
+            StoredHeld::Notes { tools, .. } => tools,
+            StoredHeld::Provider { .. } => &[],
+        }
+    }
+
+    /// D2's informational workspace pointer, which only a Notes token has.
+    #[must_use]
+    pub fn workspace(&self) -> Option<&str> {
+        match &self.held {
+            StoredHeld::Notes { workspace, .. } => workspace.as_deref(),
+            StoredHeld::Provider { .. } => None,
+        }
+    }
+
+    /// D8's reach, which only a Notes token has.
+    #[must_use]
+    pub const fn reach(&self) -> Option<&StoredReach> {
+        match &self.held {
+            StoredHeld::Notes { reach, .. } => Some(reach),
+            StoredHeld::Provider { .. } => None,
+        }
+    }
+
+    /// Which family this record declares, before anything is decrypted.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownProviderKind`] when a provider record names a
+    /// kind [ADR-0012](https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction)
+    /// D3 does not. That is a file written by a build that knew a kind this
+    /// one does not, or a hand edit, and it is reported rather than silently
+    /// skipped: a credential the store cannot classify is one it cannot
+    /// redact, and [`crate::redaction::held_secrets_for_redaction`] walks
+    /// every record.
+    pub fn family(&self) -> Result<Family, StoreError> {
+        match &self.held {
+            StoredHeld::Notes { .. } => Ok(Family::Notes),
+            StoredHeld::Provider { kind } => ProviderKind::parse(kind)
+                .map(Family::Provider)
+                .ok_or_else(|| StoreError::UnknownProviderKind {
+                    offered: kind.clone(),
+                }),
+        }
+    }
 }
 
 /// The file's whole shape.
@@ -451,8 +581,18 @@ impl CredentialStore {
             return Err(StoreError::DuplicateAlias { alias });
         }
 
-        if entry.reach().is_apex() {
-            let grants = apex_grants(entry.tools());
+        // The apex gate is D8's and applies to a Nuclear Notes token alone: a
+        // provider key has no instance boundary to cross, which is why
+        // `Entry::reach` answers `None` for one rather than answering a
+        // default that would read as "instance-locked" and be meaningless.
+        if let Some(reach) = entry.reach()
+            && reach.is_apex()
+        {
+            let grants = apex_grants(
+                entry
+                    .tools()
+                    .expect("an entry with a reach is a Notes entry and has a tool scope"),
+            );
             match confirmer {
                 None => return Err(StoreError::ApexNeedsConfirmation { alias, grants }),
                 Some(confirmer) if !confirmer.confirm_apex(&alias, &grants) => {
@@ -467,18 +607,31 @@ impl CredentialStore {
         let key = keys.key().map_err(StoreError::Sealing)?;
         let sealed = Sealed::seal(&key, &alias, entry.secret()).map_err(StoreError::Sealing)?;
 
+        let held = match entry.held() {
+            Held::Notes {
+                reach,
+                tools,
+                workspace,
+            } => StoredHeld::Notes {
+                kind: entry.secret().kind().as_str().to_owned(),
+                reach: match reach {
+                    Reach::InstanceLocked(instance) => {
+                        StoredReach::InstanceLocked(instance.as_str().to_owned())
+                    }
+                    Reach::Apex => StoredReach::Apex,
+                },
+                role: None,
+                tools: tools.names().to_vec(),
+                workspace: workspace.clone(),
+            },
+            Held::Provider { kind } => StoredHeld::Provider {
+                kind: kind.as_str().to_owned(),
+            },
+        };
+
         let record = Record {
             description: entry.description().as_str().to_owned(),
-            kind: entry.secret().kind().as_str().to_owned(),
-            reach: match entry.reach() {
-                Reach::InstanceLocked(instance) => {
-                    StoredReach::InstanceLocked(instance.as_str().to_owned())
-                }
-                Reach::Apex => StoredReach::Apex,
-            },
-            role: None,
-            tools: entry.tools().names().to_vec(),
-            workspace: entry.workspace().map(str::to_owned),
+            held,
             sealed,
         };
         self.entries.insert(alias, record);
@@ -497,8 +650,12 @@ impl CredentialStore {
             .ok_or_else(|| StoreError::UnknownAlias {
                 alias: alias.clone(),
             })?;
+        let family = record.family()?;
         let key = keys.key().map_err(StoreError::Sealing)?;
-        record.sealed.open(&key, alias).map_err(StoreError::Sealing)
+        record
+            .sealed
+            .open(&key, alias, family)
+            .map_err(StoreError::Sealing)
     }
 
     /// Give one token ADR-0007 D4's composer role, taking it from no other.
@@ -530,7 +687,7 @@ impl CredentialStore {
             });
         }
 
-        let scope = ToolScope::new(record.tools.clone());
+        let scope = ToolScope::new(record.tools().to_vec());
         if let Some(tool) = scope.outside_composer_scope() {
             return Err(StoreError::ComposerScopeExceeded {
                 alias: alias.clone(),
@@ -538,10 +695,24 @@ impl CredentialStore {
             });
         }
 
-        self.entries
+        // A provider key cannot hold the composer role, and the enum is what
+        // says so: `StoredHeld::Provider` has no `role` field to write. The
+        // arm returns the same refusal an unknown alias does rather than
+        // inventing a variant, because from the caller's side "there is no
+        // Notes token by that name" is exactly what happened.
+        match &mut self
+            .entries
             .get_mut(alias)
             .expect("the record was found above")
-            .role = Some(Role::Composer.as_str().to_owned());
+            .held
+        {
+            StoredHeld::Notes { role, .. } => *role = Some(Role::Composer.as_str().to_owned()),
+            StoredHeld::Provider { .. } => {
+                return Err(StoreError::UnknownAlias {
+                    alias: alias.clone(),
+                });
+            }
+        }
         self.save()
     }
 
@@ -550,7 +721,7 @@ impl CredentialStore {
     pub fn composer(&self) -> Option<(&Alias, &Record)> {
         self.entries
             .iter()
-            .find(|(_, record)| record.role.as_deref() == Some(Role::Composer.as_str()))
+            .find(|(_, record)| record.role() == Some(Role::Composer.as_str()))
     }
 
     /// Replace a token's cached tool scope and write the store.
@@ -581,10 +752,19 @@ impl CredentialStore {
                 alias: alias.clone(),
             });
         }
-        self.entries
+        match &mut self
+            .entries
             .get_mut(alias)
             .expect("the alias was found above")
-            .tools = scope.names().to_vec();
+            .held
+        {
+            StoredHeld::Notes { tools, .. } => *tools = scope.names().to_vec(),
+            StoredHeld::Provider { .. } => {
+                return Err(StoreError::UnknownAlias {
+                    alias: alias.clone(),
+                });
+            }
+        }
         self.save()
     }
 

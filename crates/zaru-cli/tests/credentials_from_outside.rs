@@ -95,12 +95,13 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
     let composer_secret = format!("nn_mcp_{}", nonce("secret"));
     store
         .add(
-            Entry::new(
+            Entry::notes(
                 composer_alias.clone(),
                 Description::new("the composer's search").expect("one line"),
-                Secret::new(composer_secret).expect("nn_mcp_ names a kind"),
+                Secret::notes(composer_secret).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
             )
+            .expect("an nn_ value builds a Nuclear Notes entry")
             .with_tools(ToolScope::new(["pages.read", "search.global"]))
             .with_workspace("zaru"),
             &keys,
@@ -113,12 +114,13 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
     let agent_secret = format!("nn_app_{}", nonce("secret"));
     store
         .add(
-            Entry::new(
+            Entry::notes(
                 agent_alias.clone(),
                 Description::new("the agent's research").expect("one line"),
-                Secret::new(agent_secret.clone()).expect("nn_app_ names a kind"),
+                Secret::notes(agent_secret.clone()).expect("nn_app_ names a kind"),
                 Reach::Apex,
             )
+            .expect("an nn_ value builds a Nuclear Notes entry")
             .with_tools(ToolScope::new(["pages.read", "pages.apply_patch"])),
             &keys,
             Some(&AlwaysConfirms),

@@ -148,12 +148,13 @@ impl KeyStore for StagedKey {
 fn staged_entry(label: &str) -> (Entry, String) {
     let value = format!("nn_mcp_{}", nonce(label));
     (
-        Entry::new(
+        Entry::notes(
             Alias::new(label).expect("the fixture alias is well formed"),
             Description::new("a token this check planted").expect("one renderable line"),
-            Secret::new(value.clone()).expect("an nn_mcp_ value names a kind"),
+            Secret::notes(value.clone()).expect("an nn_mcp_ value names a kind"),
             Reach::InstanceLocked(Instance::new("cortex.page")),
-        ),
+        )
+        .expect("an nn_ value builds a Nuclear Notes entry"),
         value,
     )
 }

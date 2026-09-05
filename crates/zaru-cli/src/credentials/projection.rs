@@ -54,11 +54,20 @@ impl CredentialStore {
     #[must_use]
     pub fn agent_namespaces(&self) -> Vec<Namespace> {
         self.records()
-            .filter(|(_, record)| record.role.as_deref() != Some(Role::Composer.as_str()))
+            // A provider key is filtered out before the composer is, and the
+            // order does not matter because the two predicates are
+            // independent -- but the reason does. D5 projects *Nuclear Notes*
+            // tokens as MCP servers, and a provider key serves no MCP tools
+            // at all, so projecting one would offer the agent a namespace
+            // with nothing in it whose name claims otherwise. ADR-0007 D3 is
+            // the sharper reason: the agent must never see a provider key,
+            // and a namespace is the surface the agent reaches through.
+            .filter(|(_, record)| record.is_notes())
+            .filter(|(_, record)| record.role() != Some(Role::Composer.as_str()))
             .map(|(alias, record)| Namespace {
                 name: format!("{NAMESPACE_PREFIX}:{alias}"),
                 description: agent_description(record),
-                tools: record.tools.clone(),
+                tools: record.tools().to_vec(),
             })
             .collect()
     }
@@ -70,8 +79,8 @@ impl CredentialStore {
 /// description the agent reads". The marking is composed by
 /// [`StoredMarking`] so that the three renderings cannot drift apart.
 fn agent_description(record: &Record) -> String {
-    match &record.reach {
-        StoredReach::InstanceLocked(_) => record.description.clone(),
-        StoredReach::Apex => format!("{} [{}]", record.description, Reach::APEX_MARKING),
+    match record.reach() {
+        Some(StoredReach::InstanceLocked(_)) | None => record.description.clone(),
+        Some(StoredReach::Apex) => format!("{} [{}]", record.description, Reach::APEX_MARKING),
     }
 }

@@ -25,7 +25,8 @@
 //! invariant over a collection cannot be held by a member of it.
 
 use crate::credentials::alias::Alias;
-use crate::credentials::secret::Secret;
+use crate::credentials::secret::{Kind, Secret};
+use crate::providers::ProviderKind;
 use core::fmt;
 use core::time::Duration;
 
@@ -324,7 +325,83 @@ impl fmt::Display for Description {
     }
 }
 
-/// One token as the user supplies it, secret and all.
+/// A credential's family and everything that belongs to only that family.
+///
+/// # This is where "a provider record cannot carry a reach" is held
+///
+/// [ADR-0007] D2's entry was Nuclear Notes' in every field — `instance`,
+/// `tools`, `workspace`, a `kind` ADR-0161 discriminates by prefix — and the
+/// store was closed to provider keys for exactly that reason. When the open
+/// question closed in favour of one store on 2026-09-05, the alternative to
+/// this enum was a flat entry with four fields that are meaningless for half
+/// the credentials in it: an `Option<Reach>` nobody reads for a provider key,
+/// an empty `ToolScope`, a `workspace` that is always `None`.
+///
+/// A field that is meaningless for a variant is a field something eventually
+/// reads for that variant. Here a provider entry **has no reach to read** and
+/// a Notes entry **has no provider kind to read**, so neither confusion is
+/// expressible rather than merely being avoided — the argument
+/// [`ProviderEndpoint`](crate::providers::ProviderEndpoint) makes about its
+/// own missing variant, in the other direction.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[derive(Debug, Clone)]
+pub enum Held {
+    /// A Nuclear Notes token: [ADR-0007] D8's reach, D6's cached scope and
+    /// D2's informational workspace pointer.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    Notes {
+        /// D8's instance boundary, or its absence.
+        reach: Reach,
+        /// D6's cached tool names.
+        tools: ToolScope,
+        /// D2's `workspace`, "informational only".
+        workspace: Option<String>,
+    },
+    /// A model provider's API key, for one of [ADR-0012] D3's kinds.
+    ///
+    /// One key per kind. The alias is `provider.<kind>` and the kind is here,
+    /// so the two cannot disagree.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    Provider {
+        /// Which provider this key authenticates against.
+        kind: ProviderKind,
+    },
+}
+
+/// An entry was offered whose secret and whose family disagree.
+///
+/// **Carries the alias and two family names, and never a value.** The alias
+/// is the user's own word and is what they need in order to act; the value is
+/// the thing this whole module exists to keep out of a rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryRefused {
+    /// The alias the entry was offered under.
+    pub alias: Alias,
+    /// The family the constructor builds.
+    pub wanted: &'static str,
+    /// The family the secret actually belongs to.
+    pub found: &'static str,
+}
+
+impl fmt::Display for EntryRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the entry `{}` was built as a {} credential from a {} secret. ADR-0007 D2's entry \
+             holds two families since 2026-09-05 and the halves are not interchangeable: a \
+             Nuclear Notes token has an instance and a tool scope, and a provider key has a \
+             provider kind, and neither has the other's",
+            self.alias, self.wanted, self.found,
+        )
+    }
+}
+
+impl std::error::Error for EntryRefused {}
+
+/// One credential as the user supplies it, secret and all.
 ///
 /// The fields are private and the accessors are read-only, so a caller
 /// holding an entry cannot step around the store's invariants. An entry
@@ -334,37 +411,122 @@ pub struct Entry {
     alias: Alias,
     description: Description,
     secret: Secret,
-    reach: Reach,
-    tools: ToolScope,
-    workspace: Option<String>,
+    held: Held,
 }
 
 impl Entry {
-    /// Take an entry. Its role is unset; only the store grants one.
-    #[must_use]
-    pub fn new(alias: Alias, description: Description, secret: Secret, reach: Reach) -> Self {
-        Self {
+    /// Take a Nuclear Notes token. Its role is unset; only the store grants
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// [`EntryRefused`] when the secret is a provider key. The two
+    /// constructors read the family off the secret rather than taking it as
+    /// an argument, so an entry whose stored kind disagrees with its stored
+    /// value cannot be built.
+    pub fn notes(
+        alias: Alias,
+        description: Description,
+        secret: Secret,
+        reach: Reach,
+    ) -> Result<Self, EntryRefused> {
+        if !secret.kind().is_notes() {
+            return Err(EntryRefused {
+                alias,
+                wanted: "Nuclear Notes",
+                found: "provider",
+            });
+        }
+        Ok(Self {
             alias,
             description,
             secret,
-            reach,
-            tools: ToolScope::default(),
-            workspace: None,
-        }
+            held: Held::Notes {
+                reach,
+                tools: ToolScope::default(),
+                workspace: None,
+            },
+        })
+    }
+
+    /// Take a model provider's API key.
+    ///
+    /// **The kind is not a parameter.** It is read off the secret, which was
+    /// built under a kind the user named, so the entry's kind and the value's
+    /// kind are one fact rather than two that can drift.
+    ///
+    /// # Errors
+    ///
+    /// [`EntryRefused`] when the secret is a Nuclear Notes token.
+    pub fn provider(
+        alias: Alias,
+        description: Description,
+        secret: Secret,
+    ) -> Result<Self, EntryRefused> {
+        let Kind::Provider(kind) = secret.kind() else {
+            return Err(EntryRefused {
+                alias,
+                wanted: "provider",
+                found: "Nuclear Notes",
+            });
+        };
+        Ok(Self {
+            alias,
+            description,
+            secret,
+            held: Held::Provider { kind },
+        })
     }
 
     /// Attach the cached tool scope D6 describes.
+    ///
+    /// # Panics
+    ///
+    /// Never through a reachable path: a tool scope belongs to the Notes half
+    /// and [`Entry::notes`] is the only constructor that produces one, so a
+    /// provider entry cannot be the receiver of a builder that only the Notes
+    /// constructor's result exposes in practice. It is an `expect` rather
+    /// than a silent no-op because a builder that quietly discarded a scope
+    /// is how a token ends up in the store with less scope than the caller
+    /// believed it had.
     #[must_use]
-    pub fn with_tools(mut self, tools: ToolScope) -> Self {
-        self.tools = tools;
+    pub fn with_tools(mut self, scope: ToolScope) -> Self {
+        match &mut self.held {
+            Held::Notes { tools, .. } => *tools = scope,
+            Held::Provider { .. } => {
+                panic!(
+                    "a provider key has no cached tool scope; ADR-0007 D6's cache is a Notes \
+                        token's `tools/list` and a provider serves no MCP tools"
+                )
+            }
+        }
         self
     }
 
     /// Attach the last-known workspace pointer, which D2 calls informational.
+    ///
+    /// # Panics
+    ///
+    /// Never through a reachable path, for the reason [`Entry::with_tools`]
+    /// gives.
     #[must_use]
     pub fn with_workspace(mut self, slug: impl Into<String>) -> Self {
-        self.workspace = Some(slug.into());
+        match &mut self.held {
+            Held::Notes { workspace, .. } => *workspace = Some(slug.into()),
+            Held::Provider { .. } => {
+                panic!(
+                    "a provider key has no workspace pointer; ADR-0007 D2's `workspace` is a \
+                        Nuclear Notes token row's and a provider has no notion of one"
+                )
+            }
+        }
         self
+    }
+
+    /// Which family this credential belongs to, and what belongs to it.
+    #[must_use]
+    pub const fn held(&self) -> &Held {
+        &self.held
     }
 
     /// This token's local name.
@@ -385,21 +547,32 @@ impl Entry {
         &self.secret
     }
 
-    /// Whether this token is instance-locked or apex.
+    /// Whether this token is instance-locked or apex, for a Notes token.
+    ///
+    /// `None` for a provider key, which has no instance boundary to have.
     #[must_use]
-    pub const fn reach(&self) -> &Reach {
-        &self.reach
+    pub const fn reach(&self) -> Option<&Reach> {
+        match &self.held {
+            Held::Notes { reach, .. } => Some(reach),
+            Held::Provider { .. } => None,
+        }
     }
 
-    /// The cached tool scope.
+    /// The cached tool scope, for a Notes token.
     #[must_use]
-    pub const fn tools(&self) -> &ToolScope {
-        &self.tools
+    pub const fn tools(&self) -> Option<&ToolScope> {
+        match &self.held {
+            Held::Notes { tools, .. } => Some(tools),
+            Held::Provider { .. } => None,
+        }
     }
 
     /// The last-known workspace pointer, which the token row overrides.
     #[must_use]
     pub fn workspace(&self) -> Option<&str> {
-        self.workspace.as_deref()
+        match &self.held {
+            Held::Notes { workspace, .. } => workspace.as_deref(),
+            Held::Provider { .. } => None,
+        }
     }
 }

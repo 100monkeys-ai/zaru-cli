@@ -249,22 +249,31 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
         ];
     }
 
+    // Filtered to Nuclear Notes tokens, and that filter is what stops this
+    // listing lying about what it lists. The store has held provider keys
+    // since 2026-09-05, and ADR-0007 D7 names this surface `notes tokens`:
+    // every column below -- workspace, tool count, instance, composer role --
+    // is a Nuclear Notes token's, and a provider key rendered here would show
+    // four empty cells under headings that do not apply to it. The other
+    // listing is `zaru providers keys`, and the two share
+    // `crate::credentials::listed`.
     let rows: Vec<[String; 6]> = store
         .records()
+        .filter(|(_, record)| record.is_notes())
         .map(|(alias, record)| {
             [
                 alias.to_string(),
                 record.description.clone(),
                 record
-                    .workspace
-                    .clone()
-                    .unwrap_or_else(|| NOT_SET.to_owned()),
-                format!("{} tool(s)", record.tools.len()),
-                match &record.reach {
-                    StoredReach::Apex => Reach::APEX_MARKING.to_owned(),
-                    StoredReach::InstanceLocked(instance) => instance.clone(),
+                    .workspace()
+                    .map_or_else(|| NOT_SET.to_owned(), str::to_owned),
+                format!("{} tool(s)", record.tools().len()),
+                match record.reach() {
+                    Some(StoredReach::Apex) => Reach::APEX_MARKING.to_owned(),
+                    Some(StoredReach::InstanceLocked(instance)) => instance.clone(),
+                    None => String::new(),
                 },
-                if record.role.as_deref() == Some(Role::Composer.as_str()) {
+                if record.role() == Some(Role::Composer.as_str()) {
                     Role::Composer.as_str().to_owned()
                 } else {
                     String::new()

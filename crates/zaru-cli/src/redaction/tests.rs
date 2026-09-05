@@ -41,12 +41,13 @@ fn store_holding(
         // the product. Each check owns its scratch root, so a short fixed
         // name is unique where it has to be.
         let alias = Alias::new(&format!("held{index}")).expect("a plain name is a legal alias");
-        let entry = Entry::new(
+        let entry = Entry::notes(
             alias.clone(),
             Description::new(format!("held {index}, {}", nonce("purpose"))).expect("one line"),
-            Secret::new(value.clone()).expect("the fixture prefixes name a kind"),
+            Secret::notes(value.clone()).expect("the fixture prefixes name a kind"),
             Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
         )
+        .expect("an nn_ value builds a Nuclear Notes entry")
         .with_tools(ToolScope::new(["pages.read"]));
         store.add(entry, &keys, None).expect("an entry is added");
         aliases.push(alias);

@@ -530,8 +530,31 @@ impl<'a> Surface<'a> {
                 )),
             ),
             StoreError::Sealing(failure) => self.sealing(failure, session),
-            StoreError::DuplicateAlias { .. }
-            | StoreError::UnknownAlias { .. }
+            // Reachable from `zaru providers keys add <kind>` since
+            // 2026-09-05: one key per kind, so a second `add` for a kind the
+            // store already holds lands here. The user's, and the remedy is
+            // real -- the listing shows what is already there.
+            StoreError::DuplicateAlias { .. } => correctable(
+                failure,
+                run(
+                    "`zaru providers keys` lists every provider key this machine holds",
+                    "zaru providers keys",
+                ),
+            ),
+            // Reachable from the listing: a store file naming a provider kind
+            // this build does not have. The user's, because the only writer
+            // of that file is this harness and a kind it cannot parse means
+            // the file came from elsewhere.
+            StoreError::UnknownProviderKind { .. } => correctable(
+                failure,
+                act(
+                    "the only writer of ~/.zaru/credentials.json is this harness; if it was \
+                     edited by hand, or written by a build that knew a provider kind this one \
+                     does not, restore it or remove that entry"
+                        .to_owned(),
+                ),
+            ),
+            StoreError::UnknownAlias { .. }
             | StoreError::ApexNeedsConfirmation { .. }
             | StoreError::ApexDeclined { .. }
             | StoreError::SecondComposerRole { .. }

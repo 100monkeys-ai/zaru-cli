@@ -197,7 +197,15 @@ fn validate(schema: &Schema, layer: Layer, document: Table) -> Result<Table, Con
         let declared_as_a_reference = matches!(field.kind, FieldKind::CredentialAlias);
         if (layer.refuses_credential_shaped_values() || declared_as_a_reference)
             && let Some(text) = value.as_text()
-            && Secret::new(text).is_ok()
+            // Notes-shaped only, and deliberately. `Secret::provider` admits
+            // any text that is not empty, has no control character and does
+            // not begin or end with whitespace -- which is nearly every
+            // configuration value there is -- so asking it here would refuse
+            // the whole file. ADR-0014 D4's protection against a provider key
+            // reaching configuration is that no field holds one: the store is
+            // where a provider key goes, and `provider.<kind>.endpoint` is an
+            // endpoint. Raised on ADR-0014 rather than approximated here.
+            && Secret::notes(text).is_ok()
         {
             return Err(ConfigRefused::CredentialShaped {
                 layer,

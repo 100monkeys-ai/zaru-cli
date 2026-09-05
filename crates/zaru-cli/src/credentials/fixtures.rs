@@ -89,6 +89,17 @@ pub(crate) fn app_secret_nonce() -> String {
     format!("nn_app_{}", nonce("appsecret"))
 }
 
+/// A value shaped like a model provider's API key and not one.
+///
+/// **It deliberately does not begin `AIza`.** A fixture carrying Google's
+/// prefix would let a prefix rule for provider keys pass every check here
+/// while refusing every real key from every other provider — which is the
+/// rule this store was careful not to invent. See
+/// [`crate::credentials::secret`].
+pub(crate) fn provider_secret_nonce() -> String {
+    format!("pk-{}", nonce("providerkey"))
+}
+
 /// A directory tree a check owns, removed when the check ends.
 ///
 /// [Testing]'s rule: "Each test owns its own state... its own configuration

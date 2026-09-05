@@ -188,7 +188,16 @@ pub(super) fn every_mapped_refusal() -> Vec<(&'static str, Classified, Class)> {
     );
 
     // ADR-0007 D2's two token kinds, and its one-line description.
-    user("SecretRefused", SecretRefused.into());
+    user(
+        "SecretRefused::NoNotesPrefix",
+        SecretRefused::NoNotesPrefix.into(),
+    );
+    user("SecretRefused::Empty", SecretRefused::Empty.into());
+    user("SecretRefused::Control", SecretRefused::Control.into());
+    user(
+        "SecretRefused::SurroundingWhitespace",
+        SecretRefused::SurroundingWhitespace.into(),
+    );
     user(
         "DescriptionRefused",
         DescriptionRefused { offered: offered() }.into(),

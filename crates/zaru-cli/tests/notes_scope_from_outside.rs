@@ -401,8 +401,8 @@ impl Wired {
         self.store
             .record(&self.alias)
             .expect("the token is stored")
-            .tools
-            .clone()
+            .tools()
+            .to_vec()
     }
 
     fn projected_names(&self) -> Vec<String> {
@@ -432,12 +432,13 @@ async fn wire() -> Wired {
     let planted = format!("nn_mcp_{}", nonce("secret"));
     store
         .add(
-            Entry::new(
+            Entry::notes(
                 alias.clone(),
                 Description::new("the agent's research").expect("one line"),
-                Secret::new(planted.clone()).expect("nn_mcp_ names a kind"),
+                Secret::notes(planted.clone()).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(TokenInstance::new("100monkeys-ai.cortex.page")),
             )
+            .expect("an nn_ value builds a Nuclear Notes entry")
             .with_tools(ToolScope::new(STALE_SCOPE))
             .with_workspace("zaru"),
             &keys,

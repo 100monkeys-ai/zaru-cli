@@ -103,6 +103,22 @@ impl ProviderKind {
         }
     }
 
+    /// Which kind a name spells, if any.
+    ///
+    /// Built by searching [`ProviderKind::ALL`] rather than by a match, so a
+    /// sixth variant is parseable the moment it exists and there is no second
+    /// list of names to fall out of step with [`ProviderKind::as_str`].
+    ///
+    /// It reads [`ProviderKind::as_str`] and not
+    /// [`ProviderKind::key_segment`], because this parses what a **user
+    /// typed** — on the command line, where D3's own spelling is what they
+    /// have been shown — and the key segment exists only to survive
+    /// ADR-0014's environment transform.
+    #[must_use]
+    pub fn parse(offered: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == offered)
+    }
+
     /// The kind's segment inside a configuration key.
     ///
     /// The same as [`ProviderKind::as_str`] for three of the four. See the
