@@ -23,16 +23,16 @@
 //! crate "Binary, configuration, session lifecycle, the credential store, the
 //! local tool surface and its permission model".
 //!
-//! Nine things are built here. Read off this crate's own module list rather
-//! than off a commit log — `config`, `credentials`, `failure`, `manifest`,
-//! `providers`, `redaction`, `runtime`, `session` and `tools`.
+//! Ten things are built here. Read off this crate's own module list rather
+//! than off a commit log — `cli`, `config`, `credentials`, `failure`,
+//! `manifest`, `providers`, `redaction`, `runtime`, `session` and `tools`.
 //!
-//! [`redaction`] is the newest and it is the **only** product implementation
-//! of [ADR-0008] trigger clause 6's port, decided on 2026-09-05: the harness
-//! removes from what it sends a model the bearer values it is itself holding
-//! in [ADR-0007]'s store, by exact value and by ASCII core, and looks for
-//! nothing else. Unknown secrets in command output are named as out of scope
-//! by that decision. `zaru-core` declares the port and implements it nowhere.
+//! [`redaction`] is the **only** product implementation of [ADR-0008] trigger
+//! clause 6's port, decided on 2026-09-05: the harness removes from what it
+//! sends a model the bearer values it is itself holding in [ADR-0007]'s store,
+//! by exact value and by ASCII core, and looks for nothing else. Unknown
+//! secrets in command output are named as out of scope by that decision.
+//! `zaru-core` declares the port and implements it nowhere.
 //!
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
@@ -43,14 +43,25 @@
 //! through `std::fs`, inside D4's working-directory boundary. The other five
 //! sit behind ports with no implementation in this product tree, as do the
 //! prompt, the allowlist, the destructive matcher, the credential store's
-//! sealing, ADR-0014's file layers, `meta.toml`'s writer, ADR-0009's manifest
-//! reader, ADR-0012's provider and its alias negotiation, and ADR-0004's
-//! membrane. **Nothing in this workspace can reach a provider at all.**
+//! sealing, ADR-0014's file layers **2 and 3** — layer 5 has a reader as of
+//! 2026-09-05, [`cli::layers::Flags`], the first implementation of that port
+//! in this product tree — `meta.toml`'s writer, ADR-0009's manifest reader,
+//! ADR-0012's provider and its alias negotiation, and ADR-0004's membrane.
+//! **Nothing in this workspace can reach a provider at all.**
 //!
-//! **None of it is reachable from the `zaru` binary**, which takes no
-//! arguments, prints its version and its composition, and exits 0. Reaching
-//! any of it needs a command surface, which is ADR-0015's and sits behind
-//! ADR-0003 D2's undecided argument parser.
+//! **Six of the ten are reachable from the `zaru` binary as of 2026-09-05**,
+//! and the sentence that said none of them was is gone with the argument
+//! parser ADR-0003 D2 decided under directive 20. [`cli`] is [ADR-0015] D2's
+//! out-of-session surface: it parses, folds three of ADR-0014 D1's five
+//! layers, and prints `runtime`, `models`, `config explain <key>`, `sessions
+//! list`, `sessions rm <id>` and `notes tokens`. The binary still **runs no
+//! task**, because that needs a provider; `zaru --help` says so.
+//!
+//! `tools`, `manifest` and `redaction` are what nothing a user can type
+//! reaches, and each waits on what it always did: a tool-call loop with a
+//! model behind it, a TOML reader, and a prompt to redact.
+//!
+//! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 //!
 //! [Bounded Contexts] names no crate for the tool surface. It is here under a
 //! delegated coordinator ruling of 2026-09-04, recorded on that page and on

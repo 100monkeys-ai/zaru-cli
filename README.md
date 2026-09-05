@@ -12,66 +12,92 @@ for a smoother surface, the legible option wins. That trade is the product.
 
 ## Status
 
-**Pre-alpha. Nothing here is installable, and no binary does any work yet.**
-Six crates compile, a binary prints what it is composed of, and CI enforces the
-rules the repository is meant to hold itself to.
+**Pre-alpha. Nothing here is installable, and the harness cannot run a task.**
+Six crates compile, CI enforces the rules the repository is meant to hold
+itself to, and as of 2026-09-05 the binary does something a person can see.
 
-Eight pieces exist behind that binary and it reaches exactly one of them.
-The iteration loop is in `zaru-core`, headless, driven through five ports that
-nothing in any product tree implements. The composer is in `zaru-tui`, rendered
-under a test backend, reaching its two search tiers through a port and a
-request/response pair that nothing implements either. The credential store is
-in `zaru-cli`, holding named tokens on disk with no bearer value among them —
-sealing is a port with no implementation, so no secret is written anywhere —
-and caching each token's tool scope, which one Nuclear Notes session replaces
-with a single fresh listing on each of the three signals a decision record
-invalidates a cache on. The configuration hierarchy is in `zaru-cli`, resolving
-five layers over a schema that names no key, reading each layer through a port
-nothing implements. The local tool surface is in `zaru-cli` too: the seven built-in tool names, the
-working-directory boundary, and the permission model that decides whether a
-call is prompted for. **Nothing executes.** No tool runs a command, opens a
-socket or touches a file, because the acting half sits behind ports with no
-implementation, and the permission prompt itself is one of them.
+`zaru` reads its arguments, resolves configuration, and prints what is already
+on this machine. Six commands run:
 
-The sixth is the Nuclear Notes client in `zaru-notes`: a session over MCP with
-the workspace named on every read, a bearer value the type system will not
-render, an attachment that cannot be constructed without saying where it lives,
-and those three staleness signals. It reaches no network, because the transport
-is a port with no implementation and there is therefore nothing in its
-dependency tree that can open a socket. Every check against it exchanges real
-protocol bytes over an in-memory pipe.
+```sh
+zaru runtime                  # the tier, what it engages, and what changing it would alter
+zaru models                   # each model alias, what it resolved to, and which layer said so
+zaru config explain <key>     # every layer's value for one key, with the effective one marked
+zaru sessions list            # every session on this machine
+zaru sessions rm <id>         # delete a session's directory, with no tombstone
+zaru notes tokens             # the stored Nuclear Notes tokens and which is the composer's
+```
 
-The seventh is the session lifecycle, in `zaru-cli`. A session is a directory
-named by a ULID holding plain files, because a harness that shows its work
-should not store the record of that work somewhere only it can read: an
-append-only transcript of one event per line, a checkpoint rewritten
-atomically beside it, a resume that restores and never re-executes, and
-bounded retention whose deletion is real. Its `meta.toml` has no writer — the
-dependency table names no TOML crate and an approximate emitter would be the
-"for now" this harness forbids — so that file is a port with no
-implementation, like the others above.
+`--runtime <tier>` and `--model <identifier>` set the two keys the flag layer
+carries for one run. `--resume <id>` and `--continue` restore a session and
+print its transcript. `--help` lists exactly what runs and nothing else.
 
-The eighth is the error taxonomy, also in `zaru-cli`, and it is the one the
-binary reaches. Five classes of failure, each carrying by construction what its
-class owes the reader; a mapping from every error the workspace already raises
-to the class a decision record states for it; and a boundary around everything
-the binary does, so that a bug in the harness is reported as a bug in the
-harness — with the version and where to report it — rather than as a Rust
-panic. The process exits with a documented code for what happened. Today the
-binary does nothing that can fail, so the only code it can reach is `0`.
+**It cannot run a task**, and it says so rather than letting you find out: no
+provider client exists anywhere in this workspace, so there is nothing for the
+agent loop to ask. A task invocation is refused, naming what is missing.
 
-Cutting across three of those eight is one port rather than a ninth piece:
-every path from captured bytes into a model prompt passes a `Redactor`, and
-the type a prompt is built from cannot be made any other way. The single
+Ten pieces exist behind that binary and the command surface reaches six of them.
+The iteration loop and the tool-call loop are in `zaru-core`, headless, driven
+through ports that nothing in any product tree implements. The composer is in
+`zaru-tui`, rendered under a test backend, reaching its two search tiers through
+a port and a request/response pair that nothing implements either — **nothing
+this binary prints goes through it**; the terminal is unbuilt and every command
+above writes plain lines to standard output.
+
+The credential store is in `zaru-cli`, holding named tokens on disk with no
+bearer value among them — sealing is a port with no implementation, so no
+secret is written anywhere, and so `zaru notes tokens` lists nothing on a
+machine that has not been given one by a test. The configuration hierarchy is
+in `zaru-cli`, resolving five layers over a schema whose keys arrive from the
+records that own them; **three of the five layers have readers** — the built-in
+one, `ZARU_*`, and the command line — and the two that read files wait on a
+TOML parser. The local tool surface is in `zaru-cli` too: the seven built-in
+tool names, the working-directory boundary, and the permission model. Two of
+the seven act, through `std::fs`, inside that boundary; the other five sit
+behind ports with no implementation, as does the permission prompt itself.
+
+The Nuclear Notes client is in `zaru-notes`: a session over MCP with the
+workspace named on every read, a bearer value the type system will not render,
+and three staleness signals. It reaches no network, because the transport is a
+port with no implementation. Every check against it exchanges real protocol
+bytes over an in-memory pipe.
+
+The session lifecycle is in `zaru-cli`. A session is a directory named by a
+ULID holding plain files, because a harness that shows its work should not
+store the record of that work somewhere only it can read: an append-only
+transcript of one event per line, a checkpoint rewritten atomically beside it,
+a resume that restores and never re-executes, and bounded retention whose
+deletion is real. `zaru --resume` prints the transcript's own bytes for exactly
+that reason. Its `meta.toml` has no writer — the dependency table's `toml` row
+has no caller yet — so that file is a port with no implementation, like the
+others above. **The binary starts no session**: it reads the ones that are
+there and creates nothing by being asked a question.
+
+Cutting across three of the pieces above is one port rather than an eleventh:
+every path from captured bytes into a model prompt passes a `Redactor`, and the
+type a prompt is built from cannot be made any other way. The single
 implementation removes the bearer values the harness is itself holding in the
 credential store, by exact value and by the ASCII core an escaping formatter
 would leave intact. It matches no patterns and looks for nothing it does not
 hold, so a secret the harness never saw is out of scope and said to be. The
 transcript, the checkpoint and the preserved output of an oversized command
 keep the raw bytes: redaction is on what a model reads, not on the record.
+**Nothing this binary prints passes through it**, because nothing it prints is
+a prompt.
 
-No provider, no SEAL, no terminal interface, and no command surface exists.
-Seven of the eight pieces above are reachable only from their own tests.
+The error taxonomy is in `zaru-cli`, and it is what every command exits
+through. Five classes of failure, each carrying by construction what its class
+owes the reader; a mapping from every error the workspace already raises to the
+class a decision record states for it; and a boundary around everything the
+binary does, so that a bug in the harness is reported as a bug in the harness
+rather than as a Rust panic. Three of its six exit codes are now reachable from
+the real artefact: `0`, `2` for anything the reader can change, and `4` for a
+model that resolved to a provider this build cannot reach.
+
+The runtime tiers are in `zaru-cli` as well, and `zaru runtime` is the first
+thing that shows one. **The tier names are ADR-0001's and this file
+deliberately does not restate them**, because they become effectively permanent
+at first publication and the record wants its review before then.
 
 The harness is pre-alpha in the load-bearing sense too: it carries no
 backward-compatibility shims and no legacy code paths, and anything that looks
