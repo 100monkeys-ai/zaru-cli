@@ -1906,10 +1906,14 @@ fn the_pane_repaints_while_a_turn_is_suspended() {
         staged.finished.load(Ordering::SeqCst),
         "the staged turn never ran, so this check asserted nothing about a suspended one"
     );
-    assert_eq!(
-        staged.beats.load(Ordering::SeqCst),
-        5,
-        "the race waited {} beat(s) rather than the five the turn was held for",
+    // **A floor, not an equality**, and for the reason the interrupt check
+    // above records: the gate is opened by a thread, so a beat can fire before
+    // it is open and the count then runs past five. Five is the minimum the
+    // turn was held for; the equality below is the property, and it is
+    // deterministic because every beat that is polled paints.
+    assert!(
+        staged.beats.load(Ordering::SeqCst) >= 5,
+        "the race waited {} beat(s) rather than at least the five the turn was held for",
         staged.beats.load(Ordering::SeqCst)
     );
     // **An equality, not a floor.** Every beat that was waited is a beat at
@@ -2059,23 +2063,26 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
         crate::terminal::driver::Raced::Interrupted(zaru_tui::shell::Leaving::Interrupt),
         "`Ctrl-C` during a turn did not leave"
     );
-    // Staging: no beat was ever waited, because the interrupt won before the
-    // terminal fell silent. A run that got here on beats would be a run in
-    // which the interrupt was read after the turn had already been released.
-    assert_eq!(
-        staged.beats.load(Ordering::SeqCst),
-        0,
-        "the race waited {} beat(s) before the interrupt, so the keys were not read while the \
-         turn was suspended",
-        staged.beats.load(Ordering::SeqCst)
-    );
     assert!(
         !staged.finished.load(Ordering::SeqCst),
         "the turn's future ran to completion, so it was awaited rather than dropped and nothing \
          was interrupted"
     );
     // Staging: the two keys before the interrupt were read, so the race was
-    // genuinely running rather than ending on its first poll.
+    // genuinely running rather than ending on its first poll. **This is the
+    // staging assertion and there is no second one**, which is a correction
+    // rather than an omission: an earlier form also asserted that no beat had
+    // been waited before the interrupt, and that is a race, not a property.
+    // The reader is a thread, so on a loaded machine the select can poll
+    // before it has sent and a beat fires first; the interrupt still wins and
+    // the check still means what it says. **CI found it and this machine did
+    // not** -- run 33975304551 on the GitHub runner, "the race waited 1
+    // beat(s) before the interrupt", against green here every time. A
+    // probabilistic assertion is the failure library verification-lessons §57
+    // names, arriving in a check rather than in a mutation. What the composer
+    // holds is the deterministic form of the same claim: those keys can only
+    // have got there through `read_while_busy`, which only runs while the
+    // turn is suspended.
     assert_eq!(
         shell.composer().text(),
         "hi",
