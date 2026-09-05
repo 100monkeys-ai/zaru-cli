@@ -353,7 +353,7 @@ impl<'a> Surface<'a> {
     ///
     /// The user's: they supplied the value and they can supply another. The
     /// refusal names what was wrong with the shape and **never the value** —
-    /// [`SecretRefused`](crate::credentials::SecretRefused) is `Copy` and
+    /// [`SecretRefused`] is `Copy` and
     /// therefore cannot carry one.
     #[must_use]
     pub fn key_refused(kind: ProviderKind, refusal: &SecretRefused) -> Classified {

@@ -248,7 +248,7 @@ pub enum StoredReach {
 
 /// The half of a record that belongs to one family and not the other.
 ///
-/// [`Held`](crate::credentials::Held)'s on-disk form. Externally tagged
+/// [`Held`]'s on-disk form. Externally tagged
 /// rather than internally tagged, so the file reads
 /// `"held": {"notes": {…}}` — a shape a person opening
 /// `~/.zaru/credentials.json` can classify at a glance, and one
@@ -256,7 +256,7 @@ pub enum StoredReach {
 ///
 /// **A provider record has no `reach`, no `tools` and no `workspace`, and a
 /// Notes record has no provider kind.** That is the whole reason this is an
-/// enum; see [`Held`](crate::credentials::Held).
+/// enum; see [`Held`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum StoredHeld {
