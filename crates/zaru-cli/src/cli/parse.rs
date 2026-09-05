@@ -215,6 +215,7 @@ fn walk(words: Vec<String>) -> Result<(Flags, Vec<String>), CommandRefused> {
         match flag {
             Flag::Runtime => flags.overrides.tier = value,
             Flag::Model => flags.overrides.model = value,
+            Flag::Mode => flags.overrides.mode = value,
             Flag::Resume => {
                 let text = value.unwrap_or_default();
                 flags.resume =

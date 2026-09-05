@@ -64,13 +64,21 @@ pub struct Overrides {
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     pub model: Option<String>,
+    /// `--mode <mode>`, destined for `tools.mode`. [ADR-0011] D3.
+    ///
+    /// The value is not parsed here. It travels to layer 5 as text, exactly as
+    /// `--runtime` does, so `--mode fast` is refused by [`crate::tools::mode`]
+    /// naming the layer rather than by the parser with no layer to name.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub mode: Option<String>,
 }
 
 impl Overrides {
     /// Whether any flag set anything.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.tier.is_none() && self.model.is_none()
+        self.tier.is_none() && self.model.is_none() && self.mode.is_none()
     }
 }
 

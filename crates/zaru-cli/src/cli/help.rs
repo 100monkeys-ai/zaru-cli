@@ -124,23 +124,27 @@ pub fn lines(version: &str) -> Vec<String> {
     }
 
     lines.push(String::new());
-    // Rewritten 2026-09-05. The sentence here said no provider client is
-    // built, which stopped being true the day the `gemini` client landed. A
-    // help text that overstates what is missing is as wrong as one that
-    // overstates what works, and the thing actually missing is narrower: a
-    // client exists and nothing connects it to a loop.
+    // Rewritten twice on 2026-09-05, both times because it overstated what was
+    // missing. It said no provider client was built until the `gemini` client
+    // landed; it then said nothing connected a client to the agent loop, which
+    // stopped being true the moment `zaru <task>` ran a turn — and it went on
+    // saying it, in the one place a user reads to find out what this binary
+    // does, through every arc since. A help text that overstates what is
+    // missing is as wrong as one that overstates what works, and it is the
+    // more expensive way round: nobody tries the thing it disowns.
+    //
+    // Corrected on sight by the `mode-key` arc, which needed this paragraph to
+    // be true in order to add a line to the list above it.
+    lines.push("`zaru \"<task>\"` runs one turn: it asks the model, runs the tools it".to_owned());
     lines.push(
-        "This harness cannot run a task yet. One provider client is built and nothing".to_owned(),
+        "asks for under ADR-0011's permission model, and writes a transcript you can".to_owned(),
     );
     lines.push(
-        "connects it to the agent loop, so there is still nothing for the loop to ask.".to_owned(),
+        "read with `cat`. Store a key with `providers keys add <kind>` first. What it".to_owned(),
     );
-    lines.push(
-        "What runs today is the list above, which reads what is already on this machine".to_owned(),
-    );
-    lines.push(
-        "and changes none of it except `sessions rm`, `init` and `providers keys add`.".to_owned(),
-    );
+    lines
+        .push("cannot do yet: any provider kind but `gemini`, the iteration loop, or a".to_owned());
+    lines.push("conversation longer than one turn.".to_owned());
 
     lines
 }

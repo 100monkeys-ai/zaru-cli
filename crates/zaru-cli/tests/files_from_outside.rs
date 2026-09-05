@@ -196,6 +196,7 @@ fn a_value_set_in_all_five_layers_resolves_to_the_flag_and_every_layer_names_its
         &Overrides {
             tier: None,
             model: Some("layer-five".to_owned()),
+            mode: None,
         },
         [("ZARU_MODEL_DEFAULT".to_owned(), "layer-four".to_owned())],
         &Files::at(Some(&scratch.home()), Some(scratch.working_directory())),

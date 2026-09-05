@@ -1035,26 +1035,6 @@ impl Surface<'_> {
         )
     }
 
-    /// The permission mode a user's configuration set could not be taken.
-    ///
-    /// The mirror of [`Surface::allowlist`], for ADR-0011 D3's other key. Both
-    /// arms of [`ModeRefused`](crate::tools::ModeRefused) are already
-    /// user-correctable and already carry their own remedy — the project arm
-    /// names the file and where the mode does belong, the misspelling arm
-    /// names the three values D3 defines — so this adds the second remedy
-    /// ADR-0016 D2 wants beside them: the command that shows the reader every
-    /// layer's answer for the key they got wrong.
-    #[must_use]
-    pub fn mode(refusal: &crate::tools::ModeRefused) -> Classified {
-        correctable(
-            refusal,
-            run(
-                "read what the harness has for that key",
-                &format!("config explain {}", crate::tools::mode::KEY),
-            ),
-        )
-    }
-
     /// A turn that ended in a port failure.
     ///
     /// # This is where ADR-0016's own missing clause is answered

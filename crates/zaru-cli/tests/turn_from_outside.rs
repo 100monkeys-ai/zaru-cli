@@ -267,6 +267,158 @@ fn absent_everywhere(home: &Home, ran: &Ran, value: &str, core: &str, what: &str
 
 // --- The corpus -------------------------------------------------------------
 
+/// A project cannot buy itself fewer prompts, and the user can set the mode.
+///
+/// **Security corpus, and the shape of its refusal is measured rather than
+/// assumed.** ADR-0014 D6's *first* escalation is "raise the permission
+/// mode", and until 2026-09-05 there was no key for it to name. There is now,
+/// so this is the case a cloned repository would actually try.
+///
+/// **The refusal a user gets is ADR-0009's, not ADR-0014 D6's.** `tools.mode`
+/// sits under `[tools]`, which ADR-0009 D1's manifest vocabulary does not
+/// declare, so the manifest reader refuses the file one step before D6's
+/// escalation ceiling sees a value. Nothing is weakened — the project still
+/// cannot set it, and `tools::mode::field` declares it `Refused` besides —
+/// but what the reader is told names a table rather than a privilege, so this
+/// check asserts **that**, and asserts D6's sentence is *absent*, rather than
+/// claiming a refusal the harness does not give. The shadowing itself is
+/// pinned by `the_escalation_ceiling_is_shadowed_by_adr_0009s_manifest_vocabulary`
+/// in `permission_from_outside.rs`, and D6's own arm by
+/// `a_project_may_not_set_the_permission_mode_however_the_resolution_was_built`.
+///
+/// Its **accepting sibling** is the second half: the same value, in the
+/// user's own file, is taken — read back out of `config explain` because that
+/// is the only place a person can see it, and without it this check is
+/// satisfied by a harness that refuses the key from every layer.
+#[test]
+fn corpus_a_project_may_not_set_the_permission_mode_and_the_user_may() {
+    let home = Home::new("mode-project");
+
+    std::fs::write(
+        home.project().join("zaru.toml"),
+        "[tools]\nmode = \"yolo\"\n",
+    )
+    .expect("a scratch project file");
+
+    let refused = zaru(&home, &[], &["read", "the", "manifest"]);
+    assert_eq!(
+        refused.code, 2,
+        "a project file the harness will not serve is the reader's to edit, which is exit 2"
+    );
+    assert!(
+        refused.everything().contains("zaru.toml"),
+        "the refusal must name the file the reader has to edit: {}",
+        refused.everything()
+    );
+    assert!(
+        !refused.everything().contains("yolo"),
+        "a refusal that quoted the mode back would be teaching the reader the word that buys \
+         fewer prompts: {}",
+        refused.everything()
+    );
+    assert!(
+        !refused
+            .everything()
+            .contains("more privilege than the user granted"),
+        "ADR-0014 D6's own sentence reached the user, so the shadowing this check is written \
+         against is over and it should now assert D6's refusal instead: {}",
+        refused.everything()
+    );
+
+    // The accepting sibling: the same key, the same shape, in the user's own
+    // file, seen where a person can see it.
+    std::fs::remove_file(home.project().join("zaru.toml")).expect("the project file is removed");
+    std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+    std::fs::write(
+        home.path().join(".zaru").join("config.toml"),
+        "[tools]\nmode = \"allow\"\n",
+    )
+    .expect("a scratch user file");
+
+    let explained = zaru(&home, &[], &["config", "explain", "tools.mode"]);
+    assert_eq!(
+        explained.code, 0,
+        "the user's own layer is the one ADR-0011 D3 gives the mode to"
+    );
+    assert!(
+        explained.stdout.contains("tools.mode = allow"),
+        "the effective value must be the one the user wrote: {}",
+        explained.stdout
+    );
+    assert!(
+        explained.stdout.contains("\u{2190} effective"),
+        "ADR-0014 D3 requires the effective layer be marked: {}",
+        explained.stdout
+    );
+}
+
+/// A `--mode` no record defines is refused naming every mode that exists.
+///
+/// **Corpus case for ADR-0014 D5's own argument** — "a typo that silently
+/// does nothing is the worst outcome of any config system, because the user
+/// sees no change and concludes the setting does not work" — applied to the
+/// key with the most to lose from it.
+///
+/// **This is the check that decides where the mode is read.** With the read
+/// at the `Executor`, as it was first written, `--mode fast` on a machine
+/// with no model configured was discarded by the missing-model refusal above
+/// it and the harness said nothing whatever about the word the user had just
+/// typed. The mode is resolved beside the tier for that reason, and this
+/// scratch home deliberately has **no model configured**, so a read that
+/// moves back down reddens here.
+///
+/// Its **accepting sibling** is the third arm: a mode that *is* one of the
+/// three gets past this refusal to the next one, so the check is not
+/// satisfied by a harness that refuses every `--mode`.
+#[test]
+fn corpus_a_mode_no_record_defines_is_refused_naming_every_mode_that_does() {
+    let home = Home::new("mode-flag");
+
+    let refused = zaru(&home, &[], &["--mode", "fast", "write", "a", "haiku"]);
+    assert_eq!(
+        refused.code, 2,
+        "a word the user just typed is the user's to correct, which is exit 2"
+    );
+
+    let everything = refused.everything();
+    for named in ["ask", "allow", "yolo"] {
+        assert!(
+            everything.contains(named),
+            "ADR-0011 D3 defines exactly three modes and the refusal leaves out {named:?}: \
+             {everything}"
+        );
+    }
+    assert!(
+        everything.contains("fast"),
+        "the refusal must quote back what the user wrote, or they cannot find it: {everything}"
+    );
+
+    // The accepting sibling: a real mode is not what stops this run.
+    let taken = zaru(&home, &[], &["--mode", "allow", "write", "a", "haiku"]);
+    assert!(
+        !taken.everything().contains("names no permission mode"),
+        "`allow` is one of D3's three and was refused as though it were not: {}",
+        taken.everything()
+    );
+
+    // And the same value through layer 4, which the transform gives for free
+    // the moment the key is declared -- so a mode reachable by a flag and not
+    // by the environment would be a gap nobody chose.
+    let through_the_environment = zaru(
+        &home,
+        &[("ZARU_TOOLS_MODE", "fast")],
+        &["write", "a", "haiku"],
+    );
+    assert!(
+        through_the_environment
+            .everything()
+            .contains("names no permission mode"),
+        "ADR-0014 D1's transform makes ZARU_TOOLS_MODE this key's layer-4 spelling, and it did \
+         not reach the same refusal: {}",
+        through_the_environment.everything()
+    );
+}
+
 /// A task with no key held is refused naming the alias and the command, and
 /// never a key.
 ///

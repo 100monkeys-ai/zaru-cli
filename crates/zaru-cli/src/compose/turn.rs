@@ -184,6 +184,36 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         Err(refusal) => return Ran::refused(surface.tier(&refusal)),
     };
 
+    // --- ADR-0011 D3's mode, resolved beside the tier and for its reason ---
+    //
+    // This read `Mode::default()` where the `Executor` is built until
+    // 2026-09-05, with a comment saying no key was declared for it and that a
+    // user could not change the mode from the terminal. `tools.mode` is that
+    // key, and it is read **here** rather than there because a value the user
+    // just typed must be answered before the harness complains about
+    // something they did not: with the read at the `Executor`, `--mode fast`
+    // on a machine with no model configured was silently discarded by the
+    // model refusal above it, which is exactly ADR-0014 D5's "a typo that
+    // silently does nothing is the worst outcome of any config system".
+    //
+    // Beside the tier, because they are the same kind of thing: two values
+    // this turn resolves out of one configuration before it attempts
+    // anything, each refused naming its own key. Unset is `Ask`, which is
+    // D3's default rather than this composition's choice.
+    //
+    // Classified through `From<ModeRefused>` rather than through a `Surface`
+    // arm of its own, which is what `ModelTable` above already does. The
+    // taxonomy has carried a remedy **per arm** since it landed — the project
+    // arm names the file and where the mode does belong, the misspelling arm
+    // names the three values D3 defines — and a `Surface` arm here would have
+    // replaced both with one sentence about `config explain`, which is a
+    // worse answer to "I typed a word that is not a mode" than the record's
+    // own vocabulary is.
+    let mode = match Mode::from_configuration(resolution) {
+        Ok(mode) => mode,
+        Err(refusal) => return Ran::refused(Classified::from(refusal)),
+    };
+
     // --- ADR-0012 D4's model, through ADR-0014's five layers ---------------
     let model = match ModelTable::from_configuration(resolution) {
         Err(refusal) => return Ran::refused(Classified::from(refusal)),
@@ -376,17 +406,6 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         Err(refusal) => {
             return Ran::refused_having_said(lines, Surface::web_client(&refusal));
         }
-    };
-
-    // ADR-0011 D3's mode, from the user's own configuration. This read
-    // `Mode::default()` until 2026-09-05, with a comment saying no key was
-    // declared for it and that a user could not change the mode from the
-    // terminal; `tools.mode` is that key, and this is the line that made
-    // declaring it worth anything. Unset is still `Ask`, which is D3's
-    // default rather than this composition's choice.
-    let mode = match Mode::from_configuration(resolution) {
-        Ok(mode) => mode,
-        Err(refusal) => return Ran::refused_having_said(lines, Surface::mode(&refusal)),
     };
 
     let executor = Executor {

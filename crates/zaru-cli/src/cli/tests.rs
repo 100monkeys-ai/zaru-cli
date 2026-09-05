@@ -742,6 +742,7 @@ fn a_flag_reaches_the_tier_through_adr_0014s_layer_five_and_not_around_it() {
     let overrides = Overrides {
         tier: Some("linked".to_owned()),
         model: None,
+        mode: None,
     };
     let resolution =
         layers::resolve(&overrides, [], &Files::none()).expect("three readable layers fold");
@@ -783,6 +784,7 @@ fn adr_0014_layer_one_supplies_bare_and_every_higher_layer_still_wins() {
         &Overrides {
             tier: Some("contained".to_owned()),
             model: None,
+            mode: None,
         },
         [],
         &Files::none(),
@@ -797,19 +799,30 @@ fn adr_0014_layer_one_supplies_bare_and_every_higher_layer_still_wins() {
     );
 }
 
-/// A flag can reach two keys and no others.
+/// A flag can reach three keys and no others.
 ///
-/// D1 names `--tier` and `--model` for layer 5 and this harness spells the
-/// first `--runtime`, per ADR-0001 D2. What the check holds is the *count*:
-/// a flag that reached a third key would let the command line set something
-/// no record put on layer 5.
+/// D1 illustrates layer 5 as "`--tier`, `--model`, …" and names no closed
+/// list, so what belongs here is the set of keys whose **own records** give
+/// them a flag: `runtime.tier` from ADR-0001 D2 (which spells it `--runtime`),
+/// `model.default` from ADR-0012 D4, and `tools.mode` from ADR-0011 D3, which
+/// arrived on 2026-09-05. What the check holds is the *count and the
+/// spellings*: a flag that reached a fourth key would let the command line set
+/// something no record put on layer 5, and it would do it silently.
+///
+/// **This read "the two keys" until 2026-09-05.** The ellipsis in D1's own
+/// illustration is why the number is not itself a decision — the list grows
+/// when a record gives its key a flag, and this assertion is where that has to
+/// be said out loud.
+///
+/// The mutant is dropping `tools.mode` from `Flags::of`.
 #[test]
-fn layer_five_carries_exactly_the_two_keys_adr_0014_d1_names() {
+fn layer_five_carries_exactly_the_three_keys_whose_records_name_a_flag() {
     use crate::config::LayerSource;
 
     let everything = Overrides {
         tier: Some("bare".to_owned()),
         model: Some("a-model".to_owned()),
+        mode: Some("allow".to_owned()),
     };
     let document = layers::Flags::of(&everything)
         .read()
@@ -834,8 +847,12 @@ fn layer_five_carries_exactly_the_two_keys_adr_0014_d1_names() {
 
     assert_eq!(
         reached,
-        vec!["model.default".to_owned(), "runtime.tier".to_owned()],
-        "layer 5 reaches exactly the two keys ADR-0014 D1 names for it"
+        vec![
+            "model.default".to_owned(),
+            "runtime.tier".to_owned(),
+            "tools.mode".to_owned(),
+        ],
+        "layer 5 reaches exactly the three keys whose records name a flag for them"
     );
 
     let nothing = layers::Flags::of(&Overrides::default())
@@ -980,6 +997,7 @@ fn adr_0014_clause_1_a_value_set_in_all_five_layers_resolves_to_the_flag() {
         &Overrides {
             tier: None,
             model: Some("layer-five".to_owned()),
+            mode: None,
         },
         [("ZARU_MODEL_DEFAULT".to_owned(), "layer-four".to_owned())],
         &files,
@@ -1087,6 +1105,7 @@ fn the_environment_sets_the_same_keys_and_a_flag_beats_it() {
         &Overrides {
             tier: Some("linked".to_owned()),
             model: None,
+            mode: None,
         },
         [("ZARU_RUNTIME_TIER".to_owned(), "contained".to_owned())],
         &Files::none(),
@@ -1112,6 +1131,7 @@ fn a_tier_no_record_names_is_refused_once_and_the_refusal_names_its_layer() {
         &Overrides {
             tier: Some("sandboxed".to_owned()),
             model: None,
+            mode: None,
         },
         [],
         &Files::none(),

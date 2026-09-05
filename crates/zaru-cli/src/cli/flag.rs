@@ -53,6 +53,26 @@ pub enum Flag {
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
     Model,
+    /// [ADR-0011] D3's `--mode <mode>`.
+    ///
+    /// Named by ADR-0011 D3 on 2026-09-05, in the shape [ADR-0001] D2 names
+    /// `--runtime` and [ADR-0012] D4 names `--model`: **the record that owns
+    /// the key names the flag**. [ADR-0015] D2 states the flag surface's
+    /// parsing contract and lists no flags, so it needed no row for this one.
+    ///
+    /// It exists because declaring `tools.mode` gives layer 4 for free —
+    /// ADR-0014 D1's transform is mechanical, so `ZARU_TOOLS_MODE` works the
+    /// moment the key does — and layer 5 being the one layer that could not
+    /// say what the environment can would be a gap over exactly the key layer
+    /// 5 exists for, a one-off override. `crate::cli::classify`'s refusal for
+    /// a project-set mode had also promised one since the taxonomy landed:
+    /// "set the permission mode in your own configuration, the environment or
+    /// a flag instead".
+    ///
+    /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Mode,
     /// [ADR-0010] D4's `--resume <id>`.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -68,11 +88,12 @@ pub enum Flag {
 impl Flag {
     /// Every flag, in the order `--help` lists them.
     ///
-    /// The length is annotated, so a seventh fails to compile here as well as
+    /// The length is annotated, so an eighth fails to compile here as well as
     /// in every exhaustive match below.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Runtime,
         Self::Model,
+        Self::Mode,
         Self::Resume,
         Self::Continue,
         Self::Help,
@@ -85,6 +106,7 @@ impl Flag {
         match self {
             Self::Runtime => "--runtime",
             Self::Model => "--model",
+            Self::Mode => "--mode",
             Self::Resume => "--resume",
             Self::Continue => "--continue",
             Self::Help => "--help",
@@ -98,6 +120,7 @@ impl Flag {
         match self {
             Self::Runtime => Some("<tier>"),
             Self::Model => Some("<identifier>"),
+            Self::Mode => Some("<mode>"),
             Self::Resume => Some("<id>"),
             Self::Continue | Self::Help | Self::Version => None,
         }
@@ -109,6 +132,7 @@ impl Flag {
         match self {
             Self::Runtime => "set runtime.tier for this run, at ADR-0014 D1's layer 5",
             Self::Model => "set model.default for this run, at the same layer",
+            Self::Mode => "set tools.mode for this run, at the same layer: ask, allow or yolo",
             Self::Resume => "restore a session and print its transcript",
             Self::Continue => "the same, for the most recent session",
             Self::Help => "print this",
@@ -118,23 +142,26 @@ impl Flag {
 
     /// Whether the flag is a request in its own right rather than a setting.
     ///
-    /// The two settings are the two [ADR-0014] D1 names for layer 5; the four
-    /// requests each say what to do instead of what to configure, which is why
-    /// a request flag beside a subcommand is refused rather than merged.
+    /// The three settings are what layer 5 carries; the four requests each say
+    /// what to do instead of what to configure, which is why a request flag
+    /// beside a subcommand is refused rather than merged. [ADR-0014] D1
+    /// illustrates layer 5 as "`--tier`, `--model`, …" and names no closed
+    /// list, so the settings are the keys whose own records give them a flag
+    /// rather than a list this enum holds against that illustration.
     ///
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
     #[must_use]
     pub const fn is_a_request(self) -> bool {
         match self {
-            Self::Runtime | Self::Model => false,
+            Self::Runtime | Self::Model | Self::Mode => false,
             Self::Resume | Self::Continue | Self::Help | Self::Version => true,
         }
     }
 
     /// The flag with this spelling, if there is one.
     ///
-    /// Walked from [`Flag::ALL`] rather than matched against literals, so a
-    /// seventh is reachable the moment it is declared.
+    /// Walked from [`Flag::ALL`] rather than matched against literals, so an
+    /// eighth is reachable the moment it is declared.
     #[must_use]
     pub fn named(offered: &str) -> Option<Self> {
         Self::ALL

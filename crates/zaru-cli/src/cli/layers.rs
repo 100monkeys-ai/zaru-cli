@@ -29,9 +29,10 @@
 //!
 //! # What layer 5 sets, and what a flag may not reach
 //!
-//! Two keys, because D1 names two: `runtime.tier` from `--runtime`, and
-//! `model.default` from `--model`. A flag cannot reach any other key, which is
-//! a property of [`Overrides`] having two fields rather than of a check.
+//! Three keys: `runtime.tier` from `--runtime`, `model.default` from
+//! `--model`, and `tools.mode` from `--mode`, which arrived on 2026-09-05 with
+//! [ADR-0011] D3's key. A flag cannot reach any other key, which is a property
+//! of [`Overrides`] having three fields rather than of a check.
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -146,6 +147,9 @@ impl Flags {
         }
         if let Some(model) = &overrides.model {
             document.insert_path(&ModelAlias::Default.key(), Value::Text(model.clone()));
+        }
+        if let Some(mode) = &overrides.mode {
+            document.insert_path(&crate::tools::mode::key(), Value::Text(mode.clone()));
         }
         Self { document }
     }
