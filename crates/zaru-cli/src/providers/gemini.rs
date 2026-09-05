@@ -55,12 +55,25 @@
 //! trigger clause 6 reaches a provider key without a second seam. That is why
 //! the store holds it at all — see [`crate::credentials::secret`].
 //!
-//! # Nothing here is wired to a loop
+//! # This client holds one piece of conversational state, and it has to
 //!
-//! `zaru <task>` still runs no loop. This module makes a `Model` exist; the
-//! tool-call loop's wiring is another arc's, and the command surface's
-//! refusal now names the four kinds with no client instead of claiming the
-//! workspace has none.
+//! Said here because a provider client that remembers anything is a surprise
+//! worth announcing. [`map::Answered`] holds the model turns of the turn now
+//! in flight, because `generateContent` is stateless and its own guide
+//! requires every later round to resend "All model-generated steps returned
+//! in Turn 1 (including thought and function_call steps) exactly as
+//! received" — and `zaru-core`'s [`ModelRequest`] has no field for them,
+//! rightly, since a `thoughtSignature` means nothing to a headless loop.
+//!
+//! It is scoped to one turn and reset by the act of building a first
+//! request, which is [`map::request_from`]'s doing rather than this
+//! module's: a rule held at the only place that can express it instead of at
+//! a call site that could forget.
+//!
+//! **This section said "Nothing here is wired to a loop" until 2026-09-05.**
+//! That stopped being true when `composer-wiring` landed `zaru "<task>"`, and
+//! it stayed on the page for a day; the state above is the thing being wired
+//! to a loop made necessary.
 //!
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
@@ -146,6 +159,13 @@ pub struct GeminiClient {
     /// task and a datum it mutates has to be safe to read from all of them.
     /// Watched as "error: future cannot be sent between threads safely".
     last: Mutex<Option<(u64, u64)>>,
+    /// What the model has already said in the turn now in flight.
+    ///
+    /// [`map::Answered`] says why a stateless API's client has to keep this
+    /// and why the loop cannot. A `Mutex` for the same reason `last` is one:
+    /// [`Model::respond`] takes `&self` and returns a `Send` future, so
+    /// `Self: Sync` is required and a `RefCell` would not compile.
+    answered: Mutex<map::Answered>,
 }
 
 impl GeminiClient {
@@ -189,6 +209,7 @@ impl GeminiClient {
             key,
             http,
             last: Mutex::new(None),
+            answered: Mutex::new(map::Answered::default()),
         })
     }
 
@@ -217,7 +238,23 @@ impl GeminiClient {
         &self,
         request: &ModelRequest<'_>,
     ) -> Result<ModelResponse, GeminiFailure> {
-        let body = map::request_from(request)?;
+        // The turn's history, which `request_from` resets when this request
+        // begins a turn -- see `map::Answered::at_turn_boundary`, which is
+        // where that decision lives so that no call site can forget it.
+        //
+        // Scoped so the guard is dropped before the first `.await`: a
+        // `std::sync::MutexGuard` is `!Send`, and `Model::respond` returns a
+        // `Send` future, so holding one across an await would not compile.
+        // A poisoned lock means a previous holder panicked while pushing to a
+        // `Vec`, which cannot happen; the value is used either way rather
+        // than propagating a panic into an exchange.
+        let body = {
+            let mut answered = match self.answered.lock() {
+                Ok(answered) => answered,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            map::request_from(request, &mut answered)?
+        };
         let url = self.endpoint.url_for(&self.model);
 
         let response = self
@@ -262,6 +299,26 @@ impl GeminiClient {
         match self.last.lock() {
             Ok(mut slot) => *slot = Some(usage),
             Err(poisoned) => *poisoned.into_inner() = Some(usage),
+        }
+
+        // Remember this model turn **only when it asked for tools**, because
+        // that is the only case a later round exists to give it back in: a
+        // `Text` or a `Stopped` ends the turn and the next exchange arrives
+        // with no results and forgets everything anyway. The parts come from
+        // the parsed response rather than from `mapped`, which has already
+        // narrowed them to `zaru-core`'s three arms and dropped the
+        // signature the API requires back.
+        if matches!(mapped, ModelResponse::Calls { .. })
+            && let Some(parts) = answer
+                .candidates
+                .first()
+                .and_then(|candidate| candidate.content.as_ref())
+                .map(|content| content.parts.as_slice())
+        {
+            match self.answered.lock() {
+                Ok(mut answered) => answered.record(parts),
+                Err(poisoned) => poisoned.into_inner().record(parts),
+            }
         }
         Ok(mapped)
     }

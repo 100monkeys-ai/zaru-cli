@@ -1144,8 +1144,10 @@ impl Surface<'_> {
     ///
     /// The table is that record's Status tracking of 2026-09-05, written when
     /// the client landed and measured against the live endpoint. This is a
-    /// wildcard-free match over the five, so a sixth shape fails to compile
-    /// here rather than taking a neighbouring class.
+    /// wildcard-free match over the six, so a seventh shape fails to compile
+    /// here rather than taking a neighbouring class — which is how the sixth
+    /// arrived: `ResultsDoNotMatchCalls` was added to `GeminiFailure` and
+    /// this function stopped compiling until it was placed.
     ///
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     #[must_use]
@@ -1184,8 +1186,14 @@ impl Surface<'_> {
             // "the API refused the request's shape -- defect: this harness
             // built the request"; "a response body the client cannot read --
             // defect: the mapping is ours"; "a tool descriptor whose schema is
-            // not JSON -- defect: the harness supplied the descriptor".
-            F::RequestRefused { .. } | F::Unreadable { .. } | F::ToolSchemaUnreadable { .. } => {
+            // not JSON -- defect: the harness supplied the descriptor". And
+            // the sixth, added 2026-09-05: a turn whose accumulated results
+            // and remembered calls disagree in number -- defect, because both
+            // numbers are this process's and neither came from the provider.
+            F::RequestRefused { .. }
+            | F::Unreadable { .. }
+            | F::ToolSchemaUnreadable { .. }
+            | F::ResultsDoNotMatchCalls { .. } => {
                 undecided(self.version, self.report_at, session, line!())
             }
         }

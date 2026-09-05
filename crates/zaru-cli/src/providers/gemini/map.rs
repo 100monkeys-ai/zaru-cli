@@ -6,12 +6,28 @@
 //!
 //! # Why this is its own module with no I/O in it
 //!
-//! Everything here is a pure function from one value to another. That is what
-//! lets a recorded exchange — a real response body captured once and scrubbed
-//! — drive both directions offline, on a CI runner with no key and no
-//! network. [Testing] forbids a check calling a provider, and a mapping that
-//! could only be exercised through a socket would be a mapping nothing
-//! checks.
+//! Everything here is a function from values to values, and nothing here
+//! opens a socket, reads a clock or touches a file. That is what lets a
+//! recorded exchange — a real response body captured once and scrubbed —
+//! drive both directions offline, on a CI runner with no key and no network.
+//! [Testing] forbids a check calling a provider, and a mapping that could
+//! only be exercised through a socket would be a mapping nothing checks.
+//!
+//! [`request_from`] takes its history by `&mut` and resets it at a turn
+//! boundary, so it is not *pure* in the narrow sense — it was, until
+//! 2026-09-05, and that is stated rather than quietly dropped. What it buys
+//! is that the boundary cannot be forgotten by a caller, and what it costs is
+//! nothing a check can see: the transformation is still a function of the
+//! request and the prior history, and every check here still runs offline.
+//!
+//! # A round is a pair of turns, and the model's half is not optional
+//!
+//! The conversation this module builds is the prompt, then, for every round
+//! the turn has already had, the model's own turn followed by the results of
+//! the calls it made. The model's half was missing until 2026-09-05, and its
+//! absence is the whole of the `gemini-read-loop` defect — see
+//! [`Answered`] and [`wire::FunctionResponse::name`] for what it cost and
+//! how it was measured.
 //!
 //! # The three arms, and what decides between them
 //!
@@ -38,7 +54,119 @@ use super::wire;
 use serde_json::Value;
 use zaru_core::tool_call::{ModelRequest, ModelResponse, TokenUsage, ToolRequest};
 
+/// The model turns this client has already been answered with, within one
+/// turn of the loop.
+///
+/// # Why a provider client keeps state at all
+///
+/// `generateContent` is stateless and its function-calling guide says what a
+/// stateless caller owes it: "you must pass the full history of the
+/// conversation in the input field of each subsequent request. This history
+/// must include: 1. The initial user_input step. **2. All model-generated
+/// steps returned in Turn 1 (including thought and function_call steps)
+/// exactly as received.** 3. The function_result step containing the output
+/// of your executed function."
+///
+/// [`ModelRequest`] hands this client (1) and (3) and has no field for (2) —
+/// deliberately, because `zaru-core` is headless and a `thoughtSignature` is
+/// an opaque Google datum with no meaning to a loop. So the client that
+/// *received* those steps is the only thing that can give them back, and this
+/// is where it keeps them.
+///
+/// **The alternative was widening [`ToolResult`] to carry the tool's name**,
+/// which `request_from`'s own comment used to wish for. It was refused twice:
+/// it would put a provider's vocabulary into a headless port, and it would
+/// not be enough — the signature still has to come from here, and once the
+/// calls are here the name is here with them.
+///
+/// # What "exactly as received" costs, and what it does not
+///
+/// The parts are stored as [`wire::Part`] values parsed from the response and
+/// re-serialised, not as raw bytes. That round-trips every field this client
+/// declares and drops any Google adds tomorrow — which is a real limit and is
+/// stated rather than hidden. It is bounded by the same asymmetry
+/// [`wire::Part::Other`] describes: a field that turns out to be required
+/// arrives as an HTTP 400 naming it, exactly as `thought_signature` did, which
+/// is a failure a reader can act on rather than a silent degradation.
+///
+/// [`ToolResult`]: zaru_core::tool_call::ToolResult
+#[derive(Debug, Clone, Default)]
+pub struct Answered {
+    rounds: Vec<Round>,
+}
+
+/// One round of a turn: what the model said, and which calls it asked for.
+///
+/// No `PartialEq`: [`wire::Part::Other`] holds a `serde_json::Value`, which
+/// has no `Eq` at all because it can hold a float. A check asserts on the
+/// serialised request body, which is the contract anyway -- what this value
+/// equals matters only through what it makes the client send.
+#[derive(Debug, Clone)]
+struct Round {
+    /// The candidate's parts, as this client parsed them.
+    parts: Vec<wire::Part>,
+    /// The calls inside those parts, in the order the model asked.
+    calls: Vec<wire::FunctionCall>,
+}
+
+impl Answered {
+    /// Drop everything remembered if this request begins a new turn.
+    ///
+    /// # The boundary lives here, not at the call site
+    ///
+    /// [`ModelRequest::results`] is "What the tools returned so far in this
+    /// turn" and is "Empty on the first exchange", so an empty one *is* a
+    /// turn beginning — it is the only signal the port gives. Reading it
+    /// inside [`request_from`] rather than in
+    /// [`super::GeminiClient::exchange`] is what makes the rule structural:
+    /// there is no call site that can forget to reset, because building a
+    /// request is the reset.
+    ///
+    /// It covers the iteration loop too, and that is not incidental:
+    /// `compose::iterate` sends `results: &[]` on every iteration because
+    /// "an iteration's exchange is a first exchange", so an iteration cannot
+    /// inherit a turn's model history and be refused for a signature
+    /// belonging to a conversation it is not in.
+    fn at_turn_boundary(&mut self, request: &ModelRequest<'_>) {
+        if request.results.is_empty() {
+            self.rounds.clear();
+        }
+    }
+
+    /// Remember one model turn, exactly as it arrived.
+    ///
+    /// Called only when the response was [`ModelResponse::Calls`]: a turn
+    /// that answers or stops sends nothing further, so there is nothing for a
+    /// later round to be given back.
+    pub fn record(&mut self, parts: &[wire::Part]) {
+        let calls = parts
+            .iter()
+            .filter_map(|part| match part {
+                wire::Part::FunctionCall { function_call, .. } => Some(function_call.clone()),
+                wire::Part::FunctionResponse { .. }
+                | wire::Part::Text { .. }
+                | wire::Part::Other(_) => None,
+            })
+            .collect();
+        self.rounds.push(Round {
+            parts: parts.to_vec(),
+            calls,
+        });
+    }
+
+    /// How many calls this turn has asked for in total.
+    ///
+    /// The number a request's accumulated results must match, which is what
+    /// makes a mismatch reportable rather than silently truncating.
+    fn calls_asked(&self) -> usize {
+        self.rounds.iter().map(|round| round.calls.len()).sum()
+    }
+}
+
 /// Build a request body from what the loop handed the model.
+///
+/// `answered` is what the model has already said this turn, which the loop
+/// cannot supply and this client therefore keeps — see [`Answered`].
 ///
 /// # Errors
 ///
@@ -46,8 +174,22 @@ use zaru_core::tool_call::{ModelRequest, ModelResponse, TokenUsage, ToolRequest}
 /// schema is not JSON. ADR-0011 D1 declares no argument shapes, so the schema
 /// is whichever surface owns the tool — and a schema that is not JSON is that
 /// surface's defect rather than the user's or the provider's.
-pub fn request_from(request: &ModelRequest<'_>) -> Result<wire::Request, GeminiFailure> {
-    let mut contents = Vec::with_capacity(2);
+///
+/// [`GeminiFailure::ResultsDoNotMatchCalls`] when the accumulated results and
+/// the remembered calls are not the same number. A request built past that
+/// mismatch would pair a result with the wrong call's name, which is the
+/// defect this function was rewritten to remove.
+pub fn request_from(
+    request: &ModelRequest<'_>,
+    answered: &mut Answered,
+) -> Result<wire::Request, GeminiFailure> {
+    // A turn beginning is a history ending. See `Answered::at_turn_boundary`
+    // for why the decision is here and not at the caller: this is the only
+    // way to build a request, so it is the only place the rule can be held
+    // rather than remembered.
+    answered.at_turn_boundary(request);
+
+    let mut contents = Vec::with_capacity(1 + 2 * answered.rounds.len());
 
     // The prompt. `Prompt` can only be built from `Redacted`, which can only
     // be built by a `Redactor` -- so ADR-0008 clause 6's guarantee reaches
@@ -57,43 +199,69 @@ pub fn request_from(request: &ModelRequest<'_>) -> Result<wire::Request, GeminiF
         role: wire::ROLE_USER.to_owned(),
         parts: vec![wire::Part::Text {
             text: request.prompt.as_str().to_owned(),
+            thought_signature: None,
         }],
     });
 
-    // This turn's tool results, if any, as one further `user` turn. Not
-    // `"tool"` and not `"function"`: Gemini 2.0 and 2.5 accepted those and
-    // the current API does not.
+    // Every round this turn has already had, as the API's own conversation:
+    // the model's turn exactly as it arrived, then the results of the calls
+    // it made, in the order it made them.
     //
-    // `ToolResult::content` is `Redacted` too, which is the second half of
-    // clause 6's type gate -- a tool's output reaches a model through here
-    // and not through a prompt.
-    if !request.results.is_empty() {
+    // **Correlation is by position, not by id.** That is
+    // `ModelRequest::results`' own documented contract -- "What the tools
+    // returned so far in this turn, oldest first" -- and `tool_call::machine`
+    // appends each round's outcomes in call order, so position is exact even
+    // for a provider that sends no id at all. The id is still echoed, from
+    // the call rather than from the result, because Google asks for it:
+    // "Include this exact `id` in your `functionResponse` so the model can
+    // accurately map your result back".
+    //
+    // `ToolResult::content` is `Redacted`, which is the second half of clause
+    // 6's type gate -- a tool's output reaches a model through here and not
+    // through a prompt.
+    if request.results.len() != answered.calls_asked() {
+        return Err(GeminiFailure::ResultsDoNotMatchCalls {
+            results: request.results.len(),
+            calls: answered.calls_asked(),
+        });
+    }
+    let mut results = request.results.iter();
+    for round in &answered.rounds {
+        // Not `"tool"` and not `"function"` for the results below: Gemini 2.0
+        // and 2.5 accepted those and the current API does not.
+        contents.push(wire::Content {
+            role: wire::ROLE_MODEL.to_owned(),
+            parts: round.parts.clone(),
+        });
+        let mut parts = Vec::with_capacity(round.calls.len());
+        for call in &round.calls {
+            let Some(result) = results.next() else {
+                // Unreachable while the count above holds; written as a
+                // refusal rather than an `expect` because a request built on
+                // a wrong pairing is exactly what this function must not
+                // produce.
+                return Err(GeminiFailure::ResultsDoNotMatchCalls {
+                    results: request.results.len(),
+                    calls: answered.calls_asked(),
+                });
+            };
+            parts.push(wire::Part::FunctionResponse {
+                function_response: wire::FunctionResponse {
+                    id: call.id.clone(),
+                    // The tool's own name, taken from the call this client
+                    // received. See `wire::FunctionResponse::name` for what
+                    // sending the id here did.
+                    name: call.name.clone(),
+                    response: serde_json::json!({
+                        "content": result.content.as_str(),
+                        "failed": result.failed,
+                    }),
+                },
+            });
+        }
         contents.push(wire::Content {
             role: wire::ROLE_USER.to_owned(),
-            parts: request
-                .results
-                .iter()
-                .map(|result| wire::Part::FunctionResponse {
-                    function_response: wire::FunctionResponse {
-                        // Echoed, never regenerated. Google's guidance is
-                        // "Include this exact `id` in your `functionResponse`
-                        // so the model can accurately map your result back".
-                        id: (!result.id.is_empty()).then(|| result.id.clone()),
-                        // The loop's `ToolResult` carries no name -- it
-                        // correlates by id, which is the provider's own
-                        // identifier. The API wants a name, so the id is the
-                        // best-known name here; a loop that later carries the
-                        // tool name through `ToolResult` would improve this,
-                        // and that is `zaru-core`'s to decide rather than
-                        // this client's to invent.
-                        name: result.id.clone(),
-                        response: serde_json::json!({
-                            "content": result.content.as_str(),
-                            "failed": result.failed,
-                        }),
-                    },
-                })
-                .collect(),
+            parts,
         });
     }
 
@@ -162,7 +330,7 @@ pub fn response_from(
     let calls: Vec<ToolRequest> = parts
         .iter()
         .filter_map(|part| match part {
-            wire::Part::FunctionCall { function_call } => Some(ToolRequest {
+            wire::Part::FunctionCall { function_call, .. } => Some(ToolRequest {
                 // Carried, never generated. An id the provider did not send
                 // becomes an empty one rather than a number this client made
                 // up: renumbering is the failure `ToolRequest::id` is
@@ -186,7 +354,7 @@ pub fn response_from(
     let text: String = parts
         .iter()
         .filter_map(|part| match part {
-            wire::Part::Text { text } => Some(text.as_str()),
+            wire::Part::Text { text, .. } => Some(text.as_str()),
             wire::Part::FunctionCall { .. }
             | wire::Part::FunctionResponse { .. }
             | wire::Part::Other(_) => None,

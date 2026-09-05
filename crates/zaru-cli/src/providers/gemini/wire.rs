@@ -88,6 +88,27 @@ pub const ROLE_MODEL: &str = "model";
 /// a part carrying both a `text` and a `functionCall` — which the API does
 /// not document but does not forbid — is read as the call rather than as the
 /// prose beside it.
+///
+/// # Two variants carry a `thoughtSignature`, and it is not decoration
+///
+/// A model turn is **resent** to the API on every later round of a turn, and
+/// the thinking guide's rule for it is imperative: "You MUST always resend
+/// all thought blocks exactly as they were received from the model. You
+/// should NOT remove or modify thought blocks from the history, as they
+/// contain the signatures required for the model to continue its reasoning."
+/// Its note says where they live on this API — "In the `generateContent`
+/// API, there are no dedicated thought blocks. Because of this, signatures
+/// are metadata that can be attached to any part, such as living inside
+/// `functionCall` parts or the final part of a response" — which is why the
+/// field is on [`Part::FunctionCall`] and [`Part::Text`] and not on
+/// [`FunctionCall`] itself.
+///
+/// **Measured, not inferred.** A model turn resent without it is refused,
+/// HTTP 400 `INVALID_ARGUMENT`, in the API's own words: *"Function call is
+/// missing a thought_signature in functionCall parts. This is required for
+/// tools to work correctly, and missing thought_signature may lead to
+/// degraded model performance."* Eight of eight, 2026-09-05, against
+/// `gemini-3.6-flash`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Part {
@@ -96,6 +117,12 @@ pub enum Part {
     FunctionCall {
         /// The call.
         function_call: FunctionCall,
+        /// Google's opaque record of the reasoning behind this call.
+        ///
+        /// Read on the way in and written back unchanged on the way out. See
+        /// the enum's own documentation for the rule and the measurement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     /// A tool result the caller is supplying.
     #[serde(rename_all = "camelCase")]
@@ -104,9 +131,20 @@ pub enum Part {
         function_response: FunctionResponse,
     },
     /// Text, in either direction.
+    #[serde(rename_all = "camelCase")]
     Text {
         /// The text.
         text: String,
+        /// Google's opaque record of the reasoning behind this text.
+        ///
+        /// The documentation names "the final part of a response" as the
+        /// other place a signature rides, so it is carried here too. Nothing
+        /// in this client resends a `Text` part today — a turn that answers
+        /// is a turn that ends — and the field is here so that a model turn
+        /// which mixes prose with a call round-trips whole rather than
+        /// losing half of what it must be given back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     /// A part this client does not understand.
     ///
@@ -116,7 +154,16 @@ pub enum Part {
     /// recorded 2026-09-05 at `recorded/calls.json` — carried a
     /// `thoughtSignature` beside the `functionCall`, a field the reference
     /// documents nowhere. On that response it rode on the same part object as
-    /// the call, so `FunctionCall` matched it and nothing broke.
+    /// the call, so `FunctionCall` matched it.
+    ///
+    /// **What that sentence used to claim, and why it was wrong.** It said
+    /// "and nothing broke". Nothing broke *at parse time*; the field was
+    /// silently dropped, because the variant that matched had nowhere to put
+    /// it, and dropping it is one third of the defect this arm's neighbour
+    /// now carries a field for. A part that matches a variant which cannot
+    /// hold all of it is not a part that round-trips, and "the response
+    /// parsed" is a weaker statement than it reads as. Corrected 2026-09-05
+    /// by the `gemini-read-loop` arc.
     ///
     /// **A part carrying only such a field would have failed every variant,
     /// and an untagged enum with no fallback fails the whole response.** So
@@ -164,9 +211,30 @@ pub struct FunctionResponse {
     /// so it is echoed rather than regenerated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Which tool answered.
+    /// Which tool answered, by the name it was declared under.
+    ///
+    /// **The reference calls this "Required. The name of the function to
+    /// call", and it means the declaration's name rather than any identifier
+    /// the caller has to hand.** A client that sent the *call id* here
+    /// produced a request the API accepted with HTTP 200 and the model read
+    /// as a result from something it had never called: measured 2026-09-05,
+    /// the model asked for the same tool again in six runs of eight. That is
+    /// the whole of the `gemini-read-loop` defect, and it is why
+    /// [`super::map::Answered`] exists — the loop's [`ToolResult`] carries no
+    /// name, so the name has to come from the call this client itself
+    /// received.
+    ///
+    /// [`ToolResult`]: zaru_core::tool_call::ToolResult
     pub name: String,
     /// What it produced.
+    ///
+    /// The reference leaves the shape to the caller — "Callers can use any
+    /// keys of their choice that fit the function's syntax to return the
+    /// function output, e.g. `output`, `result`, etc." — and that freedom was
+    /// measured rather than assumed: the same exchange answers identically
+    /// with this client's `content` key and with `output`, eight of eight
+    /// each, 2026-09-05. So the key is not what a model reads a result by,
+    /// and it is not the thing that was wrong.
     pub response: Value,
 }
 

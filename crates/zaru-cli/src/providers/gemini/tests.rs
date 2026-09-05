@@ -109,9 +109,27 @@ fn the_url_carries_no_key_and_there_is_no_parameter_one_could_arrive_through() {
     );
 }
 
-// The request the loop's values become. Both halves: the prompt as a `user`
-// turn, and this turn's tool results as a second `user` turn -- not `tool`
-// and not `function`, which the current API does not accept.
+/// One model turn as the API returns it, for building an [`map::Answered`].
+fn model_turn(id: &str, name: &str, signature: Option<&str>) -> Vec<wire::Part> {
+    vec![wire::Part::FunctionCall {
+        function_call: wire::FunctionCall {
+            id: Some(id.to_owned()),
+            name: name.to_owned(),
+            args: serde_json::json!({"path": "notes.txt"}),
+        },
+        thought_signature: signature.map(str::to_owned),
+    }]
+}
+
+// The request the loop's values become, and all three turns of it: the prompt
+// as a `user` turn, the model's own turn resent exactly as it arrived, and
+// this turn's tool results as a further `user` turn -- not `tool` and not
+// `function`, which the current API does not accept.
+//
+// **It asserted only the first and the last until 2026-09-05**, and never the
+// `functionResponse.name` the reference calls Required, which is how a golden
+// body written over the defective function pinned a shape rather than a
+// contract.
 #[test]
 fn a_model_request_becomes_the_documented_request_body() {
     let text = "summarise the repository";
@@ -126,22 +144,52 @@ fn a_model_request_becomes_the_documented_request_body() {
         content: Redacted::by(&NothingHeld, "the file's bytes"),
         failed: false,
     }];
+    // A result exists only because the model asked for something, so the
+    // client's record of what it asked is part of the request's input. This
+    // check used to build a result turn out of nothing, which is how it
+    // asserted a shape the API accepts and the model cannot read.
+    let mut answered = map::Answered::default();
+    answered.record(&model_turn("call_a1", "fs.read", Some("sig-a1")));
 
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
         results: &results,
     };
-    let body = map::request_from(&request).expect("the schema is JSON");
+    let body = map::request_from(&request, &mut answered).expect("the schema is JSON");
     let json = serde_json::to_value(&body).expect("the body serialises");
 
     assert_eq!(json["contents"][0]["role"], "user");
     assert_eq!(json["contents"][0]["parts"][0]["text"], text);
 
-    // The result turn. `user`, and the id echoed exactly.
-    assert_eq!(json["contents"][1]["role"], "user");
-    let response = &json["contents"][1]["parts"][0]["functionResponse"];
+    // The model's own turn, which the documented history must include:
+    // "All model-generated steps returned in Turn 1 (including thought and
+    // function_call steps) exactly as received."
+    assert_eq!(
+        json["contents"][1]["role"], "model",
+        "the model's own turn is missing from the history, so the result below answers a call \
+         the model has no record of making: {json}"
+    );
+    let echoed = &json["contents"][1]["parts"][0];
+    assert_eq!(echoed["functionCall"]["name"], "fs.read");
+    assert_eq!(
+        echoed["thoughtSignature"], "sig-a1",
+        "the model turn was resent without its thought signature, which the API refuses by name: \
+         {json}"
+    );
+
+    // The result turn. `user`, the id echoed exactly, and the **name of the
+    // tool that answered** -- which is what the reference calls "Required.
+    // The name of the function to call" and what this check did not assert
+    // until 2026-09-05.
+    assert_eq!(json["contents"][2]["role"], "user");
+    let response = &json["contents"][2]["parts"][0]["functionResponse"];
     assert_eq!(response["id"], "call_a1");
+    assert_eq!(
+        response["name"], "fs.read",
+        "the result was returned under a name that is not the tool's, so the model reads it as \
+         output from something it never called: {json}"
+    );
     assert_eq!(response["response"]["content"], "the file's bytes");
     assert_eq!(response["response"]["failed"], false);
 
@@ -163,8 +211,10 @@ fn a_model_request_becomes_the_documented_request_body() {
         tools: &[],
         results: &[],
     };
-    let json = serde_json::to_value(map::request_from(&bare).expect("no schema to read"))
-        .expect("the body serialises");
+    let json = serde_json::to_value(
+        map::request_from(&bare, &mut map::Answered::default()).expect("no schema to read"),
+    )
+    .expect("the body serialises");
     assert!(
         json.get("tools").is_none(),
         "an empty tool list was sent as an empty array: {json}"
@@ -183,11 +233,14 @@ fn a_tool_schema_that_is_not_json_is_a_defect_and_is_named() {
         description: "run a command".to_owned(),
         parameters: "not json at all".to_owned(),
     }];
-    let failure = map::request_from(&ModelRequest {
-        prompt: &prompt,
-        tools: &tools,
-        results: &[],
-    })
+    let failure = map::request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &tools,
+            results: &[],
+        },
+        &mut map::Answered::default(),
+    )
     .expect_err("the schema is not JSON");
 
     assert!(failure.is_defect());
@@ -216,6 +269,7 @@ fn a_response_becomes_one_of_the_ports_three_arms() {
                 role: wire::ROLE_MODEL.to_owned(),
                 parts: vec![wire::Part::Text {
                     text: "forty-two".to_owned(),
+                    thought_signature: None,
                 }],
             }),
             finish_reason: Some(wire::FINISH_STOP.to_owned()),
@@ -245,6 +299,7 @@ fn a_response_becomes_one_of_the_ports_three_arms() {
                         name: "fs.list".to_owned(),
                         args: serde_json::json!({"path": "."}),
                     },
+                    thought_signature: None,
                 }],
             }),
             finish_reason: Some("SOMETHING_GOOGLE_ADDED_LATER".to_owned()),
@@ -562,6 +617,210 @@ fn the_recorded_tool_call_maps_to_calls_with_the_providers_own_id() {
     }
 }
 
+/// The round-two request, built from the round-one response the API really
+/// sent. This is the `gemini-read-loop` defect's regression check.
+///
+/// # What was wrong, measured rather than reasoned about
+///
+/// Until 2026-09-05 this client built a round-two body of two `user` turns:
+/// the prompt, then the results. The model's own turn was never resent, and
+/// each `functionResponse` was named for the **call id** rather than for the
+/// tool. Against `gemini-3.6-flash`, replaying one recorded round two:
+///
+/// | Shape | Result over eight trials |
+/// | --- | --- |
+/// | as shipped | answered 2, asked for the same tool again **6** |
+/// | only the name corrected | **answered 8** |
+/// | model turn resent, no signature | **HTTP 400 × 8** |
+/// | model turn resent with its signature, name corrected | **answered 8** |
+/// | model turn resent with its signature, name left as the id | **HTTP 400 × 8** |
+///
+/// The last two rows are why both halves land together: once a model turn is
+/// present the API validates the name against it, and today's request only
+/// gets a 200 because the missing turn leaves it nothing to validate against.
+#[test]
+fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
+    let answer: wire::Response =
+        serde_json::from_str(RECORDED_CALLS).expect("the recorded body parses");
+    let parts = &answer.candidates[0]
+        .content
+        .as_ref()
+        .expect("the recorded candidate carries content")
+        .parts;
+    let mut answered = map::Answered::default();
+    answered.record(parts);
+
+    let prompt = prompt("what is the weather in Zurich");
+    let results = [ToolResult {
+        id: "call_810804".to_owned(),
+        content: Redacted::by(&NothingHeld, "exit code: 0\nstdout:\n7C\nstderr:\n"),
+        failed: false,
+    }];
+    let body = map::request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &results,
+        },
+        &mut answered,
+    )
+    .expect("a recorded round maps");
+    let json = serde_json::to_value(&body).expect("the body serialises");
+    let contents = json["contents"].as_array().expect("contents is an array");
+
+    assert_eq!(
+        contents.len(),
+        3,
+        "a round-two request is the prompt, the model's turn and the results; the model's turn \
+         is what a re-reading model was never given back: {json}"
+    );
+    assert_eq!(contents[0]["role"], "user");
+    assert_eq!(contents[1]["role"], "model");
+    assert_eq!(contents[2]["role"], "user");
+
+    // The model turn, resent as it arrived. Both halves: the call, and the
+    // signature the API refuses a call without.
+    let echoed = &contents[1]["parts"][0];
+    assert_eq!(echoed["functionCall"]["name"], "get_weather");
+    assert_eq!(echoed["functionCall"]["id"], "call_810804");
+    assert_eq!(
+        echoed["thoughtSignature"],
+        serde_json::Value::String(
+            "<scrubbed: an opaque signature, 344 bytes as recorded>".to_owned()
+        ),
+        "the recorded signature was not resent, and the API's own refusal is \"Function call is \
+         missing a thought_signature in functionCall parts\": {json}"
+    );
+
+    // The result, named for the tool that produced it rather than for the
+    // call that asked. The reference: "Required. The name of the function to
+    // call."
+    let response = &contents[2]["parts"][0]["functionResponse"];
+    assert_eq!(
+        response["name"], "get_weather",
+        "the result was returned under a name that is not the declaration's, which is what made \
+         a model read its own tool output as a stranger's and ask again: {json}"
+    );
+    assert_eq!(response["id"], "call_810804");
+    assert_eq!(response["response"]["content"], results[0].content.as_str());
+
+    // The discriminating half: a `record` that kept nothing would satisfy a
+    // count assertion by leaving both the model turn and the results out, so
+    // the number of calls the round asked for is asserted too.
+    assert_eq!(
+        contents[2]["parts"]
+            .as_array()
+            .expect("the result turn has parts")
+            .len(),
+        1,
+        "the round asked for one call and the result turn must answer exactly it: {json}"
+    );
+}
+
+/// A turn's remembered model turns do not survive into the next turn.
+///
+/// The signal is [`ModelRequest::results`] being empty, which is the only one
+/// the port gives. Asserted here on the value rather than through the client,
+/// because the client needs a socket and this needs none.
+#[test]
+fn a_new_turn_forgets_what_the_last_turn_asked_for() {
+    let mut answered = map::Answered::default();
+    answered.record(&model_turn("call_1", "fs.read", Some("sig-1")));
+    answered.record(&model_turn("call_2", "fs.read", Some("sig-2")));
+
+    // No explicit reset: a request with no results IS the turn boundary, and
+    // `request_from` is the only way to build one. See
+    // `Answered::at_turn_boundary`.
+    let prompt = prompt("a second task entirely");
+    let body = map::request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &[],
+        },
+        &mut answered,
+    )
+    .expect("a first exchange maps");
+    let wire = serde_json::to_string(&body).expect("the body serialises");
+
+    assert_eq!(
+        body.contents.len(),
+        1,
+        "a turn's first request carried something from the turn before it: {wire}"
+    );
+    assert!(
+        !wire.contains("sig-1") && !wire.contains("sig-2") && !wire.contains("call_1"),
+        "a previous turn's model output reached the next turn's prompt, which is text ADR-0013's \
+         context policy did not assemble: {wire}"
+    );
+
+    // The accepting sibling: within one turn the history is carried, so this
+    // is forgetting rather than never remembering.
+    let mut answered = map::Answered::default();
+    answered.record(&model_turn("call_1", "fs.read", Some("sig-1")));
+    let results = [ToolResult {
+        id: "call_1".to_owned(),
+        content: Redacted::by(&NothingHeld, "bytes"),
+        failed: false,
+    }];
+    let body = map::request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &results,
+        },
+        &mut answered,
+    )
+    .expect("a second round maps");
+    let wire = serde_json::to_string(&body).expect("the body serialises");
+    assert!(
+        wire.contains("sig-1"),
+        "the history is not carried within a turn either, so the check above passes by the \
+         client never remembering anything: {wire}"
+    );
+}
+
+/// A result count that does not match the calls asked for is refused, and the
+/// refusal names two numbers and no content.
+#[test]
+fn results_that_do_not_match_the_calls_are_refused_rather_than_paired_wrongly() {
+    let mut answered = map::Answered::default();
+    answered.record(&model_turn("call_1", "fs.read", Some("sig-1")));
+
+    let prompt = prompt("anything");
+    let results = [
+        ToolResult {
+            id: "call_1".to_owned(),
+            content: Redacted::by(&NothingHeld, "the first file's bytes"),
+            failed: false,
+        },
+        ToolResult {
+            id: "call_2".to_owned(),
+            content: Redacted::by(&NothingHeld, "the second file's bytes"),
+            failed: false,
+        },
+    ];
+    let failure = map::request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &results,
+        },
+        &mut answered,
+    )
+    .expect_err("two results against one call is not a request this client can build");
+
+    assert!(failure.is_defect());
+    assert!(!failure.is_user_correctable());
+    assert!(!failure.is_environmental());
+    let said = failure.to_string();
+    assert!(said.contains('2') && said.contains('1'), "{said}");
+    assert!(
+        !said.contains("bytes") && !said.contains("fs.read"),
+        "the refusal quoted a tool's output or a tool's name: {said}"
+    );
+}
+
 // The text arm, against what the API actually sent.
 #[test]
 fn the_recorded_text_exchange_maps_to_text() {
@@ -680,11 +939,14 @@ fn no_tool_declaration_carries_a_keyword_geminis_schema_subset_refuses() {
     );
 
     let prompt = Prompt::new(Redacted::by(&Nothing, "read a file"));
-    let request = super::map::request_from(&ModelRequest {
-        prompt: &prompt,
-        tools: &descriptors,
-        results: &[],
-    })
+    let request = super::map::request_from(
+        &ModelRequest {
+            prompt: &prompt,
+            tools: &descriptors,
+            results: &[],
+        },
+        &mut super::map::Answered::default(),
+    )
     .expect("the seven descriptors map");
 
     let wire = serde_json::to_string(&request).expect("the request serialises");

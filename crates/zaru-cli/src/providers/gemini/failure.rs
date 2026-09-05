@@ -97,6 +97,25 @@ pub enum GeminiFailure {
         /// What the parser said.
         parser: String,
     },
+    /// The turn's accumulated results and its remembered calls are not the
+    /// same number.
+    ///
+    /// A defect of the harness for the same reason
+    /// [`Self::ToolSchemaUnreadable`] is: both sides of the count come from
+    /// this process. The alternative to refusing is a request in which some
+    /// result is returned under some other call's name, which is precisely
+    /// the shape the `gemini-read-loop` arc removed — so a mismatch is
+    /// reported rather than built past.
+    ///
+    /// **Two numbers and no content.** A result's bytes are a tool's output
+    /// and a call's name is a tool's name; neither belongs in a failure
+    /// sentence a reader will paste somewhere.
+    ResultsDoNotMatchCalls {
+        /// How many results the loop accumulated.
+        results: usize,
+        /// How many calls this client remembers asking for.
+        calls: usize,
+    },
 }
 
 impl fmt::Display for GeminiFailure {
@@ -144,6 +163,13 @@ impl fmt::Display for GeminiFailure {
                 "the tool `{tool}` was offered to a model with a parameter schema that is not \
                  JSON: {parser}. ADR-0011 D1 declares no argument shapes, so the schema is \
                  whichever surface owns the tool -- and this harness supplied it",
+            ),
+            Self::ResultsDoNotMatchCalls { results, calls } => write!(
+                f,
+                "this turn accumulated {results} tool result(s) against {calls} call(s) the \
+                 provider asked for, so a result would have been returned under some other \
+                 call's name. Neither number came from the provider -- both are this harness's \
+                 -- so the request was refused rather than built on the wrong pairing",
             ),
         }
     }
@@ -206,6 +232,7 @@ impl GeminiFailure {
             Self::RequestRefused { .. }
                 | Self::Unreadable { .. }
                 | Self::ToolSchemaUnreadable { .. }
+                | Self::ResultsDoNotMatchCalls { .. }
         )
     }
 
