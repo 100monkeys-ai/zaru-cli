@@ -8,7 +8,7 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 use crate::cli::namespace::Namespace;
-use crate::session::{Phase, Record};
+use crate::session::{Phase, Record, SaidOnce};
 use zaru_tui::shell::port::{
     CommandVocabulary, Line, Namespace as Row, Register, TranscriptSource,
 };
@@ -112,8 +112,8 @@ impl TranscriptSource for Transcript {
 
 /// Which register one record belongs in, and what it says.
 ///
-/// **No wildcard arm anywhere**, so a sixth `Record` variant has to be given a
-/// register rather than falling into the plain one — which is how a new
+/// **No wildcard arm anywhere**, so a seventh `Record` variant has to be given
+/// a register rather than falling into the plain one — which is how a new
 /// producer would otherwise render as narration and be read as narration.
 ///
 /// # It returns many lines, because one record is not always one line
@@ -159,6 +159,22 @@ fn lines_for(record: &Record) -> Vec<Line> {
                 )
             })
             .collect(),
+        // The two lines a session says once, read back on `--resume`. **Two
+        // registers, and each is the record's own.** [ADR-0002] D8 puts an
+        // event-anchored recommendation "in the same visual register as a SEAL
+        // verdict or a learning line", and a learning line is D4's and D5's,
+        // which is `Announced`. [ADR-0011] D2 says the harness "states
+        // plainly" that `bare` is not a sandbox, and `Plain` is the absence of
+        // a marker rather than a glyph chosen for it — no record names one.
+        // Deciding both by one register would be the same conflation the two
+        // rules that produce them exist to avoid.
+        Record::Said(said) => {
+            let register = match said.line {
+                SaidOnce::Notice => Register::Plain,
+                SaidOnce::Recommendation => Register::Announced,
+            };
+            vec![Line::new(register, said.text.clone())]
+        }
     }
 }
 

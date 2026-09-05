@@ -2753,3 +2753,48 @@ fn an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo() {
          says nothing:\n{ordinary}"
     );
 }
+
+/// The two once-ever lines read back in two registers, each the record's own.
+///
+/// The mutant this catches is one register for both. ADR-0002 D8 puts an
+/// event-anchored recommendation "in the same visual register as a SEAL
+/// verdict or a learning line", which is `Announced`; ADR-0011 D2 has the
+/// harness "state plainly", and `Plain` is the absence of a marker rather than
+/// a glyph nobody chose. A pane that announced the notice would put a `◈` on a
+/// sentence no record gives one to, and a pane that rendered the
+/// recommendation plainly would drop the marker D8 names for it.
+#[test]
+fn the_two_once_ever_lines_read_back_in_the_registers_their_records_give_them() {
+    let pane = Pane::of(&[
+        Record::Said(crate::session::Said {
+            line: crate::session::SaidOnce::Notice,
+            text: "bare tier has no membrane.".to_owned(),
+        }),
+        Record::Said(crate::session::Said {
+            line: crate::session::SaidOnce::Recommendation,
+            text: "no validators are declared · declare one".to_owned(),
+        }),
+    ]);
+    let lines = zaru_tui::shell::port::TranscriptSource::lines(&pane);
+
+    assert_eq!(lines.len(), 2, "one record, one line, twice: {lines:?}");
+    assert_eq!(
+        lines[0].register,
+        zaru_tui::shell::port::Register::Plain,
+        "ADR-0011 D2 has the harness state this plainly and names no marker for it",
+    );
+    assert_eq!(
+        lines[1].register,
+        zaru_tui::shell::port::Register::Announced,
+        "ADR-0002 D8 puts an event-anchored recommendation in the same register as a learning \
+         line, which is the announcement register",
+    );
+    assert_ne!(
+        lines[0].register, lines[1].register,
+        "two lines decided by two rules must not be read back through one register",
+    );
+    // The words are the record's, never composed here: ADR-0010 D2's pane
+    // "shows what the file holds, unaltered".
+    assert_eq!(lines[0].text, "bare tier has no membrane.");
+    assert_eq!(lines[1].text, "no validators are declared · declare one");
+}

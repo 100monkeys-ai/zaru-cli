@@ -57,7 +57,7 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 
 use crate::session::checkpoint::{Checkpoint, CheckpointError};
-use crate::session::record::{Phase, Record, ToolCall};
+use crate::session::record::{Phase, Record, SaidOnce, ToolCall};
 use crate::session::store::{CHECKPOINT_FILE, TRANSCRIPT_FILE};
 use crate::session::transcript::{Transcript, TranscriptError};
 use core::fmt;
@@ -95,6 +95,59 @@ impl Interrupted {
         redactor: &R,
     ) -> zaru_core::iteration::Interruption {
         zaru_core::iteration::Interruption::of(Redacted::by(redactor, &self.call.line))
+    }
+}
+
+/// Which once-ever lines this session has already said.
+///
+/// # Two booleans and not one, because there are two rules
+///
+/// [ADR-0011] D2's notice and [ADR-0002] D8's recommendation are both stated
+/// once and both rebuilt when a process opens, but what "already said" means
+/// differs for them and so does what re-checks the condition each process.
+/// This type reports the two facts and **decides neither**: the decisions are
+/// [`SessionNotice::for_tier_in_session`](crate::tools::SessionNotice) and
+/// [`MissingManifest::for_manifest_in_session`](crate::manifest::MissingManifest),
+/// each beside the carrier it gates. A single flag here would be the "two
+/// rules in one place" shape ADR-0002's own Status tracking names.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlreadySaid {
+    notice: bool,
+    recommendation: bool,
+}
+
+impl AlreadySaid {
+    /// A session that has said neither.
+    ///
+    /// What a session being minted has, and it is a **fact rather than a
+    /// default**: `compose::turn::task` creates the directory it is about to
+    /// run turn one in, so its transcript holds nothing because nothing has
+    /// happened yet.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            notice: false,
+            recommendation: false,
+        }
+    }
+
+    /// Whether [ADR-0011] D2's not-a-sandbox notice is on this transcript.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    #[must_use]
+    pub const fn notice(&self) -> bool {
+        self.notice
+    }
+
+    /// Whether [ADR-0002] D8's recommendation is.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    #[must_use]
+    pub const fn recommendation(&self) -> bool {
+        self.recommendation
     }
 }
 
@@ -164,6 +217,13 @@ pub struct Resumed {
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     pub turns: u32,
+    /// Which once-ever lines this session has already said.
+    ///
+    /// **Derived over every record rather than over the tail**, for the reason
+    /// [`Resumed::turns`] is: what a session has already said is not a
+    /// property of how much of it somebody asked to see. `said_so_far` in this
+    /// module carries the rest.
+    pub said: AlreadySaid,
     /// A call that was in flight when the process died, if one was.
     pub interrupted: Option<Interrupted>,
     /// How many bytes of a partial line the transcript ends with, if any.
@@ -205,6 +265,8 @@ pub fn resume(directory: &Path, tail: usize) -> Result<Resumed, ResumeFailure> {
         // caller wants re-rendered, and a session's turn count is not a
         // property of how much of it somebody asked to see.
         turns: turns_so_far(&reading.records),
+        // Over every record, for the same reason and stated at the field.
+        said: said_so_far(&reading.records),
         interrupted: unfinished_call(&reading.records),
         tail: reading.tail(tail).to_vec(),
         tail_lines: reading.tail_lines(tail).to_vec(),
@@ -263,6 +325,61 @@ fn turns_so_far(records: &[Record]) -> u32 {
         })
         .max()
         .unwrap_or(0)
+}
+
+/// Which once-ever lines this session has said, read off its transcript.
+///
+/// # The transcript is the session's memory, and it is the only store
+///
+/// [ADR-0002]'s Status tracking rules that "the transcript is the session's
+/// memory and is where that counter belongs — a line that is already a record
+/// in a session's transcript is not appended to it again". This function is
+/// that reading, and it is the **only** derivation: the two decisions below
+/// it read this and nothing else.
+///
+/// **Not the checkpoint, which would work today and is the wrong store.** Both
+/// sentences already reach [ADR-0010] D3's `context.json`, because they are
+/// part of the turn's answer and `compose::boundary::exchange_of_turn` puts
+/// that in [ADR-0013] D1's layer 6. Reading them back from there would put a
+/// permanent counter inside the one structure whose whole job is to discard —
+/// D2 of this record calls the transcript history and the checkpoint a
+/// checkpoint, and `compose::boundary` says the checkpoint holds "layer 6 and
+/// nothing else".
+///
+/// **Not `turn_started` either.** Deriving "said" from "a turn has happened"
+/// is unsound in the direction of silence, and differently for each line. The
+/// tier is resolved per process — `runtime.tier` is settable at [ADR-0014]
+/// D1's layers 2, 4 and 5, and `meta.toml` records only the tier the session
+/// was *created* at — so a session started at `contained` and resumed at
+/// `bare` has a `turn_started` record and has never said the notice. And a
+/// project that had a `zaru.toml` on turn one and lost it before the resume
+/// was never owed the recommendation. Both readings would suppress a line
+/// that was never shown.
+///
+/// # A trailing fragment is not a record, and that is [ADR-0010] D2's own cost
+///
+/// `Transcript::read` splits at the last newline and reports the tail as
+/// `Reading::fragment`, so a `said` record that was the event in flight when
+/// the process died is not seen here and the line is stated again. D2's
+/// promise is "a crash loses **at most the event in flight**", and this is
+/// exactly that loss rather than an extra one. `turns_so_far` above carries
+/// the same exposure and was decided the same way.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+fn said_so_far(records: &[Record]) -> AlreadySaid {
+    let mut said = AlreadySaid::none();
+    for record in records {
+        if let Record::Said(spoken) = record {
+            match spoken.line {
+                SaidOnce::Notice => said.notice = true,
+                SaidOnce::Recommendation => said.recommendation = true,
+            }
+        }
+    }
+    said
 }
 
 /// The call that started and never finished, if there is one.

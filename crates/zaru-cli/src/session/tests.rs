@@ -1959,3 +1959,193 @@ fn a_stored_attachment_identity_with_no_workspace_is_refused_on_the_way_back_in(
     serde_json::from_str::<Record>(&sound)
         .expect("the same record with a workspace named is a value the constructor accepts");
 }
+
+// ---------------------------------------------------------------------------
+// D2's sixth producer — a line this session says once and never again
+// ---------------------------------------------------------------------------
+
+/// The two once-ever lines are two records on disk, not one.
+///
+/// ADR-0010 D2's sixth producer, accepted 2026-09-05 under directive 20. The
+/// mutant this catches is the two `SaidOnce` variants being indistinguishable
+/// on disk — one spelling, or a `bool` — which would make
+/// `SessionNotice::for_tier_in_session` and
+/// `MissingManifest::for_manifest_in_session` decide by one rule, the shape
+/// ADR-0002's Status tracking names as "two rules in one place".
+#[test]
+fn a_line_said_once_is_a_record_that_names_which_line_it_was() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 41))
+        .expect("could not start a session");
+
+    let notice = Record::Said(crate::session::Said {
+        line: crate::session::SaidOnce::Notice,
+        text: "bare tier has no membrane.".to_owned(),
+    });
+    let recommendation = Record::Said(crate::session::Said {
+        line: crate::session::SaidOnce::Recommendation,
+        text: "no validators are declared · declare one".to_owned(),
+    });
+
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    transcript.record(&notice).expect("could not append");
+    transcript
+        .record(&recommendation)
+        .expect("could not append");
+
+    assert_eq!(
+        notice.producer(),
+        "said",
+        "the sixth producer needs a name of its own; `producer` is a total function and this is \
+         the name it chose",
+    );
+
+    let reading = Transcript::read(&session.transcript_path()).expect("the transcript reads back");
+    assert_eq!(
+        reading.records,
+        vec![notice, recommendation],
+        "both records must round-trip as themselves; two lines that come back as one are two \
+         rules deciding by one witness",
+    );
+    // Read off the bytes rather than the parse, because a serialisation that
+    // spelled both variants the same way would round-trip through a `Deserialize`
+    // that had also been changed.
+    assert!(
+        reading.lines[0].contains("\"line\":\"notice\"")
+            && reading.lines[1].contains("\"line\":\"recommendation\""),
+        "the two lines must be told apart on disk by a reader with nothing but the file: {:?}",
+        reading.lines,
+    );
+}
+
+/// A resumed session reads which once-ever lines it has already said.
+///
+/// The mutant this catches is the witness being derived over the **tail**
+/// rather than over every record: the `said` records here are the oldest in
+/// the file and the resume asks for one record. `Resumed::turns` is derived
+/// the same way and for the same reason — what a session has already said is
+/// not a property of how much of it somebody asked to see.
+#[test]
+fn a_resumed_session_reads_which_once_ever_lines_it_has_already_said() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+
+    let spoken = store
+        .start(id_at(1_700_000_000_000, 42))
+        .expect("could not start a session");
+    let mut transcript =
+        Transcript::append_to(spoken.transcript_path()).expect("could not open the transcript");
+    transcript
+        .record(&Record::Said(crate::session::Said {
+            line: crate::session::SaidOnce::Notice,
+            text: "bare tier has no membrane.".to_owned(),
+        }))
+        .expect("could not append");
+    // Everything after it, so a derivation over the tail cannot see the record
+    // above and a derivation over the file can.
+    for seq in 0..6u64 {
+        transcript
+            .record(&Record::Loop(super::fixtures::sequenced_event(seq, 8)))
+            .expect("could not append");
+    }
+
+    let resumed = crate::session::resume(spoken.directory(), 1).expect("the session resumed");
+    assert!(
+        resumed.said.notice(),
+        "this session's transcript says it stated ADR-0011 D2's notice, and a resume that read \
+         only the tail did not see it",
+    );
+    assert!(
+        !resumed.said.recommendation(),
+        "nothing in this transcript says ADR-0002 D8's recommendation was ever shown",
+    );
+
+    // The accepting sibling: a session that has said neither must report
+    // neither, so a witness that answered `true` for everything could not pass
+    // both halves.
+    let silent = store
+        .start(id_at(1_700_000_000_001, 43))
+        .expect("could not start a session");
+    let resumed = crate::session::resume(silent.directory(), usize::MAX).expect("it resumed");
+    assert!(
+        !resumed.said.notice() && !resumed.said.recommendation(),
+        "a session that has said nothing has said neither line",
+    );
+}
+
+/// A `said` record that was the event in flight is not a line this session said.
+///
+/// ADR-0010 D2: "Append-only means a crash loses **at most the event in
+/// flight**." `Transcript::read` splits at the last newline and reports the
+/// tail as `Reading::fragment`, so a torn `said` record is exactly that loss
+/// and the line is stated again — the same exposure `turns_so_far` carries and
+/// the same answer it was given. The mutant this catches is counting the
+/// fragment, which would suppress a line the reader never saw.
+#[test]
+fn a_torn_said_record_is_not_a_line_this_session_said() {
+    use std::io::Write as _;
+
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 44))
+        .expect("could not start a session");
+    let path = session.transcript_path();
+
+    let mut transcript = Transcript::append_to(&path).expect("the transcript opened");
+    transcript
+        .record(&Record::Loop(super::fixtures::sequenced_event(0, 8)))
+        .expect("could not append");
+
+    // Serialised through the same path a whole record takes and then cut, so
+    // it is a genuine half-written record rather than arbitrary bytes.
+    let whole = serde_json::to_string(&Record::Said(crate::session::Said {
+        line: crate::session::SaidOnce::Notice,
+        text: "bare tier has no membrane.".to_owned(),
+    }))
+    .expect("a record serialises");
+    let mut raw = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("the transcript is appendable");
+    raw.write_all(&whole.as_bytes()[..whole.len() / 2])
+        .expect("could not tear a line");
+    raw.flush().expect("could not flush the tear");
+
+    let resumed = crate::session::resume(session.directory(), usize::MAX).expect("it resumed");
+    assert!(
+        resumed.fragment.is_some(),
+        "the staging is asserted: without a fragment this check holds nothing",
+    );
+    assert!(
+        !resumed.said.notice(),
+        "a torn record is D2's event in flight and was never a complete line on disk; counting \
+         it suppresses a statement the reader may never have seen",
+    );
+
+    // The accepting sibling: the same record, whole, in a session of its own —
+    // appending it after the tear would make the torn line a *complete* line
+    // that does not parse, which is a different thing and is refused.
+    let intact = store
+        .start(id_at(1_700_000_000_001, 45))
+        .expect("could not start a session");
+    let mut transcript =
+        Transcript::append_to(intact.transcript_path()).expect("the transcript opened");
+    transcript
+        .record(&Record::Loop(super::fixtures::sequenced_event(0, 8)))
+        .expect("could not append");
+    transcript
+        .record(&Record::Said(crate::session::Said {
+            line: crate::session::SaidOnce::Notice,
+            text: "bare tier has no membrane.".to_owned(),
+        }))
+        .expect("could not append");
+    let resumed = crate::session::resume(intact.directory(), usize::MAX).expect("it resumed");
+    assert!(
+        resumed.fragment.is_none() && resumed.said.notice(),
+        "a complete record is a line this session said",
+    );
+}

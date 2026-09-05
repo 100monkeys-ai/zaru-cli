@@ -9,10 +9,11 @@
 //!
 //! # A producer is a variant, never a string
 //!
-//! Eight producers are named above and **five exist in this workspace**:
+//! Eight producers are named above and **six exist in this workspace**:
 //! `zaru-core`'s [`Event`], its outer-loop [`TurnEvent`], [ADR-0011] D4's
-//! transcript entry, [ADR-0016] D1's five classes, and — since 2026-09-05 —
-//! [ADR-0013] D2's compaction. Each is a variant of [`Record`], so a sixth
+//! transcript entry, [ADR-0016] D1's five classes, [ADR-0013] D2's
+//! compaction, and — since 2026-09-05 — a line this session says once and
+//! never again. Each is a variant of [`Record`], so a seventh
 //! producer is a variant and every match over the enum fails to compile
 //! rather than a `kind` string being invented at a call site — the same
 //! closed-enum discipline [`Class`](crate::failure::Class),
@@ -43,6 +44,33 @@
 //! that the user not be left wondering what happened.
 //!
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+//!
+//! # A line said once is a record here, and that is the same argument again
+//!
+//! [ADR-0011] D2 states "once at session start" that `bare` is not a sandbox;
+//! [ADR-0002] D8's event-anchored recommendation — which is [ADR-0009] D4's
+//! missing-validators line — "fires at most once ever". Both carriers are
+//! rebuilt when a **process** opens, so before [`Record::Said`] there was
+//! nothing on disk saying either had been said, and a session resumed a
+//! second time said both again.
+//!
+//! **The counter belongs here rather than anywhere else, and two records say
+//! so.** ADR-0002's Status tracking rules that "the transcript is the
+//! session's memory and is where that counter belongs — a line that is
+//! already a record in a session's transcript is not appended to it again".
+//! And D2 of this record makes the transcript "a replayable record:
+//! re-rendering it reproduces what the user saw" — which is the same sentence
+//! that put D3's compaction announcement inside [`Record::Compacted`] two
+//! sections above, applied to two more lines the user was shown and the file
+//! did not hold.
+//!
+//! It is a **sixth producer**, accepted 2026-09-05 under directive 20 as an
+//! Update to ADR-0010 D2 and open to Jeshua's veto: D2's own producer list
+//! ends at "learning announcements", which are ADR-0002 D4's and D5's, and
+//! neither of these two lines is one.
+//!
+//! [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+//! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 //!
 //! # The tool call is stored as its rendered line, and that is D2's own claim
 //!
@@ -207,6 +235,50 @@ impl FailureLine {
     }
 }
 
+/// Which of the two once-ever lines a [`Record::Said`] is about.
+///
+/// **Two variants and not a string, because the two are decided by two
+/// different rules.** [ADR-0011] D2's notice is a property of a *tier* — the
+/// sentence is false anywhere there is a membrane, so the tier is re-read
+/// every process and this record only says the statement was made. [ADR-0002]
+/// D8's recommendation is a *line in the pane* — what "already in the
+/// transcript" means for it is literally that this line was shown. A reader
+/// that could not tell them apart would decide both by one rule, which is the
+/// shape ADR-0002's own Status tracking names as "two rules in one place".
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaidOnce {
+    /// [ADR-0011] D2's not-a-sandbox notice, stated "once at session start".
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    Notice,
+    /// [ADR-0002] D8's event-anchored recommendation, which "fires at most
+    /// once ever" and is [ADR-0009] D4's missing-validators line.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    Recommendation,
+}
+
+/// A line this session has said and will not say again.
+///
+/// The text is carried for the reason [`Record::Compacted`] carries its
+/// announcements: D2's replayability claim is that "re-rendering it
+/// reproduces what the user saw", and a line the user was shown that the file
+/// does not hold breaks it. The [`SaidOnce`] is what the *decision* is made
+/// from; the text is what a re-rendering needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Said {
+    /// Which of the two lines this was.
+    pub line: SaidOnce,
+    /// The sentence, exactly as the reader was shown it.
+    pub text: String,
+}
+
 /// One line of [ADR-0010] D2's transcript.
 ///
 /// **Externally tagged**, so a line is one JSON object whose single key names
@@ -238,12 +310,21 @@ pub enum Record {
     /// anything and appears on neither event stream, which is why it is a
     /// variant here and not an `Event`.
     Compacted(Compaction),
+    /// A line this session said once and will not say again.
+    ///
+    /// A sixth producer, and the one that makes "once" a property of the
+    /// **session** rather than of the process it was said in: the two
+    /// carriers are rebuilt when a process opens, and this is what a later
+    /// process reads to know the line is already spent. See the module
+    /// documentation for why the transcript is where that counter belongs and
+    /// why it is not derived from the checkpoint.
+    Said(Said),
 }
 
 impl Record {
     /// Which producer this line came from.
     ///
-    /// A total function over the enum with **no wildcard arm**, so a fourth
+    /// A total function over the enum with **no wildcard arm**, so a further
     /// producer cannot arrive without a name being chosen for it here.
     #[must_use]
     pub const fn producer(&self) -> &'static str {
@@ -253,6 +334,7 @@ impl Record {
             Self::ToolCall(_) => "tool_call",
             Self::Failure(_) => "failure",
             Self::Compacted(_) => "compacted",
+            Self::Said(_) => "said",
         }
     }
 }

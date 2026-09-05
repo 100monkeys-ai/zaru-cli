@@ -107,8 +107,8 @@ pub use id::{
 };
 pub use meta::file::MetaFile;
 pub use meta::{Meta, MetaFailure, MetaStore};
-pub use record::{FailureLine, Phase, Record, ToolCall};
-pub use resume::{Interrupted, ResumeFailure, Resumed, resume};
+pub use record::{FailureLine, Phase, Record, Said, SaidOnce, ToolCall};
+pub use resume::{AlreadySaid, Interrupted, ResumeFailure, Resumed, resume};
 pub use retention::{PruneFailure, Pruned, RetentionWindow, WindowRefused, prune, remove};
 pub use store::{
     CHECKPOINT_FILE, META_FILE, SESSIONS_DIRECTORY, Session, SessionError, SessionStore,
