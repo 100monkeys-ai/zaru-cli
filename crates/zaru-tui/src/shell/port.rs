@@ -249,6 +249,21 @@ pub trait TranscriptSource {
 pub struct Confirmation {
     /// The whole sentence the prompt states.
     pub statement: String,
+    /// What follows it: the answers, and which of them is the default.
+    ///
+    /// # Handed across, for the same reason the statement is
+    ///
+    /// `zaru-cli`'s plain prompt already spells this once, as
+    /// `tools::prompt::SUFFIX`, and that constant landed first. Spelling it
+    /// again here would put the vocabulary a user reads in two places, and
+    /// [ADR-0011] D3's whole argument for composing the statement once is
+    /// that what the user was told and what the harness believes it asked
+    /// cannot be allowed to drift apart. **The `y/N` a user reads is part of
+    /// what they were told.** So it crosses the port as a value and this
+    /// crate holds no constant for it.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub answers: String,
     /// Whether [ADR-0011] D6 matched, so the prompt can be raised without
     /// re-deriving why.
     ///
@@ -257,11 +272,12 @@ pub struct Confirmation {
 }
 
 impl Confirmation {
-    /// A question.
+    /// A question, its answers, and whether it is a loud one.
     #[must_use]
-    pub fn new(statement: impl Into<String>, prominent: bool) -> Self {
+    pub fn new(statement: impl Into<String>, answers: impl Into<String>, prominent: bool) -> Self {
         Self {
             statement: statement.into(),
+            answers: answers.into(),
             prominent,
         }
     }

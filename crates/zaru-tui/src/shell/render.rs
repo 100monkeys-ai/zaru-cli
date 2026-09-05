@@ -34,16 +34,6 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line as TextLine;
 use ratatui::widgets::Paragraph;
 
-/// What a confirmation prompt states after the question.
-///
-/// The capital is the default, which is the convention every shell tool on a
-/// terminal already uses, and the default is **decline** — [ADR-0011] D3 makes
-/// `ask` the default mode because it is the safe one, and a prompt whose
-/// default acted would not be that.
-///
-/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-pub const ANSWERS: &str = "[y/N]";
-
 /// What a prominent prompt is prefixed with, per [ADR-0011] D6.
 ///
 /// D6: "Surfacing beats forbidding." The marking raises the prompt without
@@ -84,6 +74,11 @@ impl Shell {
     }
 
     /// What the composer's area shows: the prompt, or a standing question.
+    ///
+    /// The answers line is the one `zaru-cli`'s plain prompt writes, handed
+    /// across rather than spelled again — see [`Confirmation::answers`].
+    ///
+    /// [`Confirmation::answers`]: crate::shell::Confirmation::answers
     #[must_use]
     pub fn prompt_lines(&self) -> Vec<String> {
         match self.asking() {
@@ -94,7 +89,7 @@ impl Shell {
                 } else {
                     question.statement.clone()
                 };
-                vec![statement, ANSWERS.to_owned()]
+                vec![statement, question.answers.clone()]
             }
         }
     }

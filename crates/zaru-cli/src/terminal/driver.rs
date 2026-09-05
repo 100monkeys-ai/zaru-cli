@@ -92,16 +92,43 @@ impl<R: Restore> Drop for Guard<R> {
 
 /// [ADR-0011] D3's question, as the shell renders it.
 ///
-/// The statement crosses unchanged. That record's port says the sentence "is
-/// composed once, by the decision, and handed here — rather than composed
-/// where it is rendered — so that what the user was told and what the harness
-/// believes it asked cannot drift apart", and a conversion that reworded it
-/// would be the drift that sentence forbids.
+/// # Two renderings of one question, and one source for every word in it
 ///
+/// [`crate::tools::prompt`] is the plain one, "for the surface that writes
+/// plain lines to standard output"; this is the terminal's, which paints the
+/// same question in a pane. **Both reach the same [`Confirm`] port with the
+/// same [`Question`]**, which is what that module's own documentation
+/// anticipates.
+///
+/// So nothing a user reads is spelled twice. The statement crosses unchanged —
+/// D3's port says it "is composed once, by the decision, and handed here...
+/// so that what the user was told and what the harness believes it asked
+/// cannot drift apart", and a conversion that reworded it would be that drift.
+/// **The answers cross too**, as [`prompt::SUFFIX`] trimmed of the padding the
+/// plain line needs and the pane does not: the `y/N` a user reads is part of
+/// what they were told, and it landed in `prompt` first, so `zaru-tui` holds
+/// no constant for it.
+///
+/// # What is deliberately *not* shared, because the inputs differ
+///
+/// [`prompt::answer`] reads a typed line and this pane reads a keystroke.
+/// There is no line to trim and no end-of-input to see, so the two rules
+/// cannot be one function. What they agree on is the only case they share and
+/// it is asserted rather than assumed:
+/// `the_pane_and_the_plain_prompt_agree_on_what_a_yes_is` drives an explicit
+/// `y` through both and a decline through both.
+///
+/// [`Confirm`]: crate::tools::port::Confirm
+/// [`prompt::SUFFIX`]: crate::tools::prompt::SUFFIX
+/// [`prompt::answer`]: crate::tools::prompt::answer
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[must_use]
 pub fn question_for_the_shell(question: &Question) -> Confirmation {
-    Confirmation::new(question.statement.clone(), question.prominent)
+    Confirmation::new(
+        question.statement.clone(),
+        crate::tools::prompt::SUFFIX.trim(),
+        question.prominent,
+    )
 }
 
 /// What the fall-through in [`dispatch`] says.

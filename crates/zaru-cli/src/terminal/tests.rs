@@ -366,9 +366,20 @@ fn a_confirmation_renders_its_default_through_the_pump() {
     run(&mut shell, &mut surface, &runner, &NoTrie, &Vocabulary).expect("pump");
 
     let first = surface.frames.first().expect("no frame was painted");
+    // The vocabulary asserted here is the plain prompt's own constant, so this
+    // cannot pass by two spellings agreeing: there is one source and the pane
+    // paints what it was handed. **The constant is deliberately not repeated
+    // here** -- writing `[y/N]` in this check would be the second spelling the
+    // lift removed, one layer out. What is asserted instead is that it says
+    // something, so the `contains` below cannot pass on an empty needle.
+    let vocabulary = crate::tools::prompt::SUFFIX.trim();
     assert!(
-        first.iter().any(|row| row.contains("[y/N]")),
-        "the default is not in the first frame: {first:#?}"
+        !vocabulary.is_empty(),
+        "the plain prompt's answers are empty, so the assertion below is `contains(\"\")`"
+    );
+    assert!(
+        first.iter().any(|row| row.contains(vocabulary)),
+        "the plain prompt's answers line is not in the pane's first frame: {first:#?}"
     );
     assert!(
         first.iter().any(|row| row.contains("! run `rm -rf build`")),
@@ -378,6 +389,63 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         shell.answer(),
         Some(false),
         "Enter through the pump did not decline"
+    );
+}
+
+/// The pane and the plain prompt agree on the one case they share.
+///
+/// # They cannot be one function, and this says why rather than sharing a name
+///
+/// `tools::prompt::answer` reads a **typed line** — it trims, it accepts `yes`
+/// as well as `y`, and it treats end of input as a no. The pane reads a
+/// **keystroke**: there is no line to trim, no `yes` to spell, and no end of
+/// input to see. So the two rules are two rules, and forcing them into one
+/// would mean inventing an input model neither surface has.
+///
+/// What they share is the answer to "what is a yes", and that is asserted on
+/// both sides here rather than assumed from the fact that both say `y`. The
+/// decline arm is the one that discriminates: an implementation where
+/// everything accepts would pass the first assertion alone.
+#[test]
+fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
+    use crate::tools::prompt::answer;
+
+    assert!(answer(Some("y")), "the plain prompt does not accept `y`");
+    assert!(!answer(Some("")), "the plain prompt accepts an empty line");
+    assert!(!answer(None), "the plain prompt accepts end of input");
+
+    let mut accepting = shell();
+    accepting.ask(question_for_the_shell(&Question {
+        statement: "run `rm -rf build`".to_owned(),
+        prominent: false,
+    }));
+    let _ = accepting.key(
+        press(Key::Char('y')),
+        core::time::Duration::from_millis(1),
+        &NoTrie,
+        &Vocabulary,
+    );
+    assert_eq!(
+        accepting.answer(),
+        Some(true),
+        "the pane does not accept `y`"
+    );
+
+    let mut declining = shell();
+    declining.ask(question_for_the_shell(&Question {
+        statement: "run `rm -rf build`".to_owned(),
+        prominent: false,
+    }));
+    let _ = declining.key(
+        press(Key::Enter),
+        core::time::Duration::from_millis(1),
+        &NoTrie,
+        &Vocabulary,
+    );
+    assert_eq!(
+        declining.answer(),
+        Some(false),
+        "the pane accepts the default, where the plain prompt declines an empty line"
     );
 }
 

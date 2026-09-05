@@ -15,6 +15,16 @@ const WIDTH: u16 = 60;
 const HEIGHT: u16 = 16;
 const NOW: Duration = Duration::from_millis(10);
 
+/// The answers line a check hands the shell.
+///
+/// **A literal this check owns, and deliberately not the product's.** The one
+/// source is `zaru_cli::tools::prompt::SUFFIX`, which this crate cannot name;
+/// what the shell owes is to paint whatever it was handed, and a check that
+/// read the product's constant would be comparing it with itself.
+/// `zaru-cli`'s `a_confirmation_renders_its_default_through_the_pump` is where
+/// the real vocabulary is asserted to reach the buffer.
+const STAGED_ANSWERS: &str = "[y/N]";
+
 fn shell() -> Shell {
     Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"))
 }
@@ -119,7 +129,11 @@ fn the_status_line_names_the_tier_in_every_state() {
     states.push(("a pane longer than the terminal", full));
 
     let mut asking = shell();
-    asking.ask(Confirmation::new("delete every file under /tmp", true));
+    asking.ask(Confirmation::new(
+        "delete every file under /tmp",
+        STAGED_ANSWERS,
+        true,
+    ));
     states.push(("a standing confirmation", asking));
 
     for (what, shell) in states {
@@ -485,7 +499,11 @@ fn an_interrupt_leaves_from_the_middle_of_a_line() {
 #[test]
 fn a_confirmation_defaults_to_decline() {
     let mut shell = shell();
-    shell.ask(Confirmation::new("run `rm -rf build`", false));
+    shell.ask(Confirmation::new(
+        "run `rm -rf build`",
+        STAGED_ANSWERS,
+        false,
+    ));
     let (rows, _) = painted(&shell, WIDTH, HEIGHT);
     assert!(
         rows.iter().any(|row| row.contains("[y/N]")),
@@ -506,7 +524,11 @@ fn a_confirmation_defaults_to_decline() {
 #[test]
 fn an_explicit_yes_accepts() {
     let mut shell = shell();
-    shell.ask(Confirmation::new("run `rm -rf build`", false));
+    shell.ask(Confirmation::new(
+        "run `rm -rf build`",
+        STAGED_ANSWERS,
+        false,
+    ));
     assert_eq!(key(&mut shell, Key::Char('y')), Action::Idle);
     assert_eq!(shell.answer(), Some(true));
 }
@@ -516,7 +538,11 @@ fn an_explicit_yes_accepts() {
 fn an_explicit_no_and_an_escape_both_decline() {
     for pressed in [Key::Char('n'), Key::Esc] {
         let mut shell = shell();
-        shell.ask(Confirmation::new("run `rm -rf build`", false));
+        shell.ask(Confirmation::new(
+            "run `rm -rf build`",
+            STAGED_ANSWERS,
+            false,
+        ));
         key(&mut shell, pressed);
         assert_eq!(shell.answer(), Some(false), "{pressed:?} did not decline");
     }
@@ -530,7 +556,11 @@ fn an_explicit_no_and_an_escape_both_decline() {
 #[test]
 fn a_key_that_is_neither_yes_nor_no_leaves_the_question_standing() {
     let mut shell = shell();
-    shell.ask(Confirmation::new("run `rm -rf build`", false));
+    shell.ask(Confirmation::new(
+        "run `rm -rf build`",
+        STAGED_ANSWERS,
+        false,
+    ));
     key(&mut shell, Key::Char('z'));
     assert_eq!(shell.answer(), None, "`z` answered the question");
     assert!(
@@ -544,7 +574,11 @@ fn a_key_that_is_neither_yes_nor_no_leaves_the_question_standing() {
 #[test]
 fn a_standing_question_takes_every_key_and_the_composer_receives_none() {
     let mut shell = shell();
-    shell.ask(Confirmation::new("run `rm -rf build`", false));
+    shell.ask(Confirmation::new(
+        "run `rm -rf build`",
+        STAGED_ANSWERS,
+        false,
+    ));
     for ch in "hello".chars() {
         key(&mut shell, Key::Char(ch));
     }
@@ -561,11 +595,19 @@ fn a_standing_question_takes_every_key_and_the_composer_receives_none() {
 #[test]
 fn a_destructive_question_renders_more_prominently_than_an_ordinary_one() {
     let mut prominent = shell();
-    prominent.ask(Confirmation::new("delete every file under /tmp", true));
+    prominent.ask(Confirmation::new(
+        "delete every file under /tmp",
+        STAGED_ANSWERS,
+        true,
+    ));
     let (loud, _) = painted(&prominent, WIDTH, HEIGHT);
 
     let mut ordinary = shell();
-    ordinary.ask(Confirmation::new("delete every file under /tmp", false));
+    ordinary.ask(Confirmation::new(
+        "delete every file under /tmp",
+        STAGED_ANSWERS,
+        false,
+    ));
     let (quiet, _) = painted(&ordinary, WIDTH, HEIGHT);
 
     assert_ne!(
