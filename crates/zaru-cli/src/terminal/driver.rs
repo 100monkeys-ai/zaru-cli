@@ -659,12 +659,14 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     // callers lives in one place — which matters most here because building
     // the exchange is where ADR-0008 clause 6's `Redactor` is applied, and
     // that clause's enumeration names the file that applies it.
-    turns.context.record(crate::compose::boundary::exchange_of_turn(
-        turns.prepared.redactor(),
-        task,
-        &tool_lines,
-        &ran.lines.join("\n"),
-    ));
+    turns
+        .context
+        .record(crate::compose::boundary::exchange_of_turn(
+            turns.prepared.redactor(),
+            task,
+            &tool_lines,
+            &ran.lines.join("\n"),
+        ));
     if let Err(failure) = crate::compose::boundary::checkpointed(&turns.context, turns.session) {
         // The turn happened and its answer is already painted, so this is not
         // a refusal of the turn: it is the session losing its memory of it,

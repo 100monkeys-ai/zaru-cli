@@ -1442,8 +1442,8 @@ fn a_resumed_session_continues_the_turn_count_from_the_transcript() {
     let conversed = store
         .start(id_at(1_700_000_000_000, 31))
         .expect("could not start a session");
-    let mut transcript = Transcript::append_to(conversed.transcript_path())
-        .expect("could not open the transcript");
+    let mut transcript =
+        Transcript::append_to(conversed.transcript_path()).expect("could not open the transcript");
     for n in [1u32, 5, 2] {
         transcript
             .record(&Record::TurnLoop(
@@ -1470,7 +1470,8 @@ fn a_resumed_session_continues_the_turn_count_from_the_transcript() {
     let fresh = store
         .start(id_at(1_700_000_000_001, 32))
         .expect("could not start a session");
-    let resumed = crate::session::resume(fresh.directory(), usize::MAX).expect("the session resumed");
+    let resumed =
+        crate::session::resume(fresh.directory(), usize::MAX).expect("the session resumed");
     assert_eq!(
         resumed.turns, 0,
         "a session that has had no turn has had none, so its first turn is turn one",

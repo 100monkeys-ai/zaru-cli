@@ -675,7 +675,10 @@ fn corpus_a_stored_key_spoken_in_a_task_does_not_reach_the_checkpoint() {
         "the task did not reach layer 6 at all, so the absences below are about an empty file: \
          {checkpoint}"
     );
-    for (what, needle) in [("by value", value.as_str()), ("by its ASCII core", core.as_str())] {
+    for (what, needle) in [
+        ("by value", value.as_str()),
+        ("by its ASCII core", core.as_str()),
+    ] {
         assert!(
             !checkpoint.contains(needle),
             "the stored provider key reached ADR-0010 D3's checkpoint {what}, and layer 6 is \
@@ -732,7 +735,10 @@ fn adr_0010_d3s_checkpoint_is_overwritten_each_turn_and_holds_that_turn() {
         &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
         &["--model", "gemini-3.6-flash", "remember the word saffron"],
     );
-    assert_eq!(ran.code, 3, "the staging is a turn that ran and could not reach a model");
+    assert_eq!(
+        ran.code, 3,
+        "the staging is a turn that ran and could not reach a model"
+    );
 
     let session = home.one_session();
     let document: serde_json::Value =

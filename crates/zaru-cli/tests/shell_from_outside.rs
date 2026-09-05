@@ -952,10 +952,7 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
 
 /// The classifier the binary builds, so a check reads the same class it does.
 fn classifier() -> zaru_cli::cli::classify::Surface<'static> {
-    zaru_cli::cli::classify::Surface::new(
-        env!("CARGO_PKG_VERSION"),
-        env!("CARGO_PKG_REPOSITORY"),
-    )
+    zaru_cli::cli::classify::Surface::new(env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY"))
 }
 
 /// The evidence a resumed session carries into a classification.
@@ -1029,7 +1026,10 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
     let error = SessionContext::restored(
         zaru_cli::compose::prefix_for(),
         limits,
-        reopened.checkpoint.as_ref().expect("a checkpoint is on disk"),
+        reopened
+            .checkpoint
+            .as_ref()
+            .expect("a checkpoint is on disk"),
     )
     .expect_err("a document this type did not write is refused, not read as an empty session");
     // And the door refuses it too, rather than only the constructor.
