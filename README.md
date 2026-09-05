@@ -37,9 +37,16 @@ print its transcript. `--help` lists exactly what runs and nothing else.
 provider client exists anywhere in this workspace, so there is nothing for the
 agent loop to ask. A task invocation is refused, naming what is missing.
 
-Ten pieces exist behind that binary and the command surface reaches seven of them.
-The iteration loop and the tool-call loop are in `zaru-core`, headless, driven
-through ports that nothing in any product tree implements. The composer is in
+Eleven pieces exist behind that binary and the command surface reaches seven of
+them. The iteration loop and the tool-call loop are in `zaru-core`, headless,
+driven through ports that nothing in any product tree implements — except the
+three a declared validator calls out through, which all have one in `zaru-cli`
+as of 2026-09-05. A validator's command runs as a real child process; a
+`matches` pattern is compiled by an engine that cannot backtrack, so a pattern
+from a repository you cloned cannot cost exponential time; and a `json_schema`
+validator reads its schema inside the working directory and resolves no `$ref`
+out of it. **No command this binary runs declares a validator or runs one**, so
+none of that is reachable from the terminal yet. The composer is in
 `zaru-tui`, rendered under a test backend, reaching its two search tiers through
 a port and a request/response pair that nothing implements either — **nothing
 this binary prints goes through it**; the terminal is unbuilt and every command
@@ -147,16 +154,20 @@ cargo test --workspace
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
-build needs a registry: `Cargo.lock` resolves 206 packages, six of which are
+build needs a registry: `Cargo.lock` resolves 300 packages, six of which are
 this workspace's own. The third-party set is `rmcp` for the Nuclear Notes
 client, `ratatui` and `tui-textarea` for the composer, `serde` and `serde_json`
 for the credential store, `aes-gcm` and `keyring` for sealing that store, `toml`
-for `~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`, `tokio` for the
-client's channels, for the binary crate's own check that drives a session end to
-end, and for polling the loop's futures under `#[tokio::test]`, and what those
-nine pull in. Which dependencies the harness may carry is ADR-0003 D2's to
-decide, and `[workspace.dependencies]` is where each arrives once it has a
-caller.
+for `~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`, `regex` and `boon` for
+two of a declared validator's four `expect` kinds, `reqwest` for the provider
+client, `tokio` for the client's channels, for polling that provider's futures,
+for the binary crate's own check that drives a session end to end, and for
+polling the loop's futures under `#[tokio::test]`, and what those twelve pull
+in. `boon` needs the URL and Unicode machinery `$ref` resolution
+asks for, and would be the largest single dependency here had `reqwest` not
+already brought most of it. Which dependencies the harness may carry is
+ADR-0003 D2's to decide, and `[workspace.dependencies]` is where each arrives
+once it has a caller.
 
 ## Where the knowledge is
 

@@ -133,15 +133,21 @@ fn ascii_core(value: &str) -> &str {
 
 // --------------------------------------------------- the validator dispatch
 
-/// The two `expect` kinds that need a crate ADR-0003 D2 does not name.
+/// The two `expect` kinds this file deliberately does not declare.
 ///
-/// Staged empty on purpose: reaching either would mean the dispatch routed an
-/// `exit-zero` or an `exit-code` somewhere it should not have.
+/// Staged to panic on purpose, and it stays that way now that both have real
+/// implementations in `zaru_cli::validators`: reaching either from HERE would
+/// mean the dispatch routed an `exit-zero` or an `exit-code` somewhere it
+/// should not have, which is a routing failure rather than an answer.
+/// `tests/validators_from_outside.rs` is where the real evaluators run.
 struct NoEvaluator;
 
 impl PatternMatch for NoEvaluator {
     async fn matches(&self, _pattern: &Pattern, _stdout: &str) -> Result<bool, PortFailure> {
-        panic!("no check here declares a `matches` validator; ADR-0003 D2 names no regex engine")
+        panic!(
+            "no check in this file declares a `matches` validator, so reaching this is a \
+                routing failure"
+        )
     }
 }
 

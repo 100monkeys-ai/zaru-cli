@@ -40,7 +40,7 @@
 //! | --- | --- |
 //! | D1 — one file, `[project]`, `[runtime]`, `[[validator]]` | the shape, as data a caller builds; the reader is a port |
 //! | D2 — dependency order, `skipped` distinct | `zaru-core`'s, and it is where [Bounded Contexts] puts dispatch |
-//! | D3 — four `expect` kinds | `zaru-core`'s; the `json_schema` path's **boundary** is here |
+//! | D3 — four `expect` kinds | the vocabulary is `zaru-core`'s; two of the four are decided in [`crate::validators`], and the `json_schema` path's **boundary** is measured here and again there |
 //! | D4 — the missing-manifest line, once | [`MissingManifest`], as data, with the wording a parameter |
 //! | D5 — validator output into refinement | `zaru-core`'s, asserted through the loop |
 //! | D6 — read, never written | [`ManifestSource`] has one method and there is no writer anywhere |

@@ -18,19 +18,20 @@
 //! [Verification lessons] §30's rule that a comment is not a mechanism applied
 //! to a sentence D3 clearly means to be load-bearing.
 //!
-//! # Two kinds are decided here and two are not, and the split is a dependency
+//! # Two kinds are decided here and two are not, and the split is a boundary
 //!
 //! `exit-zero` and `exit-code = N` are integer comparisons against what the
 //! runner reported, so they are decided in this crate with `std` alone.
 //!
 //! `matches` and `json_schema` need a regular-expression engine and a JSON
-//! Schema validator, and **[ADR-0003] D2's table names neither** — its Trigger
-//! clause 7 treats that table as closed in the other direction too. So both
-//! are carried as *data* and evaluated through
-//! [`PatternMatch`](super::port::PatternMatch) and
-//! [`SchemaValidate`](super::port::SchemaValidate), which nothing in any
-//! product tree implements. The vocabulary is complete; two of its four
-//! meanings arrive with an amendment to that record.
+//! Schema validator. Until 2026-09-05 **[ADR-0003] D2's table named neither**,
+//! so both were carried as data and evaluated through ports nothing
+//! implemented; that table now carries `regex` and `boon`, and both are
+//! implemented in `zaru-cli`. They are still carried as data here, and
+//! evaluated through [`PatternMatch`](super::port::PatternMatch) and
+//! [`SchemaValidate`](super::port::SchemaValidate), because this crate opens no
+//! file and knows no working directory — see that module. All four meanings now
+//! exist; two of them live one crate over.
 //!
 //! # There is no score
 //!

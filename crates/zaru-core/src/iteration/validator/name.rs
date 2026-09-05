@@ -202,9 +202,10 @@ impl Run {
 /// The pattern of [ADR-0009] D3's `matches = "<regex>"`, as declared text.
 ///
 /// **It is not compiled here and this crate carries no regular-expression
-/// engine.** `regex` is not in [ADR-0003] D2's table, so what a pattern
-/// *means* is [`PatternMatch`](super::port::PatternMatch)'s, and this type is
-/// the declaration travelling to it.
+/// engine.** `regex` is a row in [ADR-0003] D2's table since 2026-09-05 and it
+/// is `zaru-cli`'s, not this crate's, so what a pattern *means* is
+/// [`PatternMatch`](super::port::PatternMatch)'s and this type is the
+/// declaration travelling to it.
 ///
 /// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators

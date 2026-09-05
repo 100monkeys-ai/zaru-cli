@@ -22,7 +22,7 @@
 //! legitimately carries both (`multipleOf: 0.5`, `"default": null`). So
 //! [`JsonFile`] sits beside [`TomlFile`] and produces a `serde_json::Value`.
 //!
-//! **What the two share is [`bytes`], and that is the point of it being a
+//! **What the two share is `bytes`, and that is the point of it being a
 //! function rather than a method.** It is where the size ceiling is applied —
 //! from the directory entry, *before* the file is brought into memory — and
 //! where a file that is not UTF-8 is refused. Two readers with two of those

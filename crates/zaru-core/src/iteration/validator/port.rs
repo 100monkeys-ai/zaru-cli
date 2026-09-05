@@ -4,10 +4,12 @@
 //! The three ports deciding a validator calls out through, none of them
 //! implemented here.
 //!
-//! **Nothing in this crate's product tree implements any of the three**,
-//! exactly as nothing implements the loop's five. A check implements them; the
-//! product does not, which is why building [ADR-0009]'s dispatch spawns no
-//! process, compiles no pattern and opens no file.
+//! **Nothing in THIS crate's product tree implements any of the three**,
+//! exactly as nothing implements the loop's five, so building [ADR-0009]'s
+//! dispatch here spawns no process, compiles no pattern and opens no file.
+//! **All three have a product implementation in `zaru-cli`** as of
+//! 2026-09-05: `zaru_cli::process::Spawn` for the runner, and
+//! `zaru_cli::validators::{Patterns, SchemaFiles}` for the two evaluators.
 //!
 //! # Why a validator's command has a port of its own
 //!
@@ -31,16 +33,22 @@
 //! record decides what running a project's command on a user's machine is
 //! allowed to be; that is a later arc's and is deliberately not this one's.
 //!
-//! # Why the two evaluators are ports
+//! # Why the two evaluators are ports, and where they are implemented
 //!
-//! [ADR-0003] D2's table names no regular-expression engine and no JSON Schema
-//! validator, and its Trigger clause 7 treats the table as closed in the other
-//! direction too — a dependency the harness turns out not to need is removed
-//! "by amendment rather than left standing unused". So declaring `regex` or a
-//! schema crate is an amendment to that record rather than an import, and the
-//! honest shape until one is accepted is a declared seam with no
-//! implementation: the shape ADR-0007's sealing, ADR-0014's file layers and
-//! ADR-0011's three ports all took on 2026-09-04.
+//! Until 2026-09-05 [ADR-0003] D2's table named no regular-expression engine
+//! and no JSON Schema validator, and its Trigger clause 7 treats that table as
+//! closed in the other direction too — a dependency the harness turns out not
+//! to need is removed "by amendment rather than left standing unused". So both
+//! were declared seams with no implementation, the shape ADR-0007's sealing,
+//! ADR-0014's file layers and ADR-0011's three ports all took on 2026-09-04.
+//!
+//! **That table now carries `regex` and `boon` as amendments 4 and 5**, and
+//! both seams have a product implementation — in `zaru-cli`, not here. The
+//! reason they stay ports rather than becoming functions in this crate is the
+//! same one that keeps [`ValidatorRunner`] a port: `zaru-core` resolves no
+//! path, knows no working directory and opens no file, and a `json_schema`
+//! path is measured against [ADR-0011] D4's boundary, which lives beside the
+//! working directory it is measured against.
 //!
 //! # What is a failing validator and what is a broken declaration
 //!

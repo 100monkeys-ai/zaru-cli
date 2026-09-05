@@ -44,10 +44,11 @@
 //! | D6 — project config cannot raise a security posture | the mechanism, over declared policies |
 //! | D7 — tier resolved once, immutable after | the invariant half: a resolution with no mutation surface |
 //!
-//! Layers 2, 3 and 5 are read through [`LayerSource`], which **nothing in
-//! this crate implements**: a TOML parser and an argument parser are two
-//! dependencies and [ADR-0003] D2's table names neither. Layer 4 needs no
-//! dependency and is built. See [`port`] for the whole of that reasoning.
+//! **All five layers have a reader as of 2026-09-05.** Layers 2 and 3 are read
+//! through [`LayerSource`] over one [`file::TomlFile`], layer 5 over a
+//! hand-written argument parser that takes no crate, and layer 4 needs no
+//! dependency at all. See [`port`] for why each waited on a decision rather
+//! than on an import.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing

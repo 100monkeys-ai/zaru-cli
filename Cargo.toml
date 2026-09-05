@@ -231,7 +231,9 @@ reqwest = { version = "0.12.28", default-features = false, features = [
 # measured 2026-09-05 against the 206-package lock and the 162-package
 # `zaru-cli` closure of that morning: the resolution already carries `regex`
 # 1.13.1 for `keyring` 4's `windows-native-keyring-store`, which is
-# platform-gated and never compiled here. `regex-lite` was the alternative and
+# platform-gated and never compiled here. The three are still three on the
+# baseline this actually landed on -- `reqwest` arrived in between and brings
+# no regex engine. `regex-lite` was the alternative and
 # is the LARGER tree, not the smaller: `boon` below takes `regex`, so
 # `regex-lite` would put two engines in one tree -- the duplication `ratatui`
 # is pinned to 0.29 and `aes-gcm` to 0.11 to avoid, measured the same way.
@@ -266,14 +268,23 @@ regex = { version = "1.13.1", default-features = false, features = [
 # `crate::validators::schema` for why a default draft is pinned rather than
 # taken.
 #
-# **41 packages in the lock and 42 in the build tree**, measured 2026-09-05
-# from 206 and 162. That is the largest single addition this workspace has
-# made and the number is stated rather than buried; eighteen of the
+# **Two numbers, and the difference between them is the point.** Measured
+# alone on 2026-09-05 against the 206-package lock and the 162-package
+# `zaru-cli` closure of that morning, this row costs 41 and 42 -- the largest
+# single addition this workspace would have made, and eighteen of the
 # forty-two are the ICU crates `url` and `idna` pull for `$id` and `$ref`
-# resolution, which the loader below never uses. A licence scan of all
-# forty-two returns Unicode-3.0, MIT OR Apache-2.0, MIT, Apache-2.0 OR MIT,
-# Unlicense OR MIT, MIT-0 and BSD-2-Clause OR Apache-2.0 OR MIT, and no
-# copyleft, so D7's clean scan holds.
+# resolution, which the loader in `crate::validators::schema` never uses.
+# **Measured on the baseline it actually landed on, `regex` and `boon`
+# together cost 12 packages in the lock and 13 in the build tree** (288 to
+# 300, 220 to 233): `reqwest` landed in between and had already brought
+# `url`, `idna` and the whole ICU chain, so twenty-nine of the forty-two were
+# paid for by a decision that had its own reasons. Both numbers are here
+# because the first is what this row costs on its own merits and the second
+# is what a reader of this tree will measure.
+#
+# A licence scan of all forty-two returns Unicode-3.0, MIT OR Apache-2.0,
+# MIT, Apache-2.0 OR MIT, Unlicense OR MIT, MIT-0 and BSD-2-Clause OR
+# Apache-2.0 OR MIT, and no copyleft, so D7's clean scan holds.
 #
 # **`jsonschema` 0.53 was measured and refused twice over.** At its defaults
 # it is 336/258, because `resolve-http` and `tls-aws-lc-rs` pull `reqwest`,

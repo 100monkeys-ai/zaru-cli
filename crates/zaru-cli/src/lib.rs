@@ -45,7 +45,10 @@
 //! through [`process`] — which is the one place this workspace starts a child
 //! process, and the first thing here that acts on the world outside a file.
 //! `process` also implements ADR-0009 D3's `ValidatorRunner`, so a declared
-//! validator's command runs. The other four built-ins sit behind ports with
+//! validator's command runs, and [`validators`] implements the other two
+//! ports that record needs — so **all four of its `expect` kinds are decided
+//! here** as of 2026-09-05, `matches` over `regex` and `json_schema` over
+//! `boon` with a loader that opens nothing. The other four built-ins sit behind ports with
 //! no implementation in this product tree, as do the prompt, the allowlist,
 //! the destructive matcher, the credential store's apex confirmer — its
 //! *sealing* left this list on 2026-09-05 and is now ordinary code over the OS

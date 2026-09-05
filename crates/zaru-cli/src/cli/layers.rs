@@ -206,7 +206,7 @@ pub fn file_ceiling() -> SizeCeiling {
 ///
 /// **Ten mebibytes, and this is the one place the number is written.** It sits
 /// beside [`FILE_CEILING_BYTES`] rather than in
-/// [`crate::validators`](crate::validators) for that constant's own reason:
+/// [`crate::validators`] for that constant's own reason:
 /// [`PatternCeiling`] takes it as a required argument with no default, because
 /// a default there would be a value chosen for a different caller
 /// ([Verification lessons] §14), and this module is where the numbers this
