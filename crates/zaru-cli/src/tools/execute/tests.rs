@@ -31,7 +31,6 @@ use crate::tools::output::{Captured, OutputBudget};
 use crate::tools::port::{Confirm, Fetch, Question, Subprocess};
 use crate::tools::seal::{NoMembrane, Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
-use crate::tools::writes::Search;
 use zaru_core::iteration::PortFailure;
 use zaru_core::tool_call::{ToolExecutor, ToolOutcome, ToolRequest};
 
@@ -71,11 +70,6 @@ const UNBUILT: &str = "has no product implementation";
 /// ported.
 struct Unbuilt;
 
-impl Search for Unbuilt {
-    async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new(format!("fs.search {UNBUILT}")))
-    }
-}
 impl Subprocess for Unbuilt {
     async fn run(
         &self,
@@ -165,10 +159,10 @@ macro_rules! executor {
             confirmer: $confirmer,
             verdicts: $verdicts,
             budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: crate::cli::layers::search_ceiling(),
             overflow: $overflow,
             transcript: $transcript,
             redactor: &HeldSecrets::none(),
-            search: $unbuilt,
             subprocess: $unbuilt,
             fetch: $unbuilt,
         }
@@ -672,10 +666,10 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         confirmer: None,
         verdicts: &membrane,
         budget: OutputBudget::new(64).expect("a small budget"),
+        search_ceiling: crate::cli::layers::search_ceiling(),
         overflow: &mut overflow,
         transcript: &mut transcript,
         redactor: &HeldSecrets::none(),
-        search: &unbuilt,
         subprocess: &unbuilt,
         fetch: &unbuilt,
     };

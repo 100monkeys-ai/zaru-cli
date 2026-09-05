@@ -4,14 +4,14 @@
 //! The acting half of [ADR-0011]: what happens after the permission decision
 //! says a call may act.
 //!
-//! # Five of the seven act, and two do not
+//! # Six of the seven act, and one does not
 //!
 //! | Tool | Here |
 //! | --- | --- |
 //! | `fs.read`, `fs.list` | [`files`], on `std::fs` inside D4's boundary |
 //! | `fs.write`, `fs.edit` | [`files`], through [`crate::atomic`] at the file's own mode |
+//! | `fs.search` | [`files`], walking `std::fs` under D4's classified root |
 //! | `cmd.run` | [`Subprocess`], over [`Spawn`](crate::process::Spawn), started at D4's boundary root |
-//! | `fs.search` | [`Search`], no implementation |
 //! | `web.fetch` | [`Fetch`], no implementation |
 //!
 //! **`fs.write` and `fs.edit` act as of 2026-09-05.** They were ported until
@@ -20,9 +20,10 @@
 //! yet contain what it is about to make. That is still true and is not closed
 //! by building them: it is the same check-at-a-moment the read path already
 //! has, costing more, and [`files`] says exactly what is and is not claimed.
-//! `fs.search` needs a matcher, which is either a dependency outside
-//! [ADR-0003] D2's table or a glob semantics this crate would be inventing.
-//! `web.fetch` needs a socket, and the harness has none.
+//! **`fs.search` acts as of 2026-09-05** over a literal needle and a literal
+//! filename substring, taking neither a regular-expression engine — which is
+//! not in [ADR-0003] D2's table — nor a glob semantics this crate would be
+//! inventing. `web.fetch` needs a socket, and the harness has none.
 //!
 //! **`cmd.run` acts as of 2026-09-05**, and it is not classified against D4 at
 //! all: a command addresses a command line, and its boundary is the working
@@ -75,7 +76,6 @@ use crate::tools::output::{Captured, OutputBudget, Overflow, Presented};
 use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Fetch, Subprocess};
 use crate::tools::seal::{Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
-use crate::tools::writes::Search;
 use std::path::PathBuf;
 use zaru_core::iteration::PortFailure;
 use zaru_core::redaction::{Redacted, Redactor};
@@ -159,7 +159,7 @@ impl std::error::Error for NotACall {}
 /// Bundled for the reason `zaru-core`'s port bundles are: a constructor
 /// taking eleven arguments is a constructor whose order is a thing to get
 /// wrong.
-pub struct Executor<'a, S, C, F> {
+pub struct Executor<'a, C, F> {
     /// D4's boundary, canonical from construction.
     pub working_directory: &'a WorkingDirectory,
     /// D3's mode. Governs prompting and nothing else.
@@ -174,6 +174,13 @@ pub struct Executor<'a, S, C, F> {
     pub verdicts: &'a (dyn Verdicts + Sync),
     /// D5's budget, refused at zero by its own constructor.
     pub budget: OutputBudget,
+    /// The largest file `fs.search` will read the contents of.
+    ///
+    /// Caller-passed and refused at zero, in the shape [`OutputBudget`] and
+    /// ADR-0007's `Ttl` already use. No record names a number and this
+    /// module invents none; the binary's is
+    /// [`crate::cli::layers::search_ceiling`].
+    pub search_ceiling: crate::config::SizeCeiling,
     /// D5's overflow sink.
     pub overflow: &'a mut (dyn Overflow + Send),
     /// ADR-0010 D2's transcript. Written around every call.
@@ -187,15 +194,13 @@ pub struct Executor<'a, S, C, F> {
     /// and this is the difference between redacting a prompt and redacting a
     /// record.
     pub redactor: &'a (dyn Redactor + Sync),
-    /// `fs.search`. No product implementation.
-    pub search: &'a S,
     /// `cmd.run`. No product implementation.
     pub subprocess: &'a C,
     /// `web.fetch`. No product implementation.
     pub fetch: &'a F,
 }
 
-impl<S, C, F> core::fmt::Debug for Executor<'_, S, C, F> {
+impl<C, F> core::fmt::Debug for Executor<'_, C, F> {
     /// Names what it holds and renders none of it.
     ///
     /// A tool surface's `Debug` is a thing that ends up in a bug report, and
@@ -235,9 +240,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-impl<S, C, F> Executor<'_, S, C, F>
+impl<C, F> Executor<'_, C, F>
 where
-    S: Search + Sync,
     C: Subprocess + Sync,
     F: Fetch + Sync,
 {
@@ -296,7 +300,9 @@ where
             (Subject::Path(target), Call::Edit { old, new, .. }) => {
                 Ok(files::edit(target.resolved(), old, new))
             }
-            (Subject::Search { needle, .. }, Call::Search { .. }) => self.search.find(needle).await,
+            (Subject::Search { root, needle }, Call::Search { .. }) => {
+                Ok(files::search(root.resolved(), needle, self.search_ceiling))
+            }
             (Subject::Command(line), Call::Run { .. }) => self.subprocess.run(line).await,
             (Subject::Url(url), Call::Fetch { .. }) => self.fetch.retrieve(url).await,
             // Unbuildable: `Executor::execute` derives the subject from the
@@ -312,9 +318,8 @@ where
     }
 }
 
-impl<S, C, F> ToolExecutor for Executor<'_, S, C, F>
+impl<C, F> ToolExecutor for Executor<'_, C, F>
 where
-    S: Search + Sync,
     C: Subprocess + Sync,
     F: Fetch + Sync,
 {
@@ -443,7 +448,7 @@ where
     }
 }
 
-impl<S, C, F> Executor<'_, S, C, F> {
+impl<C, F> Executor<'_, C, F> {
     /// Append one record and carry a transcript failure out as a port failure.
     fn record(&mut self, record: &Record) -> Result<(), PortFailure> {
         self.transcript.record(record).map_err(|failure| {

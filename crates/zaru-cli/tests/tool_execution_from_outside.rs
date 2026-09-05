@@ -181,11 +181,6 @@ impl EventSink for Printing {
 /// Never reached in these checks; present because the executor needs one.
 struct Unbuilt;
 
-impl zaru_cli::tools::Search for Unbuilt {
-    async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new("fs.search has no implementation"))
-    }
-}
 impl Subprocess for Unbuilt {
     async fn run(&self, _line: &CommandLine) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("cmd.run has no implementation"))
@@ -269,10 +264,10 @@ async fn a_model_reads_a_file_inside_the_boundary_and_the_bytes_reach_it() {
             confirmer: None,
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
@@ -368,10 +363,10 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
             confirmer: Some(&declining),
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
@@ -497,10 +492,10 @@ async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
             confirmer: None,
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
@@ -588,10 +583,10 @@ async fn a_denying_membrane_refuses_at_yolo_and_presents_as_an_expected_failure(
             confirmer: None,
             verdicts: &denying,
             budget: OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };

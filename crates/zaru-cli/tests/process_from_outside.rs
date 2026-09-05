@@ -388,11 +388,6 @@ impl EventSink for Printing {
 /// Every port this arc does not implement.
 struct Unbuilt;
 
-impl zaru_cli::tools::Search for Unbuilt {
-    async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new("fs.search has no implementation"))
-    }
-}
 impl Fetch for Unbuilt {
     async fn retrieve(&self, _url: &str) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("web.fetch has no implementation"))
@@ -501,10 +496,10 @@ async fn one_command_turn(
             confirmer,
             verdicts,
             budget: OutputBudget::new(budget).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor,
-            search: &unbuilt,
             subprocess: &spawn,
             fetch: &unbuilt,
         };
@@ -1102,10 +1097,10 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
         confirmer: None,
         verdicts: &NoMembrane,
         budget: OutputBudget::new(4096).expect("a usable budget"),
+        search_ceiling: zaru_cli::cli::layers::search_ceiling(),
         overflow: &mut overflow,
         transcript: &mut transcript,
         redactor: &HeldSecrets::none(),
-        search: &unbuilt,
         subprocess: &spawn,
         fetch: &unbuilt,
     };

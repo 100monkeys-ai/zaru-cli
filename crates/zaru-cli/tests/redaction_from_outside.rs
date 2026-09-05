@@ -251,11 +251,6 @@ impl EventSink for Quiet {
 
 struct Unbuilt;
 
-impl zaru_cli::tools::Search for Unbuilt {
-    async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new("fs.search has no implementation"))
-    }
-}
 impl Subprocess for Unbuilt {
     async fn run(&self, _line: &CommandLine) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("cmd.run has no implementation"))
@@ -357,10 +352,10 @@ async fn read_a_file_carrying(
             confirmer: Some(&accepting),
             verdicts: &membrane,
             budget: OutputBudget::new(budget).expect("a usable budget"),
+            search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor,
-            search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };

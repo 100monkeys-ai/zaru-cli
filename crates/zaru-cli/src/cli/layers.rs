@@ -242,6 +242,39 @@ pub fn pattern_ceiling() -> PatternCeiling {
     PatternCeiling::new(PATTERN_CEILING_BYTES).expect("ten mebibytes is not zero")
 }
 
+/// How large a file [ADR-0011] D1's `fs.search` will read the contents of.
+///
+/// **One mebibyte, and this is the one place the number is written** — the
+/// same sentence [`FILE_CEILING_BYTES`] carries, and deliberately the same
+/// number, because the two answer the same question: how large a file this
+/// harness will read whole into memory to look at.
+///
+/// It is a second constant rather than a reuse of the first because the two
+/// are answerable by different records. That one is [ADR-0014]'s, about a
+/// hand-written configuration file; this one is ADR-0011 D5's, about what a
+/// model-driven search may pull into a prompt. A single constant would make a
+/// later change to one silently change the other.
+///
+/// A file above it is **named as skipped** rather than passed over, because a
+/// search that quietly did not look somewhere is how a model concludes a
+/// string is absent. No record names a number, so this is a delegated
+/// coordinator ruling of 2026-09-05 recorded on ADR-0011 and open to Jeshua's
+/// veto, and no configuration key is declared for it.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+pub const SEARCH_CEILING_BYTES: u64 = 1 << 20;
+
+/// [`SEARCH_CEILING_BYTES`] as the tool surface takes it.
+///
+/// # Panics
+///
+/// Never. [`SEARCH_CEILING_BYTES`] is not zero.
+#[must_use]
+pub fn search_ceiling() -> SizeCeiling {
+    SizeCeiling::new(SEARCH_CEILING_BYTES).expect("a mebibyte is not zero")
+}
+
 /// [ADR-0014] D1's layer 2: `~/.zaru/config.toml`.
 ///
 /// **The loader never creates `~/.zaru/`.** That directory has exactly one
