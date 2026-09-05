@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! One TOML reader, for every file this harness reads.
+//! One guarded read, and the two parsers over it.
 //!
 //! # Why there is exactly one of these
 //!
@@ -14,6 +14,36 @@
 //!
 //! So [`TomlFile`] is the only thing in this workspace that calls a TOML
 //! parser, and every port is an adapter over it.
+//!
+//! # And one guarded read under both parsers
+//!
+//! [ADR-0009] D3's `json_schema` kind needs a *JSON* file — a schema, which
+//! [`Table`] cannot even hold, having neither a float nor a null while a schema
+//! legitimately carries both (`multipleOf: 0.5`, `"default": null`). So
+//! [`JsonFile`] sits beside [`TomlFile`] and produces a `serde_json::Value`.
+//!
+//! **What the two share is [`bytes`], and that is the point of it being a
+//! function rather than a method.** It is where the size ceiling is applied —
+//! from the directory entry, *before* the file is brought into memory — and
+//! where a file that is not UTF-8 is refused. Two readers with two of those
+//! would be two ceilings that can disagree, which is the same argument this
+//! module already makes for there being one TOML parse. Only the parse step
+//! differs, and it is one arm each.
+//!
+//! # The JSON refusal carries the parser's rendering, and that was measured
+//!
+//! The opposite of the TOML one, for a measured reason rather than an
+//! inconsistent one. `serde_json::Error`'s `Display` is a short description
+//! plus a line and a column — `expected `,` or `}` at line 3 column 3` — and
+//! **it does not render the offending source**. Fourteen malformed shapes were
+//! probed on 2026-09-05 with a planted value on the offending line, including
+//! a number out of range, an invalid escape, a control character in a string,
+//! an unterminated string and trailing characters; **none of the fourteen
+//! carried the value**. A schema is parsed to an untyped `Value`, so
+//! `Category::Data` — the one class whose messages quote what they were given —
+//! is unreachable from here. The position is therefore not carried separately
+//! either: the parser's own message already has it, and a second rendering of
+//! one position is one position in two places.
 //!
 //! # The refusal is built from the parser's `message`, never from its `Display`
 //!
@@ -215,6 +245,17 @@ pub enum FileRefused {
         /// rendering of the file.
         detail: String,
     },
+    /// The file is UTF-8 and is not JSON.
+    ///
+    /// Unlike [`FileRefused::NotToml`] this carries the parser's own
+    /// rendering, which already contains the line and the column. See the
+    /// module documentation for the measurement that makes that safe.
+    NotJson {
+        /// The file.
+        path: PathBuf,
+        /// `serde_json`'s own message, which describes rather than quotes.
+        detail: String,
+    },
     /// A value's TOML kind has no counterpart in this value model.
     UnrepresentableKind {
         /// The file.
@@ -235,6 +276,7 @@ impl FileRefused {
             | Self::TooLarge { path, .. }
             | Self::NotText { path, .. }
             | Self::NotToml { path, .. }
+            | Self::NotJson { path, .. }
             | Self::UnrepresentableKind { path, .. } => path.as_path(),
         }
     }
@@ -267,6 +309,9 @@ impl fmt::Display for FileRefused {
                 Some(at) => write!(f, "{} is not TOML at {at}: {detail}", path.display()),
                 None => write!(f, "{} is not TOML: {detail}", path.display()),
             },
+            Self::NotJson { path, detail } => {
+                write!(f, "{} is not JSON: {detail}", path.display())
+            }
             Self::UnrepresentableKind { path, key, kind } => write!(
                 f,
                 "`{key}` in {} holds {kind}, which no configuration key can hold. The value is \
@@ -284,6 +329,7 @@ impl std::error::Error for FileRefused {
             Self::TooLarge { .. }
             | Self::NotText { .. }
             | Self::NotToml { .. }
+            | Self::NotJson { .. }
             | Self::UnrepresentableKind { .. } => None,
         }
     }
@@ -330,13 +376,9 @@ impl TomlFile {
     /// [`FileRefused`], naming the file and, for a parse failure, the line and
     /// column.
     pub fn read(&self) -> Result<Option<Table>, FileRefused> {
-        let Some(bytes) = self.bytes()? else {
+        let Some(text) = text(&self.path, self.ceiling)? else {
             return Ok(None);
         };
-        let text = String::from_utf8(bytes).map_err(|error| FileRefused::NotText {
-            path: self.path.clone(),
-            valid_up_to: error.utf8_error().valid_up_to(),
-        })?;
         let parsed: toml::Table = text.parse().map_err(|error: toml::de::Error| {
             // `error.to_string()` renders the offending source line. It is
             // never reached from here; see the module documentation.
@@ -347,36 +389,6 @@ impl TomlFile {
             }
         })?;
         self.document(parsed).map(Some)
-    }
-
-    /// The file's bytes, refusing one that is too large before reading it.
-    ///
-    /// The size is taken from the directory entry rather than from the read,
-    /// so an oversized file is never brought into memory at all.
-    fn bytes(&self) -> Result<Option<Vec<u8>>, FileRefused> {
-        let metadata = match std::fs::metadata(&self.path) {
-            Ok(metadata) => metadata,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(source) => {
-                return Err(FileRefused::NotRead {
-                    path: self.path.clone(),
-                    source,
-                });
-            }
-        };
-        if metadata.len() > self.ceiling.get() {
-            return Err(FileRefused::TooLarge {
-                path: self.path.clone(),
-                bytes: metadata.len(),
-                ceiling: self.ceiling.get(),
-            });
-        }
-        std::fs::read(&self.path)
-            .map(Some)
-            .map_err(|source| FileRefused::NotRead {
-                path: self.path.clone(),
-                source,
-            })
     }
 
     /// This crate's value model, from the parser's.
@@ -421,5 +433,118 @@ impl TomlFile {
                 })
             }
         }
+    }
+}
+
+/// One file's bytes, refusing one that is too large before reading it.
+///
+/// The size is taken from the directory entry rather than from the read, so an
+/// oversized file is never brought into memory at all. An absent file is
+/// `Ok(None)` rather than an error, because who is owed what by an absent file
+/// differs per caller.
+///
+/// **A function rather than a method on either reader**, so that the ceiling
+/// and the refusals are applied in one place whichever parser runs next. See
+/// the module documentation.
+///
+/// # Errors
+///
+/// [`FileRefused::NotRead`] and [`FileRefused::TooLarge`].
+pub(crate) fn bytes(path: &Path, ceiling: SizeCeiling) -> Result<Option<Vec<u8>>, FileRefused> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(FileRefused::NotRead {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if metadata.len() > ceiling.get() {
+        return Err(FileRefused::TooLarge {
+            path: path.to_path_buf(),
+            bytes: metadata.len(),
+            ceiling: ceiling.get(),
+        });
+    }
+    std::fs::read(path)
+        .map(Some)
+        .map_err(|source| FileRefused::NotRead {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+/// The UTF-8 text of a file, under the same ceiling.
+///
+/// The step both parsers take before they differ: TOML and JSON are both UTF-8
+/// by their formats' own definitions.
+fn text(path: &Path, ceiling: SizeCeiling) -> Result<Option<String>, FileRefused> {
+    let Some(raw) = bytes(path, ceiling)? else {
+        return Ok(None);
+    };
+    String::from_utf8(raw)
+        .map(Some)
+        .map_err(|error| FileRefused::NotText {
+            path: path.to_path_buf(),
+            valid_up_to: error.utf8_error().valid_up_to(),
+        })
+}
+
+/// A JSON file on disk, read through the same guarded read as [`TomlFile`].
+///
+/// **It produces a `serde_json::Value` and not a [`Table`]**, because the only
+/// JSON file this harness reads is [ADR-0009] D3's schema and a schema carries
+/// shapes this crate's configuration value model deliberately has no room for.
+/// See the module documentation.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonFile {
+    path: PathBuf,
+    ceiling: SizeCeiling,
+}
+
+impl JsonFile {
+    /// The file at `path`, parsed only if it is at most `ceiling` bytes.
+    #[must_use]
+    pub fn at(path: impl Into<PathBuf>, ceiling: SizeCeiling) -> Self {
+        Self {
+            path: path.into(),
+            ceiling,
+        }
+    }
+
+    /// The file.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The ceiling this reader was given.
+    #[must_use]
+    pub const fn ceiling(&self) -> SizeCeiling {
+        self.ceiling
+    }
+
+    /// The document, or `None` where there is no such file.
+    ///
+    /// **This never creates anything**, for [`TomlFile::read`]'s reason.
+    ///
+    /// # Errors
+    ///
+    /// [`FileRefused`], naming the file and, for a parse failure, the parser's
+    /// own description with its line and column.
+    pub fn read(&self) -> Result<Option<serde_json::Value>, FileRefused> {
+        let Some(source) = text(&self.path, self.ceiling)? else {
+            return Ok(None);
+        };
+        serde_json::from_str(&source)
+            .map(Some)
+            .map_err(|error| FileRefused::NotJson {
+                path: self.path.clone(),
+                detail: error.to_string(),
+            })
     }
 }

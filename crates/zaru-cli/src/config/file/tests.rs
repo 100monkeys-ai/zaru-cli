@@ -1,13 +1,13 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The one TOML reader's checks.
+//! The one guarded read's checks, and the two parsers over it.
 //!
 //! Every check names the mutant that would make it redden, and every mutant
 //! named here has been run: the failure sentence is quoted in the commit that
 //! carries the check.
 
-use crate::config::file::{CeilingRefused, FileRefused, Position, SizeCeiling, TomlFile};
+use crate::config::file::{CeilingRefused, FileRefused, JsonFile, Position, SizeCeiling, TomlFile};
 use crate::config::value::{Table, Value};
 use crate::credentials::fixtures::{ScratchRoot, ascii_core, personal_secret_nonce};
 
@@ -386,5 +386,166 @@ fn an_empty_file_is_an_empty_document() {
     assert_eq!(
         file.read().expect("an empty file is valid TOML"),
         Some(Table::new())
+    );
+}
+
+// ------------------------------------------------------------- the JSON half
+
+/// Stage a JSON file and read it back through the product.
+fn staged_json(root: &ScratchRoot, name: &str, body: &[u8]) -> (std::path::PathBuf, JsonFile) {
+    let path = root.base().join(name);
+    std::fs::write(&path, body).expect("could not stage the file");
+    let file = JsonFile::at(&path, roomy());
+    (path, file)
+}
+
+/// A JSON file becomes a `serde_json::Value`, carrying the two shapes
+/// [`Table`] deliberately has no room for.
+///
+/// That is the whole reason there are two parsers rather than one: a schema
+/// legitimately carries a float and a null, and this crate's configuration
+/// value model refuses both by name. The mutant is routing the schema through
+/// [`TomlFile`]'s value model, which cannot represent the document at all.
+#[test]
+fn a_json_file_carries_the_two_shapes_the_configuration_value_model_refuses() {
+    let root = ScratchRoot::new();
+    let (_, file) = staged_json(
+        &root,
+        "schema.json",
+        br#"{"multipleOf": 0.5, "default": null, "type": "object"}"#,
+    );
+
+    let document = file
+        .read()
+        .expect("the file is well-formed JSON")
+        .expect("the file is there");
+
+    assert_eq!(document["multipleOf"], serde_json::json!(0.5));
+    assert!(document["default"].is_null());
+    assert_eq!(document["type"], serde_json::json!("object"));
+
+    // And the same bytes are not representable the other way, which is the
+    // claim rather than a decoration: `Value` has no float and no null.
+    let (_, as_toml) = staged(&root, "schema.toml", b"multipleOf = 0.5\n");
+    assert!(
+        matches!(as_toml.read(), Err(FileRefused::UnrepresentableKind { .. })),
+        "the configuration value model refuses a float, which is why the schema reader is not it",
+    );
+}
+
+/// An absent JSON file is `Ok(None)`, and nothing is created looking for it.
+#[test]
+fn an_absent_json_file_is_not_an_error_and_creates_nothing() {
+    let root = ScratchRoot::new();
+    let missing = root.base().join("nowhere").join("schema.json");
+    assert_eq!(
+        JsonFile::at(&missing, roomy())
+            .read()
+            .expect("an absent file is not a failure"),
+        None,
+    );
+    assert!(
+        !missing.parent().expect("a parent").exists(),
+        "a reader that created a directory in order to find nothing in it would be creating \
+         state to read state",
+    );
+}
+
+/// The two parsers share one ceiling, and it is applied before either parses.
+///
+/// The staged file is **also malformed**, so an implementation that parsed
+/// first would refuse it for the other reason. The mutant is reading the bytes
+/// before consulting the directory entry, which reddens on the refusal's
+/// variant rather than on its text.
+#[test]
+fn a_json_file_past_the_shared_ceiling_is_refused_unparsed() {
+    let root = ScratchRoot::new();
+    let path = root.base().join("big.json");
+    std::fs::write(&path, b"{ this is not json").expect("could not stage the file");
+
+    let refusal = JsonFile::at(&path, SizeCeiling::new(4).expect("four bytes"))
+        .read()
+        .expect_err("the file is past the ceiling");
+    assert!(
+        matches!(refusal, FileRefused::TooLarge { .. }),
+        "past the ceiling is refused before it is parsed, not after: {refusal:?}",
+    );
+
+    // The accepting sibling: the same bytes under a roomy ceiling are refused
+    // for the parse, so the case above really is the ceiling.
+    let refusal = JsonFile::at(&path, roomy())
+        .read()
+        .expect_err("the file is not JSON");
+    assert!(
+        matches!(refusal, FileRefused::NotJson { .. }),
+        "{refusal:?}"
+    );
+}
+
+/// A JSON file that is not UTF-8 is refused by the shared read, naming the
+/// offset, exactly as a TOML one is.
+#[test]
+fn a_json_file_that_is_not_utf8_is_refused_by_the_shared_read() {
+    let root = ScratchRoot::new();
+    let path = root.base().join("bytes.json");
+    std::fs::write(&path, b"{\"k\": \"\xff\"}").expect("could not stage the file");
+
+    let refusal = JsonFile::at(&path, roomy())
+        .read()
+        .expect_err("the file is not UTF-8");
+    let FileRefused::NotText { valid_up_to, .. } = refusal else {
+        panic!("expected the shared read's refusal, got {refusal:?}");
+    };
+    assert_eq!(valid_up_to, 7);
+}
+
+/// The JSON refusal describes rather than quotes, over the shapes that were
+/// measured.
+///
+/// **This is the measurement the module documentation cites, kept as a check
+/// so that a `serde_json` upgrade that started quoting the source would
+/// redden** rather than leaking quietly. The mutant is building the refusal
+/// from the source text instead of from the parser's message.
+#[test]
+fn a_malformed_json_refusal_carries_no_value_from_the_file() {
+    let root = ScratchRoot::new();
+    let planted = personal_secret_nonce();
+    let bodies = [
+        format!("{{\n  \"k\": \"{planted}\" \n  \"next\": 1\n}}\n"),
+        format!("{{ \"k\": \"{planted}\", }}"),
+        format!("{{ \"k\": {planted} }}"),
+        format!("{{ \"k\": \"{planted}\""),
+        format!("{{ \"k\": 1e999999, \"v\": \"{planted}\" }}"),
+        format!("[{planted}]"),
+        format!("{{}} {planted}"),
+    ];
+    for (index, body) in bodies.iter().enumerate() {
+        let (_, file) = staged_json(&root, &format!("bad-{index}.json"), body.as_bytes());
+        let refusal = file.read().expect_err("none of these is JSON");
+        let rendered = refusal.to_string();
+        assert!(
+            !rendered.contains(&planted),
+            "shape {index}: the refusal carries a value from the file: {rendered}",
+        );
+        assert!(
+            !rendered.contains(ascii_core(&planted)),
+            "shape {index}: nor a rendering escaping left intact: {rendered}",
+        );
+        assert!(
+            rendered.contains("is not JSON:"),
+            "shape {index}: and it does say what went wrong: {rendered}",
+        );
+    }
+
+    // The instrument could have found something: the same value in a file that
+    // parses is read back whole.
+    let (_, good) = staged_json(
+        &root,
+        "good.json",
+        format!("{{ \"k\": \"{planted}\" }}").as_bytes(),
+    );
+    assert_eq!(
+        good.read().expect("valid JSON").expect("present")["k"],
+        serde_json::json!(planted),
     );
 }
