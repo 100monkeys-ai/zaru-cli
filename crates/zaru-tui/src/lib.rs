@@ -17,6 +17,7 @@
 //! Errors raised here are this crate's own.
 
 pub mod composer;
+pub mod shell;
 
 /// The name of this crate, read from its `Cargo.toml` at compile time.
 pub const NAME: &str = env!("CARGO_PKG_NAME");
