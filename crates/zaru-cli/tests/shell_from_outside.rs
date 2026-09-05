@@ -792,3 +792,294 @@ fn a_standing_tip_yields_on_the_first_keystroke_during_a_turn() {
          yields the instant the user types:\n{painted_after}"
     );
 }
+
+/// [ADR-0010] D4: a resume "restores `context.json`", and what comes back is
+/// [ADR-0013] D1's layer 6 as the last process left it.
+///
+/// # The mutant this is written against
+///
+/// `terminal::open` opened a **fresh** `SessionContext` and threw the
+/// checkpoint away, so a resumed session answered its first typed line from a
+/// context that had never heard of the session it was sitting in. Restoring
+/// nothing and restoring correctly both produce a shell that opens, which is
+/// why this reads the exchanges rather than the pane.
+///
+/// # Three sessions, and the third is what makes the first two mean anything
+///
+/// A session whose checkpoint holds two exchanges comes back holding both, in
+/// order. A session whose checkpoint holds a **summary** and whose transcript
+/// holds the `Compacted` record carrying the span it replaced comes back
+/// holding the summary and **not** the span — D2 says "only the model's view
+/// is compacted", so rebuilding layer 6 from the transcript would restore the
+/// raw span, and that mutant is the one the second arm catches. And a session
+/// that never checkpointed comes back empty, which is the accepting sibling:
+/// without it, a restorer that invented exchanges would pass the first two.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[test]
+fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcript() {
+    use zaru_cli::compose::SessionContext;
+
+    let scratch = Scratch::new("restore-layer-six");
+    let directory = scratch
+        .path()
+        .join(".zaru")
+        .join("sessions")
+        .join(scratch.id.to_string());
+
+    let limits = zaru_cli::cli::layers::context_limits();
+    let held = zaru_cli::redaction::HeldSecrets::none();
+
+    // A session that said two things, checkpointed through the product's own
+    // writer rather than by writing JSON here.
+    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits);
+    said.record(zaru_core::context::Exchange::of_turn(
+        "user: remember the word saffron",
+        &[],
+        "zaru: ok",
+    ));
+    said.record(zaru_core::context::Exchange::of_turn(
+        "user: and the number nine",
+        &[format!("fs.read `notes/{NONCE}.md`")],
+        "zaru: noted",
+    ));
+    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
+        .write(&said.checkpoint())
+        .expect("the checkpoint is written");
+
+    let reopened = resumed(&directory);
+    let restored = SessionContext::restored(
+        zaru_cli::compose::prefix_for(),
+        limits,
+        reopened
+            .checkpoint
+            .as_ref()
+            .expect("the session checkpointed, so a resume carries one"),
+    )
+    .expect("a checkpoint this harness wrote reads back");
+    let held_texts: Vec<&str> = restored
+        .exchanges()
+        .iter()
+        .map(zaru_core::context::Exchange::as_str)
+        .collect();
+    assert_eq!(
+        held_texts.len(),
+        2,
+        "a resumed session restores what it said; it restored {:?}",
+        held_texts
+    );
+    assert!(
+        held_texts[0].contains("saffron") && held_texts[1].contains("nine"),
+        "layer 6 came back out of order or incomplete: {held_texts:?}"
+    );
+
+    // A compacted session: the checkpoint holds the summary, the transcript
+    // holds the span it replaced. Restoring the transcript's records instead
+    // would bring the span back.
+    let span = format!("user: the raw span {NONCE} nobody should restore");
+    let mut compacted = SessionContext::opened(zaru_cli::compose::prefix_for(), limits);
+    compacted.record(zaru_core::context::Exchange::summary(
+        "a summary standing for earlier turns",
+    ));
+    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
+        .write(&compacted.checkpoint())
+        .expect("the checkpoint is written");
+    let mut transcript =
+        Transcript::append_to(directory.join("transcript.jsonl")).expect("a transcript");
+    transcript
+        .record(&Record::Compacted(zaru_core::context::Compaction {
+            announcements: Vec::new(),
+            raw: Some(zaru_core::context::Span::new(vec![
+                zaru_core::context::Exchange::verbatim(span.clone()),
+            ])),
+        }))
+        .expect("the compaction is recorded");
+
+    let reopened = resumed(&directory);
+    let restored = SessionContext::restored(
+        zaru_cli::compose::prefix_for(),
+        limits,
+        reopened.checkpoint.as_ref().expect("a checkpoint"),
+    )
+    .expect("the compacted checkpoint reads back");
+    let rendered: String = restored
+        .exchanges()
+        .iter()
+        .map(zaru_core::context::Exchange::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("a summary standing for earlier turns"),
+        "D2 replaces the span with the summary, and the summary is not what came back: {rendered}"
+    );
+    assert!(
+        !rendered.contains(&span),
+        "the raw span was restored into layer 6. D2 says only the model's view is compacted, so \
+         the span belongs in the transcript and nowhere else: {rendered}"
+    );
+    // The staging is asserted, so a transcript that never held the span could
+    // not satisfy the arm above by there being nothing to find.
+    let on_disk =
+        std::fs::read_to_string(directory.join("transcript.jsonl")).expect("the transcript reads");
+    assert!(
+        on_disk.contains(&span),
+        "the span is not in the transcript either, so this check asserted nothing"
+    );
+    let _ = held;
+
+    // The accepting sibling: a session that never checkpointed.
+    let store = SessionStore::open(scratch.path().join(".zaru")).expect("the store");
+    let untried = store
+        .start(SessionId::mint(&zaru_cli::session::SystemWallClock).expect("a ULID"))
+        .expect("a session directory");
+    let reopened = resumed(untried.directory());
+    assert!(
+        reopened.checkpoint.is_none(),
+        "a session with no turns has written no checkpoint, which `Checkpoint::read` calls not \
+         an error",
+    );
+    assert_eq!(
+        reopened.turns, 0,
+        "and it has had no turns, so its next turn is turn one",
+    );
+}
+
+/// A checkpoint this harness did not write is refused, and its contents reach
+/// nothing a person or a log can read.
+///
+/// # Two properties, and the second is why this is a corpus case
+///
+/// [ADR-0010] D3's accepted Update: "A document this type did not write is
+/// **refused** rather than read as an empty conversation, which would drop a
+/// session's history and look exactly like a session that had none." That is
+/// the first arm.
+///
+/// The second is that the refusal carries **nothing of the document**. A
+/// `serde_json::Error`'s own message quotes the value it tripped on, and this
+/// file holds a session's whole conversation — so a hand-edited or corrupted
+/// `context.json` is exactly the shape that puts a session's text into a
+/// defect report. [ADR-0016] D3's Update already decided the same question for
+/// a panic's message, and `Classify::checkpoint_contents` carries no field of
+/// the error at all.
+///
+/// Asserted by **value and by ASCII core**, because a `Debug` rendering
+/// escapes a combining mark and an absence assertion written against the value
+/// as typed is blind to a rendering that published every byte of it
+/// (library verification-lessons §50 and §63).
+///
+/// The accepting sibling is the same document made well-formed, which
+/// restores — so this cannot pass against a reader that refuses everything.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its_contents() {
+    use zaru_cli::compose::SessionContext;
+
+    let scratch = Scratch::new("foreign-checkpoint");
+    let directory = scratch
+        .path()
+        .join(".zaru")
+        .join("sessions")
+        .join(scratch.id.to_string());
+    let limits = zaru_cli::cli::layers::context_limits();
+
+    // A secret in the position a session's own text occupies. The combining
+    // mark is what makes the ASCII-core arm necessary rather than decorative.
+    let secret = format!("nn_mcp_{NONCE}e\u{301}\u{1f701}");
+    let core = secret
+        .split(|c: char| !c.is_ascii())
+        .next()
+        .expect("an ASCII core")
+        .to_owned();
+    assert!(
+        core.len() > 8,
+        "the ASCII core has to be long enough that finding it is finding the value: {core}"
+    );
+
+    // Valid JSON, wrong shape: `exchanges` is a string where the type writes
+    // an array. `serde_json` accepts the document and `SessionContext` does
+    // not, which is the case a checkpoint that will not parse at all cannot
+    // reach.
+    let foreign = serde_json::json!({ "exchanges": secret });
+    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
+        .write(&foreign)
+        .expect("the document is written");
+
+    let reopened = resumed(&directory);
+    let error = SessionContext::restored(
+        zaru_cli::compose::prefix_for(),
+        limits,
+        reopened.checkpoint.as_ref().expect("a checkpoint is on disk"),
+    )
+    .expect_err("a document this type did not write is refused, not read as an empty session");
+
+    let classify = zaru_cli::cli::classify::Surface::new(
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_REPOSITORY"),
+    );
+    let classified = classify.checkpoint_contents(
+        &error,
+        zaru_cli::failure::SessionEvidence::NoSessionExists,
+    );
+    assert!(
+        matches!(classified, zaru_cli::failure::Classified::Defect(_)),
+        "ADR-0016 D1 makes a file only this harness writes and cannot read back a defect, and \
+         this was classified as something else",
+    );
+    assert_eq!(
+        zaru_cli::failure::Exit::Failed(classified.clone()).code(),
+        70,
+        "D5's defect code",
+    );
+
+    // **The instrument is shown to work on the thing it is guarding against,
+    // and that thing is the reason this classifier exists.** A
+    // `serde_json::Error` quotes the value it tripped on, in its `Display` and
+    // in its `Debug` alike — measured here rather than asserted, so the
+    // absences below are a finding rather than a search of an empty string
+    // (library verification-lessons §26). This is precisely what
+    // `Classify::checkpoint_contents` must not pass on: the value it quotes is
+    // a line of the user's conversation.
+    let quoted = format!("{error}\n{error:?}");
+    assert!(
+        quoted.contains(&core),
+        "the error does not quote the document, so this check is guarding against nothing \
+         and the classifier below could carry anything: {quoted}"
+    );
+
+    // Everything the harness renders about this failure: what the surface
+    // prints, and the `Debug` that would reach a panic message or a log.
+    let readable = format!(
+        "{}\n{:?}",
+        zaru_cli::failure::Presentation::of(&classified),
+        classified,
+    );
+    for (what, needle) in [("the value", secret.as_str()), ("its ASCII core", &core)] {
+        assert!(
+            !readable.contains(needle),
+            "{what} from a corrupt checkpoint reached what a person reads. The file holds a \
+             session's whole conversation, so nothing of it may travel with the refusal:\n{readable}"
+        );
+    }
+
+    // The accepting sibling: the same document, well-formed.
+    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits);
+    said.record(zaru_core::context::Exchange::verbatim(secret.clone()));
+    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
+        .write(&said.checkpoint())
+        .expect("the document is written");
+    let reopened = resumed(&directory);
+    let restored = SessionContext::restored(
+        zaru_cli::compose::prefix_for(),
+        limits,
+        reopened.checkpoint.as_ref().expect("a checkpoint is on disk"),
+    )
+    .expect("a checkpoint this harness wrote reads back");
+    assert_eq!(
+        restored.exchanges().len(),
+        1,
+        "the sibling must restore, or the refusal above is a reader that refuses everything",
+    );
+}

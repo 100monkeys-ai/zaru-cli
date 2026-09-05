@@ -635,6 +635,43 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// A checkpoint that parses as JSON but is not what this harness writes.
+    ///
+    /// # The same class as a checkpoint that will not parse, by the same
+    /// argument
+    ///
+    /// [`Self::resume`] above gives `ResumeFailure::Checkpoint` a defect
+    /// because "the transcript and the checkpoint have exactly one writer in
+    /// this workspace and it is this harness, so a *complete* line that does
+    /// not parse is a file we produced and cannot read". A document that
+    /// parses and holds something other than [ADR-0013] D1's layer 6 is the
+    /// same fact one layer in: `serde_json` accepted it and
+    /// [`crate::compose::SessionContext`] did not.
+    ///
+    /// It is a separate method rather than a `ResumeFailure` variant because
+    /// `crate::session::resume` deliberately treats the file as opaque —
+    /// `crate::session::checkpoint` "writes it whole, reads it whole, and
+    /// interprets no field" — and the one place it is interpreted is the
+    /// boundary. Making the reader parse it would put ADR-0013's shape in two
+    /// modules.
+    ///
+    /// **Nothing of the error is rendered.** A `serde_json::Error`'s own
+    /// message quotes the value it tripped on, and this file holds a session's
+    /// conversation; [`undecided`] carries a location, a version, where to
+    /// report and the session evidence, which is what [ADR-0016] D3's Update
+    /// already decided for a panic's message on the same grounds.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn checkpoint_contents(
+        &self,
+        _error: &serde_json::Error,
+        session: SessionEvidence,
+    ) -> Classified {
+        undecided(self.version, self.report_at, session, line!())
+    }
+
     /// A failure reaching the credential store.
     ///
     /// `StoreError` is one of the four enums [ADR-0016]'s Update names as

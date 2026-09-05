@@ -29,7 +29,7 @@ use crate::cli::classify::Surface as Classify;
 use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::failure::{Exit, SessionEvidence};
 use crate::runtime::ResolvedTier;
-use crate::session::{MetaFile, SessionId, SessionStore};
+use crate::session::{MetaFile, Resumed, SessionId, SessionStore};
 use crate::terminal::driver::{Crossterm, Guard, Turnable, Turns};
 use crate::terminal::source::{Beat, Source};
 use crate::terminal::trie::NotesTrie;
@@ -103,7 +103,7 @@ pub fn shell_for(
     version: &str,
     report_at: &str,
     overrides: &Overrides,
-) -> Result<(Shell, Transcript, NotesTrie), Box<Exit>> {
+) -> Result<(Shell, Transcript, NotesTrie, Resumed), Box<Exit>> {
     let classify = Classify::new(version, report_at);
 
     let resolution = crate::cli::layers::resolve_from_process(overrides)
@@ -130,7 +130,71 @@ pub fn shell_for(
     // be made -- and the composer is told to say so rather than paint nothing.
     let trie = NotesTrie::nothing_cached(attached_workspace(&directory));
     shell.composer_mut().set_absence(trie.absence());
-    Ok((shell, transcript, trie))
+    Ok((shell, transcript, trie, resumed))
+}
+
+/// [ADR-0013] D1's layer 6 as this session left it, and which turn is next.
+///
+/// # A resumed session does not remember its own conversation, until now
+///
+/// [ADR-0010] D4 says a resume "restores `context.json`", D3 says that file
+/// "holds what the model needs to continue", and until 2026-09-05 this
+/// function's caller opened a **fresh** context and threw the checkpoint
+/// away — so the first thing a person typed after resuming was answered by a
+/// model that had been told nothing about the session they were sitting in.
+///
+/// **The checkpoint is canonical and the transcript is history.** D3 and D4
+/// name `context.json` and nothing else as what a resume restores; rebuilding
+/// layer 6 out of the transcript's records instead would be a second source
+/// of truth for one thing, and it would restore the **raw** span of a
+/// compaction where [ADR-0013] D2 says "only the model's view is compacted".
+/// So a session whose checkpoint holds a summary comes back holding the
+/// summary, and the span it replaced stays where D2 put it.
+///
+/// **The prefix and the limits are this invocation's**, built fresh, which is
+/// D1's "never rewritten mid-session" read across a resume: a session resumed
+/// after a configuration change gets the configuration it was resumed under
+/// rather than the one it was started under.
+///
+/// # A checkpoint this harness did not write is a defect, not a fresh session
+///
+/// `SessionContext::restored` refuses a document it did not write, and the
+/// refusal is [ADR-0016] D1's **Defect** at D5's `70` — the same class, by the
+/// same argument, that `Classify::resume` already gives a checkpoint that will
+/// not parse: "the transcript and the checkpoint have exactly one writer in
+/// this workspace and it is this harness". Reading it as an empty conversation
+/// instead would drop a session's whole history and look exactly like a
+/// session that had none.
+///
+/// **An absent checkpoint is not that.** `Checkpoint::read` already calls
+/// `None` "not an error: D3 overwrites it each turn and a session with no
+/// turns has had none", so a session that never checkpointed opens empty.
+///
+/// # Errors
+///
+/// The classified defect, when the stored document is not what
+/// [`crate::compose::SessionContext`] writes.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub fn restored_context(
+    resumed: &Resumed,
+    classify: &Classify,
+    evidence: SessionEvidence,
+) -> Result<crate::compose::SessionContext, Box<Exit>> {
+    let prefix = crate::compose::prefix_for();
+    let limits = crate::cli::layers::context_limits();
+    match &resumed.checkpoint {
+        Some(checkpoint) => {
+            crate::compose::SessionContext::restored(prefix, limits, checkpoint).map_err(|error| {
+                Box::new(Exit::Failed(
+                    classify.checkpoint_contents(&error, evidence),
+                ))
+            })
+        }
+        None => Ok(crate::compose::SessionContext::opened(prefix, limits)),
+    }
 }
 
 /// Open the shell over a session and pump it until the user leaves.
@@ -148,7 +212,7 @@ pub fn open(
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<Exit, Box<Exit>> {
-    let (mut shell, _, trie) = shell_for(id, version, report_at, overrides)?;
+    let (mut shell, _, trie, resumed) = shell_for(id, version, report_at, overrides)?;
 
     // ADR-0008 D1's turns, resolved once for the whole session. Everything
     // below happens **before** the terminal is taken, so a refusal is written
@@ -164,6 +228,10 @@ pub fn open(
         .existing(id)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
 
+    // ADR-0010 D3's checkpoint, read back into ADR-0013 D1's layer 6, before
+    // the terminal is taken so a refusal reaches a terminal that still echoes.
+    let context = restored_context(&resumed, &classify, session.evidence())?;
+
     let mut turns = match &prepared {
         Ok(prepared) => Turnable::Ready(Box::new(Turns {
             version,
@@ -172,18 +240,17 @@ pub fn open(
             prepared,
             session: &session,
             owed: crate::compose::Owed::of(prepared),
-            // ADR-0013 D1's layers, opened once for the session. Layer 6 is
-            // empty at the first turn and is what every turn after it
-            // assembles over.
-            context: crate::compose::SessionContext::opened(
-                crate::compose::prefix_for(),
-                crate::cli::layers::context_limits(),
-            ),
-            // ADR-0008 D1's turn number. One is the session's first turn in
-            // this process; a session resumed a second time restarts the
-            // count, which is recorded on ADR-0010 rather than guessed at,
-            // because nothing on disk says how many turns a session has had.
-            next: 1,
+            // ADR-0013 D1's layers, restored from ADR-0010 D3's checkpoint
+            // rather than opened empty. Layer 6 is what this session said
+            // before the process it said it in ended, and it is what every
+            // turn from here assembles over. See `restored_context`.
+            context,
+            // ADR-0008 D1's turn number, continued rather than restarted.
+            // The transcript numbers every turn it holds, so the next one is
+            // one past the greatest it holds -- ADR-0010 D4's accepted
+            // Update of 2026-09-05, and `session::resume`'s `turns_so_far`
+            // carries why it is the greatest rather than the count.
+            next: resumed.turns + 1,
         })),
         // The real refusal, shown when the user types a task rather than at
         // the door: a person who resumed a session to read it back is not
