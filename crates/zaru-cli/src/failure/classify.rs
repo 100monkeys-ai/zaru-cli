@@ -252,10 +252,12 @@ impl From<ModeRefused> for Classified {
 
 /// ADR-0014's load-time refusals.
 ///
-/// Eight of the ten are the user's and two are ours, and the two that are ours
-/// are ours for reasons the source already states: a layer offered twice is
-/// "a caller error rather than a user's", and two declared keys colliding on
-/// one `ZARU_*` name is a collision in a schema this crate builds.
+/// Eight of the eleven are the user's and three are ours, and the three that
+/// are ours are ours for reasons the source already states: a layer offered
+/// twice is "a caller error rather than a user's", two declared keys colliding
+/// on one `ZARU_*` name is a collision in a schema this crate builds, and a
+/// declared key colliding with the **reserved** name is the same collision
+/// against the one variable that holds ADR-0007 D3's sealing key.
 impl From<ConfigRefused> for Classified {
     fn from(refusal: ConfigRefused) -> Self {
         let remedy = match &refusal {
@@ -263,7 +265,8 @@ impl From<ConfigRefused> for Classified {
             // rather than here, because D3's report needs the version, where
             // to report and the session, none of which a classification holds.
             ConfigRefused::DuplicateLayer { .. }
-            | ConfigRefused::AmbiguousEnvironmentName { .. } => {
+            | ConfigRefused::AmbiguousEnvironmentName { .. }
+            | ConfigRefused::ReservedEnvironmentName { .. } => {
                 return Classified::Defect(DefectReport::new(
                     env!("CARGO_PKG_VERSION"),
                     env!("CARGO_PKG_REPOSITORY"),

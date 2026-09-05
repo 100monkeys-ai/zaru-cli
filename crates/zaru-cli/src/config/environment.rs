@@ -28,6 +28,30 @@
 //! [`ConfigRefused::AmbiguousEnvironmentName`] rather than resolved by
 //! picking one.
 //!
+//! # One `ZARU_*` name is reserved, and it is the only exception
+//!
+//! [`CREDENTIAL_KEY_VARIABLE`] holds [ADR-0007] D3's sealing key on a machine
+//! with no OS keyring. It is **not** a configuration key and must never become
+//! one: [ADR-0014] D4 keeps credentials out of configuration because "a config
+//! file gets committed to a repository", and a sealing key is worth every
+//! credential in the store rather than one of them.
+//!
+//! So this layer passes exactly that name through untouched — it enters no
+//! layer's document, reaches no schema, and appears in no explanation of where
+//! a value came from. It is skipped **by reference to the constant** rather
+//! than by a second spelling, because a name written twice is a name that
+//! diverges, and the divergence would be silent in the direction that matters:
+//! the reader would refuse a user for setting their key correctly.
+//!
+//! The rule needs its other half too. Under this module's transform the key
+//! `credential.key` would produce that same variable, so a schema declaring it
+//! would make one variable mean a sealing key and a setting at once. That is
+//! refused as [`ConfigRefused::ReservedEnvironmentName`], on the same machinery
+//! that already refuses two declared keys colliding with each other.
+//!
+//! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+//! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+//!
 //! # A variable nothing declares is D5's error, not silence
 //!
 //! D5: "A typo that silently does nothing is the worst outcome of any config
@@ -43,6 +67,7 @@ use crate::config::layer::Layer;
 use crate::config::refusal::ConfigRefused;
 use crate::config::schema::Schema;
 use crate::config::value::{Table, Value};
+use crate::credentials::CREDENTIAL_KEY_VARIABLE;
 use std::collections::BTreeMap;
 
 /// The prefix ADR-0014 D1 gives layer 4.
@@ -73,8 +98,9 @@ pub fn variable_name(key: &Key) -> String {
 /// # Errors
 ///
 /// [`ConfigRefused::AmbiguousEnvironmentName`] when two declared keys produce
-/// one variable name, and [`ConfigRefused::UnknownKey`] for a `ZARU_*`
-/// variable that maps to no declared key.
+/// one variable name, [`ConfigRefused::ReservedEnvironmentName`] when a
+/// declared key produces the reserved one, and [`ConfigRefused::UnknownKey`]
+/// for a `ZARU_*` variable that maps to no declared key.
 pub fn read(
     schema: &Schema,
     variables: impl IntoIterator<Item = (String, String)>,
@@ -82,6 +108,12 @@ pub fn read(
     let mut names: BTreeMap<String, &Key> = BTreeMap::new();
     for key in schema.keys() {
         let name = variable_name(key);
+        if name == CREDENTIAL_KEY_VARIABLE {
+            return Err(ConfigRefused::ReservedEnvironmentName {
+                variable: name,
+                key: key.clone(),
+            });
+        }
         if let Some(existing) = names.get(&name) {
             return Err(ConfigRefused::AmbiguousEnvironmentName {
                 variable: name,
@@ -95,6 +127,14 @@ pub fn read(
     let mut document = Table::new();
     for (name, value) in variables {
         if !name.starts_with(PREFIX) {
+            continue;
+        }
+        // The one reserved name, skipped by reference to the constant that
+        // declares it rather than by a second spelling. It holds a sealing key
+        // rather than a setting, so it enters no document -- and it is not an
+        // unknown key either, because refusing it would refuse a user for
+        // doing what ADR-0007 D3 tells them to.
+        if name == CREDENTIAL_KEY_VARIABLE {
             continue;
         }
         match names.get(&name) {

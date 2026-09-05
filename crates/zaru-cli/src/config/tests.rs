@@ -21,6 +21,7 @@ use crate::config::refusal::ConfigRefused;
 use crate::config::resolve::Resolution;
 use crate::config::schema::{Field, FieldKind, Schema};
 use crate::config::value::{Table, Value};
+use crate::credentials::CREDENTIAL_KEY_VARIABLE;
 
 // ---------------------------------------------------------------------------
 // D1 — five layers, higher wins
@@ -1160,6 +1161,92 @@ fn a_schema_whose_keys_collide_on_one_variable_is_refused() {
     assert!(
         matches!(refusal, ConfigRefused::AmbiguousEnvironmentName { .. }),
         "the refusal was {refusal:?}",
+    );
+}
+
+/// The one reserved `ZARU_*` name is passed through, both ways.
+///
+/// ADR-0007 D3's sealing key lives in `ZARU_CREDENTIAL_KEY` on a machine with
+/// no OS keyring, and it is not a configuration key: ADR-0014 D4 keeps
+/// credentials out of configuration, and a sealing key is worth every
+/// credential in the store rather than one of them.
+///
+/// **Both arms are the point and neither is enough alone.** Without the first,
+/// a user who set the key correctly would have every configuration load refused
+/// with "unknown key", which is a refusal for doing the right thing. Without the
+/// second, the variable would silently enter layer 4 and appear in `config
+/// explain`'s account of where a value came from, which is a sealing key
+/// rendered into an explanation.
+#[test]
+fn the_reserved_credential_key_variable_is_neither_refused_nor_read() {
+    let document = environment::read(
+        &schema(),
+        vec![
+            (CREDENTIAL_KEY_VARIABLE.to_owned(), "a7".repeat(32)),
+            (
+                "ZARU_PROJECT_NAME".to_owned(),
+                "from-the-environment".to_owned(),
+            ),
+        ],
+    )
+    .expect(
+        "setting ADR-0007 D3's sealing key made every configuration load fail, so the harness \
+         refuses a user for doing exactly what the record tells them to",
+    );
+
+    // The staging: without the ordinary variable beside it, an empty document
+    // would satisfy the assertion below for the wrong reason.
+    assert_eq!(
+        document
+            .get_path(&key("project.name"))
+            .and_then(Value::as_text),
+        Some("from-the-environment"),
+        "the ordinary variable beside the reserved one did not reach the document, so this check \
+         says nothing about the reserved one: {document:?}"
+    );
+    let rendered = format!("{document:?}");
+    assert!(
+        !rendered.contains("credential"),
+        "the reserved variable reached layer 4's document, so a sealing key would be rendered \
+         into config explain's account of where a value came from: {rendered}"
+    );
+    assert!(
+        !rendered.contains(&"a7".repeat(32)),
+        "layer 4's document carries the sealing key: {rendered}"
+    );
+}
+
+/// No schema may declare a key that produces the reserved variable.
+///
+/// Under the transform, `credential.key` produces `ZARU_CREDENTIAL_KEY`. A
+/// schema declaring it would make one variable mean a sealing key and a
+/// setting at once, and which one won would be decided by the order this
+/// module happens to walk in.
+#[test]
+fn a_schema_declaring_the_reserved_variables_key_is_refused() {
+    let colliding = Schema::new().with(key("credential.key"), Field::free(FieldKind::Text));
+
+    let refusal = environment::read(&colliding, Vec::new()).expect_err(
+        "a schema declared the key that produces ADR-0007 D3's sealing-key variable and the read \
+         accepted it",
+    );
+
+    assert!(
+        matches!(refusal, ConfigRefused::ReservedEnvironmentName { .. }),
+        "the refusal was {refusal:?}",
+    );
+    let said = refusal.to_string();
+    assert!(
+        said.contains(CREDENTIAL_KEY_VARIABLE),
+        "the refusal does not name the variable it is about: {said}"
+    );
+    // The transform is what makes the collision real, so it is measured here
+    // rather than asserted in prose.
+    assert_eq!(
+        environment::variable_name(&key("credential.key")),
+        CREDENTIAL_KEY_VARIABLE,
+        "the key this check is built on no longer produces the reserved variable, so it is \
+         refusing a collision that does not exist"
     );
 }
 

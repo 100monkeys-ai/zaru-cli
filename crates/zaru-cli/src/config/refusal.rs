@@ -165,6 +165,26 @@ pub enum ConfigRefused {
         /// The lexically second.
         second: Key,
     },
+    /// A declared key produces the one `ZARU_*` name that is reserved.
+    ///
+    /// [ADR-0007] D3's sealing key lives in an environment variable when there
+    /// is no OS keyring, and that variable is deliberately **not** a
+    /// configuration key: [ADR-0014] D4 keeps credentials out of configuration,
+    /// and a key is the one thing worth more than a credential. So layer 4
+    /// passes that one name through untouched, and a schema that declared a key
+    /// producing it would make the same variable mean two things at once.
+    ///
+    /// Ours rather than the user's, like the ambiguity above: a schema is built
+    /// by this crate.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    ReservedEnvironmentName {
+        /// The reserved variable.
+        variable: String,
+        /// The key that produces it.
+        key: Key,
+    },
 }
 
 impl fmt::Display for ConfigRefused {
@@ -296,6 +316,10 @@ impl fmt::Display for ConfigRefused {
                 "the keys `{first}` and `{second}` both map to the environment variable \
                  {variable}; the transform upper-cases a key and turns its dots into \
                  underscores, so it cannot tell them apart",
+            ),
+            Self::ReservedEnvironmentName { variable, key } => write!(
+                f,
+                "the key `{key}` maps to the environment variable {variable}, which is reserved:                  it holds ADR-0007 D3's sealing key on a machine with no OS keyring, and it is                  deliberately not a configuration key because ADR-0014 D4 keeps credentials out                  of configuration. No key may be declared that produces it",
             ),
         }
     }
