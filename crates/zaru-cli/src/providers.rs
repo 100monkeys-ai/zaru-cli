@@ -52,10 +52,14 @@
 pub mod alias;
 pub mod endpoint;
 pub mod kind;
+pub mod resolution;
 
 pub use alias::ModelAlias;
 pub use endpoint::{EndpointRefused, ProviderEndpoint};
 pub use kind::ProviderKind;
+pub use resolution::{
+    ModelId, ModelIdRefused, ModelTable, ResolvedModel, TableRefused, declare, endpoint_of, fields,
+};
 
 #[cfg(test)]
 mod tests;

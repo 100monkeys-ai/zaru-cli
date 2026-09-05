@@ -6,8 +6,40 @@
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 
 use crate::config::environment::variable_name;
-use crate::providers::{EndpointRefused, ModelAlias, ProviderEndpoint, ProviderKind};
+use crate::config::{
+    ConfigRefused, Contribution, Field, Key, Layer, Resolution, Schema, Source, Table, Value,
+};
+use crate::providers::resolution::ModelTable;
+use crate::providers::{
+    EndpointRefused, ModelAlias, ProviderEndpoint, ProviderKind, ResolvedModel, TableRefused,
+    declare, endpoint_of, fields,
+};
 use std::collections::BTreeSet;
+
+/// The schema every resolution check below resolves against.
+///
+/// Built by [`declare`] from the record's own [`fields`], never retyped here:
+/// a check that restated the key set would agree with itself about a key that
+/// had been renamed.
+fn schema() -> Schema {
+    declare(Schema::new())
+}
+
+/// One layer, setting one key to one value.
+fn at(layer: Layer, key: &Key, value: &str) -> Contribution {
+    let mut document = Table::new();
+    document.insert_path(key, Value::Text(value.to_owned()));
+    Contribution::new(layer, Source::named(layer.label()), document)
+}
+
+/// A value distinct per layer and per key, so nothing can pass by coincidence.
+fn planted(layer: Layer, key: &Key) -> String {
+    format!(
+        "model-{}-{}",
+        layer.number(),
+        key.as_str().replace('.', "-")
+    )
+}
 
 /// ADR-0012 D2's four, and the shape that makes a fifth a compile error.
 ///
@@ -306,4 +338,332 @@ fn an_endpoint_a_listing_cannot_render_is_refused_for_its_own_reason() {
         ),
         other => panic!("surrounding whitespace must be refused as such, and was {other:?}"),
     }
+}
+
+/// **ADR-0012 trigger clause 1, first half: all four aliases set in all five
+/// layers resolve to the flag's.**
+///
+/// This half is deliberately *not* enough on its own, and the check below is
+/// why: an implementation that reported `Flag` whatever set the key passes
+/// every assertion here perfectly. Kept as two checks rather than one so that
+/// the difference is a measurement rather than a claim.
+#[test]
+fn every_alias_set_in_all_five_layers_resolves_to_the_flags_value() {
+    let schema = schema();
+
+    for alias in ModelAlias::ALL {
+        let key = alias.key();
+        let contributions: Vec<Contribution> = Layer::ALL
+            .into_iter()
+            .map(|layer| at(layer, &key, &planted(layer, &key)))
+            .collect();
+        let resolution = Resolution::resolve(&schema, contributions).expect("the fixture resolves");
+        let table = ModelTable::from_configuration(&resolution).expect("every value is text");
+
+        match table.row(alias) {
+            ResolvedModel::Resolved { model, supplied_by } => {
+                assert_eq!(
+                    model.as_str(),
+                    planted(Layer::Flag, &key),
+                    "ADR-0014 D1 has the highest layer win, so `{alias}` must be the flag's value"
+                );
+                assert_eq!(
+                    *supplied_by,
+                    Layer::Flag,
+                    "and the table must name the layer that supplied it"
+                );
+            }
+            ResolvedModel::Unresolved => {
+                panic!("`{alias}` was set in all five layers and resolved to nothing")
+            }
+        }
+    }
+}
+
+/// **ADR-0012 trigger clause 1, second half: every one of the five layers can
+/// be the one that supplied an alias, and the table says which.**
+///
+/// One layer at a time, all four aliases, all five layers — twenty cases. This
+/// is the half that discriminates: a table answering `Flag` regardless leaves
+/// the check above green and reddens here naming every case it got wrong.
+#[test]
+fn every_layer_can_be_the_one_that_supplied_an_alias() {
+    let schema = schema();
+    let mut wrong: Vec<(ModelAlias, Layer, Layer)> = Vec::new();
+    for alias in ModelAlias::ALL {
+        let key = alias.key();
+        for layer in Layer::ALL {
+            let resolution = Resolution::resolve(&schema, [at(layer, &key, &planted(layer, &key))])
+                .expect("the fixture resolves");
+            let table = ModelTable::from_configuration(&resolution).expect("every value is text");
+            if let ResolvedModel::Resolved { supplied_by, .. } = table.row(alias)
+                && *supplied_by != layer
+            {
+                wrong.push((alias, layer, *supplied_by));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "ADR-0012 D4 requires the layer that supplied each alias, and these are named wrong \
+         (alias, layer that set it, layer reported): {wrong:?}"
+    );
+}
+
+/// **The layer this table names is the layer `config explain` marks, read out
+/// of the rendered block rather than asked for a second time.**
+///
+/// One arm of the comparison must not travel through the thing being checked.
+/// The table's side comes from [`ModelTable`]; the other side is parsed from
+/// ADR-0014 D3's own rendered text — the row carrying the effective marker —
+/// which shares no code with `effective_layer`'s search. A table that invented
+/// its own precedence would agree with itself and disagree here.
+#[test]
+fn the_layer_the_table_names_is_the_layer_adr_0014_d3s_block_marks() {
+    let schema = schema();
+    let key = ModelAlias::Default.key();
+
+    for highest in [Layer::User, Layer::Project, Layer::Environment, Layer::Flag] {
+        let contributions: Vec<Contribution> = Layer::ALL
+            .into_iter()
+            .filter(|layer| *layer <= highest)
+            .map(|layer| at(layer, &key, &planted(layer, &key)))
+            .collect();
+        let resolution = Resolution::resolve(&schema, contributions).expect("the fixture resolves");
+
+        let rendered = resolution.explain(&key).to_string();
+        let marked = rendered
+            .lines()
+            .find(|line| line.contains("← effective"))
+            .unwrap_or_else(|| panic!("D3's block must mark a row:\n{rendered}"));
+        let number: u8 = marked
+            .split_whitespace()
+            .next()
+            .and_then(|first| first.parse().ok())
+            .unwrap_or_else(|| {
+                panic!("the marked row must start with D1's layer number: {marked}")
+            });
+
+        let table = ModelTable::from_configuration(&resolution).expect("every value is text");
+        let ResolvedModel::Resolved { supplied_by, .. } = table.row(ModelAlias::Default) else {
+            panic!("`default` was set and resolved to nothing")
+        };
+
+        assert_eq!(
+            supplied_by.number(),
+            number,
+            "the table says layer {} supplied `model.default`; the block it is a projection of \
+             marks layer {number}:\n{rendered}",
+            supplied_by.number(),
+        );
+    }
+}
+
+/// An alias nobody configured resolves to nothing, and nothing here invents a
+/// model to put there.
+///
+/// ADR-0012's Neutral consequence is one sentence — "Nothing here selects a
+/// default model" — so the second half reads this module's own sources for
+/// anything shaped like a model name. A default added as a literal reddens
+/// here before it can acquire a caller; the needles are the vendor prefixes a
+/// default would have to be spelled with.
+#[test]
+fn an_alias_no_layer_set_is_unresolved_and_no_default_model_is_invented() {
+    let resolution = Resolution::resolve(&schema(), []).expect("an empty configuration resolves");
+    let table = ModelTable::from_configuration(&resolution).expect("nothing to read");
+
+    for alias in ModelAlias::ALL {
+        assert_eq!(
+            *table.row(alias),
+            ResolvedModel::Unresolved,
+            "no layer set `{alias}`, and ADR-0012 selects no default model"
+        );
+    }
+
+    let sources = [
+        ("alias.rs", include_str!("alias.rs")),
+        ("kind.rs", include_str!("kind.rs")),
+        ("resolution.rs", include_str!("resolution.rs")),
+    ];
+    let found: Vec<(&str, &str)> = sources
+        .iter()
+        .flat_map(|(name, body)| {
+            ["\"claude-", "\"gpt-", "\"llama", "\"o1-", "\"gemini-"]
+                .iter()
+                .filter(move |needle| body.contains(**needle))
+                .map(move |needle| (*name, *needle))
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "ADR-0012's Neutral section selects no default model, and these look like one: {found:?}"
+    );
+}
+
+/// **A project may choose a model and may not choose where the prompts go.**
+///
+/// Both arms, because the refusal alone is satisfied by a schema that refuses
+/// the project layer everything — which would be wrong, and wrong in a way
+/// every refusal check passes perfectly.
+#[test]
+fn a_project_may_set_a_model_alias_and_may_not_set_an_endpoint() {
+    let schema = schema();
+    let alias_key = ModelAlias::Default.key();
+
+    let resolution = Resolution::resolve(
+        &schema,
+        [at(
+            Layer::Project,
+            &alias_key,
+            "a-model-a-project-asked-for",
+        )],
+    )
+    .expect("ADR-0012 D4 lists project configuration among the five layers that resolve an alias");
+    let table = ModelTable::from_configuration(&resolution).expect("the value is text");
+    match table.row(ModelAlias::Default) {
+        ResolvedModel::Resolved { model, supplied_by } => {
+            assert_eq!(
+                model.as_str(),
+                "a-model-a-project-asked-for",
+                "a project asking for a different model is ADR-0012 D4 working"
+            );
+            assert_eq!(
+                *supplied_by,
+                Layer::Project,
+                "and the layer that supplied it is the project's"
+            );
+        }
+        ResolvedModel::Unresolved => {
+            panic!("the project layer set `model.default` and it resolved to nothing")
+        }
+    }
+
+    // And every one of the four kinds, separately: a ceiling that refused only
+    // the first would pass a check that tried only the first.
+    let mut permitted: Vec<ProviderKind> = Vec::new();
+    for kind in ProviderKind::ALL {
+        let key = kind.endpoint_key();
+        match Resolution::resolve(&schema, [at(Layer::Project, &key, "http://elsewhere")]) {
+            Err(ConfigRefused::ProjectMayNotSet { key: named, reason }) => {
+                assert_eq!(named, key, "the refusal names the key the project set");
+                assert!(
+                    reason.contains("prompts"),
+                    "ADR-0014 D6 requires the reason as well as the key, and this one does not say \
+                     what is at stake: {reason:?}"
+                );
+            }
+            _ => permitted.push(kind),
+        }
+    }
+    assert!(
+        permitted.is_empty(),
+        "a repository the user cloned must not be able to redirect where their prompts go, and \
+         these kinds let it: {permitted:?}"
+    );
+}
+
+/// **ADR-0012 D5, as one declaration shared by all four kinds.**
+///
+/// D5 says local servers "configure exactly like hosted ones". The strongest
+/// reading is that the *declaration* is the same object for every kind, not
+/// merely that four similar ones exist, so this compares them against each
+/// other rather than against a literal.
+#[test]
+fn every_provider_kind_is_configured_by_the_very_same_declaration() {
+    let declared = fields();
+    let endpoints: Vec<&Field> = ProviderKind::ALL
+        .iter()
+        .map(|kind| {
+            let key = kind.endpoint_key();
+            &declared
+                .iter()
+                .find(|(candidate, _)| *candidate == key)
+                .unwrap_or_else(|| panic!("`{key}` must be declared"))
+                .1
+        })
+        .collect();
+
+    let differing: Vec<ProviderKind> = ProviderKind::ALL
+        .into_iter()
+        .zip(endpoints.iter())
+        .filter(|(_, field)| **field != endpoints[0])
+        .map(|(kind, _)| kind)
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "ADR-0012 D5 has every kind configured the same way, and these are declared differently \
+         from `anthropic`: {differing:?}"
+    );
+
+    // And the same path reads an endpoint back for every kind.
+    let schema = schema();
+    for kind in ProviderKind::ALL {
+        let key = kind.endpoint_key();
+        let resolution = Resolution::resolve(&schema, [at(Layer::User, &key, "http://somewhere")])
+            .expect("the user's own layer may set an endpoint for any kind");
+        let endpoint = endpoint_of(&resolution, kind)
+            .expect("the value is text")
+            .unwrap_or_else(|| panic!("`{key}` was set and read back as nothing"));
+        assert_eq!(endpoint.as_str(), "http://somewhere");
+    }
+}
+
+/// A configured value a listing could not render is refused, naming the alias.
+#[test]
+fn an_unusable_model_identifier_is_refused_naming_the_alias() {
+    let schema = schema();
+    let key = ModelAlias::Fast.key();
+
+    for (offered, expected) in [
+        ("", "is empty"),
+        ("a\u{7}b", "control character"),
+        (" spaced", "whitespace"),
+    ] {
+        let resolution =
+            Resolution::resolve(&schema, [at(Layer::User, &key, offered)]).expect("text resolves");
+        match ModelTable::from_configuration(&resolution) {
+            Err(TableRefused::UnusableModelId { alias, refusal }) => {
+                assert_eq!(alias, ModelAlias::Fast, "the refusal names the alias");
+                let said = refusal.to_string();
+                assert!(
+                    said.contains(expected),
+                    "the refusal must say why; it said {said:?} and should mention {expected:?}"
+                );
+            }
+            other => panic!("{offered:?} should be refused, and was {other:?}"),
+        }
+    }
+}
+
+/// **A model identifier cannot be built anywhere but the resolution table.**
+///
+/// ADR-0012 D1: "A model identifier appearing anywhere except the resolution
+/// table is a bug." That is held by Rust's own module privacy — `ModelId`'s
+/// field and its constructor are private to `providers::resolution`, and this
+/// module is a *sibling*, so `ModelId::new("anything")` written here does not
+/// compile. The red-watch for it is therefore a compile error rather than an
+/// assertion, quoted in this commit's message.
+///
+/// What runs is the other half: the source must not grow a public door. The
+/// needles are declaration-shaped, so the prose above does not match.
+#[test]
+fn nothing_outside_the_resolution_table_can_build_a_model_identifier() {
+    let body = include_str!("resolution.rs");
+    let doors = [
+        "pub fn new(",
+        "pub const fn new(",
+        "impl From<String> for ModelId",
+        "impl From<&str> for ModelId",
+        "pub struct ModelId(pub",
+    ];
+    let found: Vec<&str> = doors
+        .iter()
+        .filter(|needle| body.contains(**needle))
+        .copied()
+        .collect();
+    assert!(
+        found.is_empty(),
+        "ADR-0012 D1 puts a model identifier in one place, and these would let it be built \
+         anywhere: {found:?}"
+    );
 }
