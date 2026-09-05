@@ -362,15 +362,14 @@ pub enum RefusedBecause {
     /// rather than performed, because a confirmation nobody can answer is
     /// exactly the silent default ADR-0011 D3 and ADR-0007 D8 both forbid.
     ///
-    /// **The second route arrived on 2026-09-05** with
-    /// [`Confirm::confirm`](crate::tools::port::Confirm::confirm) answering a
-    /// `Result`. Before it, a confirmer whose terminal had closed could only
-    /// answer `false`, which is [`RefusedBecause::TheUserDeclined`] — a
+    /// **The second route arrived on 2026-09-05** with [`Confirm::confirm`]
+    /// answering a `Result`. Before it, a confirmer whose terminal had closed
+    /// could only answer `false`, which is [`Self::TheUserDeclined`] — a
     /// record saying the user declined when nobody was asked anything. The
-    /// [`ConfirmFailure`](crate::tools::port::ConfirmFailure)'s own sentence
-    /// is not carried here: this enum is a closed set of permission
-    /// *outcomes*, and widening it to hold a diagnosis would make one of
-    /// them an error report.
+    /// failure's own sentence is not carried here: this enum is a closed set
+    /// of permission *outcomes*, and widening it to hold a diagnosis would
+    /// make one of them an error report. A caller that wants the detail has
+    /// it at the call site.
     ThereWasNobodyToAsk,
     /// The user was asked and said no.
     TheUserDeclined,

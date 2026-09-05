@@ -42,6 +42,7 @@ use crate::tools::output::{
 };
 use crate::tools::port::{Allowlist as _, DestructiveMatch as _};
 use crate::tools::tree::{Placement, WorkingDirectory};
+use crate::tools::{fixtures, prompt};
 use std::path::PathBuf;
 
 /// **Corpus case 1, the representational arm — a tool reaching outside its
@@ -2280,5 +2281,202 @@ fn an_ask_that_could_not_reach_the_user_is_not_a_decline() {
     assert!(
         rendered.contains("did not reach"),
         "the refusal's own sentence must be true of both routes: {rendered:?}"
+    );
+}
+
+/// **ADR-0011 D3's prompt is one line, and it is the line the transcript will
+/// record.**
+///
+/// `zaru-tui`'s richer prompt reaches the same port with the same
+/// [`Question`], so what is asserted here is that the plain one adds a `y/N`
+/// suffix and **nothing else**: no second sentence, no re-derived annotation,
+/// no separate prominence marker. D6's marking is inside the statement
+/// already, which is why a destructive call's line carries it here without
+/// this module knowing what D6 is.
+///
+/// The mutants: appending a sentence (the line stops being one line);
+/// re-deriving the annotation (it appears twice); dropping the suffix (a user
+/// cannot tell which way an empty answer goes).
+#[test]
+fn the_prompt_is_one_line_and_it_is_the_transcripts_own() {
+    let destructive = CommandLine::split("rm -rf build").expect("a command line");
+    let invocation = Invocation::running(&destructive);
+    let decision = Decision::assess(Mode::Ask, &invocation, &Allowed::nothing(), &Shapes::new());
+    let question = decision
+        .question()
+        .expect("staging: a command at `ask` must raise a question");
+
+    let rendered = prompt::line(&question);
+    assert_eq!(
+        rendered,
+        format!("{}{}", question.statement, prompt::SUFFIX),
+        "the prompt writes the statement and the suffix, and nothing else"
+    );
+    assert_eq!(
+        rendered.lines().count(),
+        1,
+        "the prompt is one line: {rendered:?}"
+    );
+    assert!(
+        rendered.contains(&decision.entry().render()),
+        "the prompt and the transcript must describe one call the same way: {rendered:?} against \
+         {:?}",
+        decision.entry().render()
+    );
+    assert_eq!(
+        rendered.matches(DESTRUCTIVE_MARKING).count(),
+        1,
+        "D6's annotation is in the statement already; a prompt that re-derived it would show it \
+         twice: {rendered:?}"
+    );
+
+    // The accepting sibling: an ordinary call's line carries no annotation, so
+    // the count above is about the match rather than about the suffix.
+    let ordinary = CommandLine::split("cargo test").expect("a command line");
+    let quiet = Decision::assess(
+        Mode::Ask,
+        &Invocation::running(&ordinary),
+        &Allowed::nothing(),
+        &Shapes::new(),
+    );
+    let quiet_line = prompt::line(
+        &quiet
+            .question()
+            .expect("a command at `ask` raises a question"),
+    );
+    assert!(
+        !quiet_line.contains(DESTRUCTIVE_MARKING),
+        "an ordinary command's prompt was annotated: {quiet_line:?}"
+    );
+}
+
+/// **N is the default, and it is the default by being everything that is not
+/// a yes.**
+///
+/// The accepting arms are the four spellings of yes; every other row is a no,
+/// including the empty line, whitespace, end of input, and the words a user
+/// might expect to work. A rule with one accepting shape cannot forget a
+/// branch.
+///
+/// The mutants: returning `true` for an empty line (the default flips);
+/// accepting any non-empty line; making the comparison case-sensitive, which
+/// the `Y` and `YES` rows catch.
+#[test]
+fn n_is_the_default_and_only_a_yes_is_a_yes() {
+    let yes = ["y", "Y", "yes", "YES", "Yes", " y ", "y\n", "yes\r\n"];
+    let no = [
+        "", " ", "\n", "n", "N", "no", "NO", "nope", "ye", "yess", "yeah", "1", "true", "ok",
+    ];
+
+    let mut wrong = Vec::new();
+    for typed in yes {
+        if !prompt::answer(Some(typed)) {
+            wrong.push(format!("{typed:?} was read as no"));
+        }
+    }
+    for typed in no {
+        if prompt::answer(Some(typed)) {
+            wrong.push(format!("{typed:?} was read as yes"));
+        }
+    }
+    if prompt::answer(None) {
+        wrong.push("end of input was read as yes".to_owned());
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("; "));
+}
+
+/// **The prompt's I/O, driven over real handles.**
+///
+/// [`prompt::ask`] is where the writing and the reading live, so it is
+/// reachable with a real file and a real buffer; [`prompt::Prompt`] is that
+/// plus the terminal gate and the locking. What this asserts is the bytes
+/// that reached the output — read back out of the buffer rather than
+/// re-rendered — and the answer that came back.
+///
+/// The mutants: not flushing (the buffer is empty when the answer is read);
+/// writing the statement without the suffix; returning the answer to a
+/// different question.
+#[test]
+fn the_prompt_writes_its_line_and_reads_the_answer_back() {
+    let question = crate::tools::port::Question {
+        statement: format!("Allow {}", fixtures::nonce("statement")),
+        prominent: true,
+    };
+
+    for (typed, expected) in [("y\n", true), ("n\n", false), ("\n", false), ("", false)] {
+        let mut input = typed.as_bytes();
+        let mut output: Vec<u8> = Vec::new();
+        let answered = prompt::ask(&mut input, &mut output, &question)
+            .expect("a readable handle and a writable one cannot fail");
+        assert_eq!(
+            answered, expected,
+            "{typed:?} was read as {answered} and it means {expected}"
+        );
+        let written = String::from_utf8(output).expect("the prompt writes text");
+        assert_eq!(
+            written,
+            prompt::line(&question),
+            "the bytes that reached the handle are not the line the prompt renders"
+        );
+        assert!(
+            written.contains(&question.statement),
+            "the statement the decision composed did not reach the user: {written:?}"
+        );
+    }
+}
+
+/// **Corpus case: no terminal is no confirmer, and the call is refused rather
+/// than defaulted.**
+///
+/// The gate is [`IsTerminal`](std::io::IsTerminal), called by the product on
+/// a **real** handle the check owns — a file in its own scratch tree, and a
+/// pipe's read half. Neither is a fixture answering on the product's behalf.
+///
+/// A check cannot make a terminal, so the accepting end of this gate is not
+/// exercised anywhere and is a `Not verified` line on the record. What *is*
+/// exercised is the consequence, which is the half that matters: a caller
+/// holding `None` refuses with `ThereWasNobodyToAsk`, and the accepting
+/// sibling is the same decision with a confirmer that answers.
+///
+/// The mutant is `Prompt::over` skipping the `is_terminal` test, which would
+/// let a redirected run answer "the user declined" from end of input in a
+/// transcript no user was watching.
+#[test]
+fn a_prompt_without_a_terminal_is_no_confirmer_at_all() {
+    let tree = ScratchTree::new();
+    let path = tree.project().join("inside").join("answers");
+    std::fs::write(&path, b"y\n").expect("staging: a file to answer from");
+    let handle = std::fs::File::open(&path).expect("staging: the file opens");
+
+    assert!(
+        prompt::Prompt::over(handle, Vec::new()).is_none(),
+        "a regular file is not a terminal, and a prompt over one would read `y` from a file the \
+         user never typed into"
+    );
+
+    // The consequence, which is what the record actually requires.
+    let target = tree.project().join("inside").join("file");
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let classified = working.classify(target.to_str().expect("a utf-8 path"));
+    let invocation =
+        Invocation::on_path(ToolName::FsWrite, &classified).expect("fs.write addresses a path");
+    let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
+    assert_eq!(
+        decision.requirement(),
+        Requirement::Ask,
+        "staging: a write at `ask` must need a prompt"
+    );
+
+    let confirmer: Option<&dyn crate::tools::port::Confirm> = None;
+    assert_eq!(
+        decision.permit(confirmer),
+        Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
+        "ADR-0011 D3: a confirmation nobody can answer is the silent default the record forbids"
+    );
+    assert_eq!(
+        decision.permit(Some(&RecordedConfirmer::accepting())),
+        Permission::Granted,
+        "the accepting sibling: a confirmer that answers must grant, or the refusal above is what \
+         this decision does to everything"
     );
 }

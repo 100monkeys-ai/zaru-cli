@@ -90,6 +90,7 @@ pub mod name;
 pub mod notice;
 pub mod output;
 pub mod port;
+pub mod prompt;
 pub mod seal;
 pub mod tree;
 
@@ -109,6 +110,11 @@ pub use output::{
     PresentationRefused, Presented,
 };
 pub use port::{Allowlist, Confirm, ConfirmFailure, DestructiveMatch, Fetch, Question, Subprocess};
+// `prompt` is deliberately **not** re-exported here. `zaru-core` already has
+// an `iteration::Prompt` and several checks in this crate import it, so a
+// second `tools::Prompt` at the same level would be two different things one
+// `use` line away from each other. Callers say `tools::prompt::Prompt`, and
+// `line` and `answer` are far too generic to sit beside `Mode` and `Target`.
 pub use seal::{NoMembrane, Verdict, Verdicts};
 pub use tree::{Placement, Target, TreeError, WorkingDirectory};
 
