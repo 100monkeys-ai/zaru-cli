@@ -25,8 +25,8 @@ use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
-    Captured, Executor, Fetch, FileWrites, Mode, NoMembrane, OutputBudget, Question,
-    SessionOverflow, Subprocess, ToolName, Verdict, Verdicts, WorkingDirectory,
+    Captured, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question, SessionOverflow,
+    Subprocess, ToolName, Verdict, Verdicts, WorkingDirectory,
 };
 use zaru_core::iteration::{
     Clock, ContextPolicy, ContextRefusal, Interruption, PortFailure, Prompt, Turn,
@@ -181,11 +181,6 @@ impl EventSink for Printing {
 /// Never reached in these checks; present because the executor needs one.
 struct Unbuilt;
 
-impl FileWrites for Unbuilt {
-    async fn apply(&self, tool: ToolName, _target: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new(format!("{tool} has no implementation")))
-    }
-}
 impl zaru_cli::tools::Search for Unbuilt {
     async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("fs.search has no implementation"))
@@ -277,7 +272,6 @@ async fn a_model_reads_a_file_inside_the_boundary_and_the_bytes_reach_it() {
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
@@ -377,7 +371,6 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
@@ -507,7 +500,6 @@ async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
@@ -599,7 +591,6 @@ async fn a_denying_membrane_refuses_at_yolo_and_presents_as_an_expected_failure(
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &HeldSecrets::none(),
-            writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,

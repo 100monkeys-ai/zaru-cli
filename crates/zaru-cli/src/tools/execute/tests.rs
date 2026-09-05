@@ -31,7 +31,7 @@ use crate::tools::output::{Captured, OutputBudget};
 use crate::tools::port::{Confirm, Fetch, Question, Subprocess};
 use crate::tools::seal::{NoMembrane, Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
-use crate::tools::writes::{FileWrites, Search};
+use crate::tools::writes::Search;
 use zaru_core::iteration::PortFailure;
 use zaru_core::tool_call::{ToolExecutor, ToolOutcome, ToolRequest};
 
@@ -71,11 +71,6 @@ const UNBUILT: &str = "has no product implementation";
 /// ported.
 struct Unbuilt;
 
-impl FileWrites for Unbuilt {
-    async fn apply(&self, tool: ToolName, _target: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new(format!("{tool} {UNBUILT}")))
-    }
-}
 impl Search for Unbuilt {
     async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
         Err(PortFailure::new(format!("fs.search {UNBUILT}")))
@@ -173,7 +168,6 @@ macro_rules! executor {
             overflow: $overflow,
             transcript: $transcript,
             redactor: &HeldSecrets::none(),
-            writes: $unbuilt,
             search: $unbuilt,
             subprocess: $unbuilt,
             fetch: $unbuilt,
@@ -371,12 +365,19 @@ async fn nothing_outside_the_working_directory_is_ever_read() {
 /// **Security corpus.** A decision reached about one call cannot authorise
 /// another.
 ///
-/// The executor derives the invocation from the request it was handed, so
-/// there is no way to pass it a decision made about something else. The
-/// mutant: taking an `Invocation` as a parameter, which is the shape that
-/// lets a caller decide about `fs.read` and act as `fs.write`.
+/// The executor derives the invocation from the request it was handed and
+/// [`Executor::act`] matches the **subject** against the **call**, so a
+/// decision reached about a path cannot be spent on a different act. The
+/// mutant: taking an `Invocation` as a parameter, which is the shape that lets
+/// a caller decide about `fs.read` and act as `fs.write`.
+///
+/// **Re-transcribed 2026-09-05, when `fs.write` began to act.** Until then the
+/// assertion was that a write left through a port with no implementation,
+/// which is a fact about the port rather than about the routing; the property
+/// the corpus wants is that a request named `fs.read` never creates a file,
+/// and it is now checkable against a write that really would have.
 #[tokio::test]
-async fn a_write_is_never_performed_under_a_reads_decision() {
+async fn a_request_named_for_one_tool_never_performs_another() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("resolves");
     let scratch = Scratch::new();
@@ -387,7 +388,7 @@ async fn a_write_is_never_performed_under_a_reads_decision() {
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
     // `yolo` prompts for nothing, so nothing but the executor's own routing
-    // stands between this request and an act.
+    // stands between these requests and an act.
     let mut executor = executor!(
         &working,
         Mode::Yolo,
@@ -401,41 +402,76 @@ async fn a_write_is_never_performed_under_a_reads_decision() {
     );
 
     let target = tree.project().join("inside").join("written");
-    let asked = request(
-        "fs.write",
-        &[
-            target.to_str().expect("utf-8"),
-            "what a model asked to store",
-        ],
-    );
-    let failure = executor
-        .execute(&asked)
-        .await
-        .expect_err("fs.write has no product implementation, so it cannot have acted");
+    let spelled = target.to_str().expect("utf-8").to_owned();
 
-    assert!(
-        failure.detail.contains(UNBUILT) && failure.detail.contains("fs.write"),
-        "the write should have left through the port that has no implementation, and instead \
-         reached: {}",
-        failure.detail
-    );
+    // A read of a path that does not exist. It fails as the work fails --
+    // exit code, the operating system's own words -- and creates nothing.
+    let read = executor
+        .execute(&request("fs.read", &[&spelled]))
+        .await
+        .expect("a read that could not read is not a port failure");
+    match read {
+        ToolOutcome::Completed { result, .. } => assert!(
+            result.failed,
+            "a read of a path that is not there reports the work's failure: {:?}",
+            result.content
+        ),
+        other => panic!("a read at yolo is not refused: {other:?}"),
+    }
     assert!(
         !target.exists(),
-        "a file was created at {}, so this crate's product tree performed a write",
+        "a request named fs.read created {}, so the act was chosen by something other than the \
+         call that was parsed",
         target.display()
     );
 
-    // The accepting arm: the same executor, the same mode, a tool that does
-    // act. Without it the assertions above are satisfied by an executor that
-    // routes everything to a port.
-    let inside = executor
-        .execute(&request("fs.read", &["inside/file"]))
+    // A read carrying a write's arguments is not a call at all. The contract
+    // refuses it before the decision, so nothing is even classified.
+    let confused = executor
+        .execute(&request_raw_write_shaped_read(&spelled))
         .await
-        .expect("fs.read acts");
+        .expect("a refusal is not a port failure");
     assert!(
-        matches!(inside, ToolOutcome::Completed { .. }),
-        "fs.read must still act, or this check is about an executor that does nothing"
+        matches!(confused, ToolOutcome::Refused { .. }),
+        "fs.read does not take a `contents` field, and a field nobody declared is refused rather \
+         than dropped: {confused:?}"
     );
+    assert!(
+        !target.exists(),
+        "a request named fs.read carrying a write's arguments created {}",
+        target.display()
+    );
+
+    // The accepting arm, and it is what makes the two assertions above mean
+    // something: the SAME path, the SAME executor, the SAME mode, asked for
+    // as a write -- and the file appears.
+    let wrote = executor
+        .execute(&request(
+            "fs.write",
+            &[&spelled, "what a model asked to store"],
+        ))
+        .await
+        .expect("fs.write acts");
+    assert!(
+        matches!(wrote, ToolOutcome::Completed { .. }),
+        "fs.write must act, or this check is about an executor that does nothing: {wrote:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("the file the write created is on disk"),
+        "what a model asked to store",
+        "the write did not put the bytes there"
+    );
+}
+
+/// An `fs.read` request carrying `fs.write`'s arguments.
+///
+/// Built by hand rather than through `request`, which refuses a wrong arity
+/// as a staging error -- and a wrong arity is exactly what this is.
+fn request_raw_write_shaped_read(path: &str) -> ToolRequest {
+    raw_request(
+        "fs.read",
+        &serde_json::json!({ "path": path, "contents": "what a model asked to store" }).to_string(),
+    )
 }
 
 /// ADR-0011 D3's `ask` mode on a command, with the user declining.
@@ -639,7 +675,6 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         overflow: &mut overflow,
         transcript: &mut transcript,
         redactor: &HeldSecrets::none(),
-        writes: &unbuilt,
         search: &unbuilt,
         subprocess: &unbuilt,
         fetch: &unbuilt,
@@ -894,4 +929,153 @@ fn a_turn_that_ran_some_calls_and_had_others_refused_reports_both() {
         Err(crate::failure::PartialRefused::NothingCompleted),
         "a turn that ran none of its calls is not a partial success"
     );
+}
+
+/// **Security corpus.** A write outside the working directory is refused at
+/// the modes ADR-0011 D4 names, and at `yolo` it acts and is still recorded.
+///
+/// Every arm asserts on the out-of-tree file's **own contents**, never on its
+/// path: a classifier that is right and an executor that opens something else
+/// anyway is exactly the defect a path assertion cannot see. This is the read
+/// corpus's shape applied to the act that destroys rather than discloses.
+///
+/// D4: "Mode may remove the prompt; it never removes the record." So the
+/// `yolo` arm is not an escape — it is the record proving it, and the check
+/// asserts the entry carries the out-of-tree marking at all three modes.
+///
+/// The mutants: classifying the write's path leniently, and dropping the
+/// out-of-tree marking once the mode is `yolo`.
+#[tokio::test]
+async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() {
+    // Two spellings that leave the tree by different routes, and a symlink
+    // that leaves it wearing an ordinary name -- the case a purely lexical
+    // resolution gets wrong.
+    for (target, why) in [
+        ("../elsewhere/secret", "above the root"),
+        (
+            "../projectevil/loot",
+            "a sibling whose name extends the root's",
+        ),
+        ("escape/secret", "through a symlink out of the tree"),
+    ] {
+        let tree = ScratchTree::new();
+        let working = WorkingDirectory::at(tree.project()).expect("resolves");
+        let scratch = Scratch::new();
+        let mut transcript =
+            Transcript::append_to(scratch.session.transcript_path()).expect("opens");
+        let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+        let allow = StagedAllowlist(false);
+        let destructive = StagedDestructive(false);
+        let unbuilt = Unbuilt;
+        let membrane = NoMembrane;
+
+        // `ask` and `allow` both prompt for an out-of-tree call whatever the
+        // effect is (D4), and a prompt nobody can answer is refused.
+        for mode in [Mode::Ask, Mode::Allow] {
+            let mut executor = executor!(
+                &working,
+                mode,
+                &allow,
+                &destructive,
+                None,
+                &membrane,
+                &mut overflow,
+                &mut transcript,
+                &unbuilt
+            );
+            let outcome = executor
+                .execute(&request("fs.write", &[target, "OVERWRITTEN-BY-THE-MODEL"]))
+                .await
+                .expect("a refusal is not a port failure");
+            assert!(
+                matches!(outcome, ToolOutcome::Refused { .. }),
+                "{why}: an out-of-tree write at {mode} with nobody to ask must be refused: \
+                 {outcome:?}"
+            );
+        }
+
+        // The file the boundary was protecting still holds its own bytes.
+        let sentinel_path = working.classify(target);
+        assert_eq!(
+            std::fs::read_to_string(sentinel_path.resolved()).expect("the file is still there"),
+            tree.sentinel(),
+            "{why}: a file outside the working directory was overwritten by a call that was \
+             refused"
+        );
+
+        // `yolo` prompts for nothing, so the write lands -- and the record
+        // still says it left the tree. That is D4's second sentence, and it
+        // is why this arm is here rather than omitted as an escape.
+        let mut executor = executor!(
+            &working,
+            Mode::Yolo,
+            &allow,
+            &destructive,
+            None,
+            &membrane,
+            &mut overflow,
+            &mut transcript,
+            &unbuilt
+        );
+        let outcome = executor
+            .execute(&request("fs.write", &[target, "OVERWRITTEN-BY-THE-MODEL"]))
+            .await
+            .expect("no port failed");
+        assert!(
+            matches!(outcome, ToolOutcome::Completed { .. }),
+            "{why}: at yolo nothing prompts, and ADR-0011 D2 says this tier is not a sandbox: \
+             {outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sentinel_path.resolved()).expect("on disk"),
+            "OVERWRITTEN-BY-THE-MODEL",
+            "{why}: the yolo arm claims to have written and did not, so the two arms above are \
+             about an executor that never writes"
+        );
+
+        let recorded = std::fs::read_to_string(scratch.session.transcript_path())
+            .expect("the transcript is on disk");
+        assert!(
+            recorded.contains("OUTSIDE the working directory"),
+            "{why}: mode may remove the prompt and never the record, and the record does not say \
+             the call left the tree: {recorded}"
+        );
+        assert!(
+            !recorded.contains("OVERWRITTEN-BY-THE-MODEL"),
+            "{why}: the transcript carries D4's rendered line -- the tool and its resolved path \
+             -- and never a write's contents, which would put a whole file in it: {recorded}"
+        );
+        println!("{why}: refused twice, recorded three times");
+
+        // The accepting arm. Without it every assertion above is satisfied by
+        // an executor that refuses every write. It is at `ask` with a user who
+        // says yes rather than at `yolo`, because D3 prompts before ANY write
+        // and the discriminating question is whether the answer is honoured --
+        // not whether prompting can be switched off.
+        let saying_yes = Answering::saying(true);
+        let mut executor = executor!(
+            &working,
+            Mode::Ask,
+            &allow,
+            &destructive,
+            Some(&saying_yes),
+            &membrane,
+            &mut overflow,
+            &mut transcript,
+            &unbuilt
+        );
+        let inside = executor
+            .execute(&request("fs.write", &["inside/written", "ordinary"]))
+            .await
+            .expect("no port failed");
+        assert!(
+            matches!(inside, ToolOutcome::Completed { .. }),
+            "{why}: an in-tree write the user permitted must land: {inside:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tree.project().join("inside").join("written"))
+                .expect("the in-tree file is on disk"),
+            "ordinary"
+        );
+    }
 }

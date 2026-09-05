@@ -50,8 +50,8 @@ use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
-    Captured, Executor, Fetch, FileWrites, Mode, NoMembrane, OutputBudget, Question,
-    SessionOverflow, Subprocess, ToolName, WorkingDirectory,
+    Captured, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question, SessionOverflow,
+    Subprocess, WorkingDirectory,
 };
 use zaru_core::iteration::{
     Clock, ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn, ValidatorOutcome,
@@ -251,11 +251,6 @@ impl EventSink for Quiet {
 
 struct Unbuilt;
 
-impl FileWrites for Unbuilt {
-    async fn apply(&self, tool: ToolName, _target: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new(format!("{tool} has no implementation")))
-    }
-}
 impl zaru_cli::tools::Search for Unbuilt {
     async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("fs.search has no implementation"))
@@ -365,7 +360,6 @@ async fn read_a_file_carrying(
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor,
-            writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,

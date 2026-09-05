@@ -36,8 +36,8 @@ use zaru_cli::process::{Environment, ProcessCeiling, Spawn};
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
-    Captured, ELISION_PREFIX, Executor, Fetch, FileWrites, Invocation, Mode, NoMembrane,
-    OutputBudget, SessionOverflow, ToolName, Verdict, Verdicts, WorkingDirectory,
+    Captured, ELISION_PREFIX, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget,
+    SessionOverflow, Verdict, Verdicts, WorkingDirectory,
 };
 use zaru_core::iteration::validator::{
     Declared, Dispatch, Expect, Name, Pattern, PatternMatch, Plan, Run, SchemaPath, SchemaValidate,
@@ -388,11 +388,6 @@ impl EventSink for Printing {
 /// Every port this arc does not implement.
 struct Unbuilt;
 
-impl FileWrites for Unbuilt {
-    async fn apply(&self, tool: ToolName, _target: &str) -> Result<Captured, PortFailure> {
-        Err(PortFailure::new(format!("{tool} has no implementation")))
-    }
-}
 impl zaru_cli::tools::Search for Unbuilt {
     async fn find(&self, _query: &str) -> Result<Captured, PortFailure> {
         Err(PortFailure::new("fs.search has no implementation"))
@@ -509,7 +504,6 @@ async fn one_command_turn(
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor,
-            writes: &unbuilt,
             search: &unbuilt,
             subprocess: &spawn,
             fetch: &unbuilt,
@@ -1111,7 +1105,6 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
         overflow: &mut overflow,
         transcript: &mut transcript,
         redactor: &HeldSecrets::none(),
-        writes: &unbuilt,
         search: &unbuilt,
         subprocess: &spawn,
         fetch: &unbuilt,

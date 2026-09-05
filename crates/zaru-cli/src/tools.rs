@@ -73,6 +73,7 @@
 pub mod arguments;
 pub mod decision;
 pub mod execute;
+pub mod files;
 pub mod mode;
 pub mod name;
 pub mod notice;
@@ -98,7 +99,7 @@ pub use output::{
 pub use port::{Allowlist, Confirm, DestructiveMatch, Fetch, Question, Subprocess};
 pub use seal::{NoMembrane, Verdict, Verdicts};
 pub use tree::{Placement, Target, TreeError, WorkingDirectory};
-pub use writes::{FileWrites, Search};
+pub use writes::Search;
 
 // `pub(crate)` rather than private, for the reason `credentials::fixtures`
 // and `config::fixtures` already are: `crate::session`'s checks need a

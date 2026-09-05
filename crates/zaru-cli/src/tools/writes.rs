@@ -1,33 +1,28 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The three built-ins that act and are not implemented, and why each is a
-//! port rather than code.
+//! The built-in that acts and is not implemented, and why it is a port rather
+//! than code.
 //!
-//! **Nothing in this crate's product tree implements any of these.** A check
-//! implements them; the product does not.
+//! **Nothing in this crate's product tree implements this.** A check
+//! implements it; the product does not.
 //!
-//! # `fs.write` and `fs.edit` — a write is classified against a tree that
-//! does not contain what it is about to make
+//! # `fs.write` and `fs.edit` were here until 2026-09-05
 //!
-//! [ADR-0011] D4's classification resolves a candidate through its **longest
-//! existing ancestor**, which is what lets a path that does not exist yet be
-//! classified at all — and every `fs.write` that creates a file passes one.
-//! What that means for a write is a question the record does not answer: the
-//! segment the write is about to create is precisely the segment the
-//! classification could not follow, so the boundary is being asserted about a
-//! tree that will be different by the time the write lands.
+//! `FileWrites` was declared here because [ADR-0011] D4's classification
+//! resolves a candidate through its **longest existing ancestor**, so a write
+//! is classified against a tree that does not yet contain what it is about to
+//! make. That is still true. What changed is that it is now recognised as the
+//! same check-at-a-moment the read path always had, costing more rather than
+//! being a different kind of gap — and a port whose only implementations were
+//! four test doubles was a seam a check could substitute for the real thing
+//! rather than a decision waiting to be made. The two act in
+//! [`crate::tools::files`], which says exactly what is and is not claimed, and
+//! the port is deleted rather than kept beside them.
 //!
-//! Reading has the same gap and a much smaller consequence — a read that
-//! escapes discloses, a write that escapes destroys — and D2 already says the
-//! `bare` boundary is advisory. So the reads are built and these are not, and
-//! the question is raised on the record rather than answered by whoever wrote
-//! the executor. [ADR-0004]'s membrane is the answer that does not depend on
-//! winning a race.
-//!
-//! D6's destructive-pattern matcher is the other half and has no
-//! implementation either, so a write's prompt could not be given the
-//! prominence D6 requires even if the write itself were built.
+//! D6's destructive-pattern matcher is still unimplemented, so a write's
+//! prompt cannot be given the prominence D6 requires — a gap in the prompt
+//! rather than in the act.
 //!
 //! # `fs.search` — a matcher is a dependency or an invented vocabulary
 //!
@@ -52,25 +47,9 @@
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 //! [ADR-048]: https://100monkeys-ai.cortex.page/aegis-architecture/p/adrs/048-core-mcp-tools-implementation
 
-use crate::tools::name::ToolName;
 use crate::tools::output::Captured;
 use core::future::Future;
 use zaru_core::iteration::PortFailure;
-
-/// Makes a file change real. `fs.write` and `fs.edit`.
-///
-/// The tool is a parameter rather than two methods because both are one act
-/// — putting bytes where a path says — and splitting them here would make
-/// the caller decide which is which a second time, after
-/// [`ToolName::effect`] already has.
-pub trait FileWrites {
-    /// Apply the change `target` describes.
-    fn apply(
-        &self,
-        tool: ToolName,
-        target: &str,
-    ) -> impl Future<Output = Result<Captured, PortFailure>> + Send;
-}
 
 /// Content and filename search. `fs.search`.
 pub trait Search {

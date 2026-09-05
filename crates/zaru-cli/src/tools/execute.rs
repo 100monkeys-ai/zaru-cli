@@ -4,23 +4,23 @@
 //! The acting half of [ADR-0011]: what happens after the permission decision
 //! says a call may act.
 //!
-//! # Three of the seven act, and four do not
+//! # Five of the seven act, and two do not
 //!
 //! | Tool | Here |
 //! | --- | --- |
-//! | `fs.read` | `std::fs`, inside D4's boundary |
-//! | `fs.list` | `std::fs`, inside D4's boundary |
+//! | `fs.read`, `fs.list` | [`files`], on `std::fs` inside D4's boundary |
+//! | `fs.write`, `fs.edit` | [`files`], through [`crate::atomic`] at the file's own mode |
 //! | `cmd.run` | [`Subprocess`], over [`Spawn`](crate::process::Spawn), started at D4's boundary root |
-//! | `fs.write`, `fs.edit` | [`FileWrites`], no implementation |
 //! | `fs.search` | [`Search`], no implementation |
 //! | `web.fetch` | [`Fetch`], no implementation |
 //!
-//! The two filesystem tools that act are the two that cannot create a path.
-//! That matters because D4's classification resolves through a candidate's
-//! **longest existing ancestor**, so a write is classified against a tree that
-//! does not yet contain what it is about to make — and deciding what the
-//! boundary means for a path that does not exist yet is a decision no record
-//! makes. `fs.search` needs a matcher, which is either a dependency outside
+//! **`fs.write` and `fs.edit` act as of 2026-09-05.** They were ported until
+//! then because D4's classification resolves a candidate through its longest
+//! **existing** ancestor, so a write is classified against a tree that does not
+//! yet contain what it is about to make. That is still true and is not closed
+//! by building them: it is the same check-at-a-moment the read path already
+//! has, costing more, and [`files`] says exactly what is and is not claimed.
+//! `fs.search` needs a matcher, which is either a dependency outside
 //! [ADR-0003] D2's table or a glob semantics this crate would be inventing.
 //! `web.fetch` needs a socket, and the harness has none.
 //!
@@ -68,13 +68,14 @@ use crate::tools::arguments::Call;
 use crate::tools::decision::{
     Decision, Invocation, Permission, RefusedBecause, Subject, TranscriptEntry,
 };
+use crate::tools::files;
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::output::{Captured, OutputBudget, Overflow, Presented};
 use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Fetch, Subprocess};
 use crate::tools::seal::{Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
-use crate::tools::writes::{FileWrites, Search};
+use crate::tools::writes::Search;
 use std::path::PathBuf;
 use zaru_core::iteration::PortFailure;
 use zaru_core::redaction::{Redacted, Redactor};
@@ -158,7 +159,7 @@ impl std::error::Error for NotACall {}
 /// Bundled for the reason `zaru-core`'s port bundles are: a constructor
 /// taking eleven arguments is a constructor whose order is a thing to get
 /// wrong.
-pub struct Executor<'a, W, S, C, F> {
+pub struct Executor<'a, S, C, F> {
     /// D4's boundary, canonical from construction.
     pub working_directory: &'a WorkingDirectory,
     /// D3's mode. Governs prompting and nothing else.
@@ -186,8 +187,6 @@ pub struct Executor<'a, W, S, C, F> {
     /// and this is the difference between redacting a prompt and redacting a
     /// record.
     pub redactor: &'a (dyn Redactor + Sync),
-    /// `fs.write` and `fs.edit`. No product implementation.
-    pub writes: &'a W,
     /// `fs.search`. No product implementation.
     pub search: &'a S,
     /// `cmd.run`. No product implementation.
@@ -196,7 +195,7 @@ pub struct Executor<'a, W, S, C, F> {
     pub fetch: &'a F,
 }
 
-impl<W, S, C, F> core::fmt::Debug for Executor<'_, W, S, C, F> {
+impl<S, C, F> core::fmt::Debug for Executor<'_, S, C, F> {
     /// Names what it holds and renders none of it.
     ///
     /// A tool surface's `Debug` is a thing that ends up in a bug report, and
@@ -236,9 +235,8 @@ pub fn descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-impl<W, S, C, F> Executor<'_, W, S, C, F>
+impl<S, C, F> Executor<'_, S, C, F>
 where
-    W: FileWrites + Sync,
     S: Search + Sync,
     C: Subprocess + Sync,
     F: Fetch + Sync,
@@ -288,14 +286,15 @@ where
         // was reached about, so a decision about one path cannot authorise an
         // act on another.
         match (invocation.subject(), call) {
-            (Subject::Path(target), Call::OnPath { tool, .. }) => match tool {
-                ToolName::FsList => list_directory(target.resolved()),
-                _ => read_file(target.resolved()),
-            },
-            (Subject::Path(target), Call::Write { .. } | Call::Edit { .. }) => {
-                self.writes
-                    .apply(invocation.tool(), &target.resolved().display().to_string())
-                    .await
+            (Subject::Path(target), Call::OnPath { tool, .. }) => Ok(match tool {
+                ToolName::FsList => files::list(target.resolved()),
+                _ => files::read(target.resolved()),
+            }),
+            (Subject::Path(target), Call::Write { contents, .. }) => {
+                Ok(files::write(target.resolved(), contents))
+            }
+            (Subject::Path(target), Call::Edit { old, new, .. }) => {
+                Ok(files::edit(target.resolved(), old, new))
             }
             (Subject::Search { needle, .. }, Call::Search { .. }) => self.search.find(needle).await,
             (Subject::Command(line), Call::Run { .. }) => self.subprocess.run(line).await,
@@ -313,9 +312,8 @@ where
     }
 }
 
-impl<W, S, C, F> ToolExecutor for Executor<'_, W, S, C, F>
+impl<S, C, F> ToolExecutor for Executor<'_, S, C, F>
 where
-    W: FileWrites + Sync,
     S: Search + Sync,
     C: Subprocess + Sync,
     F: Fetch + Sync,
@@ -445,7 +443,7 @@ where
     }
 }
 
-impl<W, S, C, F> Executor<'_, W, S, C, F> {
+impl<S, C, F> Executor<'_, S, C, F> {
     /// Append one record and carry a transcript failure out as a port failure.
     fn record(&mut self, record: &Record) -> Result<(), PortFailure> {
         self.transcript.record(record).map_err(|failure| {
@@ -504,66 +502,6 @@ fn render<R: Redactor + ?Sized>(redactor: &R, presented: &Presented) -> Redacted
         out.push_str(&format!("\nfull output: {}\n", path.display()));
     }
     Redacted::by(redactor, &out)
-}
-
-/// Read a file with `std::fs`, inside the boundary.
-///
-/// Shaped as a [`Captured`] so that one presentation path serves every tool:
-/// a read that succeeded is exit code 0 with the contents on standard
-/// output, and one that failed is a non-zero code with the operating
-/// system's own words on standard error. The alternative — a second
-/// presentation for filesystem tools — would be D5's truncation rule written
-/// twice.
-fn read_file(path: &std::path::Path) -> Result<Captured, PortFailure> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Captured {
-            exit_code: 0,
-            stdout: String::from_utf8_lossy(&bytes).into_owned(),
-            stderr: String::new(),
-        }),
-        Err(source) => Ok(Captured {
-            exit_code: 1,
-            stdout: String::new(),
-            stderr: format!("could not read {}: {source}", path.display()),
-        }),
-    }
-}
-
-/// List a directory with `std::fs`, inside the boundary.
-///
-/// Entries are sorted, because a directory's own order is a property of the
-/// filesystem rather than of the directory, and a listing that changes order
-/// between two identical calls is a listing a model cannot reason about.
-fn list_directory(path: &std::path::Path) -> Result<Captured, PortFailure> {
-    let reading = match std::fs::read_dir(path) {
-        Ok(reading) => reading,
-        Err(source) => {
-            return Ok(Captured {
-                exit_code: 1,
-                stdout: String::new(),
-                stderr: format!("could not list {}: {source}", path.display()),
-            });
-        }
-    };
-    let mut names: Vec<String> = Vec::new();
-    for entry in reading {
-        match entry {
-            Ok(entry) => names.push(entry.file_name().to_string_lossy().into_owned()),
-            Err(source) => {
-                return Ok(Captured {
-                    exit_code: 1,
-                    stdout: String::new(),
-                    stderr: format!("could not list {}: {source}", path.display()),
-                });
-            }
-        }
-    }
-    names.sort();
-    Ok(Captured {
-        exit_code: 0,
-        stdout: names.join("\n"),
-        stderr: String::new(),
-    })
 }
 
 /// [ADR-0011] D5's overflow sink, over [ADR-0010] D1's session directory.
