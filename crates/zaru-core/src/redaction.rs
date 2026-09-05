@@ -52,20 +52,34 @@
 //!
 //! # Which paths, and what enumerates them
 //!
-//! Four today, and `zaru-cli`'s `no_captured_bytes_reach_a_prompt_except_through_the_port`
-//! is the authority on the list rather than this comment:
+//! **`zaru-cli`'s `no_captured_bytes_reach_a_prompt_except_through_the_port`
+//! is the authority on the list, and this table is not.** It walks the
+//! product sources and asserts the set of files calling [`Redacted::by`]
+//! against a list it holds, so a path added or removed reddens there; a
+//! number written *here* would go stale the first time somebody added one,
+//! which is the failure ADR-0008 clause 6 exists to prevent. The table below
+//! is a reader's orientation and is dated for that reason.
+//!
+//! Seven files as of 2026-09-05:
 //!
 //! | Path | Where the port is called |
 //! | --- | --- |
 //! | The refinement prompt ([ADR-0008] D4) | [`crate::iteration::refinement`] |
 //! | The assembled context, layers 6 and 7 ([ADR-0013] D5 and D1) | [`crate::context::assembly`] |
-//! | A tool's output becoming the next turn's content ([ADR-0011] D5) | `zaru_cli::tools::execute` |
+//! | A refusal's sentence becoming the next turn's content ([ADR-0011] D6) | [`crate::tool_call::port`] |
+//! | A tool's two captured streams, before truncation ([ADR-0011] D5) | `zaru_cli::tools::output` |
+//! | The assembled tool result a `ToolResult` is built from | `zaru_cli::tools::execute` |
 //! | A resumed session's interrupted call ([ADR-0010] D4) | `zaru_cli::session::resume` |
+//! | The span a compaction sends as its own request ([ADR-0013] D2) | `zaru_cli::compose::summarise` |
 //!
-//! The decision named the first three. The fourth was found by reading the
-//! code for this arc and ruled in on 2026-09-05 as a delegated coordinator
-//! ruling: the datum is a rendered transcript line, and once `cmd.run` exists
-//! that line is a command line, which is where a `--token=` argument lives.
+//! The decision named three. The next were found by reading the code — a
+//! resumed interruption's datum is a rendered transcript line, and once
+//! `cmd.run` exists that line is a command line, which is where a `--token=`
+//! argument lives. **The last was not findable by reading at all**, because
+//! the thing at the end of it did not exist: a compaction sends a span of
+//! layer 6 to a model as a request of its own, so everything layer 6 holds
+//! becomes prompt text a second time. It reddened this check on its first
+//! compile and was named on ADR-0008 before its row was added.
 //!
 //! # What is deliberately not redacted
 //!

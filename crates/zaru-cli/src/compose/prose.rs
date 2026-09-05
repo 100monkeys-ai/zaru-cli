@@ -110,3 +110,37 @@ pub const DECLARE_ONE: &str = "declare one in `./zaru.toml`";
 pub const NO_PERSONA: &str = "[no persona: this harness reached no prompt server, so it has no \
                               system prompt and no persona for this session, and this line is \
                               here so the absence is visible rather than inferred.]";
+
+/// What [ADR-0013] D2's compaction asks the model to do.
+///
+/// # Two of its three sentences are the record's own words
+///
+/// D2 says only that "the oldest span of layer 6 is replaced by a **generated
+/// summary**" and names no wording, so an instruction had to come from
+/// somewhere. It comes from the record rather than from an author:
+///
+/// - **"keeping the decisions made and the constraints established"** is
+///   Alternative 1's own sentence, which is why that alternative was
+///   *rejected*: a sliding window "loses decisions made early in a session —
+///   which in a coding session is where the constraints were established".
+///   That is the record stating what a summary must preserve, and it is the
+///   only such statement in it.
+/// - **"It replaces these exchanges in your own context; the full text stays
+///   on disk"** is D2's, compressed: "the raw span stays in the transcript.
+///   History is preserved on disk; only the model's view is compacted."
+/// - **"Write the summary and nothing else"** has no source. It was authored
+///   under directive 20 of 2026-09-05 as a **functional instruction** rather
+///   than persona — it says what shape the answer takes, not who is speaking
+///   — because without it the three response arms cannot be told apart: a
+///   model that prefaces its answer would put its preamble into layer 6 as
+///   though the preamble were the conversation.
+///
+/// Recorded as an accepted Update on ADR-0013 D2 and quoted for Jeshua at
+/// READY, open to his veto exactly as [`NOT_A_SANDBOX`] and [`NO_VALIDATORS`]
+/// are. **This is what a model reads and never what a user reads**, which is
+/// the one way it differs from every other constant here.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub const SUMMARISE_SPAN: &str = "Summarise the conversation below into a replacement for it, keeping the decisions made and \
+     the constraints established. It replaces these exchanges in your own context; the full text \
+     stays on disk. Write the summary and nothing else.";

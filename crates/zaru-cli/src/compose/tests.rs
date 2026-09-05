@@ -524,3 +524,229 @@ async fn a_prose_answer_is_a_candidate_with_nothing_to_apply() {
         "the candidate's text is what the model said, byte for byte"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0013 D2 — the generated summary, as a request to a provider
+// ---------------------------------------------------------------------------
+
+/// A model that records what it was asked and answers however it was staged.
+struct StagedModel {
+    answer: zaru_core::tool_call::ModelResponse,
+    asked: std::sync::Mutex<Vec<String>>,
+    tools_offered: std::sync::Mutex<Vec<usize>>,
+}
+
+impl StagedModel {
+    fn answering(answer: zaru_core::tool_call::ModelResponse) -> Self {
+        Self {
+            answer,
+            asked: std::sync::Mutex::new(Vec::new()),
+            tools_offered: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn text(text: &str) -> Self {
+        Self::answering(zaru_core::tool_call::ModelResponse::Text {
+            text: text.to_owned(),
+            tokens: zaru_core::tool_call::TokenUsage {
+                prompt: 700,
+                completion: 40,
+            },
+        })
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().expect("no panic holds this").clone()
+    }
+}
+
+impl zaru_core::tool_call::Model for StagedModel {
+    fn capabilities(&self) -> zaru_core::tool_call::Capabilities {
+        zaru_core::tool_call::Capabilities { tool_calling: true }
+    }
+
+    async fn respond(
+        &self,
+        request: &zaru_core::tool_call::ModelRequest<'_>,
+    ) -> Result<zaru_core::tool_call::ModelResponse, zaru_core::iteration::PortFailure> {
+        self.asked
+            .lock()
+            .expect("no panic holds this")
+            .push(request.prompt.as_str().to_owned());
+        self.tools_offered
+            .lock()
+            .expect("no panic holds this")
+            .push(request.tools.len());
+        Ok(self.answer.clone())
+    }
+}
+
+/// A span of layer 6, oldest first.
+fn span_of(exchanges: &[&str]) -> zaru_core::context::Span {
+    zaru_core::context::Span::new(
+        exchanges
+            .iter()
+            .map(|text| zaru_core::context::Exchange::verbatim(*text))
+            .collect(),
+    )
+}
+
+/// D2: "the oldest span of layer 6 is replaced by a **generated summary**".
+///
+/// What is sent is the record's own instruction and then the span itself,
+/// oldest first and unaltered — a summariser that paraphrased the exchanges
+/// on the way in would be summarising twice.
+///
+/// The mutant: reversing the span, which reddens the ordering assertion.
+#[tokio::test]
+async fn a_summarisation_sends_the_records_instruction_and_the_span_oldest_first() {
+    use zaru_core::context::Summariser as _;
+
+    let model = StagedModel::text("they agreed on four spaces and no tabs");
+    let held = HeldSecrets::none();
+    let summariser = crate::compose::ModelSummariser::over(&model, &held);
+
+    let summary = summariser
+        .summarise(&span_of(&["the oldest thing", "the newest thing"]))
+        .await
+        .expect("the staged model answers with text");
+
+    assert_eq!(summary, "they agreed on four spaces and no tabs");
+    let asked = model.asked();
+    assert_eq!(asked.len(), 1, "one span is one request; got {asked:?}");
+    let sent = &asked[0];
+    assert!(
+        sent.starts_with(prose::SUMMARISE_SPAN),
+        "the instruction leads, and it is ADR-0013's own words rather than this module's: {sent:?}"
+    );
+    let oldest = sent.find("the oldest thing").expect("the span was sent");
+    let newest = sent.find("the newest thing").expect("the span was sent");
+    assert!(
+        oldest < newest,
+        "D2 compacts oldest first and the span arrives in that order; the request put the newest \
+         at {newest} and the oldest at {oldest}"
+    );
+}
+
+/// A summarisation offers no tools, and the wire layer turns that into no
+/// `tools` key at all rather than an empty array.
+///
+/// The mutant: passing a descriptor through, which reddens the count.
+#[tokio::test]
+async fn a_summarisation_offers_the_model_no_tools() {
+    use zaru_core::context::Summariser as _;
+
+    let model = StagedModel::text("a summary");
+    let held = HeldSecrets::none();
+    let summariser = crate::compose::ModelSummariser::over(&model, &held);
+    summariser
+        .summarise(&span_of(&["something"]))
+        .await
+        .expect("the staged model answers");
+
+    let offered = model
+        .tools_offered
+        .lock()
+        .expect("no panic holds this")
+        .clone();
+    assert_eq!(
+        offered,
+        vec![0],
+        "a summarisation is not a turn and has nothing to call, so `ModelRequest.tools` is empty \
+         -- which `wire::Request` renders as no `tools` key at all"
+    );
+}
+
+/// Neither of the two non-text arms becomes a summary.
+///
+/// An empty string here would replace a span of real conversation with
+/// nothing and announce that it had summarised it. `Context::compact` obtains
+/// the summary before it removes anything, so a failure leaves the context
+/// exactly as it was — which is the honest outcome and is asserted from
+/// outside the crate.
+///
+/// The mutant: returning `Ok(String::new())` on either arm, which reddens the
+/// refusal assertions.
+#[tokio::test]
+async fn a_model_that_stops_or_asks_for_a_tool_has_not_summarised_anything() {
+    use zaru_core::context::Summariser as _;
+
+    let held = HeldSecrets::none();
+
+    let stopped = StagedModel::answering(zaru_core::tool_call::ModelResponse::Stopped {
+        reason: "MAX_TOKENS".to_owned(),
+        tokens: zaru_core::tool_call::TokenUsage::default(),
+    });
+    let failure = crate::compose::ModelSummariser::over(&stopped, &held)
+        .summarise(&span_of(&["something"]))
+        .await
+        .expect_err("a stop is not a summary");
+    assert!(
+        failure.to_string().contains("MAX_TOKENS"),
+        "the provider's own word is carried rather than paraphrased: {failure}"
+    );
+
+    let calling = StagedModel::answering(zaru_core::tool_call::ModelResponse::Calls {
+        calls: vec![zaru_core::tool_call::ToolRequest {
+            id: "call-1".to_owned(),
+            name: "fs.read".to_owned(),
+            arguments: "{}".to_owned(),
+        }],
+        tokens: zaru_core::tool_call::TokenUsage::default(),
+    });
+    let failure = crate::compose::ModelSummariser::over(&calling, &held)
+        .summarise(&span_of(&["something"]))
+        .await
+        .expect_err("a tool call is not a summary");
+    assert!(
+        failure.to_string().contains("offered it none"),
+        "the refusal says the request offered no tools, so a reader knows the model asked for \
+         something it was never given: {failure}"
+    );
+}
+
+/// ADR-0012 D7: "Every request records prompt tokens, completion tokens".
+///
+/// A summarisation is a request, so what it spent is readable. `None` before
+/// the first, because a client that had made no request and reported a zero
+/// would be inventing a datum.
+///
+/// The mutant: not recording the usage, which reddens the `Some` assertion.
+#[tokio::test]
+async fn a_summarisation_reports_what_it_spent() {
+    use zaru_core::context::Summariser as _;
+
+    let model = StagedModel::text("a summary");
+    let held = HeldSecrets::none();
+    let summariser = crate::compose::ModelSummariser::over(&model, &held);
+
+    assert_eq!(
+        summariser.spent(),
+        None,
+        "nothing has been asked yet, and a zero here would be a datum nobody measured"
+    );
+    summariser
+        .summarise(&span_of(&["something"]))
+        .await
+        .expect("the staged model answers");
+    let spent = summariser
+        .spent()
+        .expect("ADR-0012 D7: every request records its tokens");
+    assert_eq!((spent.prompt, spent.completion), (700, 40));
+}
+
+/// The summariser's `Debug` is a number and never the session's conversation.
+///
+/// The mutant: `#[derive(Debug)]`, which renders the redactor and would put
+/// the harness's own held bearer values into a panic message.
+#[test]
+fn the_summarisers_debug_renders_no_text_at_all() {
+    let model = StagedModel::text("a summary");
+    let held = HeldSecrets::none();
+    let rendered = format!("{:?}", crate::compose::ModelSummariser::over(&model, &held));
+    assert!(
+        rendered.contains("ModelSummariser") && !rendered.contains("summary"),
+        "a Debug is what ends up in a panic message, so it names what it holds and renders none \
+         of it: {rendered:?}"
+    );
+}

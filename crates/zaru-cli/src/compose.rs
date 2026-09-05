@@ -75,6 +75,7 @@ pub mod model;
 pub mod prose;
 pub mod shared;
 pub mod sink;
+pub mod summarise;
 pub mod turn;
 
 pub use context::{TurnContext, prefix_for};
@@ -83,6 +84,7 @@ pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept};
 pub use model::Classifying;
 pub use shared::Shared;
 pub use sink::Records;
+pub use summarise::ModelSummariser;
 pub use turn::{KINDS_WITH_A_CLIENT, Owed, Prepared, Ran};
 
 #[cfg(test)]

@@ -359,10 +359,19 @@ impl crate::tools::Overflow for Preserving {
 ///
 /// **This list is the authority on how many paths there are**, and the
 /// decision's own "three today" is the number that was known when it was
-/// written. It is four: the `redaction-seam` arc found a fourth by reading
-/// the code, and a coordinator ruling of 2026-09-05 put it in. The decision
-/// was amended on ADR-0008 to point at this check rather than at a count.
-const PATHS: [(&str, &str); 7] = [
+/// written. **It is eight**, and the decision's own count has been overtaken
+/// four times: the `redaction-seam` arc found a fourth by reading the code, a
+/// coordinator ruling of 2026-09-05 put it in, the `shell-task-turns` arc's
+/// finished turn became the seventh, and the eighth arrived the same day with
+/// something no reading could have found because the thing at the end of it
+/// did not exist. That is why ADR-0008 was amended to point at this check
+/// rather than at a number.
+///
+/// **The eighth row was named on ADR-0008 before it was added here**, which is
+/// what the assertion below demands in its own words. It reddened on the first
+/// compile of `compose/summarise.rs`, which is the whole purpose of
+/// enumerating rather than counting.
+const PATHS: [(&str, &str); 8] = [
     (
         "zaru-core/src/iteration/refinement.rs",
         "the refinement prompt's four variable-length parts (ADR-0008 D4)",
@@ -391,6 +400,10 @@ const PATHS: [(&str, &str); 7] = [
         "zaru-cli/src/terminal/driver.rs",
         "a finished turn becoming the next turn's layer 6, in a session that \
          holds a conversation (ADR-0013 D1)",
+    ),
+    (
+        "zaru-cli/src/compose/summarise.rs",
+        "the span a compaction sends to a model as its own request (ADR-0013 D2)",
     ),
 ];
 
