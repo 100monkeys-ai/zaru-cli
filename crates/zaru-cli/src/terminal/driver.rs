@@ -645,6 +645,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         .await
     };
     let tool_lines = tools.taken();
+    let redactor = turns.prepared.redactor();
 
     let ran = match raced {
         Raced::Ran(ran) => ran,
@@ -662,25 +663,16 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     turns
         .context
         .record(crate::compose::boundary::exchange_of_turn(
-            turns.prepared.redactor(),
+            redactor,
             task,
             &tool_lines,
             &ran.lines.join("\n"),
         ));
-    if let Err(failure) = crate::compose::boundary::checkpointed(&turns.context, turns.session) {
-        // The turn happened and its answer is already painted, so this is not
-        // a refusal of the turn: it is the session losing its memory of it,
-        // and the next process would silently come back one turn short. It is
-        // said in the pane, in the register a failure belongs in, and the
-        // session stays open — ADR-0016 D2's "every error names the remedy or
-        // admits there is not one", and the remedy is the path.
-        let mut lines = lines_of(&ran);
-        lines.push(Line::new(
-            zaru_tui::shell::port::Register::Failed,
-            format!("{failure}"),
-        ));
-        return Turned::Ran(lines);
-    }
+    // A checkpoint that could not be written is the session losing its memory
+    // of a turn that happened, so it is said and the session stays open — the
+    // turn's answer is already painted and reporting only the failure would
+    // discard it. ADR-0016 D6's "partial success is reported as partial".
+    let lost = crate::compose::boundary::checkpointed(&turns.context, turns.session).err();
 
     // ADR-0013 clause 5 and ADR-0012 clause 6, both on ADR-0001 D2's row.
     // **After the record above**, so the number the user reads is the context
@@ -688,6 +680,11 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     // which is what D6's "a number that has been visible all along" means for
     // somebody about to type again. A compaction made at the next turn's
     // boundary shows here at the end of that turn, by the same rule.
+    //
+    // **And after the checkpoint, on both of its outcomes.** A turn whose
+    // checkpoint failed still recorded its exchange, so the row would
+    // otherwise be one turn stale on exactly the path where the user is being
+    // told something went wrong.
     refresh_status(
         shell,
         &turns.context,
@@ -695,7 +692,14 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         redactor,
     );
 
-    Turned::Ran(lines_of(&ran))
+    let mut lines = lines_of(&ran);
+    if let Some(failure) = lost {
+        lines.push(Line::new(
+            zaru_tui::shell::port::Register::Failed,
+            format!("{failure}"),
+        ));
+    }
+    Turned::Ran(lines)
 }
 
 /// Put [ADR-0013] D6's and [ADR-0012] D7's numbers on the status row.
