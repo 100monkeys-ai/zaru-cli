@@ -657,8 +657,8 @@ impl<'a> Surface<'a> {
     ///
     /// **Nothing of the error is rendered.** A `serde_json::Error`'s own
     /// message quotes the value it tripped on, and this file holds a session's
-    /// conversation; [`undecided`] carries a location, a version, where to
-    /// report and the session evidence, which is what [ADR-0016] D3's Update
+    /// conversation; the defect report carries a location, a version, where
+    /// to report and the session evidence, which is what [ADR-0016] D3's Update
     /// already decided for a panic's message on the same grounds.
     ///
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management

@@ -157,9 +157,10 @@ pub struct Resumed {
     /// How many turns this session has already had.
     ///
     /// **The greatest `n` any `turn_started` record carries, and zero when
-    /// there is none** — so the next turn is this plus one. See
-    /// [`turns_so_far`] for why it is the greatest rather than the count, and
-    /// [ADR-0010] D4's accepted Update of 2026-09-05 for the decision.
+    /// there is none** — so the next turn is this plus one. `turns_so_far`
+    /// in this module carries why it is the greatest rather than the count,
+    /// the last, or the restored exchange count; [ADR-0010] D4's accepted
+    /// Update of 2026-09-05 is the decision.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     pub turns: u32,
