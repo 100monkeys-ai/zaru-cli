@@ -389,25 +389,37 @@ pub fn provider_keys(store: &crate::credentials::CredentialStore) -> Vec<String>
         .collect()
 }
 
-/// [ADR-0012] D7's "per session on exit".
+/// [ADR-0012] D7's line, on the status row and on the way out.
 ///
 /// D7: "Every request records prompt tokens, completion tokens, and — where
 /// the provider publishes pricing — cost. Per turn in the status line, per
-/// session on exit." This is the second half. The first is the status line,
-/// which is `zaru-tui`'s.
+/// session on exit." **This one function is both halves**, as of the
+/// `status-line` arc of 2026-09-05: `compose::turn::rendered` prints it when
+/// the session ends and `terminal::driver::refresh_status` puts the same
+/// string on [`zaru_tui::shell::Status`], so the two spellings D7 asks for
+/// cannot disagree about a word.
 ///
 /// **Nothing here computes a cost.** `TokenUsage` carries one only when a
 /// provider reported it, and `providers::usage` refuses to invent a rate: "no
 /// rate, no currency, no rounding". So a run against a provider that publishes
 /// no pricing prints two numbers and their sum, and says nothing about money.
 ///
-/// The total is [`TokenUsage`]'s own, not this function's arithmetic: the
-/// `gemini` client's mapping makes it equal the provider's own
-/// `totalTokenCount`, including the thinking tokens D7 knows nothing about,
-/// and a sum computed here would be a second answer that could disagree.
+/// # The sum is this function's arithmetic, and that is worth stating exactly
+///
+/// This paragraph read "The total is `TokenUsage`'s own, not this function's
+/// arithmetic" until 2026-09-05, and it was **false**: `providers::TokenUsage`
+/// has no `total` and cannot have one, because a check in that module forbids
+/// the string `fn total` there — D7 names two quantities and a third would be
+/// one more thing to keep consistent. So the sum below is computed here.
+///
+/// What the retired sentence was protecting is real and is unaffected: the
+/// `gemini` client reports `completion_tokens` as candidates **plus**
+/// thoughts, so `prompt + completion` equals the provider's own
+/// `totalTokenCount` including the thinking tokens D7 knows nothing about.
+/// That equality is a property of the **mapping**, checked in
+/// `providers::gemini::tests`, and it was never a property of this addition.
 ///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-/// [`TokenUsage`]: crate::providers::TokenUsage
 #[must_use]
 pub fn usage(usage: &crate::providers::TokenUsage) -> String {
     let mut line = format!(
