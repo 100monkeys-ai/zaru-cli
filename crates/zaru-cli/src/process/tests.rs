@@ -786,3 +786,352 @@ async fn the_environment_checks_child_reports_what_its_grandchild_saw() {
         println!("{ENV_MARKER}{line}");
     }
 }
+
+// -------------------------------------------- the runtime, while a child runs
+
+/// How many polls of the loop below a condition is given before the check
+/// refuses.
+///
+/// **A bound on failure, never a wait.** Every condition here is satisfied on
+/// the first poll or two; this exists so that a mutant that never satisfies it
+/// prints a sentence rather than hanging the suite. [Verification lessons] §20
+/// — the wait is on the condition, the number only bounds the refusal.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+const POLL_BUDGET: usize = 100_000;
+
+/// How many times the scripted children below look for their gate before
+/// giving up, and the code they exit with when they do.
+///
+/// A child that spun forever would turn a red into a hang, and a hang is not
+/// an instrument.
+const GIVES_UP_AFTER: usize = 300;
+
+/// The code a scripted child exits with when its gate never appeared.
+const GAVE_UP: i32 = 9;
+
+/// Write a shell script into the tree and give back the command line that runs
+/// it.
+///
+/// `/bin/sh` by absolute path with one argument, so nothing here goes near
+/// [`CommandLine::split`]'s refused constructs: the script's own `while`, `[`
+/// and `$((…))` are the file's business and never text this workspace splits.
+fn scripted(tree: &ScratchTree, name: &str, body: &str) -> CommandLine {
+    let path = tree.project().join(name);
+    std::fs::write(&path, body).unwrap_or_else(|why| panic!("staging: {name}: {why}"));
+    CommandLine::of("/bin/sh", [path.display().to_string()])
+        .expect("`/bin/sh` and one path are a program and one argument")
+}
+
+/// A child that waits for a file to appear, then exits zero.
+fn waits_for(gate: &std::path::Path) -> String {
+    format!(
+        "n=0\nwhile [ ! -e '{}' ]; do\n  n=$((n+1))\n  if [ \"$n\" -gt {GIVES_UP_AFTER} ]; then \
+         exit {GAVE_UP}; fi\n  sleep 0.01\ndone\nexit 0\n",
+        gate.display()
+    )
+}
+
+/// Whether a process id is still in the process table.
+///
+/// Linux, like everything else in this module that reads a signal number off
+/// an exit status. A **zombie still has a `/proc` entry**, so absence here is
+/// the stronger property: the child is dead *and* it has been reaped.
+fn in_the_process_table(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// The runtime keeps being polled for the whole of a child.
+///
+/// # The instrument is a gate, not a clock
+///
+/// The child spins until a file appears and the file is written **from the
+/// other branch of the same `select!`**, so the child can only finish if the
+/// runtime polled something other than [`Spawn::execute`] while the child was
+/// running. The tick is [`tokio::task::yield_now`], which reads no clock
+/// ([Verification lessons] §57): what is asserted is the child's exit code,
+/// which is `0` when the gate was written and [`GAVE_UP`] when it was not.
+///
+/// **The mutant is the shape this replaced.** Inserting
+/// `while child.try_wait().ok().flatten().is_none() { std::thread::sleep(…) }`
+/// at the top of `Spawn::wait` — the pre-2026-09-05 blocking poll — stops the
+/// gate ever being written, and the child exits [`GAVE_UP`] on **every** run
+/// rather than on some of them.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[tokio::test]
+async fn the_runtime_is_still_polled_while_a_child_runs() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let gate = tree.project().join(awkward_nonce("gate"));
+    assert!(
+        !gate.exists(),
+        "the staging is wrong: the gate the child is waiting for already exists, so this check \
+         would pass without the runtime being polled at all"
+    );
+    let line = scripted(&tree, "waits-for-a-gate.sh", &waits_for(&gate));
+    let spawn = Spawn::new(
+        &working,
+        Environment::inherited_minimum().expect("the five"),
+        generous(),
+    );
+
+    let running = spawn.execute(&line);
+    tokio::pin!(running);
+    let mut polls = 0_usize;
+    let mut opened = false;
+    let outcome = loop {
+        tokio::select! {
+            biased;
+
+            outcome = &mut running => break outcome,
+
+            () = tokio::task::yield_now() => {
+                polls += 1;
+                if !opened {
+                    std::fs::write(&gate, b"").expect("the gate is written");
+                    opened = true;
+                }
+                assert!(
+                    polls < POLL_BUDGET,
+                    "the child never finished in {POLL_BUDGET} polls, having been given its gate \
+                     on poll 1. Either the runtime is not polling this loop while the child runs, \
+                     or the child cannot see the gate"
+                );
+            }
+        }
+    };
+
+    let outcome =
+        outcome.unwrap_or_else(|failure| panic!("the scripted child did not run: {failure}"));
+    assert_eq!(
+        outcome.ended,
+        Ended::Exited { code: 0 },
+        "the child exited {}, which is what it does when its gate never appeared — so the runtime \
+         was not polled while it ran and nothing beside `execute` could make progress. It ran for \
+         {:?}",
+        outcome.ended.exit_code(),
+        outcome.took,
+    );
+    assert!(
+        polls > 0 && opened,
+        "the loop never reached its other branch, so the assertion above says nothing"
+    );
+}
+
+/// Dropping the future ends the child, and a child left alone reports instead.
+///
+/// # Both arms, because "the pid is gone" is true of a child that just exited
+///
+/// The first arm interrupts: the future is dropped while the child is spinning
+/// on a gate that is never opened, and the child leaves the process table. The
+/// second arm is its **accepting sibling** — the same script, the same
+/// `execute`, the gate opened — and asserts that an outcome comes back at all.
+/// Without it, a `Spawn` that killed every child the instant it started would
+/// pass the first arm.
+///
+/// **The mutant is `kill_on_drop(false)`**, measured before this check was
+/// written: the child then *survives* the runtime being dropped, so the wait
+/// below exhausts its budget on every run.
+#[tokio::test]
+async fn an_interrupt_during_a_child_ends_the_child() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let never = tree.project().join(awkward_nonce("gate-that-never-opens"));
+    let pidfile = tree.project().join(awkward_nonce("pid"));
+    let body = format!("echo $$ > '{}'\n{}", pidfile.display(), waits_for(&never));
+    let line = scripted(&tree, "reports-its-pid.sh", &body);
+    let spawn = Spawn::new(
+        &working,
+        Environment::inherited_minimum().expect("the five"),
+        generous(),
+    );
+
+    let pid = {
+        let running = spawn.execute(&line);
+        tokio::pin!(running);
+        let mut polls = 0_usize;
+        // Wait on the condition — the child having reported its own pid —
+        // rather than on any span of time.
+        let pid = loop {
+            tokio::select! {
+                biased;
+
+                outcome = &mut running => panic!(
+                    "the child ended before it could be interrupted: {outcome:?}"
+                ),
+
+                () = tokio::task::yield_now() => {
+                    polls += 1;
+                    if let Ok(held) = std::fs::read_to_string(&pidfile)
+                        && let Ok(pid) = held.trim().parse::<u32>()
+                    {
+                        break pid;
+                    }
+                    assert!(
+                        polls < POLL_BUDGET,
+                        "the child never wrote its process id in {POLL_BUDGET} polls, so killing \
+                         it would say nothing about what an interrupt costs"
+                    );
+                }
+            }
+        };
+        assert!(
+            in_the_process_table(pid),
+            "the staging is wrong: the child was already gone before it was interrupted"
+        );
+        pid
+        // `running` is dropped here, which is exactly what a mid-turn
+        // `Ctrl-C` does to the turn's future.
+    };
+
+    let mut polls = 0_usize;
+    while in_the_process_table(pid) {
+        polls += 1;
+        assert!(
+            polls < POLL_BUDGET,
+            "the child {pid} is still in the process table after the future that owned it was \
+             dropped, so an interrupt leaves a command running on the user's machine with nothing \
+             left to stop it"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    // The accepting sibling: the same script, uninterrupted, reports.
+    let opens = tree.project().join(awkward_nonce("gate-that-opens"));
+    std::fs::write(&opens, b"").expect("the gate is written");
+    let line = scripted(&tree, "finishes.sh", &waits_for(&opens));
+    let outcome = spawn
+        .execute(&line)
+        .await
+        .unwrap_or_else(|failure| panic!("the uninterrupted child did not run: {failure}"));
+    assert_eq!(
+        outcome.ended,
+        Ended::Exited { code: 0 },
+        "a child that was never interrupted did not report its own outcome, so the arm above \
+         cannot distinguish an interrupt from a `Spawn` that kills everything"
+    );
+}
+
+/// A child that ignores the polite signals is ended anyway.
+///
+/// `trap '' TERM INT` in the child, and it still leaves the process table —
+/// which is what makes the signal the same `SIGKILL` the ceiling already
+/// sends rather than something a well-behaved process can decline. Its
+/// accepting sibling is the second arm of the check above.
+#[tokio::test]
+async fn a_child_that_ignores_the_signal_is_ended_anyway() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let never = tree.project().join(awkward_nonce("gate-that-never-opens"));
+    let pidfile = tree.project().join(awkward_nonce("pid"));
+    let body = format!(
+        "trap '' TERM INT\necho $$ > '{}'\n{}",
+        pidfile.display(),
+        waits_for(&never)
+    );
+    let line = scripted(&tree, "ignores-the-signal.sh", &body);
+    let spawn = Spawn::new(
+        &working,
+        Environment::inherited_minimum().expect("the five"),
+        generous(),
+    );
+
+    let pid = {
+        let running = spawn.execute(&line);
+        tokio::pin!(running);
+        let mut polls = 0_usize;
+        let pid = loop {
+            tokio::select! {
+                biased;
+                outcome = &mut running => panic!("the child ended too early: {outcome:?}"),
+                () = tokio::task::yield_now() => {
+                    polls += 1;
+                    if let Ok(held) = std::fs::read_to_string(&pidfile)
+                        && let Ok(pid) = held.trim().parse::<u32>()
+                    {
+                        break pid;
+                    }
+                    assert!(polls < POLL_BUDGET, "the child never wrote its process id");
+                }
+            }
+        };
+        pid
+    };
+
+    let mut polls = 0_usize;
+    while in_the_process_table(pid) {
+        polls += 1;
+        assert!(
+            polls < POLL_BUDGET,
+            "a child that ignores `TERM` and `INT` outlived the interrupt, so the signal an \
+             interrupt sends is one a process can decline"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// No thread is created to read a child, asserted over the source itself.
+///
+/// # Why the source rather than `/proc/self/task`
+///
+/// The count of live threads belongs to the **test binary**, which runs many
+/// checks at once, so an assertion over it would be a property of whoever else
+/// was running — the probabilistic instrument [Verification lessons] §57
+/// refuses. The property is about this module, so it is asserted about this
+/// module: `spawn.rs` names no thread at all.
+///
+/// The **liveness arm** is what stops a scan that read the wrong file from
+/// passing vacuously (§18): the source must contain the `select!` this
+/// property is about.
+///
+/// Watched red on a planted `std::thread::spawn`.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_child_is_read_by_futures_rather_than_by_threads() {
+    let source = include_str!("spawn.rs");
+    assert!(
+        source.contains("tokio::select!"),
+        "this scan read something that is not the spawn module, so it asserts nothing"
+    );
+    for named in ["std::thread::spawn", "thread::sleep", "JoinHandle"] {
+        assert!(
+            !source.contains(named),
+            "`process::spawn` names `{named}`, so a child is read or waited for on a thread \
+             again — which is the thread that used to outlive the ceiling when a grandchild held \
+             the pipes, and the reason a turn could not be interrupted while a child ran"
+        );
+    }
+}
+
+/// The runtime the session actually builds can run a child.
+///
+/// # This is a property of `compose::turn::runtime`, not of this module
+///
+/// `tokio::process` needs the io driver: on a runtime built without it the
+/// first child panics with *"A Tokio 1.x context was found, but IO is
+/// disabled. Call `enable_io` on the runtime builder to enable IO."* Measured
+/// rather than read. `compose::turn::runtime` builds `enable_all`, so it is
+/// satisfied — and that is a rule holding by construction only while somebody
+/// checks it, which is what this does. Narrowing that builder to `enable_time`
+/// reddens this deterministically, with the panic above as its sentence.
+#[test]
+fn the_sessions_own_runtime_can_run_a_child() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let spawn = Spawn::new(
+        &working,
+        Environment::inherited_minimum().expect("the five"),
+        generous(),
+    );
+    let runtime = crate::compose::turn::runtime().expect("the session's own runtime");
+    let outcome = runtime
+        .block_on(spawn.execute(&CommandLine::split("true").expect("a command line")))
+        .unwrap_or_else(|failure| panic!("`true` did not run on the session's runtime: {failure}"));
+    assert_eq!(
+        outcome.ended,
+        Ended::Exited { code: 0 },
+        "the runtime every turn is polled on could not run a child"
+    );
+}
