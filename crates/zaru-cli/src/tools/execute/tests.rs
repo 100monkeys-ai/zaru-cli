@@ -20,6 +20,7 @@
 //!
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 
+use crate::redaction::HeldSecrets;
 use crate::session::{Phase, Record, SessionStore, Transcript, resume};
 use crate::tools::decision::Invocation;
 use crate::tools::execute::{Executor, SessionOverflow};
@@ -168,6 +169,7 @@ macro_rules! executor {
             budget: OutputBudget::new(4096).expect("a usable budget"),
             overflow: $overflow,
             transcript: $transcript,
+            redactor: &HeldSecrets::none(),
             writes: $unbuilt,
             search: $unbuilt,
             subprocess: $unbuilt,
@@ -223,7 +225,7 @@ async fn a_read_inside_the_working_directory_returns_the_files_bytes() {
     match outcome {
         ToolOutcome::Completed { result, decision } => {
             assert!(
-                result.content.contains(&contents),
+                result.content.as_str().contains(&contents),
                 "the read did not return the file's bytes: {:?}",
                 result.content
             );
@@ -584,6 +586,7 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         budget: OutputBudget::new(64).expect("a small budget"),
         overflow: &mut overflow,
         transcript: &mut transcript,
+        redactor: &HeldSecrets::none(),
         writes: &unbuilt,
         search: &unbuilt,
         subprocess: &unbuilt,
@@ -599,16 +602,14 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         panic!("the read should have acted");
     };
     assert!(
-        result.content.contains("bytes elided"),
+        result.content.as_str().contains("bytes elided"),
         "the output exceeded the budget and the elision was not marked: {:?}",
         result.content
     );
     let marker = "full output: ";
-    let at = result
-        .content
-        .find(marker)
-        .expect("D5 requires the path be shown");
-    let path: std::path::PathBuf = result.content[at + marker.len()..].trim().into();
+    let shown = result.content.as_str();
+    let at = shown.find(marker).expect("D5 requires the path be shown");
+    let path: std::path::PathBuf = shown[at + marker.len()..].trim().into();
     assert!(
         path.starts_with(scratch.session.directory()),
         "the full text must be preserved in the session directory, and went to {}",

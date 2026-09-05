@@ -42,6 +42,7 @@
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 
 use crate::iteration::port::{Clock, ContextPolicy, ContextRefusal, Interruption, Turn};
+use crate::redaction::Redactor;
 use crate::tool_call::error::{PortKind, ToolCallError};
 use crate::tool_call::event::{Event, EventSink, TurnEnding};
 use crate::tool_call::limits::ToolCallCeiling;
@@ -130,12 +131,12 @@ pub enum Outcome {
 /// ceiling is a port failure — see [`crate::tool_call::error`].
 ///
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
-pub async fn run<M, X, P, K, I>(
+pub async fn run<M, X, P, K, R, I>(
     n: u32,
     start: Start<'_>,
     ceiling: ToolCallCeiling,
     tool_calling: ToolCalling,
-    ports: Ports<'_, M, X, P, K>,
+    ports: Ports<'_, M, X, P, K, R>,
     inner: Option<&I>,
     sinks: &mut [&mut dyn EventSink],
 ) -> Result<Outcome, ToolCallError>
@@ -144,6 +145,7 @@ where
     X: ToolExecutor,
     P: ContextPolicy,
     K: Clock,
+    R: Redactor + ?Sized,
     I: InnerLoop,
 {
     // Taken by value and deliberately unused past this line. It is evidence
@@ -362,7 +364,7 @@ where
             // The single path out of `ToolOutcome`. A refusal becomes this
             // turn's next content exactly as a completion does, and there is
             // no arm anywhere that turns one into an error.
-            results.push(outcome.for_the_model());
+            results.push(outcome.for_the_model(ports.redactor));
         }
 
         if round >= ceiling.get() {

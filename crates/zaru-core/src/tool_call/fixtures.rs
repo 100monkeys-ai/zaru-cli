@@ -266,7 +266,12 @@ impl ToolExecutor for StagedTools {
                 decision,
                 result: ToolResult {
                     id: request.id.clone(),
-                    content,
+                    // The executing surface redacts before it hands a
+                    // completed result on -- `zaru-cli`'s does, over the
+                    // credential store -- because that is where the raw
+                    // capture and the transcript both live. This fixture
+                    // stands where that surface stands and holds nothing.
+                    content: Redacted::by(&NothingHeld, &content),
                     failed: false,
                 },
             },
@@ -274,7 +279,7 @@ impl ToolExecutor for StagedTools {
                 decision,
                 result: ToolResult {
                     id: request.id.clone(),
-                    content,
+                    content: Redacted::by(&NothingHeld, &content),
                     failed: true,
                 },
             },

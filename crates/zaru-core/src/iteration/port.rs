@@ -135,22 +135,33 @@ pub struct ValidatorReport {
 /// anything else would be a second description of one call. It also keeps
 /// this crate ignorant of tools: a string it does not parse, exactly as
 /// [`crate::tool_call::ToolRequest`]'s arguments are.
+///
+/// # It carries redacted text, and that was a ruling rather than an omission
+///
+/// The line is a transcript line rather than captured bytes, so ADR-0008
+/// clause 6's decision of 2026-09-05 does not name this path among its three.
+/// The `redaction-seam` arc found it by reading the code and the coordinator
+/// ruled it in on the same day: a rendered `cmd.run` line **is** a command
+/// line, which is where a `--token=` argument lives, and by the time a model
+/// reads it the distinction between a transcript line and captured bytes has
+/// stopped meaning anything. The transcript itself keeps the raw line, which
+/// is ADR-0010's rule and is asserted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interruption {
-    call: String,
+    call: Redacted,
 }
 
 impl Interruption {
     /// Take the rendered line of a call that never completed.
     #[must_use]
-    pub fn of(call: impl Into<String>) -> Self {
-        Self { call: call.into() }
+    pub const fn of(call: Redacted) -> Self {
+        Self { call }
     }
 
-    /// The line, as whatever recorded it rendered it.
+    /// The line, as whatever recorded it rendered it, after redaction.
     #[must_use]
     pub fn call(&self) -> &str {
-        &self.call
+        self.call.as_str()
     }
 }
 

@@ -69,6 +69,7 @@ use crate::tools::tree::WorkingDirectory;
 use crate::tools::writes::{FileWrites, Search};
 use std::path::PathBuf;
 use zaru_core::iteration::PortFailure;
+use zaru_core::redaction::{Redacted, Redactor};
 use zaru_core::tool_call::{
     ToolDecision, ToolDescriptor, ToolExecutor, ToolOutcome, ToolRequest, ToolResult,
 };
@@ -135,6 +136,15 @@ pub struct Executor<'a, W, S, C, F> {
     pub overflow: &'a mut (dyn Overflow + Send),
     /// ADR-0010 D2's transcript. Written around every call.
     pub transcript: &'a mut Transcript,
+    /// ADR-0008 clause 6's port, decided 2026-09-05.
+    ///
+    /// Applied where a capture becomes the text the model is given, and
+    /// nowhere else in this module. The `Captured` the transcript and the
+    /// overflow sink are written from is untouched: ADR-0010's Negative
+    /// section says the record "contain\[s\] whatever the session contained",
+    /// and this is the difference between redacting a prompt and redacting a
+    /// record.
+    pub redactor: &'a (dyn Redactor + Sync),
     /// `fs.write` and `fs.edit`. No product implementation.
     pub writes: &'a W,
     /// `fs.search`. No product implementation.
@@ -319,7 +329,7 @@ where
                     },
                     result: ToolResult {
                         id: request.id.clone(),
-                        content: render(&presented),
+                        content: render(self.redactor, &presented),
                         failed: presented.exit_code != 0,
                     },
                 })
@@ -368,7 +378,19 @@ impl<W, S, C, F> Executor<'_, W, S, C, F> {
 /// D5: "Stdout and stderr are captured separately, both surfaced, and both
 /// fed to the model." Both are here, labelled, and the path of any preserved
 /// overflow with them — which is D5's "with the path shown".
-fn render(presented: &Presented) -> String {
+///
+/// # This is where ADR-0008 clause 6's port applies on the tool path
+///
+/// It replaces the identity seam the `tool-surface` arc left in
+/// [`crate::tools::output`], and it sits **here** rather than there
+/// deliberately. That seam was on the path from a capture to *its caller*,
+/// which includes the human; D5 says both streams are surfaced, and redacting
+/// what the user is shown of their own machine's output is not what clause 6
+/// asks for. This function is the narrower thing: the point where a
+/// [`Presented`] becomes the bytes a **model** reads. The `Presented` itself,
+/// the `Captured` behind it, the transcript and the preserved overflow file
+/// all keep raw bytes.
+fn render<R: Redactor + ?Sized>(redactor: &R, presented: &Presented) -> Redacted {
     let mut out = format!("exit code: {}\n", presented.exit_code);
     out.push_str("stdout:\n");
     out.push_str(presented.stdout.as_str());
@@ -377,7 +399,7 @@ fn render(presented: &Presented) -> String {
     if let Some(path) = &presented.full_text_at {
         out.push_str(&format!("\nfull output: {}\n", path.display()));
     }
-    out
+    Redacted::by(redactor, &out)
 }
 
 /// Read a file with `std::fs`, inside the boundary.

@@ -62,6 +62,7 @@ use crate::session::store::{CHECKPOINT_FILE, TRANSCRIPT_FILE};
 use crate::session::transcript::{Transcript, TranscriptError};
 use core::fmt;
 use std::path::Path;
+use zaru_core::redaction::{Redacted, Redactor};
 
 /// A tool call that was in flight when the process died.
 ///
@@ -81,9 +82,19 @@ impl Interrupted {
     /// and D2's replayability claim is that re-rendering it reproduces what
     /// the user saw — so handing the model anything else would be a second
     /// description of one call.
+    ///
+    /// It passes ADR-0008 clause 6's port, which was a coordinator ruling of
+    /// 2026-09-05 rather than one of the three paths that decision names: a
+    /// rendered `cmd.run` line **is** a command line, and that is where a
+    /// `--token=` argument lives. **`self.call.line` is untouched**, so the
+    /// transcript this was read out of still carries the raw line, which is
+    /// ADR-0010's rule and is asserted.
     #[must_use]
-    pub fn for_the_model(&self) -> zaru_core::iteration::Interruption {
-        zaru_core::iteration::Interruption::of(self.call.line.clone())
+    pub fn for_the_model<R: Redactor + ?Sized>(
+        &self,
+        redactor: &R,
+    ) -> zaru_core::iteration::Interruption {
+        zaru_core::iteration::Interruption::of(Redacted::by(redactor, &self.call.line))
     }
 }
 

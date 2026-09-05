@@ -47,6 +47,18 @@
 //! showing a path that does not exist would be exactly the unnoticeable
 //! truncation D5 names.
 //!
+//! # A capture is raw here, and redaction is not this module's
+//!
+//! The identity seam this module used to carry — one named private function
+//! on the path from a tool's captured output to its caller — is gone.
+//! [ADR-0008]'s trigger clause 6 was decided on 2026-09-05 and its port is
+//! applied where a [`Presented`] becomes the bytes a **model** reads, in
+//! [`crate::tools::execute`]. It is not applied here, because this path also
+//! serves the human: D5 says both streams are surfaced, and redacting what a
+//! user is shown of their own machine's output is not what that clause asks
+//! for. A [`Captured`] and a [`Presented`] carry raw bytes, and so do the
+//! transcript and the overflow file written from them.
+//!
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
@@ -247,26 +259,6 @@ pub struct Presented {
     pub full_text_at: Option<PathBuf>,
 }
 
-/// The single point on the path from a tool's captured output to its caller.
-///
-/// It is the identity and it does nothing. [ADR-0008]'s trigger clause 6 — a
-/// decision must exist for secret redaction in failure text — is deliberately
-/// open, and `zaru-core`'s refinement construction already carries the first
-/// such point, on the path from a validator's output to the model's prompt.
-/// **This is the second**, on the path from a tool's output to whatever
-/// consumes it, and it exists so that a redaction decision, when it is made,
-/// has two named places to attach rather than a scattering of filters.
-///
-/// It is not a hook and takes no policy: nothing may pass behaviour through
-/// it, because a configurable redaction point would be the decision itself,
-/// settled in code. ADR-0011 D5 sends both streams to the model, so the
-/// obligation clause 6 names is exactly as live here as it is there.
-///
-/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-const fn tool_output_for_the_caller(raw: &str) -> &str {
-    raw
-}
-
 impl Captured {
     /// Show this capture to a caller within the budget.
     ///
@@ -281,8 +273,8 @@ impl Captured {
         budget: OutputBudget,
         overflow: Option<&mut dyn Overflow>,
     ) -> Result<Presented, PresentationRefused> {
-        let stdout = excerpt(tool_output_for_the_caller(&self.stdout), budget);
-        let stderr = excerpt(tool_output_for_the_caller(&self.stderr), budget);
+        let stdout = excerpt(&self.stdout, budget);
+        let stderr = excerpt(&self.stderr, budget);
 
         let elided_bytes = stdout.elided.unwrap_or_default() + stderr.elided.unwrap_or_default();
         let full_text_at = if elided_bytes == 0 {

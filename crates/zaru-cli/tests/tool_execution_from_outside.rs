@@ -21,6 +21,7 @@
 use core::time::Duration;
 use std::sync::Mutex;
 use zaru_cli::failure::{Class, Presentation};
+use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::{
     Captured, Executor, Fetch, FileWrites, Mode, NoMembrane, OutputBudget, Question,
@@ -274,12 +275,13 @@ async fn a_model_reads_a_file_inside_the_boundary_and_the_bytes_reach_it() {
             budget: OutputBudget::new(4096).expect("a usable budget"),
             overflow: &mut overflow,
             transcript: &mut transcript,
+            redactor: &HeldSecrets::none(),
             writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
-        run::<_, _, _, _, NeverIterates>(
+        run::<_, _, _, _, _, NeverIterates>(
             1,
             Start::Task("read the entry point"),
             ToolCallCeiling::new(4).expect("a usable ceiling"),
@@ -289,6 +291,7 @@ async fn a_model_reads_a_file_inside_the_boundary_and_the_bytes_reach_it() {
                 tools: &mut executor,
                 context: &policy,
                 clock: &clock,
+                redactor: &HeldSecrets::none(),
             },
             None,
             &mut [&mut sink],
@@ -372,12 +375,13 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
             budget: OutputBudget::new(4096).expect("a usable budget"),
             overflow: &mut overflow,
             transcript: &mut transcript,
+            redactor: &HeldSecrets::none(),
             writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
-        run::<_, _, _, _, NeverIterates>(
+        run::<_, _, _, _, _, NeverIterates>(
             1,
             Start::Task("read the secret"),
             ToolCallCeiling::new(4).expect("a usable ceiling"),
@@ -387,6 +391,7 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
                 tools: &mut executor,
                 context: &policy,
                 clock: &clock,
+                redactor: &HeldSecrets::none(),
             },
             None,
             &mut [&mut sink],
@@ -487,7 +492,7 @@ async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
     let membrane = NoMembrane;
 
     // The conversion `zaru-cli` owns, into the datum `zaru-core` carries.
-    let carried: Interruption = interrupted.for_the_model();
+    let carried: Interruption = interrupted.for_the_model(&HeldSecrets::none());
 
     {
         let mut executor = Executor {
@@ -500,12 +505,13 @@ async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
             budget: OutputBudget::new(4096).expect("a usable budget"),
             overflow: &mut overflow,
             transcript: &mut transcript,
+            redactor: &HeldSecrets::none(),
             writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
-        run::<_, _, _, _, NeverIterates>(
+        run::<_, _, _, _, _, NeverIterates>(
             2,
             Start::Resumed(&carried),
             ToolCallCeiling::new(2).expect("a usable ceiling"),
@@ -515,6 +521,7 @@ async fn an_interrupted_call_reaches_the_model_on_the_next_turn() {
                 tools: &mut executor,
                 context: &policy,
                 clock: &clock,
+                redactor: &HeldSecrets::none(),
             },
             None,
             &mut [&mut sink],
@@ -590,12 +597,13 @@ async fn a_denying_membrane_refuses_at_yolo_and_presents_as_an_expected_failure(
             budget: OutputBudget::new(4096).expect("a usable budget"),
             overflow: &mut overflow,
             transcript: &mut transcript,
+            redactor: &HeldSecrets::none(),
             writes: &unbuilt,
             search: &unbuilt,
             subprocess: &unbuilt,
             fetch: &unbuilt,
         };
-        run::<_, _, _, _, NeverIterates>(
+        run::<_, _, _, _, _, NeverIterates>(
             1,
             Start::Task("read the entry point"),
             ToolCallCeiling::new(4).expect("a usable ceiling"),
@@ -605,6 +613,7 @@ async fn a_denying_membrane_refuses_at_yolo_and_presents_as_an_expected_failure(
                 tools: &mut executor,
                 context: &policy,
                 clock: &clock,
+                redactor: &HeldSecrets::none(),
             },
             None,
             &mut [&mut sink],

@@ -38,6 +38,7 @@
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 
 use crate::iteration::port::{PortFailure, Prompt};
+use crate::redaction::{Redacted, Redactor};
 use core::fmt;
 use core::future::Future;
 
@@ -86,13 +87,25 @@ pub struct ToolDecision {
     pub permitted: bool,
 }
 
-/// What one tool call produced.
+/// What one tool call produced, as the model is given it.
+///
+/// The content is [`Redacted`], because this type is the only text on a
+/// [`ModelRequest`] besides the [`Prompt`] and it is therefore the second
+/// half of ADR-0008 clause 6's type gate. **A tool's output reaches a model
+/// through here and not through a prompt**, so a `Redacted`-only `Prompt`
+/// would not cover it.
+///
+/// Distinct from [`ToolOutcome`], which carries the executing surface's own
+/// raw bytes: ADR-0010's transcript records what the session contained, and
+/// the event stream is what that transcript is written from. The redaction
+/// happens at exactly one point, where a `ToolOutcome` becomes model-bound
+/// text — [`ToolOutcome::for_the_model`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResult {
     /// The request's id, so a provider can match it to what it asked for.
     pub id: String,
     /// What goes back to the model.
-    pub content: String,
+    pub content: Redacted,
     /// Whether the tool itself reported a failure.
     ///
     /// A tool that failed still produced a result; ADR-0016 D1 row 1 puts
@@ -146,13 +159,21 @@ impl ToolOutcome {
     /// A refusal becomes an ordinary tool result carrying the refusal's own
     /// sentence. That is the whole of "a refusal becomes the next model
     /// turn's content": there is no other path out of this type.
+    ///
+    /// **This is the one point where a tool call's text becomes something a
+    /// model will read**, which is why it takes ADR-0008 clause 6's port. The
+    /// completed arm's content already passed a redactor in the executing
+    /// surface, where the raw capture and the transcript both live; passing
+    /// it again costs nothing, because redaction is idempotent. The refused
+    /// arm's sentence has not, because it is composed here and can quote the
+    /// target a model asked for.
     #[must_use]
-    pub fn for_the_model(&self) -> ToolResult {
+    pub fn for_the_model<R: Redactor + ?Sized>(&self, redactor: &R) -> ToolResult {
         match self {
             Self::Completed { result, .. } => result.clone(),
             Self::Refused { id, because, .. } => ToolResult {
                 id: id.clone(),
-                content: because.clone(),
+                content: Redacted::by(redactor, because),
                 failed: false,
             },
         }
@@ -403,13 +424,13 @@ pub trait InnerLoop {
     ) -> impl Future<Output = Result<crate::iteration::Outcome, PortFailure>> + Send;
 }
 
-/// The four ports one turn of the tool-call loop needs.
+/// The five ports one turn of the tool-call loop needs.
 ///
 /// Bundled for the reason [`Ports`](crate::iteration::Ports) is: a function
 /// taking each separately is a function whose argument order is a thing to
 /// get wrong.
 #[derive(Debug)]
-pub struct Ports<'a, M, X, P, K> {
+pub struct Ports<'a, M, X, P, K, R: ?Sized> {
     /// The provider.
     pub model: &'a M,
     /// The tool surface.
@@ -418,4 +439,10 @@ pub struct Ports<'a, M, X, P, K> {
     pub context: &'a P,
     /// Supplies elapsed time.
     pub clock: &'a K,
+    /// Removes the harness's own secrets from what reaches the model.
+    ///
+    /// ADR-0008 trigger clause 6's port, decided 2026-09-05. This loop hands
+    /// it to [`ToolOutcome::for_the_model`], which is the one point a tool
+    /// call's text becomes something a model will read.
+    pub redactor: &'a R,
 }

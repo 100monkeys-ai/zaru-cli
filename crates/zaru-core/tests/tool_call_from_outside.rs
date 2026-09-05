@@ -206,7 +206,7 @@ async fn an_outside_caller_drives_a_turn_through_a_tool_call_to_an_answer() {
                 },
                 result: ToolResult {
                     id: String::from("c1"),
-                    content: String::from("fn main() { println!(\"zaru\") }"),
+                    content: Redacted::by(&NothingHeld, "fn main() { println!(\"zaru\") }"),
                     failed: false,
                 },
             }]
@@ -217,7 +217,7 @@ async fn an_outside_caller_drives_a_turn_through_a_tool_call_to_an_answer() {
     let policy = Policy::default();
     let mut sink = Printing::default();
 
-    let outcome = run::<_, _, _, _, Iterating>(
+    let outcome = run::<_, _, _, _, _, Iterating>(
         1,
         Start::Task("read the entry point"),
         ToolCallCeiling::new(4).expect("a usable ceiling"),
@@ -227,6 +227,7 @@ async fn an_outside_caller_drives_a_turn_through_a_tool_call_to_an_answer() {
             tools: &mut surface,
             context: &policy,
             clock: &clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut sink],
@@ -296,7 +297,7 @@ async fn a_refusal_reaches_the_model_and_the_turn_carries_on() {
     let policy = Policy::default();
     let mut sink = Printing::default();
 
-    let outcome = run::<_, _, _, _, Iterating>(
+    let outcome = run::<_, _, _, _, _, Iterating>(
         1,
         Start::Task("clean the workspace"),
         ToolCallCeiling::new(4).expect("a usable ceiling"),
@@ -306,6 +307,7 @@ async fn a_refusal_reaches_the_model_and_the_turn_carries_on() {
             tools: &mut surface,
             context: &policy,
             clock: &clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut sink],
@@ -332,7 +334,10 @@ async fn a_refusal_reaches_the_model_and_the_turn_carries_on() {
 async fn a_resumed_turn_carries_the_interruption_into_what_the_model_sees() {
     println!("== a resumed turn ==");
     let clock = Ticking::default();
-    let interrupted = Interruption::of("fs.write /etc/hosts  [OUTSIDE the working directory]");
+    let interrupted = Interruption::of(Redacted::by(
+        &NothingHeld,
+        "fs.write /etc/hosts  [OUTSIDE the working directory]",
+    ));
     let model = Provider {
         script: Mutex::new(
             [ModelResponse::Text {
@@ -363,6 +368,7 @@ async fn a_resumed_turn_carries_the_interruption_into_what_the_model_sees() {
             tools: &mut surface,
             context: &policy,
             clock: &clock,
+            redactor: &NothingHeld,
         },
         Some(&inner),
         &mut [&mut sink],
@@ -414,6 +420,7 @@ async fn declared_validators_make_the_turn_an_iteration() {
             tools: &mut surface,
             context: &policy,
             clock: &clock,
+            redactor: &NothingHeld,
         },
         Some(&inner),
         &mut [&mut sink],

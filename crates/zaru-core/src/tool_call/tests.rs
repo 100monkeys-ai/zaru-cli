@@ -12,6 +12,10 @@
 
 use crate::iteration::fixtures::ManualClock;
 use crate::iteration::port::Interruption;
+use crate::redaction::Redacted;
+use crate::redaction::fixtures::{
+    HoldingOne, NothingHeld, ascii_core as redaction_ascii_core, staged_secret,
+};
 use crate::tool_call::error::{PortKind, ToolCallError};
 use crate::tool_call::event::{Event, TurnEnding};
 use crate::tool_call::fixtures::{
@@ -114,7 +118,7 @@ async fn a_tool_result_returns_to_the_model_byte_for_byte_and_the_model_continue
     let seen = Arc::clone(&model.seen);
     let mut recorder = Recorder::default();
 
-    let outcome = run::<_, _, _, _, StagedInner>(
+    let outcome = run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("the task"),
         roomy(),
@@ -124,6 +128,7 @@ async fn a_tool_result_returns_to_the_model_byte_for_byte_and_the_model_continue
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -148,7 +153,8 @@ async fn a_tool_result_returns_to_the_model_byte_for_byte_and_the_model_continue
         "the second exchange should carry exactly the one result the tool produced"
     );
     assert_eq!(
-        seen[1][0].content, produced,
+        seen[1][0].content.as_str(),
+        produced,
         "the tool's output did not reach the model byte for byte"
     );
     assert_eq!(
@@ -197,7 +203,7 @@ async fn a_refusal_becomes_the_next_model_turns_content_and_is_never_an_error() 
     let seen = Arc::clone(&model.seen);
     let mut recorder = Recorder::default();
 
-    let outcome = run::<_, _, _, _, StagedInner>(
+    let outcome = run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("the task"),
         roomy(),
@@ -207,6 +213,7 @@ async fn a_refusal_becomes_the_next_model_turns_content_and_is_never_an_error() 
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -222,7 +229,8 @@ async fn a_refusal_becomes_the_next_model_turns_content_and_is_never_an_error() 
     let seen = seen.lock().expect("seen poisoned").clone();
     assert_eq!(seen[1].len(), 1, "the refusal should have become a result");
     assert_eq!(
-        seen[1][0].content, because,
+        seen[1][0].content.as_str(),
+        because,
         "the refusal's own sentence did not reach the model byte for byte"
     );
     assert!(
@@ -275,7 +283,7 @@ async fn the_ceiling_comes_from_the_caller_and_bounds_the_exchanges() {
         let context = RecordingContext::default();
         let mut recorder = Recorder::default();
 
-        let outcome = run::<_, _, _, _, StagedInner>(
+        let outcome = run::<_, _, _, _, _, StagedInner>(
             1,
             Start::Task("t"),
             ToolCallCeiling::new(staged).expect("non-zero"),
@@ -285,6 +293,7 @@ async fn the_ceiling_comes_from_the_caller_and_bounds_the_exchanges() {
                 tools: &mut executor,
                 context: &context,
                 clock: &*clock,
+                redactor: &NothingHeld,
             },
             None,
             &mut [&mut recorder],
@@ -347,7 +356,7 @@ async fn declared_validators_decide_whether_the_turn_is_an_iteration_or_a_tool_c
     let prompts = Arc::clone(&model.prompts);
     let mut recorder = Recorder::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -357,6 +366,7 @@ async fn declared_validators_decide_whether_the_turn_is_an_iteration_or_a_tool_c
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -404,6 +414,7 @@ async fn declared_validators_decide_whether_the_turn_is_an_iteration_or_a_tool_c
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         Some(&inner),
         &mut [&mut recorder],
@@ -459,7 +470,7 @@ async fn declared_validators_decide_whether_the_turn_is_an_iteration_or_a_tool_c
 async fn a_resumed_turn_tells_the_model_what_did_not_complete_and_iterates_nothing() {
     let clock = manual_clock();
     let line = nonce("fs.write /tmp/x  [OUTSIDE the working directory]");
-    let interrupted = Interruption::of(line.clone());
+    let interrupted = Interruption::of(Redacted::by(&NothingHeld, &line));
     let model = StagedModel::new(
         vec![Answer::Text(nonce("carrying on"))],
         Arc::clone(&clock),
@@ -486,6 +497,7 @@ async fn a_resumed_turn_tells_the_model_what_did_not_complete_and_iterates_nothi
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         // Supplied, and deliberately: a resumed turn must not enter it even
         // when a project declares validators, because there is no new task.
@@ -546,7 +558,7 @@ async fn the_context_is_assembled_once_at_the_turn_boundary_and_never_inside_the
     let seen = Arc::clone(&model.seen);
     let mut recorder = Recorder::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -556,6 +568,7 @@ async fn the_context_is_assembled_once_at_the_turn_boundary_and_never_inside_the
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -604,7 +617,7 @@ async fn two_dissimilar_subscribers_receive_the_same_events_from_one_emission() 
     let mut recorder = Recorder::default();
     let mut projector = Projector::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -614,6 +627,7 @@ async fn two_dissimilar_subscribers_receive_the_same_events_from_one_emission() 
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder, &mut projector],
@@ -670,7 +684,7 @@ async fn elapsed_comes_from_the_callers_clock_and_not_from_the_machines() {
     let context = RecordingContext::default();
     let mut recorder = Recorder::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -680,6 +694,7 @@ async fn elapsed_comes_from_the_callers_clock_and_not_from_the_machines() {
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -732,7 +747,7 @@ async fn a_port_failure_is_an_error_and_neither_an_answer_nor_an_exhaustion() {
         let context = RecordingContext::default();
         let mut recorder = Recorder::default();
 
-        let error = run::<_, _, _, _, StagedInner>(
+        let error = run::<_, _, _, _, _, StagedInner>(
             1,
             Start::Task("t"),
             roomy(),
@@ -742,6 +757,7 @@ async fn a_port_failure_is_an_error_and_neither_an_answer_nor_an_exhaustion() {
                 tools: &mut executor,
                 context: &context,
                 clock: &*clock,
+                redactor: &NothingHeld,
             },
             None,
             &mut [&mut recorder],
@@ -784,7 +800,7 @@ async fn an_answer_ends_the_turn_and_no_event_follows_it() {
     let context = RecordingContext::default();
     let mut recorder = Recorder::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -794,6 +810,7 @@ async fn an_answer_ends_the_turn_and_no_event_follows_it() {
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -826,7 +843,7 @@ async fn a_stop_is_reported_as_itself_and_is_neither_an_answer_nor_an_exhaustion
     let context = RecordingContext::default();
     let mut recorder = Recorder::default();
 
-    let outcome = run::<_, _, _, _, StagedInner>(
+    let outcome = run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -836,6 +853,7 @@ async fn a_stop_is_reported_as_itself_and_is_neither_an_answer_nor_an_exhaustion
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -894,7 +912,7 @@ async fn the_decision_is_reported_for_every_call_whichever_way_it_went() {
     let context = RecordingContext::default();
     let mut recorder = Recorder::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -904,6 +922,7 @@ async fn the_decision_is_reported_for_every_call_whichever_way_it_went() {
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -969,7 +988,7 @@ async fn the_stream_carries_a_byte_count_and_never_the_tools_output() {
     let context = RecordingContext::default();
     let mut recorder = Recorder::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -979,6 +998,7 @@ async fn the_stream_carries_a_byte_count_and_never_the_tools_output() {
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -1040,7 +1060,7 @@ async fn the_tools_the_model_is_offered_come_from_the_executor_itself() {
     let offered = Arc::clone(&model.offered);
     let mut recorder = Recorder::default();
 
-    run::<_, _, _, _, StagedInner>(
+    run::<_, _, _, _, _, StagedInner>(
         1,
         Start::Task("t"),
         roomy(),
@@ -1050,6 +1070,7 @@ async fn the_tools_the_model_is_offered_come_from_the_executor_itself() {
             tools: &mut executor,
             context: &context,
             clock: &*clock,
+            redactor: &NothingHeld,
         },
         None,
         &mut [&mut recorder],
@@ -1061,5 +1082,109 @@ async fn the_tools_the_model_is_offered_come_from_the_executor_itself() {
         offered.lock().expect("offered poisoned").as_slice(),
         staged.as_slice(),
         "the model was offered a different set from the one the executor declares"
+    );
+}
+
+// --- ADR-0008 trigger clause 6, decided 2026-09-05 -------------------------
+
+#[tokio::test]
+async fn a_refusals_sentence_is_redacted_before_it_becomes_the_next_turns_content() {
+    // The third of the paths that decision names, at the point this crate
+    // owns. A completed call's content was redacted by the executing surface,
+    // where the raw capture and the transcript both live; a refusal's
+    // sentence is composed here and can quote the target the model asked for,
+    // so `for_the_model` is where it passes the port.
+    //
+    // The event stream is asserted to keep the raw sentence in the same
+    // check, because that is what ADR-0010's transcript is written from and
+    // the difference between redacting a prompt and redacting a record is the
+    // whole shape of this decision.
+    let clock = manual_clock();
+    let secret = staged_secret();
+    // This crate has two notions of an ASCII core and they are not the
+    // same function: `tool_call::fixtures`' strips a known nonce tail, and
+    // the redaction fixtures' takes the ASCII prefix. The staged secret comes
+    // from the second, so the core asserted here must come from the second
+    // too -- a mismatch there is what made an earlier draft of the product
+    // check fail against its own staging rather than against the code.
+    let core = redaction_ascii_core(&secret);
+    assert!(
+        !core.is_empty() && core != secret,
+        "the staged secret must have an ASCII core distinct from itself"
+    );
+    let because = format!("the user declined `cmd.run curl -H 'Bearer {secret}'`");
+    let holding = HoldingOne::new(secret.clone(), "work");
+
+    let model = StagedModel::new(
+        vec![
+            Answer::Calls(vec![request("call-1", "cmd.run")]),
+            Answer::Text(nonce("fine-then")),
+        ],
+        Arc::clone(&clock),
+        Duration::from_millis(1),
+    );
+    let mut executor = StagedTools::new(
+        vec![Act::Refuse(because.clone())],
+        tools(),
+        Arc::clone(&clock),
+        Duration::from_millis(1),
+    );
+    let context = RecordingContext::default();
+    let seen = Arc::clone(&model.seen);
+    let mut recorder = Recorder::default();
+
+    run::<_, _, _, _, _, StagedInner>(
+        1,
+        Start::Task("the task"),
+        roomy(),
+        ToolCalling::required(&model, "staged").expect("can call tools"),
+        Ports {
+            model: &model,
+            tools: &mut executor,
+            context: &context,
+            clock: &*clock,
+            redactor: &holding,
+        },
+        None,
+        &mut [&mut recorder],
+    )
+    .await
+    .expect("a refusal is not a port failure");
+
+    let seen = seen.lock().expect("seen poisoned").clone();
+    let content = seen[1][0].content.as_str();
+    assert!(
+        !content.contains(&secret),
+        "a held value reached the model in a refusal's sentence: {content:?}"
+    );
+    assert!(
+        !content.contains(core),
+        "a held value's ASCII core reached the model in a refusal's sentence, \
+         so an escaping renderer would publish it: {content:?}"
+    );
+    assert!(
+        content.contains("<redacted: work>"),
+        "nothing marks where the value was, and a `for_the_model` that \
+         returned an empty result would satisfy both assertions above on its \
+         own: {content:?}"
+    );
+
+    // The other half, and it is the one whose sign is inverted. The event is
+    // what ADR-0010 D2's transcript is written from, and that record's own
+    // Negative section says the transcript "contain\[s\] whatever the session
+    // contained". Redacting here would be redacting the record.
+    let refusal = recorder
+        .events
+        .iter()
+        .find_map(|event| match event {
+            Event::ToolRefused { because, .. } => Some(because.clone()),
+            _ => None,
+        })
+        .expect("one refusal was staged");
+    assert_eq!(
+        refusal, because,
+        "the event stream must carry the refusal's raw sentence, because that \
+         is what the transcript is written from and ADR-0010 keeps whatever \
+         the session contained"
     );
 }
