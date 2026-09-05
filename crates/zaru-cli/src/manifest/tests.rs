@@ -458,3 +458,297 @@ fn product_sources(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> 
     }
     found
 }
+
+// ---------------------------------------------------------------------------
+// D1's file, read
+// ---------------------------------------------------------------------------
+
+/// A ceiling roomy enough that no manifest check meets it by accident.
+fn roomy() -> crate::config::SizeCeiling {
+    crate::config::SizeCeiling::new(1 << 20).expect("a mebibyte is not zero")
+}
+
+/// [ADR-0009] D1's corrected worked manifest, read off a real file.
+///
+/// The example is D1's own, and **the fixture perturbs it where the check is
+/// about ordering** — it does not assert dependency order here, because that is
+/// `zaru-core`'s and D1's example is already written in it, which is the
+/// fidelity trap [Verification lessons] §55 names. What is asserted is that
+/// every declared validator arrives with its own `expect`, including the two
+/// spellings D1 shows.
+///
+/// The mutant is dropping the `[[validator]]` arm, which reddens with none.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons-2
+#[test]
+fn adr_0009_d1s_worked_manifest_is_read_off_a_real_file() {
+    use crate::manifest::file::ManifestFile;
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+    std::fs::write(
+        tree.project().join(crate::manifest::MANIFEST_FILE),
+        br#"[project]
+name = "acme-api"
+workspace = "acme-engineering"
+
+[runtime]
+max_iterations = 3
+
+[[validator]]
+name = "build"
+run  = "cargo build --locked"
+expect = "exit-zero"
+
+[[validator]]
+name = "test"
+run  = "cargo test --all"
+expect = "exit-zero"
+after = ["build"]
+
+[[validator]]
+name = "shape"
+run  = "cargo run -- --emit-schema"
+expect = { json_schema = "schema/output.json" }
+"#,
+    )
+    .expect("could not stage the manifest");
+    std::fs::create_dir_all(tree.project().join("schema")).expect("staging: schema/");
+    std::fs::write(tree.project().join("schema").join("output.json"), b"{}")
+        .expect("staging: the schema");
+
+    let manifest = ManifestFile::in_directory(working, roomy())
+        .parse()
+        .expect("D1's own example is a manifest this harness reads")
+        .expect("the file is there");
+
+    assert_eq!(
+        manifest.project().get("name"),
+        Some(&Value::Text("acme-api".to_owned()))
+    );
+    assert_eq!(
+        manifest.project().get("workspace"),
+        Some(&Value::Text("acme-engineering".to_owned()))
+    );
+    assert_eq!(
+        manifest.runtime().get("max_iterations"),
+        Some(&Value::Integer(3)),
+        "D1's `[runtime]` lowers a ceiling and no longer sets a tier"
+    );
+
+    let declared: Vec<(&str, &str)> = manifest
+        .validators()
+        .iter()
+        .map(|validator| (validator.name.as_str(), validator.expect.kind()))
+        .collect();
+    assert_eq!(
+        declared,
+        vec![
+            ("build", "exit-zero"),
+            ("test", "exit-zero"),
+            ("shape", "json_schema"),
+        ],
+        "every validator D1 declares arrives with its own kind"
+    );
+    let after: Vec<&str> = manifest.validators()[1]
+        .after
+        .iter()
+        .map(Name::as_str)
+        .collect();
+    assert_eq!(after, vec!["build"], "D2's `after` reaches the declaration");
+    println!("D1's manifest, read: {} validator(s)", declared.len());
+}
+
+/// An absent manifest is D4's datum rather than a failure.
+///
+/// The mutant is refusing where there is no file, which reddens with the
+/// refusal printed.
+#[test]
+fn an_absent_manifest_is_no_manifest_rather_than_a_refusal() {
+    use crate::manifest::file::ManifestFile;
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+    let file = ManifestFile::in_directory(working, roomy());
+    assert!(!file.path().exists(), "the fixture stages no manifest");
+
+    assert_eq!(
+        file.parse().expect("an absent manifest is not a failure"),
+        None,
+        "ADR-0009 D4 makes a project without one an ordinary thing"
+    );
+    assert!(
+        !file.path().exists(),
+        "nothing may be created in order to find out there is nothing"
+    );
+}
+
+/// A manifest that links out of the tree is refused **before** it is read.
+///
+/// **The fixture's target is malformed TOML on purpose.** An implementation
+/// that read first and classified after would refuse it as unparsable, so the
+/// two are told apart by which refusal arrives — which is what makes this a
+/// check about ordering rather than about containment alone.
+///
+/// For the security corpus, which only grows.
+#[test]
+fn a_manifest_that_links_out_of_the_working_directory_is_refused_before_it_is_read() {
+    use crate::manifest::file::{ManifestFile, ManifestNotRead};
+
+    let tree = ScratchTree::new();
+    let outside = tree.base().join("elsewhere").join("planted.toml");
+    std::fs::write(&outside, b"this is not toml = = =\n").expect("staging: the planted file");
+    std::os::unix::fs::symlink(
+        &outside,
+        tree.project().join(crate::manifest::MANIFEST_FILE),
+    )
+    .expect("staging: the escaping manifest");
+
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+    let refusal = ManifestFile::in_directory(working, roomy())
+        .parse()
+        .expect_err("a manifest outside the working directory is refused");
+
+    let ManifestNotRead::OutsideTheWorkingDirectory { resolved, .. } = &refusal else {
+        panic!(
+            "a manifest that links out of the tree must be refused before it is read; any other \
+             refusal here means the bytes were read first: {refusal:?}"
+        );
+    };
+    assert_eq!(
+        resolved,
+        &std::fs::canonicalize(&outside).expect("the target exists"),
+        "the refusal names where the link actually reached"
+    );
+    println!("refused: {refusal}");
+}
+
+/// A top-level name that is none of D1's three is refused, not dropped.
+///
+/// Dropping it would put the name beyond ADR-0014 D5's reach, because the fold
+/// only ever sees what the contribution carries — D5's own silent-typo failure
+/// arriving one layer before that clause can fire.
+///
+/// The mutant is ignoring an unknown table, which reddens with the manifest
+/// printed instead of a refusal.
+#[test]
+fn a_top_level_name_that_is_none_of_d1s_three_is_refused_naming_the_nearest() {
+    use crate::manifest::file::{ManifestFile, ManifestNotRead};
+
+    let tree = ScratchTree::new();
+    std::fs::write(
+        tree.project().join(crate::manifest::MANIFEST_FILE),
+        b"[projekt]\nname = \"typo\"\n",
+    )
+    .expect("could not stage the manifest");
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+
+    let refusal = ManifestFile::in_directory(working, roomy())
+        .parse()
+        .expect_err("`projekt` is not a table this record declares");
+    let ManifestNotRead::UnknownTable {
+        offered, nearest, ..
+    } = &refusal
+    else {
+        panic!("expected an unknown-table refusal, got {refusal:?}");
+    };
+    assert_eq!((offered.as_str(), *nearest), ("projekt", PROJECT_TABLE));
+    println!("refused: {refusal}");
+}
+
+/// Each of D3's four kinds is read from a file, and a fifth is refused.
+///
+/// **The population is [`Expect::KINDS`]** rather than a list typed here, so a
+/// fifth kind cannot be added to that record without this check being answered
+/// for it ([Verification lessons] §17).
+///
+/// The mutant is dropping any one kind's arm.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn each_of_adr_0009_d3s_four_expect_kinds_is_read_from_a_file_and_a_fifth_is_refused() {
+    use crate::manifest::file::{ManifestFile, ManifestNotRead};
+
+    let spelled = |body: &str| -> Result<Vec<Declared>, ManifestNotRead> {
+        let tree = ScratchTree::new();
+        std::fs::write(tree.project().join(crate::manifest::MANIFEST_FILE), body)
+            .expect("could not stage the manifest");
+        let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+        ManifestFile::in_directory(working, roomy())
+            .parse()
+            .map(|manifest| manifest.expect("the file is there").validators().to_vec())
+    };
+
+    let written = [
+        ("exit-zero", "expect = \"exit-zero\"".to_owned()),
+        ("exit-code", "expect = { exit-code = 2 }".to_owned()),
+        ("matches", "expect = { matches = \"^ok$\" }".to_owned()),
+        (
+            "json_schema",
+            "expect = { json_schema = \"shape.json\" }".to_owned(),
+        ),
+    ];
+    assert_eq!(
+        written.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+        Expect::KINDS.to_vec(),
+        "this check's population is ADR-0009 D3's own list, and it has moved"
+    );
+
+    for (kind, expect) in &written {
+        let declared = spelled(&format!(
+            "[[validator]]\nname = \"v\"\nrun = \"r\"\n{expect}\n"
+        ))
+        .unwrap_or_else(|refusal| {
+            panic!("`{expect}` is D3's own spelling for `{kind}`: {refusal}")
+        });
+        assert_eq!(declared.len(), 1);
+        assert_eq!(&declared[0].expect.kind(), kind);
+        println!("{expect} -> {:?}", declared[0].expect);
+    }
+
+    let refusal = spelled("[[validator]]\nname = \"v\"\nrun = \"r\"\nexpect = { exit-cod = 2 }\n")
+        .expect_err("`exit-cod` names no kind D3 defines");
+    let ManifestNotRead::NoSuchExpectKind { nearest, .. } = &refusal else {
+        panic!("expected a no-such-kind refusal, got {refusal:?}");
+    };
+    assert_eq!(*nearest, "exit-code");
+    println!("refused: {refusal}");
+}
+
+/// A validator missing a field is refused naming its position and the field.
+///
+/// The position rather than the name, because the name is one of the things
+/// that can be missing.
+///
+/// The mutant is defaulting a missing `run` to the empty string, which reddens
+/// with the manifest printed instead of a refusal.
+#[test]
+fn a_validator_missing_a_field_is_refused_naming_its_position_and_the_field() {
+    use crate::manifest::file::{ManifestFile, ManifestNotRead};
+
+    let tree = ScratchTree::new();
+    // The interesting entry is in the middle, so the check cannot pass against
+    // "take the first" or "take the last" -- Verification lessons §54.
+    std::fs::write(
+        tree.project().join(crate::manifest::MANIFEST_FILE),
+        b"[[validator]]\nname = \"a\"\nrun = \"ra\"\nexpect = \"exit-zero\"\n\n\
+          [[validator]]\nname = \"b\"\nexpect = \"exit-zero\"\n\n\
+          [[validator]]\nname = \"c\"\nrun = \"rc\"\nexpect = \"exit-zero\"\n",
+    )
+    .expect("could not stage the manifest");
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory exists");
+
+    let refusal = ManifestFile::in_directory(working, roomy())
+        .parse()
+        .expect_err("a validator with no `run` is not a validator");
+    let ManifestNotRead::ValidatorMissing { position, field } = &refusal else {
+        panic!("expected a missing-field refusal, got {refusal:?}");
+    };
+    assert_eq!(
+        (*position, *field),
+        (2, "run"),
+        "the second entry is the one with no `run`: {refusal}"
+    );
+    println!("refused: {refusal}");
+}

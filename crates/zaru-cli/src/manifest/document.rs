@@ -67,6 +67,20 @@ pub const PROJECT_TABLE: &str = "project";
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 pub const RUNTIME_TABLE: &str = "runtime";
 
+/// The name [ADR-0009] D1 gives the manifest's array of validator tables.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+pub const VALIDATOR_TABLE: &str = "validator";
+
+/// The file [ADR-0009] D1 puts at the repository root.
+///
+/// One spelling, read by [`ManifestFile`](crate::manifest::ManifestFile) and
+/// written by [ADR-0009] D6's `zaru init`, so the reader and the writer cannot
+/// disagree about which file they are about.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+pub const MANIFEST_FILE: &str = "zaru.toml";
+
 /// The name [ADR-0009] D1's `[project]` table gives the project.
 ///
 /// A constant for the reason [`PROJECT_TABLE`] is one: it is written into a
