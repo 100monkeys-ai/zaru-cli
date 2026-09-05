@@ -47,8 +47,17 @@ impl Composer {
                 vec![format!("{count} pending · /inbox")]
             }
             StripContent::Tip { text } => vec![text],
-            StripContent::Trie { matches } | StripContent::Picker { matches, .. } => {
+            // ADR-0015 D2's row: a command line is not a search, so the strip
+            // says nothing and reclaims its rows exactly as a collapse does.
+            StripContent::Command => Vec::new(),
+            // A picker never carries the absence line. An open picker with no
+            // matches is what a miss looks like, and the picker's own sigil is
+            // already on the screen saying what is being picked.
+            StripContent::Picker { matches, .. } => {
                 matches.into_iter().map(|entry| entry.title).collect()
+            }
+            StripContent::Trie { matches } => {
+                self.or_absence(matches.into_iter().map(|entry| entry.title).collect())
             }
             StripContent::Merged { entries, search } => {
                 let mut lines: Vec<String> = entries.into_iter().map(|entry| entry.title).collect();
@@ -59,8 +68,31 @@ impl Composer {
                 {
                     lines.push(KEYWORD_ONLY.to_owned());
                 }
-                lines
+                self.or_absence(lines)
             }
+        }
+    }
+
+    /// `lines`, or the absence line when there are none and one was handed in.
+    ///
+    /// # A blank strip is what this exists to stop
+    ///
+    /// Before the fast tier had an implementation, a user typing into `zaru`
+    /// saw nothing below the input and was told nothing about why — the largest
+    /// missing piece of this surface, and the kind of silent degradation
+    /// [Operating Principles]' "legibility beats smoothness" is written
+    /// against. A user with no Nuclear Notes token has a reason to see nothing,
+    /// and the reason is worth one line.
+    ///
+    /// It appends rather than replaces so that it cannot hide a match: it is
+    /// reached only when there is nothing else to show. See
+    /// [`Composer::set_absence`] for why the line is handed in.
+    ///
+    /// [Operating Principles]: https://100monkeys-ai.cortex.page/zaru/p/operations/operating-principles
+    fn or_absence(&self, lines: Vec<String>) -> Vec<String> {
+        match (lines.is_empty(), &self.absence) {
+            (true, Some(absence)) => vec![absence.clone()],
+            _ => lines,
         }
     }
 
@@ -242,6 +274,54 @@ mod tests {
         assert!(
             after_text.contains(TRIE_NONCE),
             "one keystroke did not put trie matches on the strip; the frame was {after:?}"
+        );
+    }
+
+    /// The absence line is painted where `ab000df` painted nothing, and the
+    /// input row does not move because it appeared.
+    ///
+    /// Two subjects asserted apart. The first is that a user sees the sentence
+    /// at all, read out of the buffer. The second is ADR-0005 D2 applied to the
+    /// new row: a strip that grew from zero rows to one must not move the input,
+    /// and that is compared against the same composer with no line handed in.
+    #[test]
+    fn the_absence_line_is_painted_and_the_input_row_does_not_move_for_it() {
+        // The check owns its literal, and deliberately a short one: what is
+        // asserted here is that the composer paints the line it was handed,
+        // whatever it says. The words a user actually reads are `zaru-cli`'s
+        // and are asserted at the shell's own width, because this frame is 40
+        // columns and a real sentence about Nuclear Notes does not fit in it —
+        // which is itself worth knowing and is why the wording is short.
+        const ABSENCE: &str = "nothing to search · ✦";
+        let empty = TrieOf::new(0);
+
+        let mut silent = Composer::new();
+        typing(&mut silent, "édit", Duration::ZERO, &empty);
+        let (before, before_cursor) = painted(&silent, WIDTH, HEIGHT);
+        assert!(
+            before[1].trim().is_empty(),
+            "with no line handed in the strip's first row is blank, which is what this arc found              and what the row below replaces; it was {:?}",
+            before[1]
+        );
+
+        let mut speaking = Composer::new();
+        speaking.set_absence(Some(ABSENCE.to_owned()));
+        typing(&mut speaking, "édit", Duration::ZERO, &empty);
+        let (after, after_cursor) = painted(&speaking, WIDTH, HEIGHT);
+
+        assert_eq!(
+            after[1].trim_end(),
+            ABSENCE,
+            "the absence line should be the strip's first row, read out of the test backend's              buffer; the frame was {after:?}"
+        );
+        assert_eq!(
+            before[0], after[0],
+            "the input row moved because the absence line appeared, which is D2's reflow: {:?}              then {:?}",
+            before[0], after[0]
+        );
+        assert_eq!(
+            before_cursor, after_cursor,
+            "and so did the cursor, which D2 forbids"
         );
     }
 

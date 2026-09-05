@@ -81,6 +81,25 @@ pub enum StripContent {
         /// Where the slow tier has got to.
         search: SearchState,
     },
+    /// The line is a command, so the strip says nothing. **Not one of D1's
+    /// rows.**
+    ///
+    /// # Which record supplies this, and why D1's table is unchanged
+    ///
+    /// [ADR-0015] D2 gives a session two grammars over one vocabulary, and
+    /// inside a session "a leading `/` says command and everything else is the
+    /// task". ADR-0005 D1's table is keyed on prompt emptiness and predates
+    /// that grammar reaching the composer, so it has no row for a line that is
+    /// not a search at all — and inventing one there would be reading a
+    /// decision into a record that does not carry it.
+    ///
+    /// So the row is **ADR-0015 D2's**, and what it renders is nothing. The
+    /// mode stays [`StripMode::Typing`], because the prompt is not empty and
+    /// D1's two modes are keyed on exactly that; a command line reported as the
+    /// empty mode would say the user had typed nothing.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Command,
     /// `[[` or `@` entered: the explicit picker, filtered by what follows.
     /// D1 row 6.
     Picker {
@@ -110,7 +129,9 @@ impl StripContent {
     pub const fn mode(&self) -> StripMode {
         match self {
             Self::Deposits { .. } | Self::Tip { .. } | Self::Collapsed => StripMode::Empty,
-            Self::Trie { .. } | Self::Merged { .. } | Self::Picker { .. } => StripMode::Typing,
+            Self::Trie { .. } | Self::Merged { .. } | Self::Picker { .. } | Self::Command => {
+                StripMode::Typing
+            }
         }
     }
 }

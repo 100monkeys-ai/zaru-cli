@@ -71,6 +71,10 @@ pub const MATCH_LIMIT: usize = 8;
 enum Intent {
     /// The prompt is empty. D1 rows 1 to 3.
     Empty,
+    /// The line is a command, per [ADR-0015] D2. Not one of D1's rows.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Command,
     /// The cursor sits inside an explicit picker's token. D1 row 6.
     Picker { kind: PickerKind, filter: String },
     /// Ordinary text. D1 rows 4 and 5, split on the character floor.
@@ -94,6 +98,9 @@ pub struct Composer {
     /// response carrying no results" stay different states.
     server: Option<Vec<Entry>>,
     search: SearchState,
+    /// What to say when the fast tier has nothing to search, or `None` when it
+    /// has. Handed in, exactly as a standing tip is — see [`Composer::set_absence`].
+    absence: Option<String>,
     /// When the text last changed, in the caller's clock.
     last_edit: Duration,
     /// The query a request has already been emitted for, so one query produces
@@ -123,6 +130,7 @@ impl Composer {
             matches: Vec::new(),
             server: None,
             search: SearchState::Idle,
+            absence: None,
             last_edit: Duration::ZERO,
             requested: None,
         }
@@ -169,6 +177,28 @@ impl Composer {
         self.tip = tip;
     }
 
+    /// Hand the composer what to say when there is nothing to search.
+    ///
+    /// # Why the composer is handed this rather than asking
+    ///
+    /// "The fast tier holds no entry at all" is the host's knowledge and not
+    /// this crate's: whether a Nuclear Notes token exists, whether one has been
+    /// used, and which workspace is attached are all `zaru-cli`'s, and
+    /// [`Entries`] deliberately answers one question — what matches a prefix.
+    /// So the line crosses as a value, exactly as [ADR-0002] D8's standing tip
+    /// does and for the same reason, and the composer decides only where it
+    /// goes.
+    ///
+    /// `Some` means the tier has nothing to offer and this is why; `None` means
+    /// it has something, and a prefix that matches nothing is then an ordinary
+    /// miss rather than an absence. **They are different sentences to a user**
+    /// and a surface that could not tell them apart would have to guess.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    pub fn set_absence(&mut self, absence: Option<String>) {
+        self.absence = absence;
+    }
+
     /// Apply one keystroke at `now`, and refresh the fast tier.
     ///
     /// The trie is consulted here, on every keystroke that leaves something to
@@ -180,7 +210,9 @@ impl Composer {
 
         let intent = self.intent();
         match &intent {
-            Intent::Empty => self.matches.clear(),
+            // ADR-0015 D2 decides this before the strip sees the keystroke: a
+            // leading `/` is a command, and a command is not a search.
+            Intent::Empty | Intent::Command => self.matches.clear(),
             Intent::Picker { kind, filter } => {
                 self.matches = entries
                     .matches(filter, MATCH_LIMIT)
@@ -197,7 +229,7 @@ impl Composer {
         // old one, and re-arms the debounce for the new one.
         let asking_for = match &intent {
             Intent::Query { query, .. } => Some(query.as_str()),
-            Intent::Empty | Intent::Picker { .. } => None,
+            Intent::Empty | Intent::Command | Intent::Picker { .. } => None,
         };
         if self.requested.as_deref() != asking_for {
             self.requested = None;
@@ -262,6 +294,7 @@ impl Composer {
                     StripContent::Collapsed
                 }
             }
+            Intent::Command => StripContent::Command,
             Intent::Picker { kind, filter } => StripContent::Picker {
                 kind,
                 filter,
@@ -293,6 +326,14 @@ impl Composer {
         let text = lines.join("\n");
         if text.trim().is_empty() {
             return Intent::Empty;
+        }
+
+        // ADR-0015 D2, inside a session: "a leading `/` says command and
+        // everything else is the task". The grammar decides before anything
+        // else looks at the text, so a picker sigil inside a command line opens
+        // nothing either — the line is not a search and no part of it is.
+        if text.trim_start().starts_with('/') {
+            return Intent::Command;
         }
 
         let (row, col) = self.input.cursor();
@@ -363,7 +404,7 @@ pub(crate) mod fixtures;
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{CountingTrie, SERVER_NONCE, TRIE_NONCE, server_results, typing};
+    use super::fixtures::{CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, server_results, typing};
     use super::{Composer, DEBOUNCE, PickerKind, Scope, SearchResponse, StripContent, StripMode};
     use core::time::Duration;
 
@@ -660,6 +701,170 @@ mod tests {
             composer.strip(),
             StripContent::Collapsed,
             "empty, neither: D1 row 3 collapses the strip"
+        );
+    }
+
+    /// ADR-0015 D2, inside a session: "a leading `/` says command and
+    /// everything else is the task". **The grammar decides before the strip
+    /// sees a keystroke**, so a command line never reaches the fast tier.
+    ///
+    /// The count is the discriminating arm and it is taken from the trie's own
+    /// tally rather than from anything the composer reports about itself. The
+    /// accepting sibling is the same word without the slash: without it, a
+    /// composer that had simply stopped consulting the trie would pass.
+    #[test]
+    fn a_slash_prefixed_line_never_reaches_the_trie_and_the_same_word_does() {
+        let commanded = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "/runtime", Duration::ZERO, &commanded);
+        assert_eq!(
+            commanded.calls(),
+            0,
+            "`/runtime` is a command and eight keystrokes of it reached the trie {} time(s);              ADR-0015 D2's grammar decides before the strip sees a keystroke",
+            commanded.calls()
+        );
+        assert_eq!(
+            composer.strip(),
+            StripContent::Command,
+            "a command line renders nothing, and the state says so rather than pretending the              trie returned no matches"
+        );
+        assert_eq!(
+            composer.strip().mode(),
+            StripMode::Typing,
+            "the prompt is not empty, and D1's two modes are keyed on exactly that"
+        );
+        assert!(
+            composer.strip_lines().is_empty(),
+            "and it paints no rows: {:?}",
+            composer.strip_lines()
+        );
+
+        let searched = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "runtime", Duration::ZERO, &searched);
+        assert_eq!(
+            searched.calls(),
+            7,
+            "the same word without the slash is a search, and every keystroke of it consults the              trie"
+        );
+    }
+
+    /// A picker sigil inside a command line opens nothing, because the line is
+    /// not a search and no part of it is.
+    ///
+    /// Staged with the sigil in the middle rather than at either end, so that
+    /// "the line begins with a slash" and "the token at the cursor begins with
+    /// a slash" cannot give the same answer.
+    #[test]
+    fn a_picker_sigil_inside_a_command_line_opens_no_picker() {
+        // Two stagings, because they fail differently. In the first the
+        // sigil's token is AT THE CURSOR, which is the only position that
+        // would open a picker at all -- so that is the case separating "the
+        // line decides" from "the token at the cursor decides". In the second
+        // the sigil is behind the cursor, where without the leading `/` the
+        // line would be an ordinary query.
+        for line in ["/notes [[é", "/notes [[é workspace"] {
+            let trie = CountingTrie::staged();
+            let mut composer = Composer::new();
+            typing(&mut composer, line, Duration::ZERO, &trie);
+
+            assert_eq!(
+                composer.strip(),
+                StripContent::Command,
+                "{line:?} begins with `/`, so ADR-0015 D2 has already decided it is a command \
+                 and no part of it is a search; the strip was {:?}",
+                composer.strip()
+            );
+            assert_eq!(
+                trie.calls(),
+                0,
+                "and nothing in {line:?} reached the trie; it was consulted {} time(s)",
+                trie.calls()
+            );
+        }
+    }
+
+    /// The absence line is shown when there is nothing else to show, and never
+    /// instead of something.
+    ///
+    /// Three states in one check because the line's whole job is to be
+    /// distinguishable from the other two: a match hides it, a miss shows it,
+    /// and a host that handed nothing in leaves the strip as it was.
+    #[test]
+    fn the_absence_line_appears_only_when_there_is_nothing_else_to_show() {
+        const ABSENCE: &str = "no Nuclear Notes token · nothing to search";
+
+        let empty = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        typing(&mut composer, "éd", Duration::ZERO, &empty);
+        assert_eq!(
+            composer.strip_lines(),
+            vec![ABSENCE.to_owned()],
+            "with nothing to show and a line handed in, the strip says why rather than going blank"
+        );
+
+        let populated = TrieOf::new(2);
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        typing(&mut composer, "éd", Duration::ZERO, &populated);
+        let lines = composer.strip_lines();
+        assert_eq!(
+            lines.len(),
+            2,
+            "matches are what the strip is for: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line == ABSENCE),
+            "the absence line appeared beside matches, which is the one thing it must never do:              {lines:?}"
+        );
+
+        let mut composer = Composer::new();
+        typing(&mut composer, "éd", Duration::ZERO, &empty);
+        assert!(
+            composer.strip_lines().is_empty(),
+            "with no line handed in there is nothing to say, and the composer invents nothing:              {:?}",
+            composer.strip_lines()
+        );
+    }
+
+    /// The absence line never reaches the empty prompt or a picker.
+    ///
+    /// D1 rows 1 to 3 are the standing tip's and the deposit count's, and
+    /// ADR-0002 D8's tip must not be crowded out by a line about search. An
+    /// open picker with no matches is what a miss looks like.
+    #[test]
+    fn the_absence_line_yields_the_empty_prompt_to_the_tip_and_never_enters_a_picker() {
+        const ABSENCE: &str = "no Nuclear Notes token · nothing to search";
+        let empty = TrieOf::new(0);
+
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        composer.set_standing(0, Some(format!("a tip carrying {TRIE_NONCE}")));
+        let lines = composer.strip_lines();
+        assert_eq!(lines.len(), 1, "one line on an empty prompt: {lines:?}");
+        assert!(
+            lines[0].contains(TRIE_NONCE),
+            "the tip owns the empty prompt and the absence line took it: {lines:?}"
+        );
+
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        composer.set_standing(0, None);
+        assert_eq!(
+            composer.strip(),
+            StripContent::Collapsed,
+            "an empty prompt with neither still collapses; the absence line is a typing-mode row"
+        );
+        assert!(composer.strip_lines().is_empty());
+
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        typing(&mut composer, "[[é", Duration::ZERO, &empty);
+        assert!(
+            composer.strip_lines().is_empty(),
+            "an open picker with no matches is a miss, not an absence: {:?}",
+            composer.strip_lines()
         );
     }
 
