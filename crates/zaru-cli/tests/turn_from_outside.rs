@@ -28,14 +28,19 @@
 //! it is not here: `provider_from_outside.rs` holds it, gated on a variable
 //! that says a key exists that may be spent.
 //!
-//! # Three of these are security-corpus cases
+//! # Four of these are security-corpus cases
 //!
 //! [Testing]: "Every escape found at a security boundary … joins a permanent
 //! hostile-input corpus as its reproduction", and the corpus only grows. The
-//! three are the key's absence from everything a turn produces, a call that
-//! needed a confirmation nobody could give, and a held secret in a tool result
-//! reaching a model. Each has an **accepting sibling** beside it, because an
-//! absence assertion is satisfied by a harness that does nothing at all.
+//! four are the key's absence from everything a turn produces, a call that
+//! needed a confirmation nobody could give, a held secret in a tool result
+//! reaching a model, and — since 2026-09-05, when the checkpoint stopped being
+//! empty — a stored key spoken back in a task reaching [ADR-0010] D3's
+//! `context.json`, which is what the **next process** assembles a prompt from.
+//! Each has an **accepting sibling** beside it, because an absence assertion is
+//! satisfied by a harness that does nothing at all.
+//!
+//! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //!
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
@@ -604,6 +609,80 @@ fn adr_0010_d1s_session_holds_three_files_and_meta_toml_records_six_things() {
         !meta.contains("ended ="),
         "D1 makes an absent `ended` mean still running: {meta}"
     );
+}
+
+/// A stored key spoken back in a task does not reach the checkpoint.
+///
+/// # Why this case exists only now
+///
+/// `context.json` held `{"exchanges":[]}` until 2026-09-05, so every absence
+/// assertion over it was true of a file with nothing in it. It carries
+/// [ADR-0013] D1's layer 6 now — the task, the tool lines and the answer — and
+/// layer 6 is what the **next** turn, in the **next process**, is assembled
+/// from. That makes the checkpoint a path from captured bytes into a model
+/// prompt that outlives the process, which is [ADR-0008] clause 6's subject.
+///
+/// **The seam is `compose::boundary::exchange_of_turn`** and this is the case
+/// that discriminates it: a task naming the stored key would put the key into
+/// layer 6 verbatim, and from there into the prompt of every later turn of the
+/// session, and onto disk in a file [ADR-0010] D5 says the user can read with
+/// `cat`.
+///
+/// **The transcript is deliberately not asserted clean.** D2's Negative
+/// section says it "contain\[s\] whatever the session contained, including
+/// secrets that appeared in command output. Filesystem permissions are the
+/// only protection" — so the raw file is the rule rather than a leak, and the
+/// checkpoint is the thing that must be redacted because it is what a model
+/// is shown.
+///
+/// The accepting sibling is a control value that is **not** a stored secret:
+/// it must survive into the checkpoint, or this walk is one that finds nothing
+/// anywhere and the absence above means nothing.
+///
+/// Asserted by value and by ASCII core (library verification-lessons §50).
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[test]
+fn corpus_a_stored_key_spoken_in_a_task_does_not_reach_the_checkpoint() {
+    let home = Home::new("checkpoint-redaction");
+    let (value, core) = nonce("checkpoint-redaction");
+    store_a_key(&home, "gemini", &value);
+
+    // The control travels the same route and is not a secret, so whatever
+    // reaches the checkpoint at all must carry it.
+    let control = format!("control-{}", std::process::id());
+
+    let ran = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &[
+            "--model",
+            "gemini-3.6-flash",
+            &format!("echo {value} and {control}"),
+        ],
+    );
+    assert_eq!(ran.code, 3, "the staging is a turn that ran");
+
+    let checkpoint = std::fs::read_to_string(home.one_session().join("context.json"))
+        .expect("context.json reads");
+
+    // The sibling first, so a checkpoint that held nothing could not satisfy
+    // the two absences below by being empty.
+    assert!(
+        checkpoint.contains(&control),
+        "the task did not reach layer 6 at all, so the absences below are about an empty file: \
+         {checkpoint}"
+    );
+    for (what, needle) in [("by value", value.as_str()), ("by its ASCII core", core.as_str())] {
+        assert!(
+            !checkpoint.contains(needle),
+            "the stored provider key reached ADR-0010 D3's checkpoint {what}, and layer 6 is \
+             what every later turn of this session is assembled from: {checkpoint}"
+        );
+    }
+    absent_everywhere(&home, &ran, &value, &core, "the stored provider key");
 }
 
 /// [ADR-0010] D3: "`context.json` … **is overwritten each turn.**"
