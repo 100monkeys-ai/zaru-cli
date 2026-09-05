@@ -29,11 +29,11 @@ use crate::cli::classify::Surface as Classify;
 use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::failure::{Exit, SessionEvidence};
 use crate::runtime::ResolvedTier;
-use crate::session::{SessionId, SessionStore};
+use crate::session::{MetaFile, SessionId, SessionStore};
 use crate::terminal::driver::{Crossterm, Guard};
+use crate::terminal::trie::NotesTrie;
 use crate::terminal::vocabulary::{Transcript, Vocabulary};
 use std::io::IsTerminal;
-use zaru_tui::composer::{Entries, Entry};
 use zaru_tui::shell::{Shell, Status};
 
 /// Whether this invocation would open a shell if there were a terminal.
@@ -59,24 +59,24 @@ pub fn a_person_is_watching() -> bool {
     std::io::stdout().is_terminal()
 }
 
-/// The trie the composer's fast tier reads, which nothing implements.
+/// The Nuclear Notes workspace this session recorded, if it recorded one.
 ///
-/// [Bounded Contexts] gives the local trie to `zaru-notes` and it is not
-/// built; [ADR-0005]'s own Status tracking says so. An empty implementation is
-/// what the composer is handed, and the strip therefore shows nothing while a
-/// user types. **Recorded rather than disguised**: this is the surface's
-/// largest missing piece and a check that staged entries here would be
-/// asserting about a fixture.
+/// [ADR-0006] D5 makes the attached workspace the composer's scope, and
+/// [ADR-0010] D1's `meta.toml` is where a session keeps it — so the fast tier
+/// is scoped by what the session itself says rather than by anything this
+/// function decides. A session that recorded none, which is every session on
+/// every machine today because **the binary starts no session**, gets an
+/// unnamed workspace and therefore a trie with nothing under it.
 ///
-/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
-/// [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoTrie;
-
-impl Entries for NoTrie {
-    fn matches(&self, _prefix: &str, _limit: usize) -> Vec<Entry> {
-        Vec::new()
-    }
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+fn attached_workspace(directory: &std::path::Path) -> String {
+    MetaFile::at(directory.join("meta.toml"))
+        .read_if_present()
+        .ok()
+        .flatten()
+        .and_then(|meta| meta.workspace)
+        .unwrap_or_default()
 }
 
 /// Build the shell for one session, without taking a terminal.
@@ -102,7 +102,7 @@ pub fn shell_for(
     version: &str,
     report_at: &str,
     overrides: &Overrides,
-) -> Result<(Shell, Transcript), Box<Exit>> {
+) -> Result<(Shell, Transcript, NotesTrie), Box<Exit>> {
     let classify = Classify::new(version, report_at);
 
     let resolution = crate::cli::layers::resolve_from_process(overrides)
@@ -123,7 +123,13 @@ pub fn shell_for(
     let mut shell = Shell::open(Status::new(tier.tier().to_string(), id.to_string()));
     let transcript = Transcript::of(&resumed.tail);
     shell.refresh(&transcript);
-    Ok((shell, transcript))
+
+    // ADR-0005 D3's fast tier. Nothing populates it on a real machine yet --
+    // `zaru_notes::session::Endpoint` has no implementation, so no listing can
+    // be made -- and the composer is told to say so rather than paint nothing.
+    let trie = NotesTrie::nothing_cached(attached_workspace(&directory));
+    shell.composer_mut().set_absence(trie.absence());
+    Ok((shell, transcript, trie))
 }
 
 /// Open the shell over a session and pump it until the user leaves.
@@ -141,7 +147,7 @@ pub fn open(
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<Exit, Box<Exit>> {
-    let (mut shell, _) = shell_for(id, version, report_at, overrides)?;
+    let (mut shell, _, trie) = shell_for(id, version, report_at, overrides)?;
 
     let crossterm = Crossterm::take().map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
@@ -151,7 +157,7 @@ pub fn open(
     // returning, an I/O error, a panic unwinding through it -- drops it.
     let pumped = {
         let surface: &mut Crossterm = guard.get_mut().expect("the guard was just constructed");
-        crate::terminal::driver::run(&mut shell, surface, &runner, &NoTrie, &Vocabulary)
+        crate::terminal::driver::run(&mut shell, surface, &runner, &trie, &Vocabulary)
     };
     guard.restore_now();
 

@@ -87,10 +87,20 @@ across, so a command reached with a slash runs the *same function* the
 subcommand runs. Seven of the eleven namespaces answer; the other four need
 things that do not exist and say so rather than guessing at a nearest.
 
-The composer is in `zaru-tui` too, reaching its two search tiers through a port
-and a request/response pair that nothing implements — **so the hint strip shows
-nothing while you type**, and that is the largest missing piece of this
-surface. The trie belongs to `zaru-notes` and is not built.
+The composer is in `zaru-tui` too, and its fast tier is built: a prefix trie in
+`zaru-notes` over page paths, titles and atom names, hand-written over `std`,
+answering a prefix in a descent and a copy because each node already holds the
+best matches under it. The composer reaches it through a port `zaru-cli`
+adapts, one trie per workspace so that scoping to the attached one cannot
+truncate a strip that had matches to show. A leading `/` is a command and never
+a search, decided before the strip sees a keystroke.
+
+**Nothing populates it on this machine**, because reaching Nuclear Notes needs a
+transport that is a port with no implementation and a token nothing here can
+add. So the strip says that in one line rather than going blank, which is the
+difference a user sees today. Its second tier — the debounced server search —
+is a request/response pair nothing implements, and no request is emitted at
+all.
 
 The credential store is in `zaru-cli`, holding named tokens on disk with the
 bearer value **sealed**: AES-256-GCM, a fresh nonce per seal, and the alias
@@ -138,9 +148,10 @@ see of it today.
 
 The Nuclear Notes client is in `zaru-notes`: a session over MCP with the
 workspace named on every read, a bearer value the type system will not render,
-and three staleness signals. It reaches no network, because the transport is a
-port with no implementation. Every check against it exchanges real protocol
-bytes over an in-memory pipe.
+three staleness signals, and listings of a workspace's pages and atoms that
+follow their own cursor and refuse one that does not advance. It reaches no
+network, because the transport is a port with no implementation. Every check
+against it exchanges real protocol bytes over an in-memory pipe.
 
 The session lifecycle is in `zaru-cli`. A session is a directory named by a
 ULID holding plain files, because a harness that shows its work should not

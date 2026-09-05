@@ -30,10 +30,11 @@ use ratatui::backend::TestBackend;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, ToolCall, Transcript};
-use zaru_cli::terminal::NoTrie;
 use zaru_cli::terminal::driver::{Restore, Surface, run};
 use zaru_cli::terminal::vocabulary::{Transcript as Pane, Vocabulary};
-use zaru_tui::shell::{Input, Key, Shell, Status};
+use zaru_cli::terminal::{NOTHING_CACHED, NotesTrie};
+use zaru_notes::trie::{CachedEntry, EntryKind};
+use zaru_tui::shell::{COMPOSER_ROWS, Input, Key, Shell, Status};
 
 /// A value planted in the session's transcript, so what is read back could
 /// only have come from the file the check wrote.
@@ -194,7 +195,9 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
     };
-    let pumped = run(&mut shell, &mut surface, &runner, &NoTrie, &Vocabulary).expect("the pump");
+    let trie = NotesTrie::nothing_cached("zaru");
+    shell.composer_mut().set_absence(trie.absence());
+    let pumped = run(&mut shell, &mut surface, &runner, &trie, &Vocabulary).expect("the pump");
 
     let opened = surface
         .frames
@@ -346,4 +349,88 @@ fn resuming_a_session_that_does_not_exist_creates_nothing() {
         !scratch.path().join(".zaru/sessions").join(absent).exists(),
         "a directory was created for a session that was only asked about"
     );
+}
+
+/// The strip a stranger can drive, with a fast tier they populated themselves.
+///
+/// # What this is evidence about
+///
+/// The **mechanism**, reached through `zaru-cli`'s public door using nothing
+/// the crate does not export: `zaru_notes::trie::CachedEntry`,
+/// `NotesTrie::attached_to`, and the same `terminal::driver::run` the binary
+/// calls. **It is not evidence about the `zaru` binary**, which cannot populate
+/// a trie on any machine today — reaching Nuclear Notes needs a transport that
+/// is a port with no implementation, and a token nothing here can add. What the
+/// binary does show is the other half of this check: the absence line.
+///
+/// It prints both strips. Run it with
+/// `cargo test -p zaru-cli --test shell_from_outside -- --nocapture` to read
+/// what a user would see.
+#[test]
+fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
+    let scratch = Scratch::new("strip");
+    let store = SessionStore::reading(scratch.path().join(".zaru"));
+    let directory = store.sessions_directory().join(scratch.id.as_str());
+    let resumed = zaru_cli::session::resume(&directory, usize::MAX).expect("the session resumes");
+
+    let corpus = vec![
+        CachedEntry::new(
+            "zaru",
+            "architecture/bóunded-contexts",
+            "Bóunded Contexts ✦",
+            EntryKind::Page,
+        ),
+        CachedEntry::new("zaru", "atoms/mémbrane", "Mémbrane ✦", EntryKind::Atom),
+        CachedEntry::new("zaru", "operations/téstingi", "Tésting ✦", EntryKind::Page),
+    ];
+
+    for (label, trie, typing, expected) in [
+        (
+            "a populated fast tier",
+            NotesTrie::attached_to(corpus, "zaru"),
+            "té",
+            vec!["Tésting ✦".to_owned()],
+        ),
+        (
+            "nothing cached, which is every machine today",
+            NotesTrie::nothing_cached("zaru"),
+            "té",
+            vec![NOTHING_CACHED.to_owned()],
+        ),
+    ] {
+        let mut shell = Shell::open(Status::new("bare", scratch.id.to_string()));
+        shell.refresh(&Pane::of(&resumed.tail));
+        shell.composer_mut().set_absence(trie.absence());
+
+        let keys: Vec<Input> = typing.chars().map(|ch| press(Key::Char(ch))).collect();
+        let mut surface = Recorded::of(keys);
+        let runner = zaru_cli::cli::Run {
+            version: env!("CARGO_PKG_VERSION"),
+            report_at: env!("CARGO_PKG_REPOSITORY"),
+        };
+        run(&mut shell, &mut surface, &runner, &trie, &Vocabulary).expect("the pump");
+
+        let frame = surface.frames.last().expect("a frame was painted").clone();
+        println!("-- {label}: the frame after typing {typing:?} --");
+        for row in &frame {
+            println!("   |{row}|");
+        }
+
+        let input_row = frame.len() - usize::from(COMPOSER_ROWS);
+        let strip: Vec<String> = frame[input_row + 1..]
+            .iter()
+            .map(|row| row.trim_end().to_owned())
+            .filter(|row| !row.is_empty())
+            .collect();
+        assert_eq!(
+            strip, expected,
+            "{label}: the strip's rows, read out of TestBackend's buffer and compared against \
+             literals written in this check"
+        );
+        assert_eq!(
+            frame[input_row].trim_end(),
+            typing,
+            "and the input row holds what was typed, unmoved by whatever the strip showed"
+        );
+    }
 }

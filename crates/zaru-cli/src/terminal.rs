@@ -45,10 +45,12 @@
 
 pub mod driver;
 pub mod open;
+pub mod trie;
 pub mod vocabulary;
 
 pub use driver::{Guard, Pump, Restore, Surface, question_for_the_shell, run};
-pub use open::{NoTrie, shell_for, take_over};
+pub use open::{shell_for, take_over};
+pub use trie::{NOTHING_CACHED, NotesTrie};
 pub use vocabulary::{Transcript, Vocabulary};
 
 #[cfg(test)]

@@ -6,15 +6,48 @@ use crate::cli::namespace::Namespace;
 use crate::failure::Exit;
 use crate::terminal::driver::{Guard, question_for_the_shell, request_for, run};
 use crate::terminal::fixtures::{Counting, Recording, Restores, press, typed};
-use crate::terminal::open::{NoTrie, is_a_session};
+use crate::terminal::open::is_a_session;
+use crate::terminal::trie::{NOTHING_CACHED, NotesTrie};
 use crate::terminal::vocabulary::Vocabulary;
 use crate::tools::port::Question;
 use core::cell::Cell;
 use std::rc::Rc;
+use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 use zaru_tui::shell::port::CommandVocabulary;
-use zaru_tui::shell::{Key, Shell, Status};
+use zaru_tui::shell::{COMPOSER_ROWS, Key, Shell, Status};
 
 const VERSION: &str = "0.0.0";
+
+/// The workspace the checks below attach their sessions to.
+const WORKSPACE: &str = "zaru";
+
+/// One cached entity in [`WORKSPACE`].
+fn entry(path: &str, title: &str, kind: CachedKind) -> CachedEntry {
+    CachedEntry::new(WORKSPACE, path, title, kind)
+}
+
+/// Type `text` and send nothing, so the line stays in the composer.
+///
+/// [`typed`] appends `Enter`, which submits the line and replaces the composer
+/// — so it can say nothing about what the strip showed while the user typed.
+fn keys(text: &str) -> Vec<zaru_tui::shell::Input> {
+    text.chars().map(|ch| press(Key::Char(ch))).collect()
+}
+
+/// The strip's rows out of a painted frame: what is below the input row.
+///
+/// The shell paints a status line, then the pane, then a fixed composer area at
+/// the foot — so the input is the first of the last `COMPOSER_ROWS` rows and
+/// the strip is everything after it. Read out of the buffer and trimmed, with
+/// blank rows dropped, so what comes back is the lines a person can read.
+fn strip_rows(frame: &[String]) -> Vec<String> {
+    let input_row = frame.len() - usize::from(COMPOSER_ROWS);
+    frame[input_row + 1..]
+        .iter()
+        .map(|row| row.trim_end().to_owned())
+        .filter(|row| !row.is_empty())
+        .collect()
+}
 const REPORT_AT: &str = "https://github.com/100monkeys-ai/zaru-cli";
 
 fn shell() -> Shell {
@@ -22,6 +55,11 @@ fn shell() -> Shell {
 }
 
 fn pump(keys: Vec<zaru_tui::shell::Input>) -> (Shell, Recording, Exit) {
+    pump_over(keys, &NotesTrie::nothing_cached(WORKSPACE))
+}
+
+/// The same pump over a fast tier a check chose.
+fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Recording, Exit) {
     let restores: Restores = Rc::new(Cell::new(0));
     let mut surface = Recording::of(keys, Rc::clone(&restores));
     let mut shell = shell();
@@ -29,7 +67,8 @@ fn pump(keys: Vec<zaru_tui::shell::Input>) -> (Shell, Recording, Exit) {
         version: VERSION,
         report_at: REPORT_AT,
     };
-    let pumped = run(&mut shell, &mut surface, &runner, &NoTrie, &Vocabulary)
+    shell.composer_mut().set_absence(trie.absence());
+    let pumped = run(&mut shell, &mut surface, &runner, trie, &Vocabulary)
         .expect("the recording terminal never fails");
     (shell, surface, pumped.exit)
 }
@@ -363,7 +402,14 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         version: VERSION,
         report_at: REPORT_AT,
     };
-    run(&mut shell, &mut surface, &runner, &NoTrie, &Vocabulary).expect("pump");
+    run(
+        &mut shell,
+        &mut surface,
+        &runner,
+        &NotesTrie::nothing_cached(WORKSPACE),
+        &Vocabulary,
+    )
+    .expect("pump");
 
     let first = surface.frames.first().expect("no frame was painted");
     // The vocabulary asserted here is the plain prompt's own constant, so this
@@ -422,7 +468,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     let _ = accepting.key(
         press(Key::Char('y')),
         core::time::Duration::from_millis(1),
-        &NoTrie,
+        &NotesTrie::nothing_cached(WORKSPACE),
         &Vocabulary,
     );
     assert_eq!(
@@ -439,7 +485,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     let _ = declining.key(
         press(Key::Enter),
         core::time::Duration::from_millis(1),
-        &NoTrie,
+        &NotesTrie::nothing_cached(WORKSPACE),
         &Vocabulary,
     );
     assert_eq!(
@@ -484,18 +530,192 @@ fn the_pump_exits_zero_on_the_leave_word() {
     assert_eq!(exit.code(), 0);
 }
 
-/// The composer's fast tier has nothing behind it, and that is stated rather
-/// than disguised.
+/// ADR-0005 D3's fast tier, driven through the real pump and read out of the
+/// terminal's own buffer.
 ///
-/// ADR-0005 D3's trie is `zaru-notes`' and is not built. A check that staged
-/// entries here would be asserting about a fixture, so what is asserted is
-/// the absence — and the day the trie arrives, this check is the one that has
-/// to change.
+/// This is the check the deleted one said would have to change: it asserted
+/// that nothing implemented the trie. Something does.
+///
+/// **The rows are read from the frame, never from the composer.** Every
+/// expected value is a literal written here, so neither arm of the comparison
+/// travels back through the code that painted it.
 #[test]
-fn the_composers_trie_has_no_implementation_and_the_strip_shows_nothing() {
-    use zaru_tui::composer::Entries;
+fn a_populated_fast_tier_puts_its_matches_on_the_strip_as_the_user_types() {
+    let trie = NotesTrie::attached_to(
+        vec![
+            entry(
+                "architecture/bóunded",
+                "Bóunded Contexts ✦",
+                CachedKind::Page,
+            ),
+            entry("atoms/mémbrane", "Mémbrane ✦", CachedKind::Atom),
+            entry("operations/tésting", "Tésting ✦", CachedKind::Page),
+        ],
+        WORKSPACE,
+    );
+    assert_eq!(trie.cached(), 3, "the check staged three entities");
+    assert_eq!(
+        trie.absence(),
+        None,
+        "a populated tier has nothing to apologise for"
+    );
+
+    let (_, surface, _) = pump_over(keys("mém"), &trie);
+    let last = surface.frames.last().expect("the pump painted a frame");
+    let strip = strip_rows(last);
+    assert_eq!(
+        strip,
+        vec!["Mémbrane ✦"],
+        "typing `mém` should put the one entity whose name begins with it on the strip; the \
+         frame's composer rows were {strip:?}"
+    );
+
+    let (_, surface, _) = pump_over(keys("bó"), &trie);
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert_eq!(
+        strip,
+        vec!["Bóunded Contexts ✦"],
+        "and a two-character prefix is served by the fast tier alone, which is ADR-0005 D1 row 4"
+    );
+}
+
+/// An entry in another workspace is never shown, and the same entry in the
+/// attached one is.
+///
+/// ADR-0006 D2 makes the attached workspace the composer's scope. The
+/// accepting sibling moves the *attachment* rather than the entry, so a
+/// filter that refused everything cannot pass: the corpus is byte-identical
+/// across the two halves and only the workspace this session is attached to
+/// changes.
+#[test]
+fn an_entry_from_another_workspace_is_never_shown_and_the_same_entry_attached_is() {
+    let corpus = vec![
+        CachedEntry::new(
+            WORKSPACE,
+            "architecture/bóunded",
+            "Ours ✦",
+            CachedKind::Page,
+        ),
+        CachedEntry::new(
+            "aegis",
+            "architecture/bóunded",
+            "Theirs ✦",
+            CachedKind::Page,
+        ),
+    ];
+
+    // Typed against the PATH the two share, which is the whole point: the key
+    // is identical in both workspaces, so nothing but the attachment can be
+    // what separates them.
+    let (_, surface, _) = pump_over(
+        keys("architecture/bó"),
+        &NotesTrie::attached_to(corpus.clone(), WORKSPACE),
+    );
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert_eq!(
+        strip,
+        vec!["Ours ✦"],
+        "the attached workspace's entity is shown and the other workspace's is not, though both \
+         share a path; the composer rows were {strip:?}"
+    );
+
+    let (_, surface, _) = pump_over(
+        keys("architecture/bó"),
+        &NotesTrie::attached_to(corpus, "aegis"),
+    );
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert_eq!(
+        strip,
+        vec!["Theirs ✦"],
+        "and attaching to the other workspace shows its entity, so the rule is the attachment \
+         rather than a refusal of everything: the composer rows were {strip:?}"
+    );
+}
+
+/// With nothing cached the strip says why, where before it painted nothing.
+///
+/// This is what a user sees on every machine today, and it is the difference
+/// this arc makes to the real artefact. The sentence is read out of the
+/// terminal's buffer and compared against the constant the product spells
+/// once.
+#[test]
+fn with_nothing_cached_the_strip_says_so_rather_than_going_blank() {
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+    assert_eq!(trie.cached(), 0);
+
+    let (_, surface, _) = pump_over(keys("mém"), &trie);
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert_eq!(
+        strip,
+        vec![NOTHING_CACHED.to_owned()],
+        "an empty fast tier must say why rather than paint nothing; the composer rows were \
+         {strip:?}"
+    );
     assert!(
-        NoTrie.matches("anything", 8).is_empty(),
-        "something implements the trie now, and ADR-0005 clause 10 wants re-reading"
+        NOTHING_CACHED.chars().count() <= 72,
+        "the line is {} characters and the shell's own frame is 72 columns wide, so a longer one \
+         is clipped rather than wrapped",
+        NOTHING_CACHED.chars().count()
+    );
+}
+
+/// A slash line reaches neither the trie nor the strip, driven through the
+/// real pump.
+///
+/// The composer's own check counts consultations; this one asserts the
+/// consequence a user sees, over a tier that would have had something to say.
+#[test]
+fn a_slash_line_puts_nothing_on_the_strip_though_the_tier_could_have_answered() {
+    let trie = NotesTrie::attached_to(
+        vec![entry("nótes/one", "Nótes ✦", CachedKind::Page)],
+        WORKSPACE,
+    );
+
+    let (_, surface, _) = pump_over(keys("nót"), &trie);
+    assert_eq!(
+        strip_rows(surface.frames.last().expect("a frame")),
+        vec!["Nótes ✦"],
+        "the tier answers this prefix, which is what makes the next half a statement about the \
+         slash rather than about an empty trie"
+    );
+
+    let (_, surface, _) = pump_over(keys("/nót"), &trie);
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert!(
+        strip.is_empty(),
+        "`/nót` is a command line and ADR-0015 D2 decides that before the strip sees a \
+         keystroke; the composer rows were {strip:?}"
+    );
+}
+
+/// What the strip renders is what the trie holds, byte for byte.
+///
+/// **The strip is deliberately not a redaction seam**, confirmed 2026-09-05
+/// under directive 20 and recorded on ADR-0008's clause 6 Update. That clause
+/// puts a `Redactor` on "every path from captured bytes into a model prompt";
+/// a hint strip is neither, and the titles are the user's own notes read back
+/// to them. ADR-0005's own Positive section is "The user *sees* what their
+/// cortex knows", and a strip that altered a user's own note titles in front
+/// of them would be the opposite of it.
+///
+/// So the assertion is identity and the mutant is **any transform at all**.
+/// The staged title carries a value shaped like a held secret, and it is
+/// asserted present rather than absent — which is the arm that would fail if
+/// somebody wired a redactor in here.
+#[test]
+fn what_the_strip_renders_is_what_the_trie_holds_byte_for_byte() {
+    let title = "nn_mcp_ábcd1234 · a nóte of mine ✦";
+    let trie = NotesTrie::attached_to(
+        vec![entry("nótes/awkward", title, CachedKind::Page)],
+        WORKSPACE,
+    );
+
+    let (_, surface, _) = pump_over(keys("nót"), &trie);
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert_eq!(
+        strip,
+        vec![title.to_owned()],
+        "the strip must render the cached title unchanged; a transform of any kind — redaction, \
+         truncation, case folding — moves this comparison. The composer rows were {strip:?}"
     );
 }
