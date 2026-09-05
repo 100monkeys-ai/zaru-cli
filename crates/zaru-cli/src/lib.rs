@@ -23,10 +23,10 @@
 //! crate "Binary, configuration, session lifecycle, the credential store, the
 //! local tool surface and its permission model".
 //!
-//! Five things are built here, and the sentence that said ADR-0010's session
+//! Seven things are built here, and the sentence that said ADR-0010's session
 //! lifecycle was not is corrected: it landed on 2026-09-04. Read off this
 //! crate's own module list rather than off a commit log — `config`,
-//! `credentials`, `failure`, `session` and `tools`.
+//! `credentials`, `failure`, `manifest`, `providers`, `session` and `tools`.
 //!
 //! What that means for what acts. `session` writes a real directory, a real
 //! append-only transcript and a real checkpoint. `tools` decides, and **two
@@ -34,8 +34,9 @@
 //! through `std::fs`, inside D4's working-directory boundary. The other five
 //! sit behind ports with no implementation in this product tree, as do the
 //! prompt, the allowlist, the destructive matcher, the credential store's
-//! sealing, ADR-0014's file layers, `meta.toml`'s writer and ADR-0004's
-//! membrane.
+//! sealing, ADR-0014's file layers, `meta.toml`'s writer, ADR-0009's manifest
+//! reader, ADR-0012's provider and its alias negotiation, and ADR-0004's
+//! membrane. **Nothing in this workspace can reach a provider at all.**
 //!
 //! **None of it is reachable from the `zaru` binary**, which takes no
 //! arguments, prints its version and its composition, and exits 0. Reaching
