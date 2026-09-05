@@ -78,6 +78,7 @@ use crate::credentials::{AliasRefused, DescriptionRefused, SecretRefused};
 use crate::failure::classified::Classified;
 use crate::failure::defect::DefectReport;
 use crate::failure::remedy::{Action, Remedy, Statement};
+use crate::process::SpawnFailure;
 use crate::providers::{
     CapabilityRefused, EndpointRefused, InferenceRefused, ModelIdRefused, TableRefused,
 };
@@ -340,6 +341,41 @@ impl From<InvocationRefused> for Classified {
             crate::failure::defect::Location::unknown(),
             crate::failure::defect::SessionEvidence::NoSessionExists,
         ))
+    }
+}
+
+/// ADR-0011 D1's `cmd.run` and ADR-0009 D3's `run`, as a child process.
+///
+/// **Both variants are mapped**, because ADR-0016's own Status tracking calls
+/// a partial mapping "a hole with a comment on it".
+///
+/// `CouldNotStart` is **the user's**, whatever the operating system said, and
+/// **no match over `io::ErrorKind` is made**. That type is `#[non_exhaustive]`
+/// so no wildcard-free match over it is possible, and none is needed here:
+/// the thing the user can change is the same for every kind, which is the
+/// command they declared or the model was offered. That is the difference
+/// between this and `StoreError::Io`, which ADR-0016's Update lists as
+/// deliberately unmapped precisely because *there* the kind decides the class.
+///
+/// `Lost` is **ours**. Waiting on a child, killing one, and reading a pipe are
+/// all things the harness arranged, so a failure in any of them is D1 row 5.
+impl From<SpawnFailure> for Classified {
+    fn from(failure: SpawnFailure) -> Self {
+        match &failure {
+            SpawnFailure::CouldNotStart { program, .. } => {
+                let remedy = act(format!(
+                    "check that {program:?} is installed and that PATH reaches it, or change the \
+                     command to name a program that is"
+                ));
+                correctable(&failure, remedy)
+            }
+            SpawnFailure::Lost { .. } => Classified::Defect(DefectReport::new(
+                env!("CARGO_PKG_VERSION"),
+                env!("CARGO_PKG_REPOSITORY"),
+                crate::failure::defect::Location::unknown(),
+                crate::failure::defect::SessionEvidence::NoSessionExists,
+            )),
+        }
     }
 }
 
