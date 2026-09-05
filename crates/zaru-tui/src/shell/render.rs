@@ -6,15 +6,15 @@
 //! # Three regions, and only the middle one changes size
 //!
 //! ```text
-//! ┌───────────────────────────────────────┐
-//! │ runtime.tier = bare · session 01J…     │  status, 1 row, always
-//! ├───────────────────────────────────────┤
-//! │ ✓ finished in 4.2s                     │  transcript pane, the rest
-//! │ ⊘ stopped at the ceiling after 3        │
-//! ├───────────────────────────────────────┤
-//! │ > what should I do                     │  composer, COMPOSER_ROWS, fixed
-//! │   a page the trie matched              │
-//! └───────────────────────────────────────┘
+//! ┌──────────────────────────────────────────────────────────────────┐
+//! │ runtime.tier = bare · session 01J… · context 12.3k/1048.5k tokens … │  status, 1 row
+//! ├──────────────────────────────────────────────────────────────────┤
+//! │ ✓ finished in 4.2s                                               │  transcript pane
+//! │ ⊘ stopped at the ceiling after 3                                  │
+//! ├──────────────────────────────────────────────────────────────────┤
+//! │ > what should I do                                               │  composer, fixed
+//! │   a page the trie matched                                        │
+//! └──────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! The status line is at the top and the composer's area is a fixed height at
@@ -22,9 +22,15 @@
 //! terminal's size and nothing else. That is [ADR-0005] D2 in a shell — see
 //! [`crate::shell`]'s own documentation for why the alternative fails.
 //!
+//! **The status row is one line and is not wrapped.** A row wider than the
+//! terminal is clipped at the right edge by `ratatui`, which is what makes
+//! [ADR-0001] D2's "at all times" a consequence of the tier being *first*
+//! rather than of an elision rule nothing states — see [`crate::shell::Status`].
+//!
 //! The pane shows the **tail**, which is [ADR-0010] D4's "re-renders the last
 //! stretch of transcript so the user can see where they were".
 //!
+//! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 

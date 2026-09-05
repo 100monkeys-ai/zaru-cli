@@ -170,7 +170,38 @@ pub enum Action {
 /// than as a `Tier`, because that type is `zaru-cli`'s and the words are its
 /// record's; composing them here would be a second statement of D1's table.
 ///
+/// # Four records want this one row, and this is the arbitration
+///
+/// [ADR-0013] D6 — "The status line carries context usage continuously" — and
+/// [ADR-0012] D7 — "Per turn in the status line, per session on exit" — both
+/// want a number here, and until 2026-09-05 nothing had said how one row
+/// carries two. ADR-0012's own proposed Update names the deadlock in as many
+/// words: "the status line is ADR-0001 D2's row, which ADR-0013 D6 also wants
+/// a number on, with nothing having arbitrated between them". **This type is
+/// that arbitration**, settled under a delegated coordinator ruling of
+/// 2026-09-05 and open to Jeshua's veto.
+///
+/// The row is **ordered**, and the order is what makes ADR-0001 D2 structural
+/// rather than a rule somebody keeps: the tier is first, so a terminal too
+/// narrow to hold the row clips the segments that arrive after it and never
+/// the one D2 requires "at all times". Nothing here elides anything by a rule
+/// of its own — `ratatui` clips the right edge, and being first is the whole
+/// mechanism.
+///
+/// # The two new segments arrive rendered, for the reason the tier does
+///
+/// [`Self::context`] and [`Self::tokens`] are `String` rather than the numbers
+/// they abbreviate, by exactly the argument the `tier` field above already
+/// makes. ADR-0013 D3's abbreviation and ADR-0012 D7's wording are both
+/// `zaru-cli`'s — `cli::render::thousands` and `cli::render::usage` — and the
+/// second of those is the very line the session prints on exit. Composing
+/// either here would be a second statement of a register that already has
+/// one, and the two spellings of D7 would then be free to disagree about a
+/// word.
+///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     /// The tier, spelled as [ADR-0001] D1 spells it.
@@ -181,24 +212,72 @@ pub struct Status {
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     pub session: String,
+    /// [ADR-0013] D6's context usage, rendered by the host.
+    ///
+    /// `None` before a host supplies one, which is a real state rather than a
+    /// placeholder: a shell whose composition could not resolve a provider
+    /// holds no context at all, and a zero would be a measurement of nothing.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    pub context: Option<String>,
+    /// [ADR-0012] D7's per-turn token line, rendered by the host.
+    ///
+    /// `None` until an exchange has happened. `Provider::usage` answers `None`
+    /// before the first request for the same reason `providers::usage` refuses
+    /// to invent a cost — "a client that had made no request and reported a
+    /// zero would be inventing a datum".
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    pub tokens: Option<String>,
 }
 
 impl Status {
-    /// A status line.
+    /// What the row is separated by. One spelling, used by every segment.
+    const SEPARATOR: &'static str = " · ";
+
+    /// A status line carrying [ADR-0001] D2's tier and [ADR-0010] D1's session.
+    ///
+    /// The two segments a turn supplies start absent. They are set through
+    /// [`Shell::set_context_usage`] and [`Shell::set_token_usage`], and the
+    /// signature here is deliberately unchanged from what it was before those
+    /// existed: a session opens knowing its tier and its identity and nothing
+    /// else, which is exactly the state this constructor describes.
+    ///
+    /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     #[must_use]
     pub fn new(tier: impl Into<String>, session: impl Into<String>) -> Self {
         Self {
             tier: tier.into(),
             session: session.into(),
+            context: None,
+            tokens: None,
         }
     }
 
     /// The one line the status bar paints.
     ///
-    /// The tier is first and is never elided, which is D2's "at all times".
+    /// The tier is first and is never elided, which is D2's "at all times" —
+    /// see the type's own documentation for why being first is the mechanism
+    /// rather than a rule. A segment that is `None` contributes nothing at
+    /// all, separator included, so a status line carrying neither is
+    /// byte-identical to what this printed before either existed.
     #[must_use]
     pub fn painted(&self) -> String {
-        format!("runtime.tier = {} · session {}", self.tier, self.session)
+        let mut line = format!(
+            "runtime.tier = {}{}session {}",
+            self.tier,
+            Self::SEPARATOR,
+            self.session
+        );
+        for segment in [self.context.as_deref(), self.tokens.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            line.push_str(Self::SEPARATOR);
+            line.push_str(segment);
+        }
+        line
     }
 }
 
@@ -292,6 +371,35 @@ impl Shell {
     #[must_use]
     pub const fn status(&self) -> &Status {
         &self.status
+    }
+
+    /// Put [ADR-0013] D6's context usage on the row, or take it off.
+    ///
+    /// # Why this and not a `&mut Status`
+    ///
+    /// [ADR-0001] D2 ends "Tier is resolved at session start and is immutable
+    /// for the life of a session. Changing it starts a new session. A membrane
+    /// that can be dropped mid-session is not a membrane." A `status_mut`
+    /// would hand every caller the power that sentence forbids, and the
+    /// immutability would then be a rule somebody keeps rather than a shape.
+    /// Two setters that can reach only the two segments a turn produces leave
+    /// the tier and the session with no mutation surface at all, which is the
+    /// same discipline [`Status`]'s own ordering uses for D2's other half.
+    ///
+    /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    pub fn set_context_usage(&mut self, rendered: Option<String>) {
+        self.status.context = rendered;
+    }
+
+    /// Put [ADR-0012] D7's per-turn token line on the row, or take it off.
+    ///
+    /// See [`Self::set_context_usage`] for why the pair are setters rather
+    /// than a borrow of the whole row.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    pub fn set_token_usage(&mut self, rendered: Option<String>) {
+        self.status.tokens = rendered;
     }
 
     /// Everything the pane would show, oldest first: the transcript, then this

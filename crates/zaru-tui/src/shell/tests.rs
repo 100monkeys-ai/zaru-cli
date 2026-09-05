@@ -146,6 +146,117 @@ fn the_status_line_names_the_tier_in_every_state() {
     }
 }
 
+// ----------------------------------------- ADR-0013 clause 5, ADR-0012 clause 6
+
+/// A status line carrying neither segment paints exactly what it did before
+/// either existed.
+///
+/// The regression guard for widening the row: [ADR-0001] D2's line is what
+/// every check in this workspace and every capture in every record quotes, and
+/// a segment that contributed an empty separator would change all of them
+/// while looking like nothing. Asserted byte for byte against a literal this
+/// check owns, so neither arm travels through the formatter under test.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+#[test]
+fn a_row_with_no_segments_paints_what_it_painted_before_the_segments_existed() {
+    assert_eq!(
+        Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X").painted(),
+        "runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+        "a row carrying neither segment must be byte-identical to what it was"
+    );
+}
+
+/// ADR-0013 clause 5 and ADR-0012 clause 6 both reach the painted buffer.
+///
+/// **The segments are nonces this check owns**, not numbers a renderer
+/// produced: what this crate owes is to carry what it was handed onto the row,
+/// and a check that composed a count here and then asserted the shell rendered
+/// that count would be asserting about its own arithmetic
+/// (\[Verification lessons\] §10 and §11). `zaru-cli`'s
+/// `the_two_segments_are_the_registers_the_records_already_landed` is where
+/// the wording is asserted against the records.
+///
+/// Read out of `TestBackend` rather than off `painted()`, because the claim is
+/// that a *user* meets them: a row composed correctly and then dropped by the
+/// renderer would satisfy a string comparison.
+#[test]
+fn both_records_numbers_reach_the_painted_row_in_the_order_the_arbitration_gives() {
+    let mut shell = shell();
+    shell.set_context_usage(Some("context 12.3k/1048.5k tokens".to_owned()));
+    shell.set_token_usage(Some("tokens: 390 prompt + 79 completion = 469".to_owned()));
+
+    let (rows, _) = painted(&shell, 160, HEIGHT);
+    assert_eq!(
+        rows[0].trim_end(),
+        "runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X · context 12.3k/1048.5k tokens \
+         · tokens: 390 prompt + 79 completion = 469",
+        "both segments must reach the row, after the tier and the session"
+    );
+}
+
+/// Either segment alone contributes itself and one separator, never an empty
+/// one.
+///
+/// The two are set independently — the token line is absent until an exchange
+/// has happened while the context number exists from the session's first frame
+/// — so both one-sided states are real and both are asserted. A check over the
+/// pair alone would pass while a `None` printed a trailing ` · `.
+#[test]
+fn a_segment_that_is_absent_contributes_nothing_at_all_including_its_separator() {
+    let mut only_context = Status::new("bare", "s");
+    only_context.context = Some("context 1 tokens".to_owned());
+    assert_eq!(
+        only_context.painted(),
+        "runtime.tier = bare · session s · context 1 tokens",
+        "an absent token segment must contribute no separator"
+    );
+
+    let mut only_tokens = Status::new("bare", "s");
+    only_tokens.tokens = Some("tokens: 1 prompt + 2 completion = 3".to_owned());
+    assert_eq!(
+        only_tokens.painted(),
+        "runtime.tier = bare · session s · tokens: 1 prompt + 2 completion = 3",
+        "an absent context segment must contribute no separator"
+    );
+}
+
+/// ADR-0001 D2's "at all times", at widths that cannot hold the whole row.
+///
+/// **This is the half the arbitration had to buy.** Two more segments make the
+/// row long enough that a real terminal clips it, and D2's requirement is that
+/// what survives is the tier. Nothing here elides by a rule of its own —
+/// `ratatui` clips the right edge — so the property is entirely the *order*,
+/// and the mutant that breaks it is a renderer that puts a number first.
+///
+/// Four widths, the narrowest below the tier's own spelling, so the check
+/// covers the case where even `runtime.tier = bare` does not fit and the
+/// prefix that survives is still the tier's.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+#[test]
+fn the_tier_is_what_survives_a_width_too_narrow_for_the_whole_row() {
+    let mut shell = shell();
+    shell.set_context_usage(Some("context 786.4k/1048.5k tokens".to_owned()));
+    shell.set_token_usage(Some("tokens: 390 prompt + 79 completion = 469".to_owned()));
+
+    for width in [10_u16, 20, 44, 72] {
+        let (rows, _) = painted(&shell, width, HEIGHT);
+        let row = &rows[0];
+        assert_eq!(
+            row.chars().count(),
+            usize::from(width),
+            "the status row must fill the terminal's width exactly at {width}; row 0 was {row:?}"
+        );
+        let expected = "runtime.tier = bare";
+        let head: String = expected.chars().take(usize::from(width)).collect();
+        assert!(
+            row.starts_with(&head),
+            "at width {width} the row must still begin with the tier; row 0 was {row:?}"
+        );
+    }
+}
+
 // -------------------------------------------------------- ADR-0008 clauses 4, 5
 
 /// ADR-0008 clause 4: "Exhaustion renders distinctly from both success and
