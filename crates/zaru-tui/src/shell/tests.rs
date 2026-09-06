@@ -1044,3 +1044,249 @@ fn clearing_a_stream_that_never_started_changes_nothing() {
     assert_eq!(before, after);
     assert_eq!(shell.streaming(), None);
 }
+
+// ------------------------------------- the pane's own text handling, 2026-09-06
+
+/// The rows of the transcript pane, as the buffer holds them.
+///
+/// The status row is row 0 and the composer's area is the last
+/// [`COMPOSER_ROWS`]; everything between is the pane. Trailing padding is
+/// removed because `TestBackend` fills every cell, so a row's own trailing
+/// spaces and the backend's padding are the same bytes — every fixture below
+/// is written without trailing spaces for that reason.
+fn pane_rows(shell: &Shell, width: u16, height: u16) -> Vec<String> {
+    let (rows, _) = painted(shell, width, height);
+    let last = rows.len() - usize::from(COMPOSER_ROWS);
+    rows[1..last]
+        .iter()
+        .map(|row| row.trim_end().to_owned())
+        .collect()
+}
+
+/// A shell whose pane holds exactly one line.
+fn shell_showing(register: Register, text: &str) -> Shell {
+    let mut shell = shell();
+    shell.notice(Line::new(register, text));
+    shell
+}
+
+/// The premise `Line::indent` rests on, asserted rather than assumed.
+///
+/// The continuation of a wrapped row is indented by the glyph's width plus
+/// one. A register given a two-column glyph would still wrap correctly —
+/// `indent` measures — but the mutant this catches is the reverse: somebody
+/// replacing the measurement with a literal `2` after a wide glyph arrived.
+#[test]
+fn every_register_glyph_occupies_one_column() {
+    for register in Register::ALL {
+        assert_eq!(
+            crate::shell::wrap::columns(register.glyph()),
+            1,
+            "{register:?}'s glyph {:?} is not one column wide, so a wrapped line's \
+             continuation would not align under its first row",
+            register.glyph()
+        );
+    }
+}
+
+/// An answer's own newlines are the answer's.
+///
+/// **The mutant**: `wrap::rows` stops splitting on `\n` and hands the whole
+/// text back as one piece. Measured from the binary at `8179f8a` on
+/// 2026-09-05, that is what shipped: asked to count from 1 to 30 one per
+/// line, the pane painted
+/// `123456789101112131415161718192021222324252627282930` on a single row,
+/// while `context.json` held the newlines. Read out of the buffer rather than
+/// out of `visible`, because the buffer is the consequence.
+#[test]
+fn a_thirty_line_answer_paints_thirty_rows() {
+    let answer = (1..=30).map(|n| n.to_string()).collect::<Vec<_>>().join("\n");
+    let shell = shell_showing(Register::Plain, &answer);
+
+    let rows = pane_rows(&shell, 100, 40);
+    let painted: Vec<&str> = rows
+        .iter()
+        .map(|row| row.trim())
+        .filter(|row| !row.is_empty())
+        .collect();
+
+    assert_eq!(
+        painted.len(),
+        30,
+        "a thirty-line answer painted {} row(s): {painted:#?}",
+        painted.len()
+    );
+    assert_eq!(painted.first().copied(), Some("1"));
+    assert_eq!(painted.last().copied(), Some("30"));
+}
+
+/// The accepting sibling: a record with no newline gains no row.
+///
+/// **The mutant**: `wrap::rows` appends a blank row per piece, which a
+/// renderer could easily do while satisfying the thirty-line check above and
+/// which would give a reader a pane of double-spaced narrative.
+///
+/// Two records rather than one, and asserted as **adjacent** buffer rows. A
+/// single record cannot see this: the pane's unused rows are blank anyway, so
+/// one spurious blank row after the only record is indistinguishable from the
+/// empty pane beneath it. The gap between two records is where it shows.
+#[test]
+fn two_single_line_records_paint_on_adjacent_rows() {
+    let mut shell = shell();
+    shell.notice(Line::new(Register::Succeeded, "turn 1 answered"));
+    shell.notice(Line::new(Register::Plain, "turn 2, up to 8 exchange(s)"));
+
+    let rows = pane_rows(&shell, 100, 40);
+
+    assert_eq!(rows[0], "✓ turn 1 answered");
+    assert_eq!(
+        rows[1], "  turn 2, up to 8 exchange(s)",
+        "the second record is not on the row after the first; the pane was {:#?}",
+        &rows[..4]
+    );
+}
+
+/// The status row is one row, at every width, now that the pane wraps.
+///
+/// **The mutant**: `Shell::regions` gives the status `Constraint::Length(2)`.
+/// That is the mutation this can actually see, and finding it out is worth
+/// recording: giving the status paragraph the pane's `Wrap` **does not**
+/// redden anything, because `regions` hands it a one-row `Rect` and the
+/// overflow is clipped vertically rather than growing into the pane. So the
+/// property [ADR-0001] D2 leans on is held by the **layout** rather than by
+/// the absence of a `Wrap`, and this check is written against the layout.
+///
+/// The sibling is the existing
+/// `the_tier_is_what_survives_a_width_too_narrow_for_the_whole_row`, which
+/// asserts what the one row holds; this asserts that the pane still starts on
+/// the row after it once transcript lines are allowed to occupy more than one.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+#[test]
+fn the_status_row_is_one_row_at_every_width_while_the_pane_wraps() {
+    let mut shell = shell();
+    shell.set_context_usage(Some("context 786.4k/1048.5k tokens".to_owned()));
+    shell.set_token_usage(Some("tokens: 390 prompt + 79 completion = 469".to_owned()));
+    // Three characters, so the pane's own line cannot wrap even at ten
+    // columns and the only thing that can push it down is the status row.
+    shell.notice(Line::new(Register::Plain, "zzz"));
+
+    for width in [10_u16, 20, 40, 72, 100] {
+        let (rows, _) = painted(&shell, width, HEIGHT);
+        assert_eq!(
+            rows[1].trim_end(),
+            "  zzz",
+            "at width {width} the pane's first row is {:?} rather than the transcript's \
+             only line, so the status row took more than one row",
+            rows[1]
+        );
+    }
+}
+
+/// A line longer than the pane wraps, and no character is lost.
+///
+/// **The mutant**: `Line::rows` returns the text as one row, which is what
+/// `ratatui` then clips at the right edge — the behaviour measured at
+/// `8179f8a`, where `/config explain runtime.tier` inside a session printed
+/// five layer rows whose values and whose `← effective` marker were past the
+/// edge, so the command answered nothing.
+///
+/// The fixture carries no space, so it is also the hard-split case: a single
+/// "word" wider than any row. It carries no trailing space either, which is
+/// what makes stripping the backend's padding safe and lets this assert the
+/// **exact** text rather than a proxy for it.
+#[test]
+fn a_line_wider_than_the_pane_wraps_and_loses_no_character() {
+    let long: String = (0..300).map(|n| char::from(b'a' + (n % 26) as u8)).collect();
+    let shell = shell_showing(Register::Plain, &long);
+
+    let rows: Vec<String> = pane_rows(&shell, 40, 24)
+        .into_iter()
+        .filter(|row| !row.trim().is_empty())
+        .collect();
+
+    assert!(
+        rows.len() > 1,
+        "a 300-character line at 40 columns painted {} row(s), so it did not wrap",
+        rows.len()
+    );
+    for row in &rows {
+        assert!(
+            crate::shell::wrap::columns(row) <= 40,
+            "a painted row is {} columns wide against a pane of 40: {row:?}",
+            crate::shell::wrap::columns(row)
+        );
+    }
+
+    let rejoined: String = rows.iter().map(|row| row[2..].to_owned()).collect();
+    assert_eq!(
+        rejoined, long,
+        "the wrapped rows do not reproduce the line; the pane lost or reordered text"
+    );
+}
+
+/// The accepting sibling: a line that fits is byte-identical to `painted`.
+#[test]
+fn a_line_that_fits_is_painted_exactly_as_it_always_was() {
+    let line = Line::new(Register::Call, "fs.write ./note.txt");
+    let mut shell = shell();
+    shell.notice(line.clone());
+
+    let rows: Vec<String> = pane_rows(&shell, 40, 24)
+        .into_iter()
+        .filter(|row| !row.trim().is_empty())
+        .collect();
+
+    assert_eq!(rows, vec![line.painted()]);
+}
+
+/// A wrap breaks between words and never inside one.
+///
+/// **The mutant**: the wrap splits at the budget regardless of where a word
+/// ends, which reads as a hyphenless hyphenation and makes a path or an
+/// identifier unsearchable by eye.
+#[test]
+fn a_wrapped_line_breaks_between_words_and_never_inside_one() {
+    let text = "bare tier has no membrane and a prompt is a question rather than a barrier";
+    let shell = shell_showing(Register::Plain, text);
+
+    let rows = pane_rows(&shell, 30, 24);
+    let painted = rows.join("\n");
+    for word in text.split(' ') {
+        assert!(
+            rows.iter().any(|row| row.split(' ').any(|shown| shown == word)),
+            "the word {word:?} is on no painted row whole; the pane was:\n{painted}"
+        );
+    }
+}
+
+/// The tail is a tail of **rows**, not of records.
+///
+/// **The mutant**: `visible` slices `pane_lines` before the rows are built,
+/// which is what it did until 2026-09-06. One forty-line record on a pane
+/// with room for ten then hands the widget forty rows and the widget keeps
+/// the first ten — showing the user the beginning of an answer instead of its
+/// end, which is the exact inverse of [ADR-0010] D4's "the last stretch".
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn the_tail_of_one_record_longer_than_the_pane_is_its_newest_rows() {
+    let answer = (1..=40)
+        .map(|n| format!("{TRANSCRIPT_NONCE}-{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let shell = shell_showing(Register::Plain, &answer);
+
+    // One status row and COMPOSER_ROWS at the foot leave ten for the pane.
+    let rows = pane_rows(&shell, 100, 11 + COMPOSER_ROWS);
+    let painted = rows.join("\n");
+
+    assert!(
+        painted.contains(&format!("{TRANSCRIPT_NONCE}-40")),
+        "the last row of the record is not on the pane:\n{painted}"
+    );
+    assert!(
+        !painted.contains(&format!("{TRANSCRIPT_NONCE}-1\n")) && !painted.ends_with("-1"),
+        "the first row of the record is on the pane, so this is the head:\n{painted}"
+    );
+}

@@ -62,6 +62,7 @@
 pub mod command;
 pub mod port;
 pub mod render;
+pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{CommandVocabulary, Confirmation, Line, Namespace, Register, TranscriptSource};

@@ -224,6 +224,47 @@ impl Line {
     pub fn painted(&self) -> String {
         format!("{} {}", self.register.glyph(), self.text)
     }
+
+    /// How many columns the glyph and its trailing space occupy.
+    ///
+    /// Every glyph in [`Register::ALL`] is one column wide, so this is two —
+    /// but it is measured rather than written as `2`, because a register
+    /// given a wide glyph would otherwise wrap one column late and the
+    /// continuation rows would sit a column left of the text they continue.
+    /// `every_register_glyph_occupies_one_column` asserts the premise, so a
+    /// wide glyph reddens a check rather than skewing a pane.
+    #[must_use]
+    pub fn indent(&self) -> usize {
+        crate::shell::wrap::columns(self.register.glyph()) + 1
+    }
+
+    /// The rows a pane `width` columns wide paints this line as.
+    ///
+    /// # One record is one record however many rows it takes
+    ///
+    /// The register's glyph opens the **first** row and every row after it is
+    /// indented to the same column, so a line that wrapped still reads as one
+    /// thing rather than as several. The glyph is not repeated: a second `✗`
+    /// would say a second failure happened.
+    ///
+    /// The text's own newlines are honoured before any wrapping, which is
+    /// what makes a thirty-line answer thirty rows. [ADR-0010] D2's Update of
+    /// 2026-09-05 — "the terminal's transcript pane shows what the file
+    /// holds, unaltered" — is the reason nothing is dropped at a break; see
+    /// [`crate::shell::wrap`], where that property is stated with the check
+    /// that holds it.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    #[must_use]
+    pub fn rows(&self, width: u16) -> Vec<String> {
+        let indent = self.indent();
+        let budget = usize::from(width).saturating_sub(indent);
+        let mut rows = crate::shell::wrap::rows(&self.text, budget).into_iter();
+        let first = rows.next().unwrap_or_default();
+        let mut painted = vec![format!("{} {first}", self.register.glyph())];
+        painted.extend(rows.map(|row| format!("{}{row}", " ".repeat(indent))));
+        painted
+    }
 }
 
 /// Where the pane's lines come from.

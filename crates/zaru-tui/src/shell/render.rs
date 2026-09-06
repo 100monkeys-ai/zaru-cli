@@ -26,13 +26,23 @@
 //! terminal is clipped at the right edge by `ratatui`, which is what makes
 //! [ADR-0001] D2's "at all times" a consequence of the tier being *first*
 //! rather than of an elision rule nothing states — see [`crate::shell::Status`].
+//! **The transcript pane is the opposite and wraps**, which is not an
+//! inconsistency: the status row is one row by construction and its ordering
+//! is what protects the clause on it, while a transcript line clipped at the
+//! right edge silently loses whatever the producer put last — measured on
+//! 2026-09-05 to include the values and the `← effective` marker of
+//! `config explain`, and [ADR-0011] D4's out-of-tree marking. See
+//! [`crate::shell::wrap`].
 //!
 //! The pane shows the **tail**, which is [ADR-0010] D4's "re-renders the last
-//! stretch of transcript so the user can see where they were".
+//! stretch of transcript so the user can see where they were" — a tail of
+//! painted rows rather than of records, so a record longer than the pane
+//! shows its newest rows.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+//! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
 use crate::shell::{COMPOSER_ROWS, Shell};
 use ratatui::Frame;
@@ -64,19 +74,35 @@ impl Shell {
         .areas(area)
     }
 
-    /// The transcript lines the pane can show in `height` rows, oldest first.
+    /// The rows the pane paints in a `height` by `width` area, oldest first.
     ///
     /// The **tail**: a pane shorter than the transcript shows the end of it,
     /// because that is where the user was.
+    ///
+    /// # The tail is a tail of rows, not of records
+    ///
+    /// It counted records until 2026-09-06, which was the same number only
+    /// while every record was one row. A thirty-line answer is thirty rows,
+    /// and a tail taken over records would have handed `ratatui` thirty rows
+    /// for a pane with room for ten and let the widget keep the first ten —
+    /// showing a user the beginning of the answer they had just watched
+    /// arrive. Counting rows keeps [ADR-0010] D4's "the last stretch"
+    /// true **inside** one record as well as across several.
+    ///
+    /// `width` is taken because a row count is a function of it. That is the
+    /// signature change wrapping forces, and it is the honest one: how much
+    /// of the transcript fits genuinely depends on how wide the terminal is.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     #[must_use]
-    pub fn visible(&self, height: u16) -> Vec<String> {
-        let lines = self.pane_lines();
-        let height = usize::from(height);
-        let start = lines.len().saturating_sub(height);
-        lines[start..]
+    pub fn visible(&self, height: u16, width: u16) -> Vec<String> {
+        let rows: Vec<String> = self
+            .pane_lines()
             .iter()
-            .map(crate::shell::Line::painted)
-            .collect()
+            .flat_map(|line| line.rows(width))
+            .collect();
+        let start = rows.len().saturating_sub(usize::from(height));
+        rows[start..].to_vec()
     }
 
     /// What the composer's area shows: the prompt, or a standing question.
@@ -109,8 +135,12 @@ impl Shell {
             status,
         );
 
+        // No `Wrap` on this paragraph, and that is deliberate: `visible`
+        // has already broken every row to `pane.width`, and a widget
+        // re-wrapping them would measure a continuation's indent as content
+        // and break it again one column early.
         let visible: Vec<TextLine<'_>> = self
-            .visible(pane.height)
+            .visible(pane.height, pane.width)
             .into_iter()
             .map(TextLine::from)
             .collect();
