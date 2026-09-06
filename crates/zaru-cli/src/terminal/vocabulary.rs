@@ -8,7 +8,7 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 use crate::cli::namespace::Namespace;
-use crate::session::{Phase, Record, SaidOnce, Utterance};
+use crate::session::{Phase, Record, SaidOnce, Voice};
 use zaru_tui::shell::port::{
     CommandVocabulary, Line, Namespace as Row, Register, TranscriptSource,
 };
@@ -203,7 +203,7 @@ fn lines_for(record: &Record) -> Vec<Line> {
         // reads "Ordinary narration: a user message, an iteration starting, a
         // candidate", so the type already names this exact use and nothing is
         // authored for it.
-        Record::Conversation(said) => vec![spoken(said)],
+        Record::Conversation(said) => vec![spoken(said.voice, &said.text)],
     }
 }
 
@@ -226,13 +226,20 @@ fn lines_for(record: &Record) -> Vec<Line> {
 /// redactor anywhere on the path — and the echo follows that precedent under
 /// an accepted Update of 2026-09-06 on [ADR-0010] D2, open to Jeshua's veto.
 ///
+/// # It takes the two fields it renders, and not the record
+///
+/// [`Utterance`](crate::session::Utterance) also carries the turn's number,
+/// which nothing here shows.
+/// Taking the whole record would force the live caller to supply one, and the
+/// caller that matters is [`crate::terminal::driver::run`]'s task arm, which
+/// covers a session that resolved **no provider** and therefore has no turn
+/// number to give. It would have had to invent one for the echo, which is
+/// fabricating a datum in order to render a string that never shows it.
+///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-pub(crate) fn spoken(said: &Utterance) -> Line {
-    Line::new(
-        Register::Plain,
-        format!("{}: {}", said.voice.spoken_as(), said.text),
-    )
+pub(crate) fn spoken(voice: Voice, text: &str) -> Line {
+    Line::new(Register::Plain, format!("{}: {text}", voice.spoken_as()))
 }
 
 /// One of [ADR-0008] D1's **outer** loop's seven events, as a sentence.

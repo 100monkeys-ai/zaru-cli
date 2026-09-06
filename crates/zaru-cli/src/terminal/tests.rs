@@ -756,6 +756,82 @@ fn a_task_is_answered_in_the_pane_and_mints_no_session() {
     );
 }
 
+/// The typed line is echoed above whatever the turn produces.
+///
+/// The survey's row 5: on Enter the typed text "vanishes from the composer and
+/// **is never rendered anywhere**", so "a person scrolling a long session
+/// cannot tell which answer belongs to which question". This is that line.
+///
+/// # Why this drives the arm with no provider, and why that is not a weaker case
+///
+/// `run_a_turn` needs a real `GeminiClient` and no offline check can reach it,
+/// which is the lesson `Pane`'s `Drop` records in this same file: a line placed
+/// there had a mutation deleting it redden **nothing**, and "a property whose
+/// only guarantee is that somebody remembered to write one line is the shape
+/// this workspace keeps replacing". So the echo is in `run`'s task arm, which
+/// this pump reaches, and which covers `Turnable::Cannot` as well — a person
+/// typing into a session that resolved no provider sees their own line above
+/// the refusal rather than a refusal floating over nothing.
+///
+/// # What discriminates
+///
+/// **The order**, not the presence. The echo has to be *above* what the turn
+/// said, because a line under its own answer is the confusion row 5 is about;
+/// so the two are found by offset. And the wording is `vocabulary::spoken`'s,
+/// the same function `--resume` replays a `Record::Conversation` through, so
+/// this asserts the same string the file will render to.
+///
+/// **The mutant:** deleting the `shell.notice` in `run`'s `Action::Task` arm,
+/// which is what every build before 2026-09-06 did.
+///
+/// **The accepting sibling** is the second half: a slash command is not a task
+/// and is echoed by nobody, so this cannot pass against a shell that prints a
+/// `user:` line for every input it receives.
+#[test]
+fn the_typed_line_is_echoed_above_what_the_turn_said() {
+    use crate::session::Voice;
+
+    let task = "rename the widget";
+    let mut keys = typed(task);
+    keys.extend(typed("/exit"));
+    let (shell, _surface, _exit) = pump(keys);
+
+    let said: String = shell
+        .pane_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let echo = format!("{}: {task}", Voice::User.spoken_as());
+    let at = said.find(&echo).unwrap_or_else(|| {
+        panic!("the typed line was never rendered anywhere, which is the survey's row 5: {said:?}")
+    });
+    let answered = said
+        .find(CANNOT)
+        .expect("the staging's own refusal must be on the pane, or nothing here is ordered");
+    assert!(
+        at < answered,
+        "the typed line is echoed below what the turn said, so a reader still cannot tell \
+         which answer belongs to which question: {said:?}"
+    );
+
+    // The accepting sibling: a slash command is not a task and nobody echoes
+    // it, so this check cannot pass against a shell that prints a `user:` line
+    // for every input.
+    let (only_commands, _, _) = pump(typed("/exit"));
+    let commanded: String = only_commands
+        .pane_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !commanded.contains(&format!("{}: ", Voice::User.spoken_as())),
+        "a session in which nothing was asked painted a user line anyway: {commanded:?}"
+    );
+}
+
 /// Every session id under this machine's own session root, or `None` when the
 /// root cannot be read at all.
 ///

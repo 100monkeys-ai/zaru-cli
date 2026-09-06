@@ -1436,6 +1436,49 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 }
             }
             Action::Task(task) => {
+                // ADR-0010 D2's seventh producer, echoed the moment the person
+                // presses Enter.
+                //
+                // The survey's row 5: the typed text "vanishes from the
+                // composer on Enter and **is never rendered anywhere**", so a
+                // person scrolling a long session "cannot tell which answer
+                // belongs to which question". This is that line, composed by
+                // `vocabulary::spoken` -- which is also what paints the record
+                // back on `--resume`, so the echo and the replay cannot
+                // disagree about a word.
+                //
+                // **Here rather than inside `run_a_turn`, and the reason is
+                // this file's own lesson.** `Pane`'s `Drop` records that a
+                // line placed in `run_a_turn` had a mutation deleting it
+                // redden **nothing**, because that function needs a real
+                // provider and no offline check can drive it: "a property
+                // whose only guarantee is that somebody remembered to write
+                // one line is the shape this workspace keeps replacing". This
+                // arm is reachable without one. It is also the better place on
+                // its own merits -- it covers `Turnable::Cannot` too, so a
+                // person typing into a session that resolved no provider sees
+                // their own line above the refusal rather than a refusal
+                // floating over nothing.
+                //
+                // **Noticed rather than drawn**: the arm below ends in
+                // `surface.draw`, and the beat repaints within `TICK`
+                // regardless, so this adds no second place a paint can fail.
+                //
+                // **It paints the line as typed, where the replay paints it
+                // redacted**, and that asymmetry is deliberate rather than
+                // overlooked. It already exists for the answer -- the streamed
+                // deltas reach `Shell::stream_delta` with no redactor anywhere
+                // on that path -- so what a person watches has always been
+                // their own bytes. A harness that altered a person's own line
+                // as they typed it would be the opposite of showing them their
+                // work. Accepted 2026-09-06 on ADR-0010 D2, open to Jeshua's
+                // veto, with that paragraph on the record rather than only
+                // here.
+                shell.notice(crate::terminal::vocabulary::spoken(
+                    crate::session::Voice::User,
+                    &task,
+                ));
+
                 // ADR-0008 D1: turns are the outer loop's unit, so a second
                 // task in the same session is the next turn. The session stays
                 // open whatever the turn did -- a turn that failed is not a

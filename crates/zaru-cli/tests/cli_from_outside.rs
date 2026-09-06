@@ -520,6 +520,95 @@ fn stage_a_session_in(
     id
 }
 
+/// The conversation reaches a pipe as the file's own bytes.
+///
+/// [ADR-0010] D4's non-terminal reader is handed "the transcript's own bytes
+/// and nothing else, because there is nobody there to be inside anything", and
+/// `render::resumed` extends `Resumed::tail_lines` to do it — so the seventh
+/// producer arrives on a pipe the moment it is on the file, with no rendering
+/// in between. That is asserted rather than assumed, because "no change was
+/// needed" is a claim about a code path and not an excuse to skip it.
+///
+/// # What discriminates
+///
+/// The **whole JSON line** is sought, not the words inside it. A pipe that
+/// printed `vocabulary::spoken`'s rendering — `user: count to three` — would
+/// satisfy a check written against the prose while breaking D4's own reading,
+/// and it is exactly what re-serialising the parsed records would produce.
+/// The staged text is chosen to be prose a rendering would keep and a byte
+/// comparison would not.
+///
+/// The **mutant** is `render::resumed` rendering the records instead of
+/// carrying their lines, which this record's Status tracking already reports
+/// having been watched red once for the same reason.
+///
+/// **What it does not catch, said rather than implied:** re-serialising the
+/// parsed records with `serde_json` would produce the same bytes today and
+/// pass. That is not a hole in the check but the honest edge of the property
+/// — the two would be indistinguishable until a field was added, which is
+/// exactly the reason `Reading::lines` carries the bytes rather than
+/// re-deriving them, in that type's own words. A check cannot observe a
+/// difference that does not exist yet.
+///
+/// The **accepting sibling** is the second half: a session staged with no
+/// conversation prints neither voice, so this cannot pass against a resume
+/// that prints a `conversation` line for every session.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn adr_0010_d2s_conversation_reaches_a_pipe_as_the_files_own_bytes() {
+    use zaru_cli::session::{Millis, Record, SessionId, SessionStore, Transcript, Utterance, Voice};
+
+    let home = Home::new("resume-conversation");
+    let store = SessionStore::open(home.path().join(".zaru")).expect("a scratch session store");
+    let id = SessionId::from_parts(Millis::new(1_700_000_009_000), [9, 9, 9, 9, 9, 9, 9, 9, 9, 9])
+        .expect("a well-formed ULID");
+    let session = store.start(id.clone()).expect("a session directory");
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    for (voice, text) in [
+        (Voice::User, "count to three"),
+        (Voice::Zaru, "one, two, three"),
+    ] {
+        transcript
+            .record(&Record::Conversation(Utterance {
+                n: 1,
+                voice,
+                text: text.to_owned(),
+            }))
+            .expect("could not append");
+    }
+
+    let on_disk: Vec<String> = std::fs::read_to_string(session.transcript_path())
+        .expect("the staged transcript")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(on_disk.len(), 2, "the staging wrote two records");
+
+    let ran = zaru(&home, &["--resume", id.as_str()]);
+    assert_eq!(ran.code, 0, "a bare resume prints what it was asked for");
+    for line in &on_disk {
+        assert!(
+            ran.stdout.contains(line.as_str()),
+            "the conversation must reach a pipe as the file's own bytes, and {line:?} is not in \
+             {:?} -- a rendering of the record would be a second description of one line",
+            ran.stdout
+        );
+    }
+
+    // The accepting sibling: a session with no conversation prints none.
+    let bare = Home::new("resume-no-conversation");
+    let bare_id = stage_a_session(&bare, 1_700_000_010_000);
+    let quiet = zaru(&bare, &["--resume", bare_id.as_str()]);
+    assert_eq!(quiet.code, 0, "the sibling is a resume that succeeded");
+    assert!(
+        !quiet.stdout.contains(r#""conversation""#),
+        "a session that held no conversation printed one: {}",
+        quiet.stdout
+    );
+}
+
 /// ADR-0010 D6's deletion, reached from a command, with no tombstone.
 ///
 /// **This is the clause moving.** That record's Status tracking has said
