@@ -3315,3 +3315,107 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
          person could have seen it"
     );
 }
+
+// ----------------------------- ADR-0011 D4's pair, painted once — 2026-09-06
+
+/// A staged in-tree call, for the pair checks below.
+fn a_staged_call() -> crate::tools::TranscriptEntry {
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working =
+        crate::tools::WorkingDirectory::at(tree.project()).expect("the project resolves");
+    // The tree is dropped at the end of this function and the entry keeps the
+    // rendered path, which is all these checks read. Nothing here opens a file.
+    crate::session::fixtures::entry_for(&working, "note.txt", false)
+}
+
+/// A tool call's started-and-completed pair paints **one** line.
+///
+/// **The mutant**: `Phase::Completed` renders `call.line` again, which is what
+/// shipped. Measured from main's binary at `8179f8a` on 2026-09-05, a resumed
+/// session painted `fs.write /tmp/…/note.txt` on two adjacent rows for one
+/// write — and `transcript.jsonl` shows why: the two `tool_call` records carry
+/// byte-identical `line` fields and differ only in `phase`.
+///
+/// [ADR-0010] D4 needs the pair on disk, because a `Started` with no closing
+/// record is how a killed process leaves an interruption behind. What a
+/// *reader* needs is the call, once.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn a_started_and_completed_pair_paints_the_call_once() {
+    use crate::session::{Record as SessionRecord, ToolCall};
+    use zaru_tui::shell::port::{Register, TranscriptSource};
+
+    let entry = a_staged_call();
+    let lines = crate::terminal::vocabulary::Transcript::of(&[
+        SessionRecord::ToolCall(ToolCall::started(&entry)),
+        SessionRecord::ToolCall(ToolCall::completed(&entry)),
+    ])
+    .lines();
+
+    assert_eq!(
+        lines.len(),
+        1,
+        "one tool call painted {} line(s); the pair is one action: {lines:#?}",
+        lines.len()
+    );
+    assert_eq!(lines[0].text, entry.render());
+    assert_eq!(lines[0].register, Register::Call);
+}
+
+/// The accepting sibling: a **refused** call still paints, in its own register.
+///
+/// **The mutant**: every closing phase is silenced rather than the completion
+/// alone. A user who declined a call has to be able to see that it did not
+/// act, and `Phase::Refused` is the record that says so — so the check above
+/// must not be satisfiable by a renderer that simply stopped painting closing
+/// records.
+#[test]
+fn a_refused_call_still_paints_and_in_the_announced_register() {
+    use crate::session::{Record as SessionRecord, ToolCall};
+    use zaru_tui::shell::port::{Register, TranscriptSource};
+
+    let entry = a_staged_call();
+    let lines = crate::terminal::vocabulary::Transcript::of(&[
+        SessionRecord::ToolCall(ToolCall::started(&entry)),
+        SessionRecord::ToolCall(ToolCall::refused(&entry)),
+    ])
+    .lines();
+
+    assert_eq!(lines.len(), 2, "a refused call painted {lines:#?}");
+    assert_eq!(lines[0].register, Register::Call);
+    assert_eq!(
+        lines[1].register,
+        Register::Announced,
+        "ADR-0011 D6 gives the harness no veto and the user's `no` is an answer, so a \
+         refusal is announced rather than shown as an ordinary call"
+    );
+}
+
+/// The second accepting sibling: an **interrupted** call still paints its line.
+///
+/// A `Started` with no closing record is ADR-0010 D4's interruption. It paints
+/// exactly what a completed call now paints — one line — which is worth
+/// asserting rather than leaving as a consequence: it says in a check that the
+/// pane no longer distinguishes the two, and that the distinction a reader
+/// gets is `turn_line`'s `fs.write returned · N bytes · Ts` on the next row.
+#[test]
+fn an_interrupted_call_paints_its_line_exactly_as_a_completed_one_does() {
+    use crate::session::{Record as SessionRecord, ToolCall};
+    use zaru_tui::shell::port::TranscriptSource;
+
+    let entry = a_staged_call();
+    let interrupted =
+        crate::terminal::vocabulary::Transcript::of(&[SessionRecord::ToolCall(ToolCall::started(
+            &entry,
+        ))])
+        .lines();
+    let completed = crate::terminal::vocabulary::Transcript::of(&[
+        SessionRecord::ToolCall(ToolCall::started(&entry)),
+        SessionRecord::ToolCall(ToolCall::completed(&entry)),
+    ])
+    .lines();
+
+    assert_eq!(interrupted, completed);
+    assert_eq!(interrupted.len(), 1);
+}

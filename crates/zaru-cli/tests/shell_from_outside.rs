@@ -68,18 +68,28 @@ impl Scratch {
         let session = store.start(id.clone()).expect("a session directory");
         let mut transcript =
             Transcript::append_to(session.transcript_path()).expect("a transcript to append to");
+        // **A call is a pair, and this fixture wrote only the second half
+        // until 2026-09-06.** `tools::execute` appends a `Phase::Started`
+        // before a call and a `Phase::Completed` after it, and a `Completed`
+        // with no `Started` before it is a shape the product cannot produce:
+        // ADR-0010 D4's interruption is derived from exactly that pairing.
+        // Writing the pair is what makes this staging's own claim above --
+        // that the session is built through the crate's public door, so what
+        // the shell reads back is what the product writes -- true.
         for line in [
             format!("fs.read `notes/{NONCE}.md`"),
             format!("cmd.run `just test` · {NONCE}"),
         ] {
-            transcript
-                .record(&Record::ToolCall(ToolCall {
-                    line,
-                    out_of_tree: false,
-                    destructive: false,
-                    phase: Phase::Completed,
-                }))
-                .expect("a record appended");
+            for phase in [Phase::Started, Phase::Completed] {
+                transcript
+                    .record(&Record::ToolCall(ToolCall {
+                        line: line.clone(),
+                        out_of_tree: false,
+                        destructive: false,
+                        phase,
+                    }))
+                    .expect("a record appended");
+            }
         }
         Self { path, id }
     }
@@ -196,7 +206,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
     let resumed = zaru_cli::session::resume(&directory, usize::MAX).expect("the session resumes");
     assert_eq!(
         resumed.tail.len(),
-        2,
+        4,
         "the session the check wrote did not come back, so nothing below is about a session"
     );
 
@@ -336,8 +346,9 @@ fn the_binary_prints_the_transcripts_bytes_when_nobody_is_watching() {
         "the transcript's own bytes are not on standard output"
     );
     assert!(
-        stdout.contains("2 record(s) in the transcript"),
-        "the resume did not read the two records the check wrote"
+        stdout.contains("4 record(s) in the transcript"),
+        "the resume did not read the four records the check wrote -- two calls, each a \
+         `Phase::Started` and a `Phase::Completed`, which is the pair `tools::execute` writes"
     );
     // **This asserted `2` or `4` until 2026-09-05, and the assertion was doing
     // its job when it changed.** It was written by the `tui-shell` arc to pin

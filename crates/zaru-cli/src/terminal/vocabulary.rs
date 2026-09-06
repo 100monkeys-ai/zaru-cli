@@ -132,16 +132,38 @@ fn lines_for(record: &Record) -> Vec<Line> {
     match record {
         Record::Loop(event) => vec![loop_line(event)],
         Record::TurnLoop(event) => vec![turn_line(event)],
-        Record::ToolCall(call) => {
-            let register = match call.phase {
-                Phase::Started | Phase::Completed => Register::Call,
-                // A refused call is not a failure -- ADR-0011 D6 gives the
-                // harness no veto and the user's "no" is an answer -- but it
-                // is not an ordinary call either, so it is announced.
-                Phase::Refused => Register::Announced,
-            };
-            vec![Line::new(register, call.line.clone())]
-        }
+        // **A pair paints once.** `Phase::Started` and `Phase::Completed`
+        // carry the *same* `line` -- ADR-0011 D4's rendered call, written
+        // before the call and again after it so that a `Started` with no
+        // closing record is the interruption ADR-0010 D4 needs. Rendering
+        // both put the identical string on the pane twice: measured from
+        // main's binary at `8179f8a` on 2026-09-05, one `fs.write` painted
+        // `fs.write /tmp/.../note.txt` on two adjacent rows.
+        //
+        // The completion paints nothing rather than something, because there
+        // is nothing on this record that the started line does not already
+        // carry: `ToolCall` holds `line`, `out_of_tree`, `destructive` and
+        // `phase`, and no outcome, no byte count and no elapsed time. Those
+        // are on `Event::ToolCompleted`, which `turn_line` paints as
+        // `fs.write returned · 174 bytes · 0.01s` on the very next row -- so
+        // what completion adds is already narrated, by the producer that
+        // has it.
+        //
+        // Nothing the file holds stops reaching the buffer, which is what
+        // ADR-0010 D2's 2026-09-05 Update requires of this pane: the bytes
+        // dropped are a byte-identical *second copy* of a line the reader
+        // already has.
+        Record::ToolCall(call) => match call.phase {
+            Phase::Started => vec![Line::new(Register::Call, call.line.clone())],
+            Phase::Completed => Vec::new(),
+            // A refused call is not a failure -- ADR-0011 D6 gives the
+            // harness no veto and the user's "no" is an answer -- but it
+            // is not an ordinary call either, so it is announced. It closes
+            // the pair exactly as a completion does and still paints, because
+            // its register is the whole point: a reader must be able to see
+            // that the call they declined did not act.
+            Phase::Refused => vec![Line::new(Register::Announced, call.line.clone())],
+        },
         Record::Failure(failure) => {
             vec![Line::new(Register::Failed, failure.headline.clone())]
         }
@@ -209,8 +231,8 @@ fn lines_for(record: &Record) -> Vec<Line> {
 ///
 /// **No register is new.** All six are the ones this shell already defined,
 /// and the mapping follows the precedents already in this file:
-/// [`Record::ToolCall`]'s `Phase::Started`/`Completed` are `Call` and its
-/// `Phase::Refused` is `Announced`, for the same reason.
+/// [`Record::ToolCall`]'s `Phase::Started` is `Call` and its `Phase::Refused`
+/// is `Announced`, for the same reason.
 ///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
