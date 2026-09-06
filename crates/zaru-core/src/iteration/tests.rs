@@ -757,7 +757,11 @@ async fn a_silent_validator_reaches_the_refinement_prompt_saying_so() {
     outcome.expect("the staged run should reach an outcome");
 
     let prompts = rig.generator.prompts();
-    assert_eq!(prompts.len(), 2, "the fixture stages exactly two generations");
+    assert_eq!(
+        prompts.len(),
+        2,
+        "the fixture stages exactly two generations"
+    );
     assert!(
         prompts[1].contains(crate::iteration::PRODUCED_NO_OUTPUT),
         "the refinement prompt does not say the validator produced no output.\n\
@@ -779,7 +783,10 @@ async fn a_silent_validator_reaches_the_refinement_prompt_saying_so() {
             _ => None,
         })
         .expect("the staged run failed an iteration");
-    assert_eq!(reason, format!("test:\n{}", crate::iteration::PRODUCED_NO_OUTPUT));
+    assert_eq!(
+        reason,
+        format!("test:\n{}", crate::iteration::PRODUCED_NO_OUTPUT)
+    );
 }
 
 /// The accepting sibling: a validator that produced output is untouched.

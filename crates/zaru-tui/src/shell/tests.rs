@@ -1100,7 +1100,10 @@ fn every_register_glyph_occupies_one_column() {
 /// out of `visible`, because the buffer is the consequence.
 #[test]
 fn a_thirty_line_answer_paints_thirty_rows() {
-    let answer = (1..=30).map(|n| n.to_string()).collect::<Vec<_>>().join("\n");
+    let answer = (1..=30)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     let shell = shell_showing(Register::Plain, &answer);
 
     let rows = pane_rows(&shell, 100, 40);
@@ -1140,7 +1143,8 @@ fn two_single_line_records_paint_on_adjacent_rows() {
 
     assert_eq!(rows[0], "✓ turn 1 answered");
     assert_eq!(
-        rows[1], "  turn 2, up to 8 exchange(s)",
+        rows[1],
+        "  turn 2, up to 8 exchange(s)",
         "the second record is not on the row after the first; the pane was {:#?}",
         &rows[..4]
     );
@@ -1197,7 +1201,9 @@ fn the_status_row_is_one_row_at_every_width_while_the_pane_wraps() {
 /// **exact** text rather than a proxy for it.
 #[test]
 fn a_line_wider_than_the_pane_wraps_and_loses_no_character() {
-    let long: String = (0..300).map(|n| char::from(b'a' + (n % 26) as u8)).collect();
+    let long: String = (0..300)
+        .map(|n| char::from(b'a' + (n % 26) as u8))
+        .collect();
     let shell = shell_showing(Register::Plain, &long);
 
     let rows: Vec<String> = pane_rows(&shell, 40, 24)
@@ -1254,7 +1260,8 @@ fn a_wrapped_line_breaks_between_words_and_never_inside_one() {
     let painted = rows.join("\n");
     for word in text.split(' ') {
         assert!(
-            rows.iter().any(|row| row.split(' ').any(|shown| shown == word)),
+            rows.iter()
+                .any(|row| row.split(' ').any(|shown| shown == word)),
             "the word {word:?} is on no painted row whole; the pane was:\n{painted}"
         );
     }

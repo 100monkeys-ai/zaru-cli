@@ -3324,8 +3324,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
 /// A staged in-tree call, for the pair checks below.
 fn a_staged_call() -> crate::tools::TranscriptEntry {
     let tree = crate::tools::fixtures::ScratchTree::new();
-    let working =
-        crate::tools::WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let working = crate::tools::WorkingDirectory::at(tree.project()).expect("the project resolves");
     // The tree is dropped at the end of this function and the entry keeps the
     // rendered path, which is all these checks read. Nothing here opens a file.
     crate::session::fixtures::entry_for(&working, "note.txt", false)
@@ -3408,11 +3407,10 @@ fn an_interrupted_call_paints_its_line_exactly_as_a_completed_one_does() {
     use zaru_tui::shell::port::TranscriptSource;
 
     let entry = a_staged_call();
-    let interrupted =
-        crate::terminal::vocabulary::Transcript::of(&[SessionRecord::ToolCall(ToolCall::started(
-            &entry,
-        ))])
-        .lines();
+    let interrupted = crate::terminal::vocabulary::Transcript::of(&[SessionRecord::ToolCall(
+        ToolCall::started(&entry),
+    )])
+    .lines();
     let completed = crate::terminal::vocabulary::Transcript::of(&[
         SessionRecord::ToolCall(ToolCall::started(&entry)),
         SessionRecord::ToolCall(ToolCall::completed(&entry)),
@@ -3442,17 +3440,19 @@ fn an_interrupted_call_paints_its_line_exactly_as_a_completed_one_does() {
 /// refinement prompt composes the same phrase for the same condition.
 #[test]
 fn a_validator_that_printed_nothing_says_so_on_the_pane() {
-    let line = crate::terminal::vocabulary::loop_line(
-        &zaru_core::iteration::Event::ValidatorEvaluated {
+    let line =
+        crate::terminal::vocabulary::loop_line(&zaru_core::iteration::Event::ValidatorEvaluated {
             name: "greets".to_owned(),
             outcome: zaru_core::iteration::ValidatorOutcome::Failed,
             detail: String::new(),
-        },
-    );
+        });
 
     assert_eq!(
         line.text,
-        format!("greets: failed — {}", zaru_core::iteration::PRODUCED_NO_OUTPUT)
+        format!(
+            "greets: failed — {}",
+            zaru_core::iteration::PRODUCED_NO_OUTPUT
+        )
     );
     assert!(
         !line.text.trim_end().ends_with('—'),
@@ -3470,13 +3470,12 @@ fn a_validator_that_printed_nothing_says_so_on_the_pane() {
 #[test]
 fn a_validator_that_printed_something_is_quoted_verbatim_on_the_pane() {
     let detail = "assertion failed — left ≠ right";
-    let line = crate::terminal::vocabulary::loop_line(
-        &zaru_core::iteration::Event::ValidatorEvaluated {
+    let line =
+        crate::terminal::vocabulary::loop_line(&zaru_core::iteration::Event::ValidatorEvaluated {
             name: "greets".to_owned(),
             outcome: zaru_core::iteration::ValidatorOutcome::Failed,
             detail: detail.to_owned(),
-        },
-    );
+        });
 
     assert_eq!(line.text, format!("greets: failed — {detail}"));
     assert!(
