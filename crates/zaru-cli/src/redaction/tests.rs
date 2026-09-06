@@ -352,6 +352,95 @@ impl crate::tools::Overflow for Preserving {
     }
 }
 
+/// [ADR-0010] D2's two conversation records pass this port, and this is the
+/// only place on that file where anything does.
+///
+/// # Why a record on a file the record itself calls raw is redacted
+///
+/// ADR-0010's Negative section says the transcript "contains whatever the
+/// session contained, **including secrets that appeared in command output**",
+/// and every other record on it stays verbatim. This port is a different
+/// obligation: it is over values the harness itself **holds**. The rule the
+/// accepted Update of 2026-09-06 states is that the person's words and the
+/// harness's answer are raw except for a credential this harness put in its
+/// own sealed store.
+///
+/// # What discriminates
+///
+/// **The control is the arm that makes the absence mean anything.** A
+/// constructor that returned an empty string, or that dropped the text
+/// entirely, would satisfy an absence assertion on its own; so the same
+/// record must carry the control byte for byte, and the marker must name the
+/// alias. Both voices are held, because the two are built by two public
+/// functions and a check over one of them would pass against the other being
+/// raw.
+///
+/// **The mutant:** `utterance` building `text` from its argument rather than
+/// from `Redacted::by(redactor, text)` — which is what a transcript record
+/// looked like everywhere else on this file, and is exactly the reading this
+/// arc started from and measured to be wrong.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn adr_0010_d2s_conversation_records_are_built_through_the_port() {
+    use crate::compose::boundary::{spoken_by_the_user, spoken_by_zaru};
+    use crate::session::{Record, Voice};
+
+    let scratch = ScratchRoot::new();
+    let value = personal_secret_nonce();
+    let core = ascii_core(&value);
+    let control = format!("control-{}", nonce("conversation"));
+
+    let (store, keys, aliases) = store_holding(&scratch, std::slice::from_ref(&value));
+    let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
+    assert_eq!(held.len(), 1, "one entry is one held value");
+
+    let said = format!("echo {value} and {control}");
+    for (voice, record) in [
+        (Voice::User, spoken_by_the_user(&held, 7, &said)),
+        (Voice::Zaru, spoken_by_zaru(&held, 7, &said)),
+    ] {
+        let Record::Conversation(utterance) = record else {
+            panic!("both constructors build ADR-0010 D2's seventh producer and nothing else");
+        };
+        assert_eq!(utterance.n, 7, "the turn number is the caller's");
+        assert_eq!(utterance.voice, voice, "the voice is the constructor's");
+
+        let text = &utterance.text;
+        assert!(
+            text.contains(&control),
+            "the {} half carries no control, so the two absences below are about an empty \
+             record rather than about redaction: {text:?}",
+            voice.spoken_as()
+        );
+        for (what, needle) in [("by value", value.as_str()), ("by its ASCII core", &core)] {
+            assert!(
+                !text.contains(needle),
+                "a held provider key reached ADR-0010 D2's {} record {what}, and that file is \
+                 one of the files `absent_everywhere` walks: {text:?}",
+                voice.spoken_as()
+            );
+        }
+        assert!(
+            text.contains(&marker(&aliases[0])),
+            "nothing marks where the value was, so a reader cannot tell a redaction from a \
+             thing the person never typed: {text:?}"
+        );
+    }
+
+    // The accepting sibling from the product: an empty store redacts nothing,
+    // so a record built through the same door carries the whole line. Without
+    // it the absences above are satisfied by a port that removes everything.
+    let Record::Conversation(carried) = spoken_by_the_user(&HeldSecrets::none(), 7, &said) else {
+        panic!("the constructor builds one variant");
+    };
+    assert_eq!(
+        carried.text, said,
+        "a harness holding nothing altered a line anyway, so this port is doing something \
+         other than removing values the harness holds"
+    );
+}
+
 // --- The enumeration ADR-0008's decision asks for --------------------------
 
 /// Every product source file the redaction port is called from, and what path
@@ -399,7 +488,10 @@ const PATHS: [(&str, &str); 8] = [
     (
         "zaru-cli/src/compose/boundary.rs",
         "a finished turn becoming the next turn's layer 6, in a session that \
-         holds a conversation (ADR-0013 D1)",
+         holds a conversation (ADR-0013 D1); and, since 2026-09-06, the same \
+         two strings becoming ADR-0010 D2's conversation records, from the \
+         same call site so that this list does not gain a ninth row for a \
+         path that is not a model prompt",
     ),
     (
         "zaru-cli/src/compose/summarise.rs",

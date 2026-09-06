@@ -76,7 +76,7 @@
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 
 use crate::compose::{ByteCounter, TurnContext};
-use crate::session::{Checkpoint, CheckpointError, Session};
+use crate::session::{Checkpoint, CheckpointError, Record, Session, Utterance, Voice};
 use core::fmt;
 use zaru_core::context::{
     Compaction, Context, ContextLimits, Exchange, StablePrefix, Summariser, Usage,
@@ -266,10 +266,81 @@ pub fn exchange_of_turn(
     let redacted = |text: &str| Redacted::by(redactor, text).as_str().to_owned();
     let results: Vec<String> = tool_lines.iter().map(|line| redacted(line)).collect();
     Exchange::of_turn(
-        &redacted(&format!("user: {task}")),
+        &redacted(&spoken_as(Voice::User, task)),
         &results,
-        &redacted(&format!("zaru: {answer}")),
+        &redacted(&spoken_as(Voice::Zaru, answer)),
     )
+}
+
+/// How a turn's two halves are named, wherever one is rendered.
+///
+/// The two spellings were `format!` calls here and nowhere else until
+/// 2026-09-06, when the pane began showing the same two halves back. Naming
+/// them once is what stops the screen and [ADR-0013] D1's layer 6 coming to
+/// disagree about how a turn is written down.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+fn spoken_as(voice: Voice, text: &str) -> String {
+    format!("{}: {text}", voice.spoken_as())
+}
+
+/// The task as the user typed it, as [ADR-0010] D2's seventh producer keeps it.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[must_use]
+pub fn spoken_by_the_user(redactor: &(dyn Redactor + Sync), n: u32, task: &str) -> Record {
+    utterance(redactor, n, Voice::User, task)
+}
+
+/// The answer as the turn rendered it, as that same producer keeps it.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[must_use]
+pub fn spoken_by_zaru(redactor: &(dyn Redactor + Sync), n: u32, answer: &str) -> Record {
+    utterance(redactor, n, Voice::Zaru, answer)
+}
+
+/// One half of a turn's conversation, redacted, as a record.
+///
+/// # These two are built **here** so that clause 6's enumeration stays at eight
+///
+/// [ADR-0008] clause 6's check is a walk over every product file that calls
+/// `Redacted::by`, and its own failure message tells its reader that "a path
+/// added here is a path from captured bytes into a model prompt". A transcript
+/// record is not one, so building these in [`crate::compose::turn`] would have
+/// grown that list to nine with a row that is not what the list means — the
+/// drift the enumeration exists to prevent. This file is **already** row seven,
+/// because [`exchange_of_turn`] above redacts these same two strings on their
+/// way into layer 6, so the records are built from the same call site and no
+/// file joins the set. Recorded on ADR-0008 before this was written.
+///
+/// # Why a transcript record is redacted at all, when no other one is
+///
+/// [ADR-0010]'s Negative section says the transcript "contains whatever the
+/// session contained, **including secrets that appeared in command output**",
+/// and that stays true of every other record on the file. This port is a
+/// different thing: it is over values **the harness itself holds**, ADR-0008
+/// saying "a secret the harness never held is not redacted, because nothing
+/// pattern-based was adopted". So the rule is that the person's words and the
+/// harness's answer are raw except for a credential this harness put in its
+/// own sealed store.
+///
+/// **It was forced rather than preferred.**
+/// `corpus_a_stored_key_spoken_in_a_task_does_not_reach_the_checkpoint` puts a
+/// stored provider key **in the task** and then walks every file under the
+/// scratch home asserting the value absent by value and by ASCII core.
+/// `transcript.jsonl` is one of those files, so a raw record would have made
+/// this the first path in the harness that writes a value it holds into a
+/// file — reddening a standing security check rather than raising a question.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+fn utterance(redactor: &(dyn Redactor + Sync), n: u32, voice: Voice, text: &str) -> Record {
+    Record::Conversation(Utterance {
+        n,
+        voice,
+        text: Redacted::by(redactor, text).as_str().to_owned(),
+    })
 }
 
 /// Rewrite [ADR-0010] D3's `context.json` over what layer 6 now holds.
