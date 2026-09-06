@@ -9,23 +9,34 @@
 //!
 //! # A producer is a variant, never a string
 //!
-//! Eight producers are named above and **six exist in this workspace**:
+//! Eight producers are named above and **seven exist in this workspace**:
 //! `zaru-core`'s [`Event`], its outer-loop [`TurnEvent`], [ADR-0011] D4's
 //! transcript entry, [ADR-0016] D1's five classes, [ADR-0013] D2's
-//! compaction, and — since 2026-09-05 — a line this session says once and
-//! never again. Each is a variant of [`Record`], so a seventh
-//! producer is a variant and every match over the enum fails to compile
+//! compaction, a line this session says once and never again, and — since
+//! 2026-09-06 — D2's own **user messages**, arriving beside the answer they
+//! were answered by. Each is a variant of [`Record`], so an eighth producer
+//! is a variant and every match over the enum fails to compile
 //! rather than a `kind` string being invented at a call site — the same
 //! closed-enum discipline [`Class`](crate::failure::Class),
 //! [`Layer`](crate::config::Layer) and [`ToolName`](crate::tools::ToolName)
 //! already carry in this crate.
 //!
-//! **The producers that do not exist get no variant at all.** User messages,
-//! SEAL verdicts and attachments belong to records that are unbuilt, and a
+//! **The producers that do not exist get no variant at all.** SEAL verdicts
+//! and attachments belong to records that are unbuilt, and a
 //! variant whose condition nothing can satisfy is a permanent exemption
 //! dressed as a promise ([Verification lessons] §7). Absence is what makes the
 //! gap findable — which is exactly how the compaction variant arrived: it was
 //! absent while nothing compacted, and it is here because something does.
+//!
+//! **One variant here is that exemption, arrived at from the other
+//! direction.** [`Record::Failure`] is constructed nowhere in the product
+//! tree — every refusal inside [`crate::compose::turn::run_one`] becomes
+//! printed lines and an exit code — so a turn that failed reaches no file at
+//! all, and D5's "every byte" is false for exactly the turns a reader would
+//! most want back. Found 2026-09-06 while [`Record::Conversation`] was being
+//! added, filed as a `Diagnosed` row on Known Defects rather than fixed here,
+//! and named in this paragraph because the paragraph above is what it
+//! falsifies.
 //!
 //! # The compaction record is what makes D2's "history is preserved" true
 //!
@@ -279,6 +290,104 @@ pub struct Said {
     pub text: String,
 }
 
+/// Who said one half of a turn's conversation.
+///
+/// **Two variants and not a boolean**, for the reason [`SaidOnce`] is two
+/// variants rather than a string: a reader of the file has to be able to tell
+/// the person's words from the harness's without a convention, and the two
+/// halves are written at different moments by different code with different
+/// rules about what may be missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Voice {
+    /// The person, in the words they typed.
+    User,
+    /// The harness, in the words it rendered.
+    Zaru,
+}
+
+impl Voice {
+    /// How a rendering names this voice.
+    ///
+    /// **One spelling, two callers, and neither of them invented it.**
+    /// [`crate::compose::boundary::exchange_of_turn`] has composed a turn's
+    /// two halves as `user: <task>` and `zaru: <answer>` since layer 6 gained
+    /// its shape, and those are the product's existing words for exactly this
+    /// distinction — so the pane reads them from here rather than a second
+    /// pair being chosen for the screen. The alternative was a glyph, which
+    /// would have been authored: [`Register`](zaru_tui::shell::port::Register)
+    /// gives plain narration the absence of a marker, and three of its six
+    /// glyphs are already drafted proposals because no record names one.
+    #[must_use]
+    pub const fn spoken_as(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Zaru => "zaru",
+        }
+    }
+}
+
+/// One half of one turn's conversation.
+///
+/// # The seventh producer, and half of it was licensed all along
+///
+/// [ADR-0010] D2's producer list reads "Every event from [ADR-0008] D3 is
+/// written as it occurs, **alongside user messages**, tool calls, SEAL
+/// verdicts, attachments, and learning announcements" — so the [`Voice::User`]
+/// half is a producer this record named on the day it was written and that
+/// nothing had built, which the module documentation above says in as many
+/// words. The [`Voice::Zaru`] half is the one no clause names, and it is the
+/// decision of an accepted Update of 2026-09-06 under directives 20 and 25,
+/// open to Jeshua's veto. D2 supplies its argument too: the transcript is "a
+/// replayable record: re-rendering it reproduces what the user saw", and an
+/// answer the user was shown that the file does not hold breaks that.
+///
+/// # A `user` with no `zaru` after it is the interruption
+///
+/// The two halves are written around the loop rather than together — see
+/// [`crate::compose::turn::run_one`] — and nothing marks an interruption,
+/// for the reason [`Phase`] carries three variants and no fourth: **a killed
+/// process writes nothing**, so the pair with no closer is the only marker a
+/// reader can be given. A turn that *stopped* stays distinguishable because
+/// it has a `turn_ended` record; a turn that was interrupted has none.
+///
+/// # These two strings are redacted where every other record here is raw
+///
+/// [ADR-0010]'s Negative section says the transcript "contains whatever the
+/// session contained, **including secrets that appeared in command output**",
+/// and that stays true: [`ToolCall::line`], a refusal's sentence and
+/// [`Record::Compacted`]'s span are all verbatim. [ADR-0008] clause 6's port
+/// is a different thing — it is over values **the harness itself holds**,
+/// that record saying "a secret the harness never held is not redacted,
+/// because nothing pattern-based was adopted". So the rule is that the
+/// person's words and the harness's answer are raw except for a credential
+/// this harness put in its own sealed store, and no other record moves.
+///
+/// It was forced rather than preferred, by an instrument that already
+/// existed: `corpus_a_stored_key_spoken_in_a_task_does_not_reach_the_checkpoint`
+/// puts a stored key **in the task** and then walks every file under the
+/// scratch home asserting it absent by value and by ASCII core. This file is
+/// one of those files. Both halves are therefore built in
+/// [`crate::compose::boundary`], which is already the call site that redacts
+/// these same two strings on their way into [ADR-0013] D1's layer 6 — so
+/// clause 6's enumeration stays at eight files rather than gaining a ninth.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Utterance {
+    /// Which turn of the session this belongs to.
+    ///
+    /// [ADR-0008] D1's number, the caller's, and the **same** `n` that turn's
+    /// `TurnStarted` carries — so a reader joining the two needs no rule, and
+    /// `session::resume`'s turn count keeps its single source.
+    pub n: u32,
+    /// Who said it.
+    pub voice: Voice,
+    /// What was said, as it was typed or as it was rendered.
+    pub text: String,
+}
+
 /// One line of [ADR-0010] D2's transcript.
 ///
 /// **Externally tagged**, so a line is one JSON object whose single key names
@@ -319,6 +428,20 @@ pub enum Record {
     /// documentation for why the transcript is where that counter belongs and
     /// why it is not derived from the checkpoint.
     Said(Said),
+    /// One half of one turn's conversation: the task as the user typed it,
+    /// or the answer as the turn rendered it.
+    ///
+    /// A **seventh producer**, and the one that makes `cat transcript.jsonl`
+    /// show a person what they asked and what they were told. Until it
+    /// existed this file held loop bookkeeping and nothing else, so
+    /// [ADR-0010] D5's "the user can read every byte the harness stores about
+    /// them with `cat`" was contradicted rather than merely unbuilt — the
+    /// prose survived only in `context.json`, which D3 calls the checkpoint
+    /// that is overwritten each turn. See [`Utterance`] for why the
+    /// [`Voice::User`] half is D2's own unnamed producer arriving, why the
+    /// two halves are written around the loop rather than together, and why
+    /// these are the only two strings on this file that pass a redactor.
+    Conversation(Utterance),
 }
 
 impl Record {
@@ -335,6 +458,7 @@ impl Record {
             Self::Failure(_) => "failure",
             Self::Compacted(_) => "compacted",
             Self::Said(_) => "said",
+            Self::Conversation(_) => "conversation",
         }
     }
 }

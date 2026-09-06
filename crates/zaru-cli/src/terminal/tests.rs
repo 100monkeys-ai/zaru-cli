@@ -3621,6 +3621,88 @@ fn corpus_an_out_of_tree_marking_survives_a_pane_too_narrow_for_the_line() {
     );
 }
 
+/// [ADR-0010] D2's seventh producer, replayed in order above the new turn.
+///
+/// D4: a resume "re-renders the last stretch of transcript so the user can see
+/// where they were", and until 2026-09-06 the file held no word of what was
+/// asked or answered, so what a person saw on resuming a two-turn session was
+/// loop bookkeeping. This is the pane half of that: the records are staged and
+/// the assertion is read out of the painted **buffer**, not out of
+/// `Line::rows`, so what is held is what a terminal actually shows.
+///
+/// **The order is the assertion, not the presence.** Four lines all present in
+/// any arrangement would be satisfied by a pane that grouped every user line
+/// together and every answer after them, which is exactly what a reader
+/// scrolling a session cannot use — the survey's row 5 complaint is that "a
+/// person ... cannot tell which answer belongs to which question". So each
+/// line is sought in the remainder of the frame after the one before it.
+///
+/// **The mutant:** `lines_for`'s `Record::Conversation` arm returning
+/// `Vec::new()`, which is what the arm did for every record of this kind
+/// before the arc, and which the first arm below catches.
+///
+/// **The accepting sibling** is the second half: a transcript holding a turn
+/// and no conversation paints neither voice, so this cannot pass against a
+/// pane that prints a `user:` line for anything at all.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn adr_0010_d2s_conversation_replays_in_order_above_the_new_turn() {
+    use crate::session::{Utterance, Voice};
+
+    let spoken = |n: u32, voice: Voice, text: &str| {
+        Record::Conversation(Utterance {
+            n,
+            voice,
+            text: text.to_owned(),
+        })
+    };
+    let turn = |n: u32| Record::TurnLoop(zaru_core::tool_call::Event::TurnStarted { n, of: 8 });
+
+    let records = vec![
+        spoken(1, Voice::User, "count to three"),
+        turn(1),
+        spoken(1, Voice::Zaru, "one, two, three"),
+        spoken(2, Voice::User, "now backwards"),
+        turn(2),
+        spoken(2, Voice::Zaru, "three, two, one"),
+    ];
+
+    let mut resumed = shell();
+    resumed.refresh(&Pane::of(&records));
+    let painted = painted_at(&resumed, 100, 24).join("\n");
+
+    let mut from = 0_usize;
+    for expected in [
+        "user: count to three",
+        "zaru: one, two, three",
+        "user: now backwards",
+        "zaru: three, two, one",
+    ] {
+        let at = painted[from..].find(expected).unwrap_or_else(|| {
+            panic!(
+                "the resumed pane does not show {expected:?} after the line before it, so the \
+                 conversation is either absent or out of order:\n{painted}"
+            )
+        });
+        from += at + expected.len();
+    }
+
+    // The accepting sibling: a session with turns and no conversation paints
+    // neither voice.
+    let mut bare = shell();
+    bare.refresh(&Pane::of(&[turn(1), turn(2)]));
+    let bare_painted = painted_at(&bare, 100, 24).join("\n");
+    for voice in [Voice::User, Voice::Zaru] {
+        let marker = format!("{}: ", voice.spoken_as());
+        assert!(
+            !bare_painted.contains(&marker),
+            "a transcript holding no conversation painted a {marker:?} line, so the pane is \
+             composing one rather than reading one:\n{bare_painted}"
+        );
+    }
+}
+
 /// The buffer a shell paints at a given size, as rows.
 ///
 /// `painted_row` above reads row zero at 200 columns for the status line; this

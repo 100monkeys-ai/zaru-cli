@@ -8,7 +8,7 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 use crate::cli::namespace::Namespace;
-use crate::session::{Phase, Record, SaidOnce};
+use crate::session::{Phase, Record, SaidOnce, Utterance};
 use zaru_tui::shell::port::{
     CommandVocabulary, Line, Namespace as Row, Register, TranscriptSource,
 };
@@ -112,7 +112,7 @@ impl TranscriptSource for Transcript {
 
 /// Which register one record belongs in, and what it says.
 ///
-/// **No wildcard arm anywhere**, so a seventh `Record` variant has to be given
+/// **No wildcard arm anywhere**, so an eighth `Record` variant has to be given
 /// a register rather than falling into the plain one — which is how a new
 /// producer would otherwise render as narration and be read as narration.
 ///
@@ -197,7 +197,42 @@ fn lines_for(record: &Record) -> Vec<Line> {
             };
             vec![Line::new(register, said.text.clone())]
         }
+        // ADR-0010 D2's seventh producer, replayed. **`Plain`, and the
+        // register is the record's rather than this adapter's in the
+        // strongest sense available**: `Register::Plain`'s own documentation
+        // reads "Ordinary narration: a user message, an iteration starting, a
+        // candidate", so the type already names this exact use and nothing is
+        // authored for it.
+        Record::Conversation(said) => vec![spoken(said)],
     }
+}
+
+/// One half of a turn's conversation, as a line.
+///
+/// # One function, two callers, and that is what makes the replay honest
+///
+/// [`Transcript::of`] comes through here on `--resume` and
+/// [`crate::terminal::driver::run_a_turn`] comes through here to echo the line
+/// the moment the user presses Enter — the rule [`turn_line`] and [`loop_line`]
+/// already follow, so what a person watches and what they read back cannot
+/// disagree about a word.
+///
+/// **What they *can* disagree about is one thing, and it is stated rather than
+/// hidden.** The echo paints the line as typed; the replay paints what the
+/// file holds, which passed [ADR-0008] clause 6's redactor. So a session read
+/// back shows the redaction marker where the live pane showed a credential the
+/// person themselves typed. That asymmetry already existed for the answer —
+/// the streamed deltas reach [`zaru_tui::shell::Shell::stream_delta`] with no
+/// redactor anywhere on the path — and the echo follows that precedent under
+/// an accepted Update of 2026-09-06 on [ADR-0010] D2, open to Jeshua's veto.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+pub(crate) fn spoken(said: &Utterance) -> Line {
+    Line::new(
+        Register::Plain,
+        format!("{}: {}", said.voice.spoken_as(), said.text),
+    )
 }
 
 /// One of [ADR-0008] D1's **outer** loop's seven events, as a sentence.
