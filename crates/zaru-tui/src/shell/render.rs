@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────┐
-//! │ runtime.tier = bare · session 01J… · context 12.3k/1048.5k tokens … │  status, 1 row
+//! │ runtime.tier = bare · gemini-3.6-flash · ask · 1.2k/1048.5k · 4.2s │  status, 1 row
 //! ├──────────────────────────────────────────────────────────────────┤
 //! │ ✓ finished in 4.2s                                               │  transcript pane
 //! │ ⊘ stopped at the ceiling after 3                                  │
@@ -22,10 +22,17 @@
 //! terminal's size and nothing else. That is [ADR-0005] D2 in a shell — see
 //! [`crate::shell`]'s own documentation for why the alternative fails.
 //!
-//! **The status row is one line and is not wrapped.** A row wider than the
-//! terminal is clipped at the right edge by `ratatui`, which is what makes
-//! [ADR-0001] D2's "at all times" a consequence of the tier being *first*
-//! rather than of an elision rule nothing states — see [`crate::shell::Status`].
+//! **The status row is one line and is not wrapped.** It is **composed** to
+//! the width instead, which is the 2026-09-06 amendment to [ADR-0001] D2 and
+//! is what replaced the sentence that stood here: that a row wider than the
+//! terminal was clipped at the right edge by `ratatui`, and that D2's "at all
+//! times" was therefore a consequence of the tier being *first* rather than of
+//! an elision rule nothing states. **Nothing states it no longer**: a clip
+//! protects the first field and silently drops every other clause's, so the
+//! order in which fields go is now declared as [`crate::shell::Rank`] and read
+//! by [`crate::shell::Status::painted`], which takes this region's width. The
+//! clip survives in exactly one case — a terminal too narrow for the tier's
+//! own spelling — and that is the case D2's clause-6 check already covers.
 //! **The transcript pane is the opposite and wraps**, which is not an
 //! inconsistency: the status row is one row by construction and its ordering
 //! is what protects the clause on it, while a transcript line clipped at the
@@ -131,7 +138,7 @@ impl Shell {
         let [status, pane, composer] = Self::regions(area);
 
         frame.render_widget(
-            Paragraph::new(TextLine::from(self.status().painted())),
+            Paragraph::new(TextLine::from(self.status().painted(status.width))),
             status,
         );
 

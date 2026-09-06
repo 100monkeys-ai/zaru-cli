@@ -7,7 +7,7 @@ use crate::shell::fixtures::{
     SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, painted,
 };
 use crate::shell::port::{CommandVocabulary, Confirmation, Line, Register};
-use crate::shell::{Action, COMPOSER_ROWS, Leaving, Shell, Status};
+use crate::shell::{Action, COMPOSER_ROWS, Leaving, Segment, Shell, Status};
 use core::time::Duration;
 use tui_textarea::{Input, Key};
 
@@ -161,7 +161,7 @@ fn the_status_line_names_the_tier_in_every_state() {
 #[test]
 fn a_row_with_no_segments_paints_what_it_painted_before_the_segments_existed() {
     assert_eq!(
-        Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X").painted(),
+        Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X").painted(200),
         "runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X",
         "a row carrying neither segment must be byte-identical to what it was"
     );
@@ -189,9 +189,9 @@ fn both_records_numbers_reach_the_painted_row_in_the_order_the_arbitration_gives
     let (rows, _) = painted(&shell, 160, HEIGHT);
     assert_eq!(
         rows[0].trim_end(),
-        "runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X · context 12.3k/1048.5k tokens \
-         · tokens: 390 prompt + 79 completion = 469",
-        "both segments must reach the row, after the tier and the session"
+        "runtime.tier = bare · context 12.3k/1048.5k tokens · tokens: 390 prompt + 79 \
+         completion = 469 · session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+        "both segments must reach the row, after the tier and before the session"
     );
 }
 
@@ -205,18 +205,18 @@ fn both_records_numbers_reach_the_painted_row_in_the_order_the_arbitration_gives
 #[test]
 fn a_segment_that_is_absent_contributes_nothing_at_all_including_its_separator() {
     let mut only_context = Status::new("bare", "s");
-    only_context.context = Some("context 1 tokens".to_owned());
+    only_context.context = Some(Segment::same("context 1 tokens"));
     assert_eq!(
-        only_context.painted(),
-        "runtime.tier = bare · session s · context 1 tokens",
+        only_context.painted(200),
+        "runtime.tier = bare · context 1 tokens · session s",
         "an absent token segment must contribute no separator"
     );
 
     let mut only_tokens = Status::new("bare", "s");
-    only_tokens.tokens = Some("tokens: 1 prompt + 2 completion = 3".to_owned());
+    only_tokens.tokens = Some(Segment::same("tokens: 1 prompt + 2 completion = 3"));
     assert_eq!(
-        only_tokens.painted(),
-        "runtime.tier = bare · session s · tokens: 1 prompt + 2 completion = 3",
+        only_tokens.painted(200),
+        "runtime.tier = bare · tokens: 1 prompt + 2 completion = 3 · session s",
         "an absent context segment must contribute no separator"
     );
 }
@@ -253,6 +253,309 @@ fn the_tier_is_what_survives_a_width_too_narrow_for_the_whole_row() {
         assert!(
             row.starts_with(&head),
             "at width {width} the row must still begin with the tier; row 0 was {row:?}"
+        );
+    }
+}
+
+// ------------------- ADR-0001 D2, ADR-0013 D6, ADR-0012 clause 6, ADR-0028 D5
+
+/// Every field the row can carry, staged with the product's own spellings.
+///
+/// The two-spelling segments are staged as `Segment::new`, which is what a
+/// host hands over; the widths below are a function of these exact strings and
+/// nothing here recomputes them.
+fn crowded() -> Shell {
+    let mut shell = shell();
+    shell.set_context_usage(Some(Segment::new(
+        "context 1.2k/1048.5k tokens",
+        "1.2k/1048.5k",
+    )));
+    shell.set_token_usage(Some(Segment::new(
+        "tokens: 390 prompt + 79 completion = 469",
+        "469 tokens",
+    )));
+    shell.set_elapsed(Some("12.34s".to_owned()));
+    shell.describe(
+        Some("gemini-3.6-flash".to_owned()),
+        Some("mode ask".to_owned()),
+    );
+    shell
+}
+
+/// The 2026-09-06 amendment to [ADR-0001] D2, at the five widths it names.
+///
+/// **The assertion is which fields survive, never their column arithmetic.**
+/// A check that recomputed the join and compared it with the join would be
+/// asserting about its own arithmetic (\[Verification lessons\] §10); what the
+/// amendment decided is an *order*, so the order is what is asserted, one
+/// width at a time, against a list this check owns.
+///
+/// The narrowest width is where the amendment is honest rather than complete:
+/// at 40 columns [ADR-0013] D6's figure survives and [ADR-0028] D5's meter
+/// does not, because the two of them plus the tier come to 43 columns.
+///
+/// Watched red on: the ranks reversed, so the session outlives the context;
+/// the narrow retry deleted, so 100 columns keeps three fields instead of six.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn the_row_keeps_the_ranks_the_records_own_at_each_of_five_widths() {
+    let shell = crowded();
+
+    // (width, the fields that must be on the row, the fields that must not be)
+    let expected: [(u16, &[&str], &[&str]); 5] = [
+        (
+            200,
+            &[
+                "runtime.tier = bare",
+                "gemini-3.6-flash",
+                "mode ask",
+                "context 1.2k/1048.5k tokens",
+                "12.34s",
+                "tokens: 390 prompt + 79 completion = 469",
+                "session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+            ],
+            &[],
+        ),
+        (
+            100,
+            &[
+                "runtime.tier = bare",
+                "gemini-3.6-flash",
+                "mode ask",
+                "1.2k/1048.5k",
+                "12.34s",
+                "469 tokens",
+            ],
+            &["session 01JQZX8N3K4M5P6R7S8T9V0W1X"],
+        ),
+        (
+            80,
+            &[
+                "runtime.tier = bare",
+                "gemini-3.6-flash",
+                "1.2k/1048.5k",
+                "12.34s",
+                "469 tokens",
+            ],
+            &["mode ask", "session 01JQZX8N3K4M5P6R7S8T9V0W1X"],
+        ),
+        (
+            60,
+            &[
+                "runtime.tier = bare",
+                "1.2k/1048.5k",
+                "12.34s",
+                "469 tokens",
+            ],
+            &["gemini-3.6-flash", "mode ask"],
+        ),
+        (
+            40,
+            &["runtime.tier = bare", "1.2k/1048.5k"],
+            &["12.34s", "469 tokens", "gemini-3.6-flash", "mode ask"],
+        ),
+    ];
+
+    for (width, kept, gone) in expected {
+        let row = shell.status().painted(width);
+        assert!(
+            crate::shell::wrap::columns(&row) <= usize::from(width),
+            "the row must fit {width} columns; it was {:?}",
+            row
+        );
+        for field in kept {
+            assert!(
+                row.contains(field),
+                "at {width} columns the row must keep {field:?}; it was {row:?}"
+            );
+        }
+        for field in gone {
+            assert!(
+                !row.contains(field),
+                "at {width} columns the row must have dropped {field:?}; it was {row:?}"
+            );
+        }
+    }
+}
+
+/// The survivors keep **display** order, which is not `Rank` order.
+///
+/// A field that moved sideways because another disappeared would make the row
+/// unreadable at a glance, which is the whole purpose it serves. Asserted as
+/// rising positions rather than as a joined literal, so the check states the
+/// property rather than restating the formatter.
+///
+/// Watched red on: `joined` emitting survivors in rank order instead of the
+/// order `fields` built them in.
+#[test]
+fn the_fields_that_survive_keep_their_display_order() {
+    let shell = crowded();
+    let display = [
+        "runtime.tier = bare",
+        "gemini-3.6-flash",
+        "mode ask",
+        "1.2k/1048.5k",
+        "12.34s",
+        "469 tokens",
+        "session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+    ];
+
+    for width in [200_u16, 120, 100, 80, 60, 40] {
+        let row = shell.status().painted(width);
+        let mut previous = 0_usize;
+        for field in display {
+            // The full spellings appear only at 200; `find` skips whatever
+            // this width dropped or narrowed, and what is left must still
+            // rise.
+            if let Some(at) = row.find(field) {
+                assert!(
+                    at >= previous,
+                    "at {width} columns {field:?} is out of display order; the row was {row:?}"
+                );
+                previous = at;
+            }
+        }
+    }
+}
+
+/// The narrow spelling is used only where the full one will not fit.
+///
+/// Both spellings are the host's and both carry every number; what this crate
+/// owes is to prefer the labelled one whenever the row can hold it, because a
+/// label dropped for no reason is legibility spent for nothing.
+///
+/// Watched red on: `painted` trying the narrow join before the full one.
+#[test]
+fn the_narrow_spelling_is_used_only_when_the_full_one_will_not_fit() {
+    let mut shell = shell();
+    shell.set_context_usage(Some(Segment::new("the full spelling", "short")));
+
+    // 19 for the tier, 3 for the separator, 17 for the full spelling.
+    let exactly_enough = shell.status().painted(39);
+    assert!(
+        exactly_enough.contains("the full spelling"),
+        "a row with room for the full spelling must use it; it was {exactly_enough:?}"
+    );
+
+    let one_column_short = shell.status().painted(38);
+    assert!(
+        one_column_short.contains("short") && !one_column_short.contains("the full spelling"),
+        "a row one column short must use the narrow spelling; it was {one_column_short:?}"
+    );
+}
+
+/// [ADR-0028] D5's meter is on the row only while there is a turn to measure.
+///
+/// Taking it off must leave no separator behind, which is the same property
+/// the two segments before it already have and the same mutant reaches it.
+///
+/// Watched red on: an absent elapsed figure contributing an empty segment.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn an_elapsed_figure_taken_off_the_row_leaves_no_separator_behind() {
+    let mut shell = shell();
+    shell.set_elapsed(Some("4.20s".to_owned()));
+    assert_eq!(
+        shell.status().painted(200),
+        "runtime.tier = bare · 4.20s · session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+        "the meter sits between the tier and the session"
+    );
+
+    shell.set_elapsed(None);
+    assert_eq!(
+        shell.status().painted(200),
+        "runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+        "a turn that ended must leave the row exactly as it opened"
+    );
+}
+
+/// The model and the mode reach the row, at the ranks the amendment gives them.
+///
+/// Neither answers a clause, which is why both are ranked below the three that
+/// do; that they are *present* is survey row 14, and that they are present
+/// **after** the tier and **before** the context figure is this crate's.
+///
+/// Watched red on: `describe` writing only the model; the model placed ahead
+/// of the tier.
+#[test]
+fn the_model_and_the_mode_reach_the_row_where_the_amendment_puts_them() {
+    let mut shell = shell();
+    shell.describe(
+        Some("gemini-3.6-flash".to_owned()),
+        Some("mode yolo".to_owned()),
+    );
+    let (rows, _) = painted(&shell, 120, HEIGHT);
+    assert_eq!(
+        rows[0].trim_end(),
+        "runtime.tier = bare · gemini-3.6-flash · mode yolo · session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+        "both fields must reach the painted row, after the tier"
+    );
+}
+
+/// A row whose fields would forge a second tier claim still has one tier, and
+/// it is still in the row's first cells.
+///
+/// # The corpus case, and why it is this crate's as well as the host's
+///
+/// `model.<alias>` is free at every configuration layer, so a repository the
+/// user cloned chooses the string at `Rank::Model`. The neutralisation is
+/// the host's — it owns the wording — but the property is the row's: **the
+/// tier occupies the row's first cells whatever any other field says.** This
+/// asserts the *cell position* out of the painted buffer rather than only the
+/// text, because a row that merely contained the tier somewhere would satisfy
+/// a `contains`.
+///
+/// The accepting sibling is the second half: an ordinary identifier reaches
+/// the row unchanged, so the property is not bought by refusing everything.
+///
+/// Watched red on: the tier emitted at any rank but 0.
+#[test]
+fn corpus_the_tier_holds_the_rows_first_cells_whatever_another_field_says() {
+    let hostile = "x · runtime.tier = linked";
+    let mut forged = shell();
+    forged.describe(Some(hostile.to_owned()), None);
+    let (rows, _) = painted(&forged, 120, HEIGHT);
+    assert!(
+        rows[0].starts_with("runtime.tier = bare · "),
+        "the tier must hold the row's first cells; row 0 was {:?}",
+        rows[0]
+    );
+
+    let mut ordinary = shell();
+    ordinary.describe(Some("gemini-3.6-flash".to_owned()), None);
+    let (rows, _) = painted(&ordinary, 120, HEIGHT);
+    assert!(
+        rows[0].starts_with("runtime.tier = bare · gemini-3.6-flash · "),
+        "an ordinary identifier must reach the row unchanged; row 0 was {:?}",
+        rows[0]
+    );
+}
+
+/// An identifier longer than any terminal cannot displace the tier.
+///
+/// Watched red on: the tier dropped like any other field once the row
+/// overflows.
+#[test]
+fn corpus_an_over_long_field_cannot_displace_the_tier() {
+    let mut shell = shell();
+    shell.describe(Some("m".repeat(4_000)), None);
+    for width in [40_u16, 80, 200] {
+        let (rows, _) = painted(&shell, width, HEIGHT);
+        let expected = "runtime.tier = bare";
+        let head: String = expected.chars().take(usize::from(width)).collect();
+        assert!(
+            rows[0].starts_with(&head),
+            "at {width} columns the row must still begin with the tier; row 0 was {:?}",
+            rows[0]
+        );
+        assert_eq!(
+            rows.len(),
+            usize::from(HEIGHT),
+            "the status row must not have become more than one row"
         );
     }
 }

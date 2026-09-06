@@ -189,39 +189,66 @@ pub enum Action {
 /// of its own — `ratatui` clips the right edge, and being first is the whole
 /// mechanism.
 ///
-/// # The two new segments arrive rendered, for the reason the tier does
+/// # The segments arrive rendered, for the reason the tier does
 ///
-/// [`Self::context`] and [`Self::tokens`] are `String` rather than the numbers
-/// they abbreviate, by exactly the argument the `tier` field above already
-/// makes. ADR-0013 D3's abbreviation and ADR-0012 D7's wording are both
-/// `zaru-cli`'s — `cli::render::thousands` and `cli::render::usage` — and the
-/// second of those is the very line the session prints on exit. Composing
-/// either here would be a second statement of a register that already has
-/// one, and the two spellings of D7 would then be free to disagree about a
-/// word.
+/// Every field below is text rather than the number or the enumeration it
+/// stands for, by exactly the argument the `tier` field above already makes.
+/// ADR-0013 D3's abbreviation, ADR-0012 D7's wording, ADR-0011 D3's three mode
+/// names and ADR-0012 D4's resolved identifier are all `zaru-cli`'s, and one
+/// of them — `cli::render::usage` — is the very line the session prints on
+/// exit. Composing any of them here would be a second statement of a register
+/// that already has one, and the two spellings would then be free to disagree
+/// about a word.
+///
+/// # The row is composed against a width, and that is the 2026-09-06 amendment
+///
+/// Until then this joined every present segment and let `ratatui` clip the
+/// right edge, and D2's "at all times" was a consequence of the tier being
+/// **first**. That mechanism protects exactly one clause and silently
+/// destroys the other: at 40 columns the row read `runtime.tier = bare ·
+/// session 01M1SYN1XG` and stopped, so [ADR-0013] D6's number — required
+/// "continuously", and "throughout" by its trigger clause 5 — was gone, while
+/// a session identifier no record puts on this row had taken the columns it
+/// needed. A clip is not an arbitration between two clauses; it is the absence
+/// of one, and which clause it protects is a consequence of the order somebody
+/// typed.
+///
+/// So [`Self::painted`] takes the width and drops fields by [`Rank`]. See that
+/// type for the order and why it is the records' rather than a taste, and see
+/// [ADR-0001's amendments volume 1] for what each of five widths keeps.
 ///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0001's amendments volume 1]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers-updates
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
-    /// The tier, spelled as [ADR-0001] D1 spells it.
+    /// The tier, spelled as [ADR-0001] D1 spells it. [`Rank::Tier`].
     ///
     /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
     pub tier: String,
-    /// The session this shell is inside, per [ADR-0010] D1.
+    /// The session this shell is inside, per [ADR-0010] D1. [`Rank::Session`].
+    ///
+    /// **No record puts this on the row**, which is why it is the last rank
+    /// and the first thing dropped. It is also never shortened: a ULID's
+    /// leading characters are its timestamp, so a prefix does not discriminate
+    /// between two sessions started the same minute, and a truncated
+    /// identifier cannot be typed into `--resume <id>` — a field that is
+    /// present and useless is worse than one that is absent and leaves room
+    /// for a field a clause requires.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     pub session: String,
-    /// [ADR-0013] D6's context usage, rendered by the host.
+    /// [ADR-0013] D6's context usage, rendered by the host. [`Rank::Context`].
     ///
     /// `None` before a host supplies one, which is a real state rather than a
     /// placeholder: a shell whose composition could not resolve a provider
     /// holds no context at all, and a zero would be a measurement of nothing.
     ///
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-    pub context: Option<String>,
-    /// [ADR-0012] D7's per-turn token line, rendered by the host.
+    pub context: Option<Segment>,
+    /// [ADR-0012] D7's token line, rendered by the host. [`Rank::Tokens`].
     ///
     /// `None` until an exchange has happened. `Provider::usage` answers `None`
     /// before the first request for the same reason `providers::usage` refuses
@@ -229,7 +256,144 @@ pub struct Status {
     /// zero would be inventing a datum".
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-    pub tokens: Option<String>,
+    pub tokens: Option<Segment>,
+    /// [ADR-0028] D5's meter, rendered by the host. [`Rank::Elapsed`].
+    ///
+    /// `None` except while a turn is running, which is the whole of what this
+    /// field says: the number is the turn's own wall clock and there is no
+    /// turn to measure at the prompt. What a finished turn took is already on
+    /// the pane, in the narrative's own line, so keeping it here afterwards
+    /// would be a second rendering of one datum.
+    ///
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    pub elapsed: Option<String>,
+    /// Which model is answering. [`Rank::Model`].
+    ///
+    /// **The resolved identifier and not the alias**, because the question a
+    /// person is asking of this field is *which model is answering* and an
+    /// alias answers it only for somebody who already knows the resolution.
+    /// `None` where the composition could not resolve a provider.
+    pub model: Option<String>,
+    /// [ADR-0011] D3's permission mode. [`Rank::Mode`].
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub mode: Option<String>,
+}
+
+/// One field of the row: what it says, and what it says when the row is narrow.
+///
+/// # A narrow spelling drops labelling and never a number
+///
+/// `context 1.2k/1048.5k tokens` becomes `1.2k/1048.5k` and `tokens: 390
+/// prompt + 79 completion = 469` becomes `469 tokens`. Both keep every number
+/// the full form carries: [ADR-0013] D6's argument is that "approaching is a
+/// relation", so a context figure without its window is one nobody can read as
+/// near or far, and the token total is the same sum the exit line prints, so
+/// the row and that line still cannot disagree about the datum.
+///
+/// A segment with one spelling is [`Self::same`], and `From<String>` builds
+/// one — so a host that has only one wording says so by handing over a
+/// `String`.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    /// What the field says when the row has room for it.
+    pub full: String,
+    /// What it says when the row does not.
+    pub narrow: String,
+}
+
+impl Segment {
+    /// A field with two spellings.
+    #[must_use]
+    pub fn new(full: impl Into<String>, narrow: impl Into<String>) -> Self {
+        Self {
+            full: full.into(),
+            narrow: narrow.into(),
+        }
+    }
+
+    /// A field with one spelling, said the same way at every width.
+    #[must_use]
+    pub fn same(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            narrow: text.clone(),
+            full: text,
+        }
+    }
+}
+
+impl From<String> for Segment {
+    fn from(text: String) -> Self {
+        Self::same(text)
+    }
+}
+
+impl From<&str> for Segment {
+    fn from(text: &str) -> Self {
+        Self::same(text)
+    }
+}
+
+/// The order the row's fields are dropped in, worst first.
+///
+/// # The order is the records' and not a taste
+///
+/// Ranks 0 to 3 each answer a clause, ordered by how absolutely the clause is
+/// worded: [ADR-0001] D2's "at all times", then [ADR-0013] D6's "continuously"
+/// and its clause 5's "throughout", then [ADR-0012] clause 6's "Token counts
+/// and cost appear in the status line", then [ADR-0028] D5's "as the work
+/// proceeds". **Ranks 4 to 6 answer no clause at all**, which is why they are
+/// the three that go first — a field nobody decided should outlive a field a
+/// record required is exactly the outcome a clip produces by accident.
+///
+/// **This is the drop order, not the order the row reads in.** See
+/// [`Status::painted`].
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Rank {
+    /// [ADR-0001] D2. Never dropped and never narrowed.
+    ///
+    /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+    Tier = 0,
+    /// [ADR-0013] D6 and its trigger clause 5.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    Context = 1,
+    /// [ADR-0012] clause 6.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    Tokens = 2,
+    /// [ADR-0028] D5, as amended 2026-09-06.
+    ///
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    Elapsed = 3,
+    /// No record. Survey row 14.
+    Model = 4,
+    /// No record. Survey row 14.
+    Mode = 5,
+    /// No record. The first thing dropped.
+    Session = 6,
+}
+
+impl Rank {
+    /// Every rank, worst first, so a check walks them rather than listing them.
+    pub const WORST_FIRST: [Self; 7] = [
+        Self::Session,
+        Self::Mode,
+        Self::Model,
+        Self::Elapsed,
+        Self::Tokens,
+        Self::Context,
+        Self::Tier,
+    ];
 }
 
 impl Status {
@@ -238,11 +402,11 @@ impl Status {
 
     /// A status line carrying [ADR-0001] D2's tier and [ADR-0010] D1's session.
     ///
-    /// The two segments a turn supplies start absent. They are set through
-    /// [`Shell::set_context_usage`] and [`Shell::set_token_usage`], and the
-    /// signature here is deliberately unchanged from what it was before those
-    /// existed: a session opens knowing its tier and its identity and nothing
-    /// else, which is exactly the state this constructor describes.
+    /// Every other field starts absent. The signature is deliberately
+    /// unchanged from what it was before any of them existed: a session opens
+    /// knowing its tier and its identity and nothing else, which is exactly
+    /// the state this constructor describes — and it is why a row carrying
+    /// none of them is byte-identical to what this printed then.
     ///
     /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -253,32 +417,107 @@ impl Status {
             session: session.into(),
             context: None,
             tokens: None,
+            elapsed: None,
+            model: None,
+            mode: None,
         }
     }
 
-    /// The one line the status bar paints.
+    /// The row's fields in **display order**, each with its rank.
     ///
-    /// The tier is first and is never elided, which is D2's "at all times" —
-    /// see the type's own documentation for why being first is the mechanism
-    /// rather than a rule. A segment that is `None` contributes nothing at
-    /// all, separator included, so a status line carrying neither is
-    /// byte-identical to what this printed before either existed.
-    #[must_use]
-    pub fn painted(&self) -> String {
-        let mut line = format!(
-            "runtime.tier = {}{}session {}",
-            self.tier,
-            Self::SEPARATOR,
-            self.session
-        );
-        for segment in [self.context.as_deref(), self.tokens.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            line.push_str(Self::SEPARATOR);
-            line.push_str(segment);
+    /// Display order is not [`Rank`] order, and that is deliberate: fields are
+    /// dropped by rank and the survivors keep this order, so a field never
+    /// moves sideways because another one disappeared. A row whose fields
+    /// reshuffled on every resize is a row nobody can read at a glance, which
+    /// is the whole purpose a status line serves.
+    fn fields(&self) -> Vec<(Rank, &str, &str)> {
+        let mut fields: Vec<(Rank, &str, &str)> = Vec::with_capacity(7);
+        // The tier's own spelling is composed here rather than stored, and it
+        // is the one field with no narrow form: shortening it is what
+        // ADR-0001 clause 6's check forbids.
+        fields.push((Rank::Tier, "", ""));
+        if let Some(model) = self.model.as_deref() {
+            fields.push((Rank::Model, model, model));
+        }
+        if let Some(mode) = self.mode.as_deref() {
+            fields.push((Rank::Mode, mode, mode));
+        }
+        if let Some(context) = self.context.as_ref() {
+            fields.push((Rank::Context, &context.full, &context.narrow));
+        }
+        if let Some(elapsed) = self.elapsed.as_deref() {
+            fields.push((Rank::Elapsed, elapsed, elapsed));
+        }
+        if let Some(tokens) = self.tokens.as_ref() {
+            fields.push((Rank::Tokens, &tokens.full, &tokens.narrow));
+        }
+        fields.push((Rank::Session, "", ""));
+        fields
+    }
+
+    /// The two fields whose text this type composes rather than is handed.
+    fn composed(&self, rank: Rank) -> Option<String> {
+        match rank {
+            Rank::Tier => Some(format!("runtime.tier = {}", self.tier)),
+            Rank::Session => Some(format!("session {}", self.session)),
+            _ => None,
+        }
+    }
+
+    /// The row at `keep` and narrower, in display order.
+    fn joined(&self, fields: &[(Rank, &str, &str)], keep: Rank, narrow: bool) -> String {
+        let mut line = String::new();
+        for (rank, full, short) in fields {
+            if *rank > keep {
+                continue;
+            }
+            if !line.is_empty() {
+                line.push_str(Self::SEPARATOR);
+            }
+            match self.composed(*rank) {
+                Some(text) => line.push_str(&text),
+                None => line.push_str(if narrow { short } else { full }),
+            }
         }
         line
+    }
+
+    /// The one line the status bar paints, composed to fit `width`.
+    ///
+    /// # The rule, stated so it can be falsified
+    ///
+    /// For the largest rank *k* such that every present field at *k* or better
+    /// fits `width` at its full spelling, render those; otherwise retry them
+    /// at their narrow spellings; otherwise drop rank *k* and repeat.
+    /// **Preferring more fields abbreviated over fewer fields spelled out is
+    /// the ruled half**, and it is ruled that way because every field on this
+    /// row is a number or a name and none of them needs its label to be read.
+    ///
+    /// The tier is [`Rank::Tier`] and is therefore never dropped, so a width
+    /// too narrow even for its own spelling still leaves `ratatui` clipping a
+    /// row that begins with the tier — the one place the old mechanism is
+    /// still the mechanism, and the case ADR-0001 clause 6's check already
+    /// covers at width 10.
+    ///
+    /// A field that is `None` contributes nothing at all, separator included,
+    /// so a row carrying none of them is byte-identical to what this printed
+    /// before any of them existed.
+    #[must_use]
+    pub fn painted(&self, width: u16) -> String {
+        let fields = self.fields();
+        let budget = usize::from(width);
+        for keep in Rank::WORST_FIRST {
+            for narrow in [false, true] {
+                let line = self.joined(&fields, keep, narrow);
+                if crate::shell::wrap::columns(&line) <= budget {
+                    return line;
+                }
+            }
+        }
+        // Narrower than `runtime.tier = <tier>` itself. The tier is rendered
+        // anyway and the right edge is clipped, which is D2's "at all times"
+        // for a terminal that cannot hold even one field.
+        self.joined(&fields, Rank::Tier, false)
     }
 }
 
@@ -393,18 +632,50 @@ impl Shell {
     ///
     /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-    pub fn set_context_usage(&mut self, rendered: Option<String>) {
-        self.status.context = rendered;
+    pub fn set_context_usage(&mut self, rendered: Option<impl Into<Segment>>) {
+        self.status.context = rendered.map(Into::into);
     }
 
-    /// Put [ADR-0012] D7's per-turn token line on the row, or take it off.
+    /// Put [ADR-0012] D7's token line on the row, or take it off.
     ///
-    /// See [`Self::set_context_usage`] for why the pair are setters rather
-    /// than a borrow of the whole row.
+    /// See [`Self::set_context_usage`] for why these are setters rather than a
+    /// borrow of the whole row.
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-    pub fn set_token_usage(&mut self, rendered: Option<String>) {
-        self.status.tokens = rendered;
+    pub fn set_token_usage(&mut self, rendered: Option<impl Into<Segment>>) {
+        self.status.tokens = rendered.map(Into::into);
+    }
+
+    /// Put [ADR-0028] D5's meter on the row, or take it off at the turn's end.
+    ///
+    /// See [`Self::set_context_usage`] for why this is a setter. It is a
+    /// separate one from the pair above for a reason of its own: those two
+    /// change at a turn **boundary** and this one changes on every beat of the
+    /// turn, so a single call that wrote all three would have to recompute two
+    /// numbers that cannot have changed — and [ADR-0013] D7's "compaction
+    /// happens at turn boundaries only" is exactly the rule such a call would
+    /// be quietly asserting against.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    pub fn set_elapsed(&mut self, rendered: Option<String>) {
+        self.status.elapsed = rendered;
+    }
+
+    /// Say which model is answering and which permission mode is in force.
+    ///
+    /// **One call for both, and called once.** Both are resolved once for the
+    /// life of a session — [ADR-0012] D4's alias resolution and [ADR-0011]
+    /// D3's mode are each `Prepared`'s, fixed before the first turn — so
+    /// neither has anything to update and a second call would be describing a
+    /// change that cannot happen. `None` for both is the real state of a
+    /// session whose composition could not resolve a provider.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    pub fn describe(&mut self, model: Option<String>, mode: Option<String>) {
+        self.status.model = model;
+        self.status.mode = mode;
     }
 
     /// Add to the answer being streamed, painting it as it arrives.
