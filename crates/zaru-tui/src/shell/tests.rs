@@ -1290,3 +1290,55 @@ fn the_tail_of_one_record_longer_than_the_pane_is_its_newest_rows() {
         "the first row of the record is on the pane, so this is the head:\n{painted}"
     );
 }
+
+/// **Security corpus.** A held value that a wrap breaks in two still reaches
+/// the buffer whole, across the two rows.
+///
+/// **The mutant**: the wrap consumes the space it breaks at, or normalises
+/// what it carries. Either would cut a planted value into pieces, and the
+/// absence assertions this suite makes elsewhere are written against the
+/// value's own bytes — so a wrap that quietly elided a character would make
+/// those assertions pass for a reason nobody intended, which is the inverse
+/// of [Verification lessons] §65's warning about redacting after truncating.
+///
+/// The sibling is `a_held_secret_in_a_transcript_line_reaches_the_buffer_and_nothing_else`
+/// above, which plants the same value in a line that fits. Both must pass:
+/// the pane is a view of the record at every width, which is [ADR-0010] D2's
+/// 2026-09-05 Update.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons-3
+#[test]
+fn corpus_a_held_secret_split_across_a_wrap_still_reaches_the_buffer_whole() {
+    let mut shell = shell();
+    shell.refresh(&StagedTranscript(vec![Line::new(
+        Register::Call,
+        format!("cmd.run `curl -H 'Authorization: Bearer {SECRET_NONCE}'`"),
+    )]));
+
+    // Narrow enough that the value itself cannot fit on one row, so the break
+    // lands **inside** it. At thirty columns the word wrap keeps it whole,
+    // which is right and is why the width here is fourteen: the property
+    // being asserted is about a break through a held value, not about a
+    // wrapped line that happens to carry one.
+    let rows = pane_rows(&shell, 14, 24);
+    assert!(
+        rows.iter().filter(|row| !row.trim().is_empty()).count() > 1,
+        "the line did not wrap at 14 columns, so this asserts nothing about a break: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains(SECRET_NONCE)),
+        "the value is whole on one row, so the break did not land inside it and this \
+         asserts nothing: {rows:#?}"
+    );
+
+    let rejoined: String = rows
+        .iter()
+        .filter(|row| !row.trim().is_empty())
+        .map(|row| row[2..].to_owned())
+        .collect();
+    assert!(
+        rejoined.contains(SECRET_NONCE),
+        "the wrap cut the value into pieces the buffer no longer holds; rejoined: {rejoined:?}"
+    );
+}

@@ -2713,12 +2713,15 @@ fn an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo() {
     let frame_for = |target: &crate::tools::tree::Target| {
         let mut shell = shell();
         let restores: Restores = Arc::new(AtomicUsize::new(0));
-        // Wide enough for the whole line: the target is a scratch directory's
-        // absolute path, and at the default 72 the marking is truncated off
-        // the frame. That truncation is real and is recorded on ADR-0011 as a
-        // finding -- a deep enough path hides D4's marking from a narrow
-        // terminal -- but it is a question about the line's shape, which no
-        // record gives, and not about whether this renderer marks the call.
+        // Two hundred columns, and the reason has changed. It was written
+        // because at 72 the pane *clipped* and the marking was pushed off the
+        // frame -- a finding recorded on ADR-0011 as an open question. The
+        // pane wraps as of 2026-09-06 and the marking survives at every
+        // width; `corpus_an_out_of_tree_marking_survives_a_pane_too_narrow_for_the_line`
+        // below is that assertion, at exactly the 72 the question named. This
+        // check keeps its own width so that what it holds stays one property:
+        // that the renderer marks an escaping call and does not mark an
+        // ordinary one, unmixed with anything about wrapping.
         let mut surface = Recording::wide(Arc::clone(&restores), 200);
         {
             let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
@@ -3481,4 +3484,94 @@ fn a_validator_that_printed_something_is_quoted_verbatim_on_the_pane() {
         "the phrase was composed over a validator that did produce output: {:?}",
         line.text
     );
+}
+
+/// **Security corpus.** ADR-0011 D4's out-of-tree marking survives a pane too
+/// narrow to hold the line.
+///
+/// **The mutant**: the pane clips instead of wrapping — which is what it did
+/// until 2026-09-06, and which is why this check could not have been written
+/// before then. `TranscriptEntry::render` appends the marking **last**, after
+/// the target's resolved absolute path, so a deep enough path pushed
+/// `OUTSIDE the working directory` past the right edge and D4's "it renders
+/// differently in the transcript at every mode" was false for the reader the
+/// clause is about.
+///
+/// This was a standing question on [ADR Status — open questions], raised by
+/// the `narrative-rendering` arc and filed for the security corpus:
+/// "**Whether ADR-0011 D4's out-of-tree marking may be truncated off a narrow
+/// pane** … measured at 72 columns on 2026-09-05, which is why that clause's
+/// own check paints at 200." Seventy-two is the width it named, so it is the
+/// width here.
+///
+/// The accepting sibling is the second arm: an in-tree call at the same width
+/// carries no marking, so this cannot pass on a renderer that marks
+/// everything — the pair
+/// `an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo` above already
+/// holds at 200, and this is that pair at a width a person actually uses.
+///
+/// [ADR Status — open questions]: https://100monkeys-ai.cortex.page/zaru/p/operations/adr-status-questions
+#[test]
+fn corpus_an_out_of_tree_marking_survives_a_pane_too_narrow_for_the_line() {
+    use crate::tools::fixtures::ScratchTree;
+    use crate::tools::tree::{Placement, WorkingDirectory};
+    use zaru_tui::shell::port::{Line, Register};
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let escaping = crate::session::fixtures::entry_for(&working, "../elsewhere/secret", true);
+    let ordinary = crate::session::fixtures::entry_for(&working, "notes.txt", false);
+
+    let marking = Placement::OutOfTree.as_str();
+    assert!(
+        escaping.render().contains(marking),
+        "the staged entry is not marked at all, so nothing below is about the pane"
+    );
+    // Seventy-two columns, the width the open question measured at, and the
+    // rows read out of the buffer rather than out of `Line::rows`.
+    let rows_at_72 = |entry: &crate::tools::TranscriptEntry| {
+        let mut shell = shell();
+        shell.notice(Line::new(Register::Call, entry.render()));
+        painted_at(&shell, 72, 24).join("\n")
+    };
+
+    let escaped = rows_at_72(&escaping);
+    assert!(
+        escaped.contains(marking),
+        "at 72 columns the out-of-tree marking is not on the frame; ADR-0011 D4 requires \
+         the call to render differently at every mode, and a marking a narrow terminal \
+         cannot show renders no differently to the reader that clause is about:\n{escaped}"
+    );
+
+    let inside = rows_at_72(&ordinary);
+    assert!(
+        !inside.contains(marking),
+        "an ordinary in-tree call was marked as having left the tree, so the marking says \
+         nothing:\n{inside}"
+    );
+}
+
+/// The buffer a shell paints at a given size, as rows.
+///
+/// `painted_row` above reads row zero at 200 columns for the status line; this
+/// reads the whole frame at a size the caller gives, which is what a check
+/// about wrapping needs.
+fn painted_at(shell: &Shell, width: u16, height: u16) -> Vec<String> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal
+        .draw(|frame| shell.render(frame, frame.area()))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
 }
