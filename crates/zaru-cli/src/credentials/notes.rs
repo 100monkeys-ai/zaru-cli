@@ -13,10 +13,22 @@
 //! `zaru-cli` is the composition root and is therefore where the two meet.
 //!
 //! **This module is the only place in `crates/zaru-cli/src` that names
-//! `zaru_notes`**, the binary's version print aside. That is not tidiness: it
+//! `zaru_notes::session`**, and that is the invariant one search checks: it
 //! means one search finds every crossing between the store and the client,
 //! which is the same discipline [`Secret::expose_for_dispatch`] and
 //! [`Bearer::expose_for_dispatch`] are named for on their own sides.
+//!
+//! **The sentence said `zaru_notes` rather than `zaru_notes::session` and was
+//! already false when it was written** — `crate::terminal::trie` names
+//! `zaru_notes::trie`, and `crate::lib` names the crate to print its version.
+//! Narrowed here rather than left, because an invariant a search disproves is
+//! worse than none. The narrower one is what the module is actually for: the
+//! trie is a data structure with no credential in it, and a session is the
+//! thing a bearer is handed to.
+//!
+//! It is what made [`tool_scope_at`] land here rather than beside its caller in
+//! `cli::run`. That function opens a session, and putting it in the command
+//! surface would have put `zaru_notes::session` in a second module.
 //!
 //! # Why the conversion is a function and not `impl From`
 //!
@@ -48,7 +60,9 @@ use crate::credentials::store::{CredentialStore, StoreError};
 use core::fmt;
 use core::time::Duration;
 use zaru_core::iteration::Clock;
-use zaru_notes::session::{Bearer, Invalidation, NotesError, Session};
+use zaru_notes::session::{
+    Bearer, HttpEndpoint, Instance as NotesInstance, Invalidation, NotesError, Session,
+};
 
 /// The bearer a Nuclear Notes session authenticates with, from a stored secret.
 ///
@@ -268,4 +282,79 @@ impl CredentialStore {
             .map_err(ScopeError::Store)?;
         Ok(Cached { scope, at })
     }
+}
+
+/// A Nuclear Notes instance would not complete a session.
+///
+/// # Why this carries a sentence rather than the client's error
+///
+/// The module note above says this is the only place in `crates/zaru-cli/src`
+/// that names `zaru_notes`, and that is a property one search can check rather
+/// than a habit. A failure type carrying [`NotesError`] would put that name in
+/// the signature of every function that handled one, and the seam would stop
+/// being one module. So the client's own sentence crosses, rendered once, here.
+///
+/// **Nothing is classified.** [ADR-0016] maps enums all or nothing and
+/// `NotesError` is one of the four this crate deliberately leaves unmapped;
+/// a caller reads the *command* it was running, not this value's shape.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReachFailure {
+    /// No HTTP client could be built at all.
+    Endpoint(String),
+    /// The session did not attach, or `tools/list` did not answer.
+    Session(String),
+}
+
+impl fmt::Display for ReachFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Endpoint(detail) | Self::Session(detail) => f.write_str(detail),
+        }
+    }
+}
+
+impl std::error::Error for ReachFailure {}
+
+/// What [ADR-0007] D6 calls "one `tools/list` per token at attach", against a
+/// real instance, for a token that is not in the store yet.
+///
+/// # The order is forced by two clauses at once
+///
+/// D6 caches the scope "once per token at attach". D8 requires an apex
+/// credential's confirmation to state "what it grants", and
+/// `CredentialStore::add` composes that sentence from the entry's own
+/// [`ToolScope`]. An entry stored before its scope was read would therefore
+/// tell the user it grants **zero** tools while asking them to accept it,
+/// which is a confirmation that is worse than none. So the session is opened
+/// and `tools/list` is read *before* an entry exists, and the scope is on the
+/// entry the store is handed.
+///
+/// # The bearer is built here and dropped here
+///
+/// It is made from the secret by [`bearer_for_dispatch`], handed to
+/// [`Session::attach`], and never held: neither this function nor
+/// [`Session`] has a field one could sit in.
+///
+/// # Errors
+///
+/// [`ReachFailure`], carrying the client's own words and never the token.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+pub async fn tool_scope_at(host: &str, secret: &Secret) -> Result<ToolScope, ReachFailure> {
+    let endpoint =
+        HttpEndpoint::new().map_err(|failure| ReachFailure::Endpoint(failure.to_string()))?;
+    let session = Session::attach(
+        &endpoint,
+        NotesInstance::new(host),
+        bearer_for_dispatch(secret),
+    )
+    .await
+    .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
+    let names = session
+        .tools()
+        .await
+        .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
+    Ok(ToolScope::new(names))
 }

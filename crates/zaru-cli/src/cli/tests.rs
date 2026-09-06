@@ -183,25 +183,29 @@ fn every_command_the_help_text_lists_is_one_the_parser_accepts() {
             // for the wrong reason.
             .filter(|word| !word.starts_with('<'))
             .collect();
-        let argument = match words.as_slice() {
-            ["config", "explain"] => Some("runtime.tier"),
-            ["sessions", "rm"] => Some("01HM2E5Y001440E1G50G1G4080"),
+        // A slice rather than one value, because `notes tokens add` takes two
+        // words and a command that took two would otherwise be exercised with
+        // one and refused for the wrong reason.
+        let arguments: Vec<&str> = match words.as_slice() {
+            ["config", "explain"] => vec!["runtime.tier"],
+            ["sessions", "rm"] => vec!["01HM2E5Y001440E1G50G1G4080"],
+            // An alias and an instance host. Neither is reached: the parser is
+            // all this exercises, and nothing here opens a session.
+            ["notes", "tokens", "add"] => vec!["work", "cortex.page"],
             // `<kind>` is one of ADR-0012 D3's five, and the help text spells
             // the placeholder rather than the value. Taken from
             // `ProviderKind::ALL` rather than written here, so a sixth kind
             // does not leave this arm exercising a name that is no longer the
             // first one.
-            ["providers", "keys", "add"] => Some(
+            ["providers", "keys", "add"] => vec![
                 crate::providers::ProviderKind::ALL
                     .first()
                     .expect("ADR-0012 D3 names at least one kind")
                     .as_str(),
-            ),
-            _ => None,
+            ],
+            _ => Vec::new(),
         };
-        if let Some(argument) = argument {
-            words.push(argument);
-        }
+        words.extend(arguments);
         if parse(typed(&words)).is_err() {
             unreachable.push(spelling.join(" "));
         }
@@ -643,6 +647,7 @@ fn variant_of(refusal: &CommandRefused) -> &'static str {
         CommandRefused::RequestFlagWithCommand { .. } => "RequestFlagWithCommand",
         CommandRefused::UnusableKey(_) => "UnusableKey",
         CommandRefused::UnusableSessionId(_) => "UnusableSessionId",
+        CommandRefused::UnusableAlias(_) => "UnusableAlias",
     }
 }
 
@@ -1561,5 +1566,123 @@ fn the_pressure_threshold_is_not_on_the_status_row() {
         "the threshold {threshold} is not on `Usage` and is not this row's third number; where \
          compaction begins is ADR-0013 D3's announcement, which says so as it happens. The row \
          was {rendered:?}"
+    );
+}
+
+/// ADR-0007 D7's `add`, and D8's word.
+///
+/// The two lines differ by one word and produce two different reaches, which is
+/// what D8's "instance-locked unless the user explicitly chooses otherwise"
+/// means when there is no flag and no default to infer from.
+#[test]
+fn adr_0007_d8s_reach_is_the_word_the_user_typed_and_locked_when_they_typed_none() {
+    let locked = accepted(&["notes", "tokens", "add", "work", "cortex.page"]);
+    assert_eq!(
+        locked.request,
+        Request::NotesTokensAdd {
+            alias: crate::credentials::Alias::new("work").expect("a usable alias"),
+            host: "cortex.page".to_owned(),
+            apex: false,
+        }
+    );
+
+    let apex = accepted(&["notes", "tokens", "add", "work", "cortex.page", "apex"]);
+    assert_eq!(
+        apex.request,
+        Request::NotesTokensAdd {
+            alias: crate::credentials::Alias::new("work").expect("a usable alias"),
+            host: "cortex.page".to_owned(),
+            apex: true,
+        }
+    );
+
+    // The listing is still one word and is not swallowed by the verb above.
+    assert_eq!(accepted(&["notes", "tokens"]).request, Request::NotesTokens);
+}
+
+/// An alias the store would not hold is refused by the parser, not later.
+#[test]
+fn an_alias_the_store_would_not_hold_is_refused_before_anything_is_read() {
+    let refusal = refuse(typed(&["notes", "tokens", "add", "", "cortex.page"]));
+    assert_eq!(variant_of(&refusal), "UnusableAlias");
+}
+
+/// The measured scope reaches the entry, and reaches the two places that read
+/// it back.
+///
+/// **This is the check the order in `notes_tokens_add` exists for.** A dropped
+/// `with_tools` leaves the entry carrying `ToolScope::default()`, and then two
+/// separate things lie: ADR-0007 D8's confirmation says the credential grants
+/// nothing, and the description the agent reads under D2 says the same. Both
+/// are asserted, because either alone would be satisfied by a version that set
+/// the count in one place and not the other.
+#[test]
+fn adr_0007_d6s_measured_scope_reaches_the_entry_and_both_things_that_render_it() {
+    let secret = crate::credentials::Secret::notes("nn_mcp_not-a-real-token")
+        .expect("an nn_mcp_ value is a Nuclear Notes secret");
+    let alias = crate::credentials::Alias::new("work").expect("a usable alias");
+    let scope = crate::credentials::ToolScope::new(vec![
+        "pages.read".to_owned(),
+        "pages.list".to_owned(),
+        "search.global".to_owned(),
+    ]);
+
+    let entry = crate::cli::run::notes_entry(&alias, "cortex.page", false, secret, scope)
+        .expect("a well-formed entry");
+
+    assert_eq!(
+        entry.tools().map(crate::credentials::ToolScope::count),
+        Some(3),
+        "the scope the instance reported did not reach the entry, so D8's confirmation and D2's \
+         description will both understate what this credential grants"
+    );
+    assert!(
+        entry.description().as_str().contains("granting 3 tool(s)"),
+        "the description the agent reads does not name the scope: {:?}",
+        entry.description().as_str()
+    );
+    assert!(
+        entry.description().as_str().contains("cortex.page"),
+        "the description does not say which instance this credential is for: {:?}",
+        entry.description().as_str()
+    );
+}
+
+/// The sibling: the word `apex` changes the reach and nothing else.
+#[test]
+fn adr_0007_d8s_reach_follows_the_word_and_the_scope_is_carried_either_way() {
+    let scope = crate::credentials::ToolScope::new(vec!["pages.read".to_owned()]);
+    let locked = crate::cli::run::notes_entry(
+        &crate::credentials::Alias::new("locked").expect("a usable alias"),
+        "cortex.page",
+        false,
+        crate::credentials::Secret::notes("nn_mcp_one").expect("a Nuclear Notes secret"),
+        scope.clone(),
+    )
+    .expect("a well-formed entry");
+    let apex = crate::cli::run::notes_entry(
+        &crate::credentials::Alias::new("apex").expect("a usable alias"),
+        "cortex.page",
+        true,
+        crate::credentials::Secret::notes("nn_mcp_two").expect("a Nuclear Notes secret"),
+        scope,
+    )
+    .expect("a well-formed entry");
+
+    assert!(
+        !locked
+            .reach()
+            .expect("a Nuclear Notes entry has a reach")
+            .is_apex()
+    );
+    assert!(
+        apex.reach()
+            .expect("a Nuclear Notes entry has a reach")
+            .is_apex()
+    );
+    assert_eq!(
+        locked.tools().map(crate::credentials::ToolScope::count),
+        apex.tools().map(crate::credentials::ToolScope::count),
+        "the reach is not the scope and neither may move the other"
     );
 }

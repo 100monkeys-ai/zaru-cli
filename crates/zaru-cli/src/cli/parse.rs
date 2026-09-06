@@ -53,6 +53,7 @@ use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::cli::namespace::Namespace;
 use crate::cli::refusal::CommandRefused;
 use crate::config::Key;
+use crate::credentials::Alias;
 use crate::providers::ProviderKind;
 use crate::session::SessionId;
 use std::ffi::OsString;
@@ -306,13 +307,60 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             }
             (other, _, _) => unreachable!("`{other}` is not one of Namespace::Session's verbs"),
         },
-        Namespace::Notes => match verb(namespace, rest)? {
-            ("tokens", None, _) => Ok(Request::NotesTokens),
-            ("tokens", Some(extra), command) => Err(CommandRefused::UnexpectedWord {
-                command,
+        // The second namespace whose grammar is two words deep, and it stopped
+        // going through `verb` on 2026-09-05 when `tokens add` arrived. The
+        // nesting is `providers keys add <kind>`'s and for the same reason:
+        // `notes tokens` lists and `notes tokens add` writes, and flattening it
+        // to `notes add` would read as though it were about notes rather than
+        // about their tokens.
+        Namespace::Notes => match rest {
+            [] => Err(CommandRefused::VerbMissing { namespace }),
+            [tokens] if tokens == TOKENS => Ok(Request::NotesTokens),
+            [tokens, add] if tokens == TOKENS && add == ADD => {
+                Err(CommandRefused::ArgumentMissing {
+                    command: format!("{namespace} {TOKENS} {ADD}"),
+                    argument: "an alias and an instance host",
+                })
+            }
+            [tokens, add, _alias] if tokens == TOKENS && add == ADD => {
+                Err(CommandRefused::ArgumentMissing {
+                    command: format!("{namespace} {TOKENS} {ADD}"),
+                    argument: "an instance host",
+                })
+            }
+            [tokens, add, alias, host] if tokens == TOKENS && add == ADD => {
+                Ok(Request::NotesTokensAdd {
+                    alias: Alias::new(alias).map_err(CommandRefused::UnusableAlias)?,
+                    host: (*host).to_owned(),
+                    apex: false,
+                })
+            }
+            // ADR-0007 D8: instance-locked "unless the user explicitly chooses
+            // otherwise". The choice is this word and there is no flag, no
+            // default and no inference from the host.
+            [tokens, add, alias, host, apex] if tokens == TOKENS && add == ADD && apex == APEX => {
+                Ok(Request::NotesTokensAdd {
+                    alias: Alias::new(alias).map_err(CommandRefused::UnusableAlias)?,
+                    host: (*host).to_owned(),
+                    apex: true,
+                })
+            }
+            [tokens, add, _, _, extra, ..] if tokens == TOKENS && add == ADD => {
+                Err(CommandRefused::UnexpectedWord {
+                    command: format!("{namespace} {TOKENS} {ADD}"),
+                    offered: extra.escape_debug().to_string(),
+                })
+            }
+            [tokens, extra, ..] if tokens == TOKENS => Err(CommandRefused::UnknownVerb {
+                namespace,
                 offered: extra.escape_debug().to_string(),
+                nearest: crate::config::nearest::nearest([ADD], extra),
             }),
-            (other, _, _) => unreachable!("`{other}` is not one of Namespace::Notes's verbs"),
+            [extra, ..] => Err(CommandRefused::UnknownVerb {
+                namespace,
+                offered: extra.escape_debug().to_string(),
+                nearest: crate::config::nearest::nearest([TOKENS], extra),
+            }),
         },
         // The one namespace whose grammar is two words deep, so it does not
         // go through `verb`. See `Namespace::verbs` for why the nesting is
@@ -429,3 +477,10 @@ const KEYS: &str = "keys";
 
 /// The verb `providers keys` takes.
 const ADD: &str = "add";
+
+/// The verb under `notes`, spelled once.
+const TOKENS: &str = "tokens";
+
+/// The word ADR-0007 D8 requires a user to type to store a credential with no
+/// instance boundary. Never a default and never inferred.
+const APEX: &str = "apex";

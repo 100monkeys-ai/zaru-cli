@@ -67,7 +67,7 @@ pub use entry::{
     Role, ToolScope, Ttl, TtlRefused,
 };
 pub use family::Family;
-pub use notes::{Cached, Refreshed, ScopeError, bearer_for_dispatch};
+pub use notes::{Cached, ReachFailure, Refreshed, ScopeError, bearer_for_dispatch, tool_scope_at};
 pub use port::Confirm;
 pub use projection::{Listed, Listing, NAMESPACE_PREFIX, Namespace};
 pub use sealing::{

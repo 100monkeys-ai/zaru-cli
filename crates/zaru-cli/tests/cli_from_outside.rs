@@ -112,6 +112,50 @@ fn zaru(home: &Home, arguments: &[&str]) -> Ran {
     ran
 }
 
+/// Run the built binary with something on its standard input.
+///
+/// The sibling of [`zaru`], and separate rather than an extra argument on it,
+/// because only the two `add` commands read standard input at all and a helper
+/// that always opened a pipe would change what every other check exercises.
+fn zaru_with_input(home: &Home, arguments: &[&str], input: &str) -> Ran {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        .args(arguments)
+        .env_clear()
+        .env("HOME", home.path())
+        .current_dir(home.project())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to execute the built zaru binary");
+    child
+        .stdin
+        .as_mut()
+        .expect("the child's standard input was piped")
+        .write_all(input.as_bytes())
+        .expect("the child took its input");
+    let output = child.wait_with_output().expect("the child exited");
+
+    let ran = Ran {
+        stdout: String::from_utf8(output.stdout).expect("zaru printed invalid UTF-8"),
+        stderr: String::from_utf8(output.stderr).expect("zaru printed invalid UTF-8 on stderr"),
+        code: output
+            .status
+            .code()
+            .expect("the binary was killed by a signal rather than exiting"),
+    };
+    println!("-- zaru {} (with input) --", arguments.join(" "));
+    for line in ran.stdout.lines() {
+        println!("   {line}");
+    }
+    for line in ran.stderr.lines() {
+        println!(" ! {line}");
+    }
+    println!("   exit {}", ran.code);
+    ran
+}
+
 /// ADR-0016 D5's `0` and `2`, on the artefact rather than on the mapping.
 ///
 /// **This is the clause moving.** That record's Status tracking has said since
@@ -1006,5 +1050,111 @@ fn adr_0016_d5s_seventy_is_a_reported_defect_and_the_report_names_the_session() 
         !ran.stderr.contains("this is not a record"),
         "the report quoted the file's contents, which D3's own shape has nowhere to put: {}",
         ran.stderr
+    );
+}
+
+/// The awkward tail a planted value carries: a combining acute and an
+/// astral-plane character, so a rendering that escaped rather than printed is
+/// still caught by the value's ASCII core.
+const AWKWARD_TAIL: &str = "-e\u{301}\u{1f701}";
+
+/// The value a check plants and then looks for, shaped like a token and not
+/// being one.
+///
+/// Deliberately awkward for the reason `zaru-cli`'s own fixtures are: it
+/// carries a combining mark and an astral-plane character, so a rendering that
+/// escaped rather than printed is still caught by its ASCII core.
+fn planted_token() -> String {
+    format!(
+        "not_a_token_{}_{}{AWKWARD_TAIL}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after the epoch")
+            .as_nanos()
+    )
+}
+
+/// The ASCII part of a planted value, which no escaping scheme alters.
+fn ascii_core(value: &str) -> &str {
+    value.strip_suffix(AWKWARD_TAIL).unwrap_or(value)
+}
+
+/// ADR-0007 D7's `add`, refusing before it reaches anything.
+///
+/// **The shape is checked before the network**, which is what makes this
+/// runnable on a gate with none. A value whose prefix names no ADR-0161 kind is
+/// refused by `Secret::notes`, and `notes tokens add` reaches
+/// `credentials::tool_scope_at` only after that returns — so no socket is
+/// opened, no instance is addressed, and the check needs neither.
+#[test]
+fn adr_0007_d7s_add_refuses_a_value_that_is_not_a_token_and_quotes_none_of_it() {
+    let home = Home::new("notes-add-refused");
+    let planted = planted_token();
+
+    let ran = zaru_with_input(
+        &home,
+        &["notes", "tokens", "add", "work", "cortex.page"],
+        &format!("{planted}\n"),
+    );
+
+    assert_eq!(
+        ran.code, 2,
+        "a value the user supplied and can supply again is ADR-0016 D5's user-correctable"
+    );
+    let rendered = format!("{}{}", ran.stdout, ran.stderr);
+    assert!(
+        !rendered.contains(&planted),
+        "the refusal published the value verbatim: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains(ascii_core(&planted)),
+        "the refusal published the value in an escaped form; its ASCII core {:?} is in \
+         {rendered:?}",
+        ascii_core(&planted)
+    );
+    assert!(
+        rendered.contains("notes tokens add work cortex.page"),
+        "the remedy does not name the command that would work: {rendered:?}"
+    );
+}
+
+/// The sibling: refused earlier still, at the parser, with the pipe untouched.
+///
+/// It discriminates. Without it, a `notes tokens add` that refused every input
+/// for any reason would pass the check above, and the two refusals here are
+/// raised by different code at different times — one by the parser before
+/// standard input is read at all, one by the secret's own shape check
+/// afterwards.
+#[test]
+fn adr_0007_d7s_add_names_each_argument_it_was_not_given() {
+    let home = Home::new("notes-add-arguments");
+
+    let no_arguments = zaru(&home, &["notes", "tokens", "add"]);
+    assert_eq!(no_arguments.code, 2);
+    assert!(
+        format!("{}{}", no_arguments.stdout, no_arguments.stderr)
+            .contains("an alias and an instance host"),
+        "the refusal does not say what was missing: {:?}",
+        no_arguments.stderr
+    );
+
+    let no_host = zaru(&home, &["notes", "tokens", "add", "work"]);
+    assert_eq!(no_host.code, 2);
+    assert!(
+        format!("{}{}", no_host.stdout, no_host.stderr).contains("an instance host"),
+        "an alias with no host is a different refusal and must say so: {:?}",
+        no_host.stderr
+    );
+
+    let too_many = zaru(
+        &home,
+        &["notes", "tokens", "add", "work", "cortex.page", "sideways"],
+    );
+    assert_eq!(too_many.code, 2);
+    assert!(
+        format!("{}{}", too_many.stdout, too_many.stderr).contains("sideways"),
+        "the refusal does not name the word it would not take: {:?}",
+        too_many.stderr
     );
 }

@@ -645,6 +645,66 @@ fn an_apex_token_offered_with_no_confirmer_is_refused() {
     assert!(store.is_empty(), "the apex token was stored anyway");
 }
 
+/// The defect the order in `notes tokens add` prevents, made visible.
+///
+/// ADR-0007 D8 requires the apex confirmation to state "what it grants", and
+/// `apex_grants` composes that sentence out of the entry's own tool scope. An
+/// entry built and stored **before** `tools/list` was read carries
+/// `ToolScope::default()`, so the sentence the user is asked to accept says the
+/// credential grants nothing — which is the least alarming possible wording for
+/// the most dangerous possible credential.
+///
+/// Two entries, identical but for `with_tools`, and the two sentences differ.
+/// That is why `cli::run::notes_tokens_add` reaches the instance and reads its
+/// scope before an entry exists at all.
+#[test]
+fn an_apex_confirmation_states_the_scope_the_entry_carries_and_zero_when_it_carries_none() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let (base, _) = staged_entry("unread");
+    let unread = Entry::notes(
+        base.alias().clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        Reach::Apex,
+    )
+    .expect("an nn_ value builds a Nuclear Notes entry");
+    let before = store
+        .add(unread, &keys, None)
+        .expect_err("an apex token with no confirmer is refused")
+        .to_string();
+
+    let (base, _) = staged_entry("read");
+    let read = Entry::notes(
+        base.alias().clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        Reach::Apex,
+    )
+    .expect("an nn_ value builds a Nuclear Notes entry")
+    .with_tools(ToolScope::new(vec![
+        "pages.read".to_owned(),
+        "pages.apply_patch".to_owned(),
+        "workspaces.create".to_owned(),
+    ]));
+    let after = store
+        .add(read, &keys, None)
+        .expect_err("an apex token with no confirmer is refused")
+        .to_string();
+
+    assert!(
+        before.contains("grants 0 tool(s)"),
+        "an entry stored before its scope was read says it grants nothing: {before}"
+    );
+    assert!(
+        after.contains("grants 3 tool(s)"),
+        "an entry stored after its scope was read says what it really grants: {after}"
+    );
+    assert!(store.is_empty(), "neither apex token was stored");
+}
+
 #[test]
 fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
     let scratch = ScratchRoot::new();

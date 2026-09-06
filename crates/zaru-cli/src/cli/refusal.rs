@@ -28,6 +28,7 @@
 
 use crate::cli::namespace::Namespace;
 use crate::config::KeyRefused;
+use crate::credentials::AliasRefused;
 use crate::session::SessionIdRefused;
 use core::fmt;
 
@@ -140,6 +141,8 @@ pub enum CommandRefused {
     UnusableKey(KeyRefused),
     /// A session id that is not a ULID.
     UnusableSessionId(SessionIdRefused),
+    /// An alias that is not a name this store will hold.
+    UnusableAlias(AliasRefused),
 }
 
 impl fmt::Display for CommandRefused {
@@ -200,6 +203,7 @@ impl fmt::Display for CommandRefused {
                 f,
                 "a session is named by a ULID, and this one is not: {refusal}"
             ),
+            Self::UnusableAlias(refusal) => write!(f, "{refusal}"),
         }
     }
 }
@@ -209,6 +213,7 @@ impl std::error::Error for CommandRefused {
         match self {
             Self::UnusableKey(refusal) => Some(refusal),
             Self::UnusableSessionId(refusal) => Some(refusal),
+            Self::UnusableAlias(refusal) => Some(refusal),
             Self::NotText { .. }
             | Self::UnknownCommand { .. }
             | Self::NamespaceNotBuilt { .. }

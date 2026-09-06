@@ -49,22 +49,29 @@ use zaru_tui::composer::{Entries, Entry, EntryKind, MATCH_LIMIT};
 
 /// What the strip says when the fast tier has nothing to search.
 ///
-/// # Two true facts, and no command
+/// # One true fact, and now a command
 ///
 /// **Drafted 2026-09-05 under a delegated coordinator ruling, open to Jeshua's
 /// veto**, and the words are user-facing prose rather than an implementation
-/// detail. Both halves are true of this build: nothing here can open a
-/// transport to Nuclear Notes — `zaru_notes::session::Endpoint` has no
-/// implementation in any product tree — and so nothing is cached for the trie
-/// to hold.
+/// detail. It said two things, and **the first stopped being true later the
+/// same day**: that "nothing here can open a transport to Nuclear Notes —
+/// `zaru_notes::session::Endpoint` has no implementation in any product tree".
+/// `zaru_notes::session::HttpEndpoint` is that implementation. What remains
+/// true is the second half alone: nothing is cached, because no stored token
+/// is read by the composer and nothing populates a trie.
 ///
-/// **It names no command on purpose.** `/notes` takes exactly one verb,
-/// `tokens`; there is no `add` for a Nuclear Notes token on either surface, and
-/// [ADR-0007] D7's `notes tokens add` needs a server to authenticate against.
-/// A line pointing at a command that does not exist is [ADR-0016] D2's "an
-/// error message whose reader cannot act", and inventing a spelling here is the
-/// gap library agent-lessons-3 §67 is written against — a noun in prose that
-/// never got its row in [ADR-0015] D2's table.
+/// **It named no command on purpose and now names one**, because the reason it
+/// named none has gone. That reason was that `notes tokens add` "needs a server
+/// to authenticate against" and did not exist, so a line pointing at it would
+/// be [ADR-0016] D2's "an error message whose reader cannot act". It exists,
+/// it is in `--help`, and a reader who runs it stores a credential — so the
+/// line names it, and the rule is the same rule: a remedy names something the
+/// binary runs.
+///
+/// **It still promises nothing about what happens next.** Storing a token is
+/// not the same as the strip filling, because nothing yet reads a stored token
+/// into a session — so the line says what to run and does not say the search
+/// will then work.
 ///
 /// It is one line and it is short, because the composer's own frame is as
 /// narrow as forty columns and a longer sentence is clipped rather than
@@ -73,7 +80,7 @@ use zaru_tui::composer::{Entries, Entry, EntryKind, MATCH_LIMIT};
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-pub const NOTHING_CACHED: &str = "Nuclear Notes is not reachable yet · nothing cached to search";
+pub const NOTHING_CACHED: &str = "nothing cached to search · add a token: zaru notes tokens add";
 
 /// The composer's fast tier, over the trie `zaru-notes` owns.
 #[derive(Debug)]

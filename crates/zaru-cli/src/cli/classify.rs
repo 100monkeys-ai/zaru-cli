@@ -65,6 +65,7 @@
 use crate::cli::layers::LoadFailure;
 use crate::cli::refusal::CommandRefused;
 use crate::config::{Key, Schema};
+use crate::credentials::{Alias, ReachFailure};
 use crate::credentials::{
     CREDENTIAL_KEY_VARIABLE, SealingError, SealingKey, SecretRefused, StoreError,
 };
@@ -203,6 +204,11 @@ impl<'a> Surface<'a> {
             CommandRefused::UnusableSessionId(_) => run(
                 "`zaru sessions list` prints every id on this machine",
                 "zaru sessions list",
+            ),
+            CommandRefused::UnusableAlias(_) => act(
+                "an alias is the local name you will call this credential by, as in `work` or \
+                 `personal`"
+                    .to_owned(),
             ),
         };
         correctable(refusal, remedy)
@@ -457,6 +463,73 @@ impl<'a> Surface<'a> {
                  providers keys add {kind}`"
             )),
         )
+    }
+
+    /// Standard input could not be read while adding a Nuclear Notes token.
+    ///
+    /// The sibling of [`Self::key_not_readable`] and for the same reasons; the
+    /// two are separate functions rather than one taking a noun because the
+    /// remedy names the command, and naming the wrong one is
+    /// [ADR-0016](https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy)
+    /// D2's "an error message whose reader cannot act".
+    #[must_use]
+    pub fn token_not_readable(alias: &Alias, failure: &std::io::Error) -> Classified {
+        Classified::Environmental {
+            statement: Statement::sanitised(format!(
+                "the token for \"{alias}\" could not be read from standard input: {failure}. \
+                 Whatever was read before the failure is deliberately not quoted -- it is part of \
+                 a credential"
+            )),
+            wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                "standard input has already been consumed; run the command again with the token \
+                 on its input"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// A Nuclear Notes token the store would not take.
+    #[must_use]
+    pub fn token_refused(alias: &Alias, host: &str, refusal: &SecretRefused) -> Classified {
+        correctable(
+            refusal,
+            act(format!(
+                "pipe the token in with no trailing spaces, as in `printf %s \"$TOKEN\" | zaru \
+                 notes tokens add {alias} {host}`"
+            )),
+        )
+    }
+
+    /// A Nuclear Notes instance that would not answer while a token was added.
+    ///
+    /// # This classifies the command, not the enum
+    ///
+    /// [ADR-0016]'s taxonomy is mapped per enum, all or nothing, and
+    /// `NotesError` is one of the enums this crate deliberately does not map —
+    /// a `forbidden` from Nuclear Notes could be a revoked token, a scope
+    /// change or a workspace the user was removed from, and
+    /// [ADR-0006](https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces)
+    /// D7 says the server does not reveal which. **Nothing here reads the
+    /// variant**: the class comes from what the command was doing, which is the
+    /// "class by provenance" reading [ADR-0016] already carries as proposed.
+    /// A person who ran `notes tokens add` and got no answer has exactly two
+    /// things to change — the host they typed and the token they piped — so the
+    /// class is theirs and the remedy names both. The client's own sentence is
+    /// carried verbatim beside it and is not interpreted.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn notes_unreachable(alias: &Alias, host: &str, failure: &ReachFailure) -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(format!(
+                "the token for \"{alias}\" was not stored, because {host} did not complete a \
+                 session: {failure}"
+            )),
+            remedy: act(format!(
+                "check the host and the token, then run `printf %s \"$TOKEN\" | zaru notes tokens \
+                 add {alias} {host}` again"
+            )),
+        }
     }
 
     /// `--continue` on a machine with no sessions at all.

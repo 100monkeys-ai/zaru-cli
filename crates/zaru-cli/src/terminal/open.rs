@@ -125,9 +125,13 @@ pub fn shell_for(
     let transcript = Transcript::of(&resumed.tail);
     shell.refresh(&transcript);
 
-    // ADR-0005 D3's fast tier. Nothing populates it on a real machine yet --
-    // `zaru_notes::session::Endpoint` has no implementation, so no listing can
-    // be made -- and the composer is told to say so rather than paint nothing.
+    // ADR-0005 D3's fast tier. Nothing populates it on a real machine yet, and
+    // the reason changed on 2026-09-05: it was that
+    // `zaru_notes::session::Endpoint` had no implementation, so no listing
+    // could be made at all. It has one. What is missing now is narrower and is
+    // one step rather than a transport -- nothing here reads a stored token
+    // into a session -- and the composer is told to say so rather than paint
+    // nothing.
     let trie = NotesTrie::nothing_cached(attached_workspace(&directory));
     shell.composer_mut().set_absence(trie.absence());
     Ok((shell, transcript, trie, resumed))

@@ -259,6 +259,10 @@ impl Namespace {
             Self::Runtime | Self::Models | Self::Init => &[],
             Self::Config => &["explain"],
             Self::Session => &["list", "rm"],
+            // Like `providers`, one verb with a verb of its own under it:
+            // `notes tokens` lists and `notes tokens add <alias> <host>`
+            // writes. Both namespaces are therefore parsed by matching the
+            // words rather than through `verb`.
             Self::Notes => &["tokens"],
             // One verb with a verb of its own under it, which is why this
             // namespace is the one arm of the grammar that does not go

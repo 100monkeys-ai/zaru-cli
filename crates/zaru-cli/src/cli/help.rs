@@ -54,10 +54,17 @@ fn summaries(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
             ("sessions list", "print every session on this machine"),
             ("sessions rm <id>", "delete a session's directory"),
         ],
-        Namespace::Notes => &[(
-            "notes tokens",
-            "print the stored Nuclear Notes tokens and which is the composer's",
-        )],
+        Namespace::Notes => &[
+            (
+                "notes tokens",
+                "print the stored Nuclear Notes tokens and which is the composer's",
+            ),
+            (
+                "notes tokens add <alias> <host>",
+                "store a Nuclear Notes token, read from standard input; add the word `apex` \
+                 after the host for a credential with no instance boundary",
+            ),
+        ],
         Namespace::Init => &[(
             "init",
             "write ADR-0009 D1's manifest into this directory, once, if there is none",

@@ -28,7 +28,10 @@ use crate::cli::classify::Surface;
 use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::cli::{help, layers, render};
 use crate::config::{Key, Resolution};
-use crate::credentials::{CredentialStore, Description, Entry, HarnessKeys, OsKeyring, Secret};
+use crate::credentials::{
+    Alias, Confirm, CredentialStore, Description, Entry, HarnessKeys, Instance, OsKeyring, Reach,
+    Secret, tool_scope_at,
+};
 use crate::failure::{Classified, Exit, SessionEvidence};
 use crate::providers::{ModelTable, ProviderKind};
 use crate::runtime::{ResolvedTier, Runtime};
@@ -115,6 +118,9 @@ impl Run<'_> {
             Request::Resume { id } => self.resume(id),
             Request::Continue => self.resume_latest(),
             Request::NotesTokens => self.notes_tokens(),
+            Request::NotesTokensAdd { alias, host, apex } => {
+                self.notes_tokens_add(alias, host, *apex)
+            }
             Request::ProviderKeys => self.provider_keys(),
             Request::ProviderKeysAdd { kind } => self.provider_keys_add(*kind),
             Request::Task { words } => self.task(words, &line.overrides),
@@ -422,6 +428,115 @@ impl Run<'_> {
         }
     }
 
+    /// [ADR-0007] D7's `add`, the second of that clause's five surfaces.
+    ///
+    /// # The order is the record's and not a convenience
+    ///
+    /// Read the token, **reach the instance and read `tools/list`**, build the
+    /// entry with that scope on it, then store it. D6 wants "one `tools/list`
+    /// per token at attach"; D8 wants an apex confirmation that states "what it
+    /// grants", and `CredentialStore::add` composes that sentence out of the
+    /// entry's own scope. Storing first and reading the scope afterwards would
+    /// ask the user to accept a credential the prompt said grants zero tools.
+    /// See [`tool_scope_at`](crate::credentials::tool_scope_at).
+    ///
+    /// # The confirmation is asked at the terminal, and refusing is the answer
+    /// when it cannot be
+    ///
+    /// The token arrives on standard input, so standard input is spent by the
+    /// time D8's question needs asking. It is asked on the controlling
+    /// terminal instead. **On a machine with no terminal — a pipeline, a
+    /// runner, a container — no confirmer is supplied at all**, and the store
+    /// refuses: clause 11's own words are that apex "requires a confirmation
+    /// that refuses rather than defaults when it cannot be asked". The refusal
+    /// is the correct outcome rather than a limitation, and it is the outcome
+    /// on every headless machine.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    fn notes_tokens_add(&self, alias: &Alias, host: &str, apex: bool) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+
+        let mut offered = String::new();
+        if let Err(failure) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut offered) {
+            return Outcome::failed(Surface::token_not_readable(alias, &failure));
+        }
+        // Exactly one trailing line ending, and only if it is there -- the same
+        // rule `providers keys add` applies, because the same `printf` and the
+        // same `echo` reach both.
+        let offered = offered
+            .strip_suffix('\n')
+            .unwrap_or(&offered)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| offered.strip_suffix('\n').unwrap_or(&offered));
+
+        let secret = match Secret::notes(offered) {
+            Ok(secret) => secret,
+            // The refusal carries no part of the value: `SecretRefused` is
+            // `Copy` and therefore cannot.
+            Err(refusal) => return Outcome::failed(Surface::token_refused(alias, host, &refusal)),
+        };
+
+        // The `expect` is the one `terminal::open` already carries and is
+        // deliberately not a classification: a reactor that will not register
+        // with the operating system is ADR-0016 D3's defect, caught by the
+        // boundary in `main`, and inventing a user-correctable class for it
+        // would be that record's "never present a defect as a user error".
+        let runtime = crate::compose::turn::runtime()
+            .expect("a current-thread runtime with the io and time drivers");
+        let scope = match runtime.block_on(tool_scope_at(host, &secret)) {
+            Ok(scope) => scope,
+            Err(failure) => {
+                return Outcome::failed(Surface::notes_unreachable(alias, host, &failure));
+            }
+        };
+        let granted = scope.count();
+        let entry = match notes_entry(alias, host, apex, secret, scope) {
+            Ok(entry) => entry,
+            Err(EntryUndecided::Description(refusal)) => {
+                return Outcome::failed(undecided_description(
+                    self.version,
+                    self.report_at,
+                    &refusal,
+                ));
+            }
+            Err(EntryUndecided::Entry(refusal)) => {
+                return Outcome::failed(undecided_entry(self.version, self.report_at, &refusal));
+            }
+        };
+
+        let root = match CredentialStore::default_root() {
+            Ok(root) => root,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        let keyring = OsKeyring::for_store(&root);
+        let keys = HarnessKeys::from_process(&keyring);
+        let mut store = match CredentialStore::open(root) {
+            Ok(store) => store,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+
+        let terminal = TerminalConfirm::available();
+        let confirmer = terminal.as_ref().map(|tty| tty as &dyn Confirm);
+        match store.add(entry, &keys, confirmer) {
+            Ok(()) => Outcome::printed(vec![
+                format!("stored a Nuclear Notes token under the alias `{alias}`."),
+                format!("  {host} reported {granted} tool(s), and that is what the store cached."),
+                "  the value is sealed and is not printed by any command.".to_owned(),
+            ]),
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
+        }
+    }
+
     /// The refusal every path that would need a provider ends in.
     ///
     /// **Two arms, and they are different classes**, because what is missing
@@ -574,4 +689,131 @@ fn undecided_entry(
         },
         SessionEvidence::NoSessionExists,
     ))
+}
+
+/// What building a Nuclear Notes entry can refuse on, so the caller can render
+/// each with the sentence it already has.
+#[derive(Debug)]
+pub(crate) enum EntryUndecided {
+    /// The description this function composed was not one the store takes.
+    Description(crate::credentials::DescriptionRefused),
+    /// The entry was not one the store takes.
+    Entry(crate::credentials::EntryRefused),
+}
+
+/// The entry `notes tokens add` stores, from the scope the instance reported.
+///
+/// # Why this is a function and not four statements in its caller
+///
+/// **It is the only place the measured scope and the entry meet**, and the
+/// defect it exists to make checkable is a single dropped call: an entry built
+/// without `with_tools` carries `ToolScope::default()`, so ADR-0007 D8's
+/// confirmation tells the user the credential grants nothing, and the
+/// description the agent reads says the same. Neither is visible without a
+/// server unless the joining is a function, so it is one, and a check drives it
+/// with a scope of a known size.
+///
+/// The description names the count for the same reason D8's prompt does: a
+/// stored credential whose own description understates it is metadata that will
+/// be confidently acted upon, which that record's Negative section names.
+pub(crate) fn notes_entry(
+    alias: &Alias,
+    host: &str,
+    apex: bool,
+    secret: Secret,
+    scope: crate::credentials::ToolScope,
+) -> Result<Entry, EntryUndecided> {
+    let description = Description::new(format!(
+        "the Nuclear Notes token for {host}, granting {} tool(s)",
+        scope.count()
+    ))
+    .map_err(EntryUndecided::Description)?;
+    // ADR-0007 D8: instance-locked unless the user explicitly chose otherwise,
+    // and the word they typed is the only thing that chooses.
+    let reach = if apex {
+        Reach::Apex
+    } else {
+        Reach::InstanceLocked(Instance::new(host))
+    };
+    Ok(Entry::notes(alias.clone(), description, secret, reach)
+        .map_err(EntryUndecided::Entry)?
+        .with_tools(scope))
+}
+
+/// [ADR-0007] D8's confirmation, asked on the controlling terminal.
+///
+/// # Why not standard input
+///
+/// The token is read from standard input, so by the time D8's question needs
+/// asking there is nothing left on it: a pipe is at end of file and a here-doc
+/// is spent. Reading the answer from the same descriptor would either block
+/// forever or read end-of-file and take it for a refusal the user never gave.
+/// `/dev/tty` is the descriptor that is still the person, whatever standard
+/// input was redirected to.
+///
+/// # A machine with no terminal supplies no confirmer at all
+///
+/// [`Self::available`] answers `None` there, and the caller passes `None` to
+/// `CredentialStore::add`, which refuses with its own sentence naming the
+/// alias. That is [ADR-0007] clause 11's requirement in its own words — apex
+/// "requires a confirmation that refuses rather than defaults when it cannot be
+/// asked" — and it is what happens on every runner, pipeline and container.
+/// **An implementation that answered `false` here would be a different thing**:
+/// a decline the user made rather than a question nobody could ask, and the
+/// store has separate refusals for the two.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[derive(Debug)]
+struct TerminalConfirm {
+    tty: std::path::PathBuf,
+}
+
+impl TerminalConfirm {
+    /// The controlling terminal, if this process has one.
+    fn available() -> Option<Self> {
+        let tty = std::path::PathBuf::from("/dev/tty");
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&tty)
+            .ok()
+            .map(|_| Self { tty })
+    }
+}
+
+impl Confirm for TerminalConfirm {
+    /// Ask, and take anything but an explicit yes for a no.
+    ///
+    /// **The default is refusal**, which is D8's "never silent, never a
+    /// default" read the only way that is safe: a reader who presses return
+    /// without reading has not accepted a credential with no instance
+    /// boundary.
+    fn confirm_apex(&self, alias: &Alias, grants: &str) -> bool {
+        use std::io::{BufRead, Write};
+        let Ok(mut terminal) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.tty)
+        else {
+            return false;
+        };
+        if write!(
+            terminal,
+            "`{alias}` has {grants}.\nADR-0007 D8 asks before this is stored. Type `yes` to \
+             store it: "
+        )
+        .and_then(|()| terminal.flush())
+        .is_err()
+        {
+            return false;
+        }
+        let mut answer = String::new();
+        if std::io::BufReader::new(terminal)
+            .read_line(&mut answer)
+            .is_err()
+        {
+            return false;
+        }
+        answer.trim() == "yes"
+    }
 }

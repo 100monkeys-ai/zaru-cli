@@ -36,6 +36,7 @@
 //! [Ubiquitous Language]: https://100monkeys-ai.cortex.page/zaru/p/architecture/ubiquitous-language
 
 use crate::config::Key;
+use crate::credentials::Alias;
 use crate::providers::ProviderKind;
 use crate::session::SessionId;
 
@@ -145,6 +146,31 @@ pub enum Request {
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     NotesTokens,
+    /// `zaru notes tokens add <alias> <host> [apex]` — [ADR-0007] D7's
+    /// `add`, the second of that clause's five surfaces to exist.
+    ///
+    /// **The token is read from standard input**, for the reason
+    /// [`Request::ProviderKeysAdd`] gives: an argument is in the shell's
+    /// history file, in `/proc/<pid>/cmdline`, and in `ps` for every user on
+    /// the machine for as long as the process runs.
+    ///
+    /// `host` is where the instance serves and is **not** the same question as
+    /// `apex`. The host says where to connect; [ADR-0007] D8's reach says what
+    /// the credential may cross once connected, and it is instance-locked
+    /// "unless the user explicitly chooses otherwise" — so the choice is a word
+    /// the user types rather than a default anything infers.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    NotesTokensAdd {
+        /// The local name this credential is known by. [ADR-0007] D2's
+        /// `alias`, already validated.
+        alias: Alias,
+        /// The instance host to authenticate against.
+        host: String,
+        /// Whether the user declared this credential to have no instance
+        /// boundary. [ADR-0007] D8.
+        apex: bool,
+    },
     /// `zaru --resume <id>` — [ADR-0010] D4.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
