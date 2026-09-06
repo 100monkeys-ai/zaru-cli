@@ -7,8 +7,8 @@ use crate::compose::tests::futures_lite_block_on;
 use crate::failure::Exit;
 use crate::session::Record;
 use crate::terminal::driver::{
-    Guard, Pane as TurnPane, PaneConfirm, PaneSink, Turnable, question_for_the_shell, request_for,
-    run,
+    Guard, Pane as TurnPane, PaneConfirm, PaneSink, Surface, Turnable, question_for_the_shell,
+    request_for, run,
 };
 use crate::terminal::fixtures::{Counting, Held, Recording, Restores, press, typed};
 use crate::terminal::open::{Opening, opening_for};
@@ -2222,7 +2222,34 @@ impl crate::terminal::source::Pace for Releasing {
     }
 }
 
+/// The pace is also the clock, and that is what makes a live figure checkable.
+///
+/// [ADR-0028] D5's meter reads a [`Clock`](zaru_core::iteration::Clock) on
+/// every beat, so in a check the two have to agree about what a beat is worth.
+/// Reading this counter as `TICK × beats` makes the elapsed figure an
+/// **exact** number — `0.10s` after one beat, `0.30s` after three — where a
+/// clock a check could not set would leave it asserting about how the machine
+/// happened to schedule, which is what `Held`'s own documentation exists to
+/// refuse (library verification-lessons §57).
+///
+/// It is deliberately the same value rather than a second fixture: a pace and
+/// a clock that could disagree about how long a beat took would let a check
+/// pass while the two readings drifted.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+impl zaru_core::iteration::Clock for Releasing {
+    fn now(&self) -> core::time::Duration {
+        let beats = self.beats.load(Ordering::SeqCst);
+        crate::terminal::source::TICK * u32::try_from(beats).unwrap_or(u32::MAX)
+    }
+}
+
 impl Releasing {
+    /// How many beats have been waited, for a staging that keys on them.
+    fn beats_so_far(&self) -> usize {
+        self.beats.load(Ordering::SeqCst)
+    }
+
     fn count(&self) {
         let beats = self.beats.fetch_add(1, Ordering::SeqCst) + 1;
         if beats >= self.after && self.gate.load(Ordering::SeqCst) {
@@ -2272,6 +2299,372 @@ impl Raceable {
             finished: Arc::clone(&self.finished),
         }
     }
+}
+
+/// Everything a metered race needs, staged: the pace that is also the clock,
+/// the turn it releases, and the shell the meter writes to.
+///
+/// The token reader is a closure the check owns, so what "the provider
+/// reported" is at any beat is a value this check chose rather than one a
+/// provider produced — which is the only way to drive `Meter` without a key,
+/// a network or a `Prepared`.
+struct Metered {
+    reported: Arc<std::sync::Mutex<Option<crate::providers::TokenUsage>>>,
+}
+
+impl Metered {
+    fn new() -> Self {
+        Self {
+            reported: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// What the provider says it has spent, from now on.
+    fn reports(&self, usage: Option<crate::providers::TokenUsage>) {
+        *self.reported.lock().expect("the check owns this lock") = usage;
+    }
+
+    fn reader(&self) -> impl Fn() -> Option<crate::providers::TokenUsage> + use<> {
+        let slot = Arc::clone(&self.reported);
+        move || slot.lock().expect("the check owns this lock").clone()
+    }
+}
+
+/// A provider that reports a different figure at each stage of one turn,
+/// keyed on the **beat count** rather than on a sleep.
+///
+/// **The first version of this staged the figures from a thread with two
+/// `sleep`s and it was not an instrument**: `Releasing` returns at once, so
+/// four beats passed in microseconds and the check failed against its own
+/// staging rather than against the product. Keying on the beat makes the
+/// three stages happen in a fixed order every run, which is library
+/// verification-lessons §57 — a check over a random instrument is not a check.
+fn reports_by_beat(
+    pace: &Releasing,
+) -> impl Fn() -> Option<crate::providers::TokenUsage> + use<'_> {
+    move || match pace.beats_so_far() {
+        0 | 1 => None,
+        2 | 3 => Some(crate::providers::TokenUsage::counted(390, 79)),
+        _ => Some(crate::providers::TokenUsage::counted(902, 145)),
+    }
+}
+
+/// The status row of every frame a metered race painted.
+fn status_rows(surface: &Recording) -> Vec<String> {
+    surface
+        .frames
+        .iter()
+        .map(|frame| frame[0].trim_end().to_owned())
+        .collect()
+}
+
+/// [ADR-0028] D5's meter advances across the beats of one turn.
+///
+/// **This is the whole of what survey row 2 asked for**: "nothing moves" was
+/// measured at a real terminal on 2026-09-05, with the pane's last line
+/// unchanged for the whole exchange. The turn here is held open for five
+/// beats and the status row is read on every frame; the figures are exact
+/// because the pace is also the clock, so nothing here asserts about
+/// wall-clock time.
+///
+/// The mutants: the beat branch calling `paint` instead of `tick`; `Meter`
+/// reading its start time on every refresh instead of once.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn the_elapsed_figure_advances_across_the_beats_of_one_turn() {
+    let (source, sent) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, sent);
+    let metered = Metered::new();
+    let reader = metered.reader();
+    let meter = crate::terminal::driver::Meter::started(&pace, &reader);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    let raced = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            None,
+            Some(&meter),
+            staged.turn(),
+        ))
+    };
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Ran("the turn finished")
+    );
+    assert!(
+        staged.finished.load(Ordering::SeqCst),
+        "the staged turn never ran, so this check asserted nothing"
+    );
+
+    let rows = status_rows(&surface);
+    assert!(
+        rows.len() >= 5,
+        "the race painted {} frame(s), which is too few to watch a figure rise",
+        rows.len()
+    );
+    // Exact figures, because a beat is worth `TICK` to both the pace and the
+    // clock. A `contains` over a rising set rather than an equality over the
+    // whole row: what this check is about is the meter, not the row's order.
+    for (beat, row) in rows.iter().enumerate() {
+        let expected = crate::terminal::vocabulary::seconds(
+            crate::terminal::source::TICK * u32::try_from(beat + 1).expect("a small beat count"),
+        );
+        assert!(
+            row.contains(&expected),
+            "frame {beat} must carry {expected:?}; the row was {row:?}"
+        );
+    }
+    assert!(
+        rows.first() != rows.last(),
+        "every frame's status row was identical, so nothing moved while the turn ran"
+    );
+}
+
+/// The token count changes when an exchange reports one, and not before.
+///
+/// `Provider::usage` answers `None` until a request has been made, and a
+/// turn's several exchanges each replace the slot — so what a person watches
+/// is a figure that arrives and then rises. **Not a sum**: ADR-0012 D7's
+/// accumulating total is that record's author's, and a check that asserted one
+/// here would be the "caller that summed" `Prepared::usage` warns about.
+///
+/// The mutants: `Meter::refresh` reading the token slot once, at construction;
+/// `refresh` writing the narrow spelling into both fields.
+#[test]
+fn the_token_count_changes_when_an_exchange_reports_one_and_not_before() {
+    let (source, sent) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(6, sent);
+    // Nothing at first, then one exchange's usage, then a second exchange's
+    // larger one -- each at a named beat, so the three stages happen in the
+    // same order every run.
+    let reader = reports_by_beat(&pace);
+    let meter = crate::terminal::driver::Meter::started(&pace, &reader);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let _ = futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            None,
+            Some(&meter),
+            staged.turn(),
+        ));
+    }
+
+    let rows = status_rows(&surface);
+    let joined = rows.join("\n");
+    assert!(
+        rows.first()
+            .is_some_and(|first| !first.contains("tokens:") && !first.contains(" tokens")),
+        "the first frame must carry no token count, because no exchange had reported one; it \
+         was {:?}",
+        rows.first()
+    );
+    assert!(
+        joined.contains("tokens: 390 prompt + 79 completion = 469"),
+        "the first exchange's count must reach the row; the frames were {joined}"
+    );
+    assert!(
+        joined.contains("tokens: 902 prompt + 145 completion = 1047"),
+        "the second exchange's count must replace it; the frames were {joined}"
+    );
+    assert!(
+        !joined.contains("= 1516"),
+        "the row must not sum the two exchanges; ADR-0012 D7's total is not this arc's to take"
+    );
+}
+
+/// [ADR-0013] D6's figure is the same bytes on every frame of one turn.
+///
+/// D7 of that record confines compaction to turn boundaries, so the number
+/// cannot change mid-turn and a meter that recomputed it would be asserting a
+/// reading no record makes. **This is the check that catches a meter reaching
+/// too far**, which is the one way this arc could have moved a clause it said
+/// it would not.
+///
+/// The mutant: `Meter::refresh` writing a context segment.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[test]
+fn the_context_figure_is_the_same_bytes_on_every_frame_of_one_turn() {
+    let (source, sent) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, sent);
+    let metered = Metered::new();
+    metered.reports(Some(crate::providers::TokenUsage::counted(1, 2)));
+    let reader = metered.reader();
+    let meter = crate::terminal::driver::Meter::started(&pace, &reader);
+    let mut shell = shell();
+    // A figure the host put there at the turn boundary before this turn.
+    shell.set_context_usage(Some(zaru_tui::shell::Segment::new(
+        "context 12.3k/1048.5k tokens",
+        "12.3k/1048.5k",
+    )));
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let _ = futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            None,
+            Some(&meter),
+            staged.turn(),
+        ));
+    }
+
+    let segment = shell
+        .status()
+        .context
+        .clone()
+        .expect("the host put a figure on the row before the turn");
+    assert_eq!(
+        segment,
+        zaru_tui::shell::Segment::new("context 12.3k/1048.5k tokens", "12.3k/1048.5k"),
+        "a turn must leave ADR-0013 D6's figure exactly as it found it"
+    );
+    let rows = status_rows(&surface);
+    assert!(
+        rows.len() >= 5 && rows.iter().all(|row| row.contains("12.3k/1048.5k")),
+        "every frame of the turn must carry the same context figure; the rows were {rows:?}"
+    );
+}
+
+/// The model and the mode are on the row from the session's first frame.
+///
+/// `terminal::open` writes them once, before the pump runs, through the same
+/// `refresh_status` that writes the row's two numbers — which is what keeps
+/// "one place writes this row" literally true. This drives that function
+/// rather than the binary, for the reason the neighbouring context check
+/// already records.
+///
+/// The mutants: `refresh_status` writing the description only when `tokens`
+/// is `Some`, so a session shows no model until its first exchange;
+/// `Described::of` reading the alias instead of the resolved identifier.
+#[test]
+fn the_model_and_the_mode_are_on_the_row_from_the_sessions_first_frame() {
+    let mut shell = shell();
+    let context = crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable());
+    let redactor = Nothing;
+    let model = crate::providers::ModelId::for_a_check("gemini-3.6-flash");
+
+    crate::terminal::driver::refresh_status(
+        &mut shell,
+        &context,
+        None,
+        Some(crate::terminal::driver::Described {
+            model: &model,
+            mode: crate::tools::Mode::Yolo,
+        }),
+        &redactor,
+    );
+
+    let row = shell.status().painted(200);
+    assert!(
+        row.contains("gemini-3.6-flash"),
+        "the resolved model must be on the row; it was {row:?}"
+    );
+    assert!(
+        row.contains("mode yolo"),
+        "ADR-0011 D3's mode must be on the row; it was {row:?}"
+    );
+    assert!(
+        shell.status().tokens.is_none(),
+        "a session that has had no exchange must carry no token count"
+    );
+}
+
+/// A model identifier a cloned repository chose cannot forge a second field.
+///
+/// # The case this capability arrives with
+///
+/// `model.<alias>` is free at every configuration layer, so `./zaru.toml`
+/// chooses the string at `Rank::Model` — and until this arc there was nothing
+/// a repository could put on ADR-0001 D2's row at all. An identifier carrying
+/// the row's own separator would paint as **two** fields, and the second can
+/// read as a tier: `x · runtime.tier = linked` puts a second membrane claim on
+/// the one row that record exists to make unambiguous.
+///
+/// The property is asserted two ways, because either alone is satisfiable by
+/// the wrong thing: the row carries **exactly one** `runtime.tier = `, and the
+/// tier holds the row's **first cells** out of the painted buffer rather than
+/// merely appearing in the string.
+///
+/// The accepting sibling is the second half — an ordinary identifier reaches
+/// the row byte for byte — so the property is not bought by refusing
+/// everything.
+///
+/// The mutant: `model_row` returning the identifier unaltered.
+#[test]
+fn corpus_a_model_identifier_cannot_forge_a_second_segment_on_the_row() {
+    // Both structural spellings, and one of each alone: the separator forges a
+    // second *field*, the prefix forges a second *tier claim* without needing
+    // one, and the pair does both.
+    for hostile in [
+        "x · runtime.tier = linked",
+        "x · gemini",
+        "runtime.tier = linked",
+    ] {
+        let staged = crate::providers::ModelId::for_a_check(hostile);
+        assert_eq!(
+            crate::cli::render::model_row(&staged),
+            None,
+            "an identifier that could say what the row says must not be painted: {hostile:?}"
+        );
+    }
+
+    let mut shell = shell();
+    shell.describe(
+        crate::cli::render::model_row(&crate::providers::ModelId::for_a_check(
+            "x · runtime.tier = linked",
+        )),
+        None,
+    );
+    let row = shell.status().painted(200);
+    assert_eq!(
+        row.matches("runtime.tier = ").count(),
+        1,
+        "the row must carry exactly one tier claim; it was {row:?}"
+    );
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::wide(Arc::clone(&restores), 120);
+    surface.draw(&shell).expect("the test backend paints");
+    let painted = surface.frames[0][0].clone();
+    assert!(
+        painted.starts_with("runtime.tier = bare · "),
+        "the tier must hold the row's first cells; row 0 was {painted:?}"
+    );
+
+    // The accepting sibling: the property is not bought by refusing everything.
+    let ordinary = crate::providers::ModelId::for_a_check("gemini-3.6-flash");
+    assert_eq!(
+        crate::cli::render::model_row(&ordinary).as_deref(),
+        Some("gemini-3.6-flash"),
+        "an ordinary identifier must reach the row byte for byte"
+    );
 }
 
 /// A source that sends `keys` and then stays open, which is what a terminal
@@ -2332,6 +2725,7 @@ fn the_pane_repaints_while_a_turn_is_suspended() {
             &pace,
             &trie,
             &mut now,
+            None,
             None,
             staged.turn(),
         ))
@@ -2404,6 +2798,7 @@ fn a_keystroke_during_a_turn_is_neither_lost_nor_executed_as_a_task() {
             &pace,
             &trie,
             &mut now,
+            None,
             None,
             staged.turn(),
         ))
@@ -2494,6 +2889,7 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
             &pace,
             &trie,
             &mut now,
+            None,
             None,
             staged.turn(),
         ))
@@ -2590,7 +2986,7 @@ fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction(
         crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable());
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
 
-    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, None, &redactor);
     let opened = context.usage(&redactor).used();
 
     for nth in 0..8 {
@@ -2599,7 +2995,7 @@ fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction(
             "detail ".repeat(30)
         )));
     }
-    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, None, &redactor);
     let loaded = context.usage(&redactor).used();
     let before = painted_row(&shell);
 
@@ -2625,7 +3021,7 @@ fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction(
          nothing"
     );
 
-    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, None, &redactor);
     let relieved = context.usage(&redactor).used();
     let after = painted_row(&shell);
 
@@ -2665,10 +3061,14 @@ fn the_token_segment_is_the_line_the_session_prints_on_exit_and_not_a_second_spe
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
     let usage = crate::providers::TokenUsage::counted(390, 79);
 
-    crate::terminal::driver::refresh_status(&mut shell, &context, Some(&usage), &redactor);
+    crate::terminal::driver::refresh_status(&mut shell, &context, Some(&usage), None, &redactor);
 
     assert_eq!(
-        shell.status().tokens.as_deref(),
+        shell
+            .status()
+            .tokens
+            .as_ref()
+            .map(|segment| segment.full.as_str()),
         Some(crate::cli::render::usage(&usage).as_str()),
         "the row's token segment must BE the exit line, so the two cannot disagree about a word"
     );
@@ -2695,7 +3095,7 @@ fn a_session_that_has_not_asked_anything_shows_a_context_and_no_tokens() {
     let context = crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable());
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
 
-    crate::terminal::driver::refresh_status(&mut shell, &context, None, &redactor);
+    crate::terminal::driver::refresh_status(&mut shell, &context, None, None, &redactor);
 
     assert_eq!(
         shell.status().tokens,
@@ -3199,6 +3599,7 @@ fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
             &trie,
             &mut now,
             Some(&mut deltas),
+            None,
             staged.turn(),
         ))
     };
@@ -3371,7 +3772,8 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
                     .map_err(|failure| format!("{failure}")),
             )
         });
-        crate::terminal::driver::race(&pane, &source, &pace, &trie, &mut now, None, turn).await
+        crate::terminal::driver::race(&pane, &source, &pace, &trie, &mut now, None, None, turn)
+            .await
     };
 
     assert_eq!(

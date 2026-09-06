@@ -627,3 +627,126 @@ pub fn context_usage(usage: zaru_core::context::Usage) -> String {
         thousands(usage.window())
     )
 }
+
+/// The token count as [ADR-0001] D2's row carries it, in both its spellings.
+///
+/// # Two spellings of one datum, and the total is computed once
+///
+/// The full form is [`usage`] — the very line the session prints on exit, so
+/// the row and that line cannot disagree about a word. The narrow form is the
+/// total and the unit, which is what a row 40 columns wide has room for, and
+/// **it is the same sum**: both come from [`tokens_total`], so the two
+/// spellings cannot disagree about the number either. `469 tokens` against
+/// `tokens: 390 prompt + 79 completion = 469` costs thirty columns and drops
+/// no datum a narrow row could have shown anyway.
+///
+/// This is [`Rank::Tokens`](zaru_tui::shell::Rank::Tokens), which is
+/// [ADR-0012] clause 6's, and it is where the narrow spelling was accepted on
+/// that record's amendments page on 2026-09-06.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[must_use]
+pub fn usage_row(spent: &crate::providers::TokenUsage) -> zaru_tui::shell::Segment {
+    zaru_tui::shell::Segment::new(usage(spent), format!("{} tokens", tokens_total(spent)))
+}
+
+/// What a request spent, in the one place both spellings read it.
+///
+/// A second addition at a second call site is how the row and the exit line
+/// would come to disagree about a number while agreeing about every word.
+fn tokens_total(spent: &crate::providers::TokenUsage) -> u64 {
+    spent.prompt_tokens() + spent.completion_tokens()
+}
+
+/// [ADR-0013] D6's context figure as the row carries it, in both spellings.
+///
+/// The full form is [`context_usage`]. The narrow form drops the leading word
+/// and D3's unit and **keeps both numbers**, because D6's whole claim is that
+/// a user can watch pressure build and "approaching is a relation" — a figure
+/// without its window is one nobody can read as near or far, so the window is
+/// the one thing a narrow spelling may not drop.
+///
+/// This is [`Rank::Context`](zaru_tui::shell::Rank::Context), the best rank
+/// after the tier, because D6 says "continuously" and its trigger clause 5
+/// says "throughout".
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[must_use]
+pub fn context_row(usage: zaru_core::context::Usage) -> zaru_tui::shell::Segment {
+    zaru_tui::shell::Segment::new(
+        context_usage(usage),
+        format!("{}/{}", thousands(usage.used()), thousands(usage.window())),
+    )
+}
+
+/// Which model is answering, as [ADR-0001] D2's row carries it.
+///
+/// # The identifier and not the alias
+///
+/// [operations/harness-look-and-feel] row 14 measured that the model is "the
+/// field a person checks most" and is not on the row, and [ADR-0012] D4's
+/// surface for it is `zaru models`, which is out of session. What that row is
+/// asking is *which model is answering*, and an alias answers it only for
+/// somebody who already knows the resolution — so this is the resolved
+/// identifier.
+///
+/// # It is the one field a cloned repository chooses, so it cannot forge one
+///
+/// `model.<alias>` is **free at every configuration layer** — [ADR-0012] D4
+/// lists project configuration among the five that resolve an alias — so the
+/// string here is one `./zaru.toml` can set. [`ModelId`] refuses control
+/// characters, an empty value and surrounding whitespace, and bounds nothing
+/// else, so an identifier containing [`zaru_tui::shell::SEPARATOR`] would
+/// paint as **two** fields and the second could read as a tier: a repository
+/// setting `x · runtime.tier = linked` would put a second membrane claim on
+/// the one row [ADR-0001] D2 exists to make unambiguous.
+///
+/// **An identifier that could say something the row itself says is not painted,
+/// and the field is absent instead.** Replacing the separator with a space was
+/// tried first and is not enough — it was caught by this arc's own corpus
+/// check, which printed `runtime.tier = bare · x runtime.tier = linked ·
+/// session …`: the forged field stopped being a *field* and went on reading as
+/// a tier. So the rule is a refusal over both of the row's structural
+/// spellings, [`zaru_tui::shell::SEPARATOR`] and
+/// [`zaru_tui::shell::TIER_PREFIX`], and losing the field is the direction to
+/// be wrong in on a security boundary. It cannot be done in the row: a field
+/// that legitimately carries the separator exists — [`usage`] appends a cost
+/// after one — so a blanket rule there would corrupt the token line.
+///
+/// **No provider names a model this way**, so nothing real is refused; and
+/// nothing is altered either, so `zaru models` still prints exactly what
+/// configuration said. The mode needs no such rule: `Mode::from_layer` refuses
+/// the project layer outright under [ADR-0014] D6's escalation ceiling.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ModelId]: crate::providers::ModelId
+/// [operations/harness-look-and-feel]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
+#[must_use]
+pub fn model_row(model: &crate::providers::ModelId) -> Option<String> {
+    let rendered = model.to_string();
+    let forgeable = [zaru_tui::shell::SEPARATOR, zaru_tui::shell::TIER_PREFIX];
+    forgeable
+        .iter()
+        .all(|spelling| !rendered.contains(spelling))
+        .then_some(rendered)
+}
+
+/// [ADR-0011] D3's permission mode, as the row carries it.
+///
+/// The three names are that record's own, through [`Mode::as_str`], and the
+/// leading word says which of the row's fields this is. **A mode on the row is
+/// always the resolved one**, which D3 fixes for the life of a session, and it
+/// can never be a word a cloned repository chose: `Mode::from_layer` refuses
+/// the project layer under [ADR-0014] D6's escalation ceiling.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+/// [`Mode::as_str`]: crate::tools::Mode::as_str
+#[must_use]
+pub fn mode_row(mode: crate::tools::Mode) -> String {
+    format!("mode {}", mode.as_str())
+}

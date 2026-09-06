@@ -1691,3 +1691,59 @@ fn adr_0007_d8s_reach_follows_the_word_and_the_scope_is_carried_either_way() {
         "the reach is not the scope and neither may move the other"
     );
 }
+
+/// A narrow spelling drops labelling and never a number.
+///
+/// # Why this is one check over both pairs
+///
+/// The two spellings of a segment are the one place this arc could have made
+/// a row that lies at 40 columns and tells the truth at 200. The property is
+/// the same for both pairs — every number in the full form is in the narrow
+/// one — so it is asserted once, over both, against literals this check owns
+/// rather than against the formatter's own output.
+///
+/// The token total is the load-bearing half: the full form is the very line
+/// the session prints on exit, so a narrow form carrying a different number
+/// would put two different totals in front of one user in one session.
+///
+/// The mutants: the narrow token spelling printing the completion count
+/// instead of the total; the narrow context spelling dropping the window.
+#[test]
+fn a_narrow_spelling_drops_labelling_and_never_a_number() {
+    use zaru_core::context::Usage;
+
+    let spent = crate::providers::TokenUsage::counted(390, 79);
+    let tokens = render::usage_row(&spent);
+    assert_eq!(
+        tokens.full, "tokens: 390 prompt + 79 completion = 469",
+        "the full spelling is the line the session prints on exit"
+    );
+    assert_eq!(
+        tokens.narrow, "469 tokens",
+        "the narrow spelling keeps the total and drops the two parts of it"
+    );
+    assert!(
+        tokens.full.ends_with(&tokens.narrow.replace(" tokens", "")),
+        "both spellings must carry the same total; they were {:?} and {:?}",
+        tokens.full,
+        tokens.narrow
+    );
+
+    let context = render::context_row(Usage::new(12_390, 1_048_576));
+    assert_eq!(
+        context.full, "context 12.3k/1048.5k tokens",
+        "the full spelling is ADR-0013 D3's own register"
+    );
+    assert_eq!(
+        context.narrow, "12.3k/1048.5k",
+        "the narrow spelling keeps both numbers, because D6's claim is that approaching is a \
+         relation and a figure without its window cannot be read as near or far"
+    );
+    for number in ["12.3k", "1048.5k"] {
+        assert!(
+            context.narrow.contains(number),
+            "the narrow context spelling must keep {number}; it was {:?}",
+            context.narrow
+        );
+    }
+}

@@ -670,6 +670,7 @@ fn corpus_an_interrupt_between_two_tool_calls_leaves_at_most_the_event_in_flight
                 &trie,
                 &mut now,
                 None,
+                None,
                 a_turn_that_stops_between_two_calls(&transcript_path, false),
             ))
     };
@@ -737,6 +738,7 @@ fn an_uninterrupted_turn_leaves_a_matched_pair_for_every_call() {
                 &trie,
                 &mut now,
                 None,
+                None,
                 a_turn_that_stops_between_two_calls(&transcript_path, true),
             ))
     };
@@ -802,6 +804,7 @@ fn a_standing_tip_yields_on_the_first_keystroke_during_a_turn() {
                 &Beats::default(),
                 &trie,
                 &mut now,
+                None,
                 None,
                 std::future::pending::<&'static str>(),
             ))
@@ -1216,6 +1219,7 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
                     &Beats::default(),
                     &trie,
                     &mut now,
+                    None,
                     None,
                     a_turn_that_stops_between_two_calls(&transcript_path, !interrupt),
                 ));

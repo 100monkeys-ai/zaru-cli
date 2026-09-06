@@ -600,16 +600,21 @@ fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
     );
 
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
-    refresh_status(&mut shell, &restored, None, &held);
+    refresh_status(&mut shell, &restored, None, None, &held);
 
     let segment = shell
         .status()
         .context
         .clone()
         .expect("a restored session has a context");
+    let abbreviated = zaru_cli::cli::render::thousands(expected);
+    // **Both spellings**, since 2026-09-06. A narrow row shows the same count
+    // as a wide one -- the narrow form drops labelling and never a number --
+    // and a check that read only the full one would pass while the figure a
+    // 40-column terminal actually shows was wrong.
     assert!(
-        segment.contains(&zaru_cli::cli::render::thousands(expected)),
-        "the restored count must reach the row; the segment was {segment:?}"
+        segment.full.contains(&abbreviated) && segment.narrow.contains(&abbreviated),
+        "the restored count must reach the row in both spellings; the segment was {segment:?}"
     );
 
     // The empty case, so the check above cannot be satisfied by a `restored`
@@ -689,9 +694,9 @@ fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
     }
 
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
-    refresh_status(&mut shell, &context, None, &held);
+    refresh_status(&mut shell, &context, None, None, &held);
 
-    let row = shell.status().painted();
+    let row = shell.status().painted(200);
     let debugged = format!("{:?}", shell.status());
 
     for (what, haystack) in [("the painted row", &row), ("the row's Debug", &debugged)] {

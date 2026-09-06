@@ -431,11 +431,19 @@ fn one_session(
     // composition could not resolve a provider has no context at all, so the
     // segment stays absent there rather than showing a zero -- and the token
     // segment is absent in both cases, because no exchange has happened.
+    //
+    // ADR-0012 D4's model and ADR-0011 D3's mode arrive here too, and this is
+    // the only call that writes them: both are fixed for the life of the
+    // session by `prepare`, so there is nothing for a later call to update.
+    // The `Cannot` arm supplies neither, which is the real state of a session
+    // whose composition could not resolve a provider -- there is no model
+    // answering and no mode governing a tool call that cannot happen.
     if let Turnable::Ready(turns) = &turns {
         crate::terminal::driver::refresh_status(
             &mut shell,
             &turns.context,
             None,
+            Some(crate::terminal::driver::Described::of(turns.prepared)),
             turns.prepared.redactor(),
         );
     }

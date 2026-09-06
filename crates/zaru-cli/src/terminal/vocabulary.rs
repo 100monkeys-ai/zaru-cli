@@ -515,6 +515,6 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
 }
 
 /// An elapsed time, to two decimal places, in the one place it is formatted.
-fn seconds(elapsed: core::time::Duration) -> String {
+pub(crate) fn seconds(elapsed: core::time::Duration) -> String {
     format!("{:.2}s", elapsed.as_secs_f64())
 }

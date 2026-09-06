@@ -454,8 +454,23 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
     /// visible. It is taken away by [`Shell::clear_streaming`] when the turn
     /// ends and the turn's own rendered lines arrive — see that method for
     /// why the answer is painted once, from one place.
-    fn stream(&mut self, text: &str) {
+    fn stream(&mut self, text: &str, meter: Option<&Meter<'_>>) {
         self.shell.stream_delta(text);
+        self.tick(meter);
+    }
+
+    /// Read [ADR-0028] D5's meter onto the status row, then paint.
+    ///
+    /// **The read is here rather than at the two call sites** so that a branch
+    /// which paints cannot forget it: every repaint during a turn goes through
+    /// one function, which is the shape [`Drop`] below already uses for the
+    /// streamed line and for the same reason.
+    ///
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    fn tick(&mut self, meter: Option<&Meter<'_>>) {
+        if let Some(meter) = meter {
+            meter.refresh(self.shell);
+        }
         self.paint();
     }
 
@@ -1024,6 +1039,16 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let (sender, mut deltas) = tokio::sync::mpsc::unbounded_channel();
     turns.prepared.client().stream_deltas_to(sender);
 
+    // ADR-0028 D5's meter, started with the turn. `prepared` is copied out of
+    // `turns` here because `run_one` takes `&mut turns.owed` and
+    // `&mut turns.context` below, and the reader borrows the provider client
+    // for as long as the race runs. The clock is this turn's own -- see
+    // `Meter` for why it is not `run_one`'s.
+    let prepared = turns.prepared;
+    let clock = zaru_core::iteration::SystemClock::started_now();
+    let reported = move || prepared.usage();
+    let meter = Meter::started(&clock, &reported);
+
     let outcome: Result<crate::compose::Ran, Turned> = {
         let pane = std::sync::Mutex::new(Pane::of(shell, surface));
         let confirm = PaneConfirm::over(&pane, source, pace);
@@ -1042,6 +1067,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
             entries,
             now,
             Some(&mut deltas),
+            Some(&meter),
             crate::compose::turn::run_one(
                 turns.version,
                 turns.report_at,
@@ -1079,6 +1105,13 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     // when the block above ended the turn's borrow of the shell. See that
     // impl for why it is there rather than here, and `Shell::stream_delta`
     // for why the line is cleared rather than promoted.
+    // ADR-0028 D5's meter is a turn's, so it comes off the row with the turn.
+    // **On every path**, including the interrupted one below: a stopped clock
+    // left on the row would go on saying how long something took that is no
+    // longer happening. What a finished turn took is already on the pane in
+    // the narrative's own line, which is why this is cleared rather than
+    // promoted -- `Shell::stream_delta`'s argument, one field over.
+    shell.set_elapsed(None);
     let tool_lines = tools.taken();
     let redactor = turns.prepared.redactor();
 
@@ -1126,6 +1159,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         shell,
         &turns.context,
         turns.prepared.usage().as_ref(),
+        Some(Described::of(turns.prepared)),
         redactor,
     );
 
@@ -1160,14 +1194,21 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
 ///   takes `&self` and `Context::compact` takes `&mut self`, so a context
 ///   *cannot* change while a turn is in flight — the number would be the same
 ///   number however often it were re-read.
-/// - **Token usage is D7's "per turn in the status line".** The client
-///   replaces its slot on every exchange, so a mid-turn read would show a
+/// - **Token usage was D7's "per turn in the status line", and until
+///   2026-09-06 this paragraph read that "a mid-turn read would show a
 ///   per-*exchange* number where the record says per-turn, which is a reading
-///   an implementation would be making rather than a record.
+///   an implementation would be making rather than a record".** It is a
+///   record's now: [ADR-0028] D5's Update of that day gives the row a meter
+///   that reads this number on the beat, and what it shows is unchanged — the
+///   last exchange, which is what `Provider::usage` reports. No sum was added;
+///   ADR-0012 D7's accumulating total is still that record's author's.
 ///
-/// So the beat repaints these values without recomputing them, and
-/// [`crate::terminal::source::TICK`]'s "nothing on the pane changes on a bare
-/// tick" stays true of the status row as well.
+/// So the beat repaints the context figure without recomputing it, and
+/// [`crate::terminal::source::TICK`]'s sentence about nothing changing on a
+/// bare tick is true of that figure and no longer true of the row — see
+/// [`Meter`], which is what changed and where.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 ///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
@@ -1176,16 +1217,154 @@ pub fn refresh_status(
     shell: &mut Shell,
     context: &crate::compose::SessionContext,
     tokens: Option<&crate::providers::TokenUsage>,
+    described: Option<Described<'_>>,
     redactor: &(dyn zaru_core::redaction::Redactor + Sync),
 ) {
-    shell.set_context_usage(Some(crate::cli::render::context_usage(
+    shell.set_context_usage(Some(crate::cli::render::context_row(
         context.usage(redactor),
     )));
-    // `render::usage` and not a second spelling: this is the same function the
-    // session prints on exit, so the row and that line cannot disagree about a
-    // word -- the argument `terminal::vocabulary::turn_line` already makes for
-    // the pane and the resumed transcript.
-    shell.set_token_usage(tokens.map(crate::cli::render::usage));
+    // `render::usage_row` and not a second spelling: its full form is the same
+    // function the session prints on exit, so the row and that line cannot
+    // disagree about a word -- the argument `terminal::vocabulary::turn_line`
+    // already makes for the pane and the resumed transcript.
+    shell.set_token_usage(tokens.map(crate::cli::render::usage_row));
+    // ADR-0012 D4's model and ADR-0011 D3's mode, written here because this is
+    // the one place the row is written and because writing them from a second
+    // place is exactly what ADR-0012's own Update warned about. Both are
+    // immutable for the session, so a second call writes the same two values.
+    shell.describe(
+        described.and_then(|described| crate::cli::render::model_row(described.model)),
+        described.map(|described| crate::cli::render::mode_row(described.mode)),
+    );
+}
+
+/// [ADR-0028] D5's meter: what the row says while a turn is running.
+///
+/// # The two numbers that move, and the one that must not
+///
+/// D5 reads "Per-iteration elapsed time, token counts, and cost render **as
+/// the work proceeds**", and its 2026-09-06 Update gives the clause a carrier
+/// for a turn that runs no iterations at all — where the loop emits nothing
+/// between the turn's first line and its last, which is every session on a
+/// machine with no `zaru.toml`. This is that carrier, read on
+/// [`crate::terminal::source::TICK`]'s beat.
+///
+/// - **The elapsed figure** is a difference of two [`Clock`] readings, the
+///   first taken when the turn started. `Clock` is `zaru-core`'s existing port
+///   — no new port and no new dependency — and its product implementation is
+///   the only thing in that crate that reads the machine's clock, which is
+///   what lets every check here state an exact figure instead of asserting
+///   about wall-clock time.
+/// - **The token count** is whatever `Provider::usage` most recently reported,
+///   which is **the last exchange** and deliberately not a sum. A turn holding
+///   several exchanges shows it rise as each completes.
+///   [`crate::compose::Prepared::usage`] carries why: ADR-0012 D7's
+///   accumulating total is on that record's human-owned list, and "a caller
+///   that summed here would settle it silently".
+///
+/// **[ADR-0013] D6's context figure is deliberately out of reach.** D7 of that
+/// record confines compaction to turn boundaries, so the number could not
+/// change mid-turn even if something re-read it — and this type holds nothing
+/// that could. The constraint is a shape rather than a rule anybody keeps.
+///
+/// # Its clock is not `run_one`'s, and they measure different spans
+///
+/// [`crate::compose::turn::run_one`] starts a `SystemClock` of its own for the
+/// loop's per-iteration figures. This one starts when the *turn* does and runs
+/// until it ends, which is the span the person is waiting on and is strictly
+/// wider. Both are monotonic offsets from `Instant` on one machine, so they
+/// cannot drift; they are two measurements of two things rather than two
+/// answers to one question.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+/// [`Clock`]: zaru_core::iteration::Clock
+pub struct Meter<'a> {
+    clock: &'a dyn zaru_core::iteration::Clock,
+    started: Duration,
+    /// What the provider has reported so far, re-read on every beat.
+    ///
+    /// A closure rather than a port: the one product reader is
+    /// `Prepared::usage`, a check stages whatever it wants to see rise, and a
+    /// trait here would be a third name for a question `Provider` already
+    /// answers.
+    reported: &'a dyn Fn() -> Option<crate::providers::TokenUsage>,
+}
+
+impl core::fmt::Debug for Meter<'_> {
+    /// Names what it is and reads no clock to do it.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Meter")
+            .field("started", &self.started)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> Meter<'a> {
+    /// Start measuring a turn now, by this clock.
+    pub fn started(
+        clock: &'a dyn zaru_core::iteration::Clock,
+        reported: &'a dyn Fn() -> Option<crate::providers::TokenUsage>,
+    ) -> Self {
+        Self {
+            started: clock.now(),
+            clock,
+            reported,
+        }
+    }
+
+    /// Put both numbers on the row.
+    ///
+    /// The wording is [`crate::terminal::vocabulary::seconds`] and
+    /// [`crate::cli::render::usage_row`], both handed across rather than
+    /// spelled again: the running figure and the narrative's own `· 3.92s`
+    /// are one renderer, and the row's token segment and the session-exit line
+    /// are another, so neither pair can disagree about a word.
+    pub fn refresh(&self, shell: &mut Shell) {
+        shell.set_elapsed(Some(crate::terminal::vocabulary::seconds(
+            self.clock.now() - self.started,
+        )));
+        shell.set_token_usage(
+            (self.reported)()
+                .as_ref()
+                .map(crate::cli::render::usage_row),
+        );
+    }
+}
+
+/// The two fields a session knows about itself and never changes.
+///
+/// [ADR-0012] D4's resolved model and [ADR-0011] D3's permission mode are each
+/// fixed for the life of a session by `Prepared`, so they are handed to the
+/// row **once** and have no mutation surface — the discipline
+/// `Shell::set_context_usage` already argues for the tier. They travel
+/// together because they are written together and because neither answers a
+/// clause on its own: both are [operations/harness-look-and-feel] row 14.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [operations/harness-look-and-feel]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
+#[derive(Debug, Clone, Copy)]
+pub struct Described<'a> {
+    /// What [ADR-0012] D4's `default` alias resolved to.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    pub model: &'a crate::providers::ModelId,
+    /// [ADR-0011] D3's mode.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub mode: crate::tools::Mode,
+}
+
+impl<'a> Described<'a> {
+    /// What a prepared session says about itself.
+    #[must_use]
+    pub const fn of(prepared: &'a crate::compose::Prepared) -> Self {
+        Self {
+            model: prepared.model(),
+            mode: prepared.mode(),
+        }
+    }
 }
 
 /// What the race broke out with, before the borrow of the pane ends.
@@ -1225,6 +1404,13 @@ pub enum Raced<T> {
 /// also ready — then the terminal, then the beat. Tokio's default is to pick a
 /// random ready branch, and a check over a random instrument is not a check
 /// (library verification-lessons §57).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "\
+    every argument is a port or a value some record owns, and the eighth is \
+    ADR-0028 D5's meter -- bundling any of them would be a second name for a \
+    list `run_a_turn` already carries under the same reason"
+)]
 pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
     pane: &std::sync::Mutex<Pane<'_, S>>,
     source: &Source,
@@ -1232,6 +1418,7 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
     entries: &dyn zaru_tui::composer::Entries,
     now: &mut Duration,
     deltas: Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
+    meter: Option<&Meter<'_>>,
     running: impl Future<Output = T>,
 ) -> Raced<T> {
     let mut running = core::pin::pin!(running);
@@ -1269,17 +1456,18 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
                 // same reason the beat uses it, and the answer is painted
                 // whole at the turn's end regardless.
                 if let Ok(mut pane) = pane.try_lock() {
-                    pane.stream(&delta);
+                    pane.stream(&delta, meter);
                 }
             }
 
             () = pace.elapse() => {
-                // The beat. Nothing on the pane changes because of it -- see
-                // `TICK` -- and it is what turns a suspended future into a
-                // surface that is still alive rather than one that has
-                // stopped.
+                // The beat, and since 2026-09-06 the one thing on the screen
+                // that moves: ADR-0028 D5's meter is read here -- see `TICK`,
+                // whose own sentence about nothing changing on a bare tick
+                // this replaced. It is also what turns a suspended future into
+                // a surface that is still alive rather than one that stopped.
                 if let Ok(mut pane) = pane.try_lock() {
-                    pane.paint();
+                    pane.tick(meter);
                 }
             }
         }

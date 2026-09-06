@@ -396,9 +396,36 @@ impl Rank {
     ];
 }
 
+/// What the row's fields are separated by. One spelling, used by every segment.
+///
+/// **Public because a host composing a field has to be able to keep it out.**
+/// A field whose text contained this would paint as two, and one of the row's
+/// fields — the model — is a string a repository the user cloned can choose,
+/// since `model.<alias>` is free at every configuration layer. The row cannot
+/// neutralise it here, because a field that legitimately carries the separator
+/// also exists: [ADR-0012] D7's token line appends a cost after one. So the
+/// rule is the host's and the spelling is this crate's, which is the only way
+/// the two cannot disagree.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+pub const SEPARATOR: &str = " · ";
+
+/// What [ADR-0001] D2's tier field says before the tier itself.
+///
+/// Public for [`SEPARATOR`]'s reason, one step further. A field whose text
+/// contained this would put a **second** membrane claim on the one row that
+/// record exists to make unambiguous — and a reader scanning for the tier
+/// would find two. The row cannot strip it, for the same reason it cannot
+/// strip the separator: only the host knows which of its fields a repository
+/// the user cloned can choose. So the spelling is this crate's and the rule is
+/// the host's, which is the only arrangement in which the two cannot disagree.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+pub const TIER_PREFIX: &str = "runtime.tier = ";
+
 impl Status {
     /// What the row is separated by. One spelling, used by every segment.
-    const SEPARATOR: &'static str = " · ";
+    const SEPARATOR: &'static str = SEPARATOR;
 
     /// A status line carrying [ADR-0001] D2's tier and [ADR-0010] D1's session.
     ///
@@ -458,7 +485,7 @@ impl Status {
     /// The two fields whose text this type composes rather than is handed.
     fn composed(&self, rank: Rank) -> Option<String> {
         match rank {
-            Rank::Tier => Some(format!("runtime.tier = {}", self.tier)),
+            Rank::Tier => Some(format!("{TIER_PREFIX}{}", self.tier)),
             Rank::Session => Some(format!("session {}", self.session)),
             _ => None,
         }

@@ -153,6 +153,19 @@ impl ModelId {
     }
 }
 
+#[cfg(test)]
+impl ModelId {
+    /// A model identifier a check staged, through the real constructor.
+    ///
+    /// `new` is private because D1 says an identifier existing anywhere else
+    /// is a bug, and that stays true: this goes through the same validation
+    /// the resolution table does and refuses the same values, so a check
+    /// cannot stage one configuration could not have produced.
+    pub(crate) fn for_a_check(offered: &str) -> Self {
+        Self::new(offered).expect("a check staged a valid identifier")
+    }
+}
+
 impl fmt::Display for ModelId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
