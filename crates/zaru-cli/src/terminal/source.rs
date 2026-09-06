@@ -91,12 +91,24 @@ pub const POLL: Duration = Duration::from_millis(50);
 /// inside about a hundred milliseconds as immediate, so a pane that repaints
 /// at this rate is one that never looks stuck while the model is thinking; and
 /// ten repaints a second of a terminal-sized cell buffer is work a battery
-/// does not notice, where the sixty a frame-rate would ask for is. **Nothing
-/// on the pane changes on a bare tick** — no spinner, no clock, because no
-/// record gives either a glyph or a status-line slot (ADR-0005 D1's strip is
-/// "a pure function of composer state", ADR-0001 D2's status line carries the
-/// tier and ADR-0013 clause 5's carries context usage). What the tick buys is
-/// that a keystroke read during a turn is *shown* at the moment it is read.
+/// does not notice, where the sixty a frame-rate would ask for is.
+///
+/// **Two numbers on the status row change on a bare tick, since 2026-09-06.**
+/// This paragraph read "**Nothing on the pane changes on a bare tick** — no
+/// spinner, no clock, because no record gives either a glyph or a status-line
+/// slot", and the second half of that is what stopped being true: [ADR-0028]
+/// D5's Update of that day gives the row a slot for an elapsed time and a
+/// token count, and [`crate::terminal::driver::Meter`] reads them here. **No
+/// spinner and no glyph**, which D1 of that record refuses in as many words —
+/// what moves is a number a record names, and nothing else on the pane changes
+/// on a bare tick. ADR-0005 D1's strip is still "a pure function of composer
+/// state" and ADR-0013 D6's context figure still changes only at a turn
+/// boundary.
+///
+/// What the tick also buys is that a keystroke read during a turn is *shown*
+/// at the moment it is read.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 pub const TICK: Duration = Duration::from_millis(100);
 
 /// How long the shell waits when nothing has happened.

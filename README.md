@@ -57,9 +57,18 @@ the ones you hold keys for, or a project that declared validators.
 is read on a thread of its own, so a turn and your keyboard are two things the
 shell waits on at once: what you type during a turn appears as you type it, a
 standing tip yields on that first keystroke, and the permission prompt is
-answerable while the pane keeps painting. Nothing new is painted on the tick —
-there is no spinner and no running clock, because no decision record gives
-either one, and that is named as a gap rather than invented.
+answerable while the pane keeps painting. **Since 2026-09-06 something moves while
+it thinks**: the status line carries the turn's elapsed time and what the
+provider has reported it spent, both re-read on that tick. There is still no
+spinner — ADR-0028 D1 refuses one in as many words — so what moves is a number
+rather than a glyph, and the record that licenses it was written before the
+code was.
+
+That line also says which model is answering and which permission mode is in
+force, and it is **composed to the width of your terminal** rather than cut off
+at the right edge: fields drop in a declared order as the terminal narrows, the
+tier is never one of them, and at forty columns what is left is the tier and how
+much of the context window is used.
 
 `Ctrl-C` during a turn leaves, exactly as it does at the prompt, and leaving
 is what interrupts the turn: whatever the turn had already written is in the
