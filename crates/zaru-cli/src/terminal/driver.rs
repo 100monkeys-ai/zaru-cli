@@ -1315,7 +1315,7 @@ impl<'a> Meter<'a> {
 
     /// Put both numbers on the row.
     ///
-    /// The wording is [`crate::terminal::vocabulary::seconds`] and
+    /// The wording is `terminal::vocabulary::seconds` and
     /// [`crate::cli::render::usage_row`], both handed across rather than
     /// spelled again: the running figure and the narrative's own `· 3.92s`
     /// are one renderer, and the row's token segment and the session-exit line

@@ -635,7 +635,7 @@ pub fn context_usage(usage: zaru_core::context::Usage) -> String {
 /// The full form is [`usage`] — the very line the session prints on exit, so
 /// the row and that line cannot disagree about a word. The narrow form is the
 /// total and the unit, which is what a row 40 columns wide has room for, and
-/// **it is the same sum**: both come from [`tokens_total`], so the two
+/// **it is the same sum**: both come from `tokens_total`, so the two
 /// spellings cannot disagree about the number either. `469 tokens` against
 /// `tokens: 390 prompt + 79 completion = 469` costs thirty columns and drops
 /// no datum a narrow row could have shown anyway.
@@ -695,7 +695,8 @@ pub fn context_row(usage: zaru_core::context::Usage) -> zaru_tui::shell::Segment
 ///
 /// `model.<alias>` is **free at every configuration layer** — [ADR-0012] D4
 /// lists project configuration among the five that resolve an alias — so the
-/// string here is one `./zaru.toml` can set. [`ModelId`] refuses control
+/// string here is one `./zaru.toml` can set. [`ModelId`](crate::providers::ModelId)
+/// refuses control
 /// characters, an empty value and surrounding whitespace, and bounds nothing
 /// else, so an identifier containing [`zaru_tui::shell::SEPARATOR`] would
 /// paint as **two** fields and the second could read as a tier: a repository
