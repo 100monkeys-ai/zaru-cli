@@ -277,7 +277,22 @@ pub fn resolve_in(
     overrides: &Overrides,
 ) -> Result<SessionId, Box<Exit>> {
     match opening {
-        Opening::Existing(id) => Ok(id.clone()),
+        // **The session is checked to exist here, and that is what makes a
+        // switch survivable.** Found by driving the built binary over a
+        // pseudo-terminal: `/session resume <a well-formed id nothing has>`
+        // resolved to the id, and the failure then surfaced from `shell_for`
+        // *after* the pump had returned -- so it propagated out of `open`'s
+        // loop and ended the whole session, where the person had asked to move
+        // between two of them. A resolution that can fail must fail where the
+        // pane is, which is the argument `run`'s `Action::Run` arm already
+        // makes for the lookup it does.
+        Opening::Existing(id) => {
+            let classify = Classify::new(version, report_at);
+            SessionStore::reading(root)
+                .existing(id)
+                .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
+            Ok(id.clone())
+        }
         Opening::MostRecentHere => most_recent_in_store(root, version, report_at),
         Opening::New => mint(root, version, report_at, overrides),
     }
