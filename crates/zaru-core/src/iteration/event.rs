@@ -39,6 +39,43 @@
 use core::time::Duration;
 use serde::{Deserialize, Serialize};
 
+/// What a validator's detail reads as when its command printed nothing.
+///
+/// # One phrase, because it reaches a person and a model by two paths
+///
+/// [`Event::ValidatorEvaluated`]'s `detail` is the validator's own captured
+/// output, and a `grep` used as a gate is silent when it fails — the ordinary
+/// case rather than a strange one. An empty detail was carried through as an
+/// empty detail, so `machine::failure_text` composed a validator's report as
+/// its name, a colon and nothing, the terminal painted `greets: failed —`,
+/// and the refinement prompt told the model `greets:`. Measured from the
+/// binary at `8179f8a` on 2026-09-05 against `gemini-3.6-flash`.
+///
+/// This is the phrase both take instead. It lives here, beside the field it
+/// describes, because the pane's wording is `zaru-cli`'s renderer's and the
+/// prompt's is [`machine::failure_text`]'s — two spellings of one phrase are
+/// two things that can come to disagree about a word, which is the argument
+/// [ADR-0011] D3 already makes for composing a prompt's statement once.
+///
+/// # It is a fact, not the paraphrase [ADR-0008] D4 forbids
+///
+/// D4 makes failure text data rather than decoration, and a harness sentence
+/// placed beside real captured bytes would be the harness editing evidence —
+/// which is why `ValidatorOutput` still refuses to say who killed a command.
+/// This is the other case: there are **no** bytes, so nothing is being
+/// paraphrased, summarised or annotated. The alternative is not neutrality;
+/// composing the empty string claims the validator said something and renders
+/// it as punctuation.
+///
+/// Accepted 2026-09-06 as an amendment to [ADR-0008] D3 and [ADR-0009] D2,
+/// under a delegated coordinator ruling open to Jeshua's veto.
+///
+/// [`machine::failure_text`]: crate::iteration::machine
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub const PRODUCED_NO_OUTPUT: &str = "produced no output";
+
 /// What one declared validator reported about an execution.
 ///
 /// Three outcomes rather than a boolean, because ADR-0009 D2 makes `skipped`

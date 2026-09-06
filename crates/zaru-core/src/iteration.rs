@@ -51,7 +51,7 @@ pub mod refinement;
 pub mod validator;
 
 pub use error::{IterationError, PortKind};
-pub use event::{Event, EventSink, ExhaustionReason, ValidatorOutcome};
+pub use event::{Event, EventSink, ExhaustionReason, PRODUCED_NO_OUTPUT, ValidatorOutcome};
 pub use limits::{Ceiling, ConfigurationError, Limits, TruncationBudget};
 pub use machine::{Outcome, State, run};
 pub use port::{

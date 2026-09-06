@@ -293,6 +293,10 @@ pub(super) enum Plan {
     Pass,
     /// `build` passes, `test` fails, `lint` is skipped because it came after.
     Fail,
+    /// The same shape as [`Plan::Fail`], but the failing validator printed
+    /// **nothing** — the ordinary shape of a `grep` used as a gate, which
+    /// exits non-zero and is silent.
+    FailSilently,
     /// The port itself fails.
     PortFails,
 }
@@ -358,6 +362,11 @@ impl Validators for StagedValidators {
                     ValidatorOutcome::Failed,
                     Self::failure_detail_for(n),
                 ),
+                report("lint", ValidatorOutcome::Skipped, String::new()),
+            ]),
+            Plan::FailSilently => Ok(vec![
+                report("build", ValidatorOutcome::Passed, String::new()),
+                report("test", ValidatorOutcome::Failed, String::new()),
                 report("lint", ValidatorOutcome::Skipped, String::new()),
             ]),
             Plan::PortFails => Err(PortFailure::new(format!("{NONCE} validators crashed"))),

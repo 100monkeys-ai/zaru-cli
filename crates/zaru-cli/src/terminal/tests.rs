@@ -3419,3 +3419,66 @@ fn an_interrupted_call_paints_its_line_exactly_as_a_completed_one_does() {
     assert_eq!(interrupted, completed);
     assert_eq!(interrupted.len(), 1);
 }
+
+// ------------------ ADR-0009 D2's verdict, on the pane — 2026-09-06
+
+/// A silent validator says so on the pane, rather than trailing an em dash.
+///
+/// **The mutant**: the renderer interpolates `detail` unconditionally, which
+/// is what shipped. Measured from main's binary at `8179f8a` on 2026-09-05,
+/// a `grep -q Hello greeting.txt` used as a gate — silent when it fails,
+/// which is the ordinary shape — painted:
+///
+/// ```text
+///   greets: failed —
+///   iteration 1 failed: greets: · 2.57s
+/// ```
+///
+/// An em dash with nothing after it, and a colon with nothing after it. The
+/// phrase is `zaru-core`'s constant, read rather than retyped, because the
+/// refinement prompt composes the same phrase for the same condition.
+#[test]
+fn a_validator_that_printed_nothing_says_so_on_the_pane() {
+    let line = crate::terminal::vocabulary::loop_line(
+        &zaru_core::iteration::Event::ValidatorEvaluated {
+            name: "greets".to_owned(),
+            outcome: zaru_core::iteration::ValidatorOutcome::Failed,
+            detail: String::new(),
+        },
+    );
+
+    assert_eq!(
+        line.text,
+        format!("greets: failed — {}", zaru_core::iteration::PRODUCED_NO_OUTPUT)
+    );
+    assert!(
+        !line.text.trim_end().ends_with('—'),
+        "the line still ends on a separator with nothing after it: {:?}",
+        line.text
+    );
+}
+
+/// The accepting sibling: a validator that spoke is quoted verbatim.
+///
+/// **The mutant**: the phrase replaces every detail rather than an empty one.
+/// Without this arm the check above passes over a renderer that has stopped
+/// showing failure text at all, which is what ADR-0009 D5 makes the loop's
+/// whole input.
+#[test]
+fn a_validator_that_printed_something_is_quoted_verbatim_on_the_pane() {
+    let detail = "assertion failed — left ≠ right";
+    let line = crate::terminal::vocabulary::loop_line(
+        &zaru_core::iteration::Event::ValidatorEvaluated {
+            name: "greets".to_owned(),
+            outcome: zaru_core::iteration::ValidatorOutcome::Failed,
+            detail: detail.to_owned(),
+        },
+    );
+
+    assert_eq!(line.text, format!("greets: failed — {detail}"));
+    assert!(
+        !line.text.contains(zaru_core::iteration::PRODUCED_NO_OUTPUT),
+        "the phrase was composed over a validator that did produce output: {:?}",
+        line.text
+    );
+}

@@ -354,7 +354,15 @@ fn failure_text(reports: &[ValidatorReport]) -> Option<String> {
         }
         text.push_str(&report.name);
         text.push_str(":\n");
-        text.push_str(&report.detail);
+        // A silent validator says so. See `PRODUCED_NO_OUTPUT` for why this
+        // is a fact rather than the paraphrase ADR-0008 D4 forbids: there are
+        // no captured bytes here for a paraphrase to be a paraphrase of, and
+        // the empty string is not neutral -- it claims the validator spoke.
+        if report.detail.trim().is_empty() {
+            text.push_str(crate::iteration::PRODUCED_NO_OUTPUT);
+        } else {
+            text.push_str(&report.detail);
+        }
     }
     (!text.is_empty()).then_some(text)
 }

@@ -735,3 +735,75 @@ async fn the_context_policy_is_called_only_at_an_iteration_boundary() {
         "the fixture stages two iterations, so the policy is asked twice"
     );
 }
+
+// --- D3 and ADR-0009 D2: a silent validator says so — 2026-09-06 -----------
+
+/// A validator that printed nothing reaches the model as a fact, not a colon.
+///
+/// **The mutant**: `failure_text` composes the empty detail, which is what
+/// shipped. `Event::IterationFailed`'s `reason` was then the validator's name,
+/// a colon and a newline, and the refinement prompt built from it told the
+/// model `test:` and nothing — measured from the binary at `8179f8a` on
+/// 2026-09-05, where the pane painted `iteration 1 failed: greets: · 2.57s`.
+///
+/// Read out of the **generator's** prompt rather than out of the event, so
+/// neither arm of the comparison travels back through the composition under
+/// test — the discipline `validator_failure_text_reaches_the_refinement_prompt_byte_for_byte`
+/// above already uses on the same rig.
+#[tokio::test]
+async fn a_silent_validator_reaches_the_refinement_prompt_saying_so() {
+    let rig = Rig::new(vec![Plan::FailSilently, Plan::Pass]);
+    let (outcome, events) = rig.record(limits(3, ROOMY)).await;
+    outcome.expect("the staged run should reach an outcome");
+
+    let prompts = rig.generator.prompts();
+    assert_eq!(prompts.len(), 2, "the fixture stages exactly two generations");
+    assert!(
+        prompts[1].contains(crate::iteration::PRODUCED_NO_OUTPUT),
+        "the refinement prompt does not say the validator produced no output.\n\
+         prompt was: {:?}",
+        prompts[1]
+    );
+    assert!(
+        !prompts[1].contains("test:\n\n") && !prompts[1].ends_with("test:\n"),
+        "the prompt still carries a bare name and colon: {:?}",
+        prompts[1]
+    );
+
+    // And the event a renderer subscribes to carries the same phrase, so a
+    // person and the model are told it in the same words.
+    let reason = events
+        .iter()
+        .find_map(|event| match event {
+            Event::IterationFailed { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .expect("the staged run failed an iteration");
+    assert_eq!(reason, format!("test:\n{}", crate::iteration::PRODUCED_NO_OUTPUT));
+}
+
+/// The accepting sibling: a validator that produced output is untouched.
+///
+/// **The mutant**: the phrase replaces every detail rather than an empty one,
+/// which would drop real failure text on the floor — the exact thing ADR-0008
+/// D4 exists to prevent. Without this arm, the check above is satisfied by a
+/// composition that says `produced no output` about everything.
+#[tokio::test]
+async fn a_validator_that_produced_output_still_carries_it_verbatim() {
+    let rig = Rig::new(vec![Plan::Fail, Plan::Pass]);
+    let (outcome, events) = rig.record(limits(3, ROOMY)).await;
+    outcome.expect("the staged run should reach an outcome");
+
+    let reason = events
+        .iter()
+        .find_map(|event| match event {
+            Event::IterationFailed { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .expect("the staged run failed an iteration");
+    assert_eq!(reason, StagedValidators::failure_text_for(1));
+    assert!(
+        !reason.contains(crate::iteration::PRODUCED_NO_OUTPUT),
+        "the phrase was composed over a validator that did produce output: {reason:?}"
+    );
+}

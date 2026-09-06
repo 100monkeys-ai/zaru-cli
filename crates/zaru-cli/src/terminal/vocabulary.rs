@@ -391,6 +391,11 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
         // D2 has an iteration's failure render "as a plot point ... placed as
         // part of the work — the mechanism operating — and never in the
         // register reserved for defects", which is `Register::Failed`.
+        // A silent validator says so rather than trailing an em dash with
+        // nothing after it. The phrase is `zaru-core`'s `PRODUCED_NO_OUTPUT`,
+        // read rather than retyped, because the refinement prompt composes
+        // the same phrase for the same condition and a person and a model
+        // must not be told it in two different words.
         Event::ValidatorEvaluated {
             name,
             outcome,
@@ -398,8 +403,13 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
         } => Line::new(
             Register::Plain,
             format!(
-                "{name}: {} — {detail}",
-                crate::cli::render::validator_outcome(*outcome)
+                "{name}: {} — {}",
+                crate::cli::render::validator_outcome(*outcome),
+                if detail.trim().is_empty() {
+                    zaru_core::iteration::PRODUCED_NO_OUTPUT
+                } else {
+                    detail
+                }
             ),
         ),
         Event::IterationFailed { n, reason, elapsed } => Line::new(
