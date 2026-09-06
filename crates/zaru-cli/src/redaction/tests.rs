@@ -413,7 +413,7 @@ fn adr_0010_d2s_conversation_records_are_built_through_the_port() {
              record rather than about redaction: {text:?}",
             voice.spoken_as()
         );
-        for (what, needle) in [("by value", value.as_str()), ("by its ASCII core", &core)] {
+        for (what, needle) in [("by value", value.as_str()), ("by its ASCII core", core)] {
             assert!(
                 !text.contains(needle),
                 "a held provider key reached ADR-0010 D2's {} record {what}, and that file is \

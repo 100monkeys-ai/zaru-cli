@@ -557,12 +557,17 @@ fn stage_a_session_in(
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 #[test]
 fn adr_0010_d2s_conversation_reaches_a_pipe_as_the_files_own_bytes() {
-    use zaru_cli::session::{Millis, Record, SessionId, SessionStore, Transcript, Utterance, Voice};
+    use zaru_cli::session::{
+        Millis, Record, SessionId, SessionStore, Transcript, Utterance, Voice,
+    };
 
     let home = Home::new("resume-conversation");
     let store = SessionStore::open(home.path().join(".zaru")).expect("a scratch session store");
-    let id = SessionId::from_parts(Millis::new(1_700_000_009_000), [9, 9, 9, 9, 9, 9, 9, 9, 9, 9])
-        .expect("a well-formed ULID");
+    let id = SessionId::from_parts(
+        Millis::new(1_700_000_009_000),
+        [9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+    )
+    .expect("a well-formed ULID");
     let session = store.start(id.clone()).expect("a session directory");
     let mut transcript =
         Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
