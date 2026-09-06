@@ -258,10 +258,13 @@ fn nearest_subcommand(offered: &str) -> &'static str {
 /// Read the words that are not flags.
 fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
     let Some(first) = positionals.first() else {
-        // `zaru` with no arguments at all. Printing the help is the answer to
-        // the question the user asked by typing the name of a program and
-        // nothing else.
-        return Ok(Request::Help);
+        // `zaru` with no arguments at all. **Not `Request::Help`** since
+        // 2026-09-06: it is the request to be in a session, and which of the
+        // two answers a reader gets -- a session's shell, or the usage -- is
+        // `crate::terminal::open`'s, where ADR-0010 D4's two-readers ruling
+        // already lives. A parser that decided it would have to call `isatty`,
+        // and this one reads no process state at all.
+        return Ok(Request::Session);
     };
 
     let Some(namespace) = Namespace::from_subcommand(first) else {

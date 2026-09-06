@@ -49,8 +49,11 @@ pub mod source;
 pub mod trie;
 pub mod vocabulary;
 
-pub use driver::{AfterTurn, Guard, Pump, Restore, Surface, after, question_for_the_shell, run};
-pub use open::{restored_context, shell_for, take_over};
+pub use driver::{
+    AfterTurn, Guard, Pump, Pumped, Restore, Surface, after, question_for_the_shell, run,
+    switch_for,
+};
+pub use open::{Opening, resolve_in, restored_context, shell_for, take_over};
 pub use source::{Beat, POLL, Pace, Source, TICK, Taken};
 pub use trie::{NOTHING_CACHED, NotesTrie};
 pub use vocabulary::{Transcript, Vocabulary};

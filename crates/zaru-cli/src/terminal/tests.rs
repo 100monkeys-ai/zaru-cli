@@ -11,7 +11,7 @@ use crate::terminal::driver::{
     run,
 };
 use crate::terminal::fixtures::{Counting, Held, Recording, Restores, press, typed};
-use crate::terminal::open::is_a_session;
+use crate::terminal::open::{Opening, opening_for};
 use crate::terminal::source::{Source, Taken};
 use crate::terminal::trie::{NOTHING_CACHED, NotesTrie};
 use crate::terminal::vocabulary::{Transcript as Pane, Vocabulary};
@@ -101,7 +101,13 @@ fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Rec
         "the source was contended {} time(s), which a single-threaded pump cannot do",
         source.contended()
     );
-    (shell, surface, pumped.exit)
+    let exit = match pumped.outcome {
+        crate::terminal::driver::Pumped::Left(exit) => exit,
+        crate::terminal::driver::Pumped::Switch(id) => {
+            panic!("the pump asked to switch to {id} rather than leaving")
+        }
+    };
+    (shell, surface, exit)
 }
 
 // ------------------------------------------------- ADR-0008 clause 3, whole
@@ -1455,16 +1461,24 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
 
 // ------------------------------------------------------- the tty branch itself
 
-/// Only a session request opens a shell.
+/// Only a session request opens a shell, and each names which session.
 ///
 /// A shell that opened for `zaru runtime` would turn a question into a
-/// session, and ADR-0010 D1 makes a session a directory on disk.
+/// session, and ADR-0010 D1 makes a session a directory on disk. **A bare
+/// `zaru` is the third**, since 2026-09-06: it is not a question but the
+/// request to be in one, and it mints.
 #[test]
-fn only_a_session_request_opens_a_shell() {
-    assert!(is_a_session(&Request::Continue));
-    assert!(is_a_session(&Request::Resume {
-        id: crate::session::SessionId::parse("01JQZX8N3K4M5P6R7S8T9V0W1X").expect("a ULID"),
-    }));
+fn only_a_session_request_opens_a_shell_and_each_names_which() {
+    let id = crate::session::SessionId::parse("01JQZX8N3K4M5P6R7S8T9V0W1X").expect("a ULID");
+    assert_eq!(opening_for(&Request::Session), Some(Opening::New));
+    assert_eq!(
+        opening_for(&Request::Continue),
+        Some(Opening::MostRecentHere)
+    );
+    assert_eq!(
+        opening_for(&Request::Resume { id: id.clone() }),
+        Some(Opening::Existing(id))
+    );
     for request in [
         Request::Help,
         Request::Version,
@@ -1475,7 +1489,7 @@ fn only_a_session_request_opens_a_shell() {
         Request::NotesTokens,
     ] {
         assert!(
-            !is_a_session(&request),
+            opening_for(&request).is_none(),
             "{request:?} would have opened a shell"
         );
     }

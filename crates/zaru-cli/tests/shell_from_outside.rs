@@ -283,7 +283,13 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
     for row in &last {
         println!("   |{row}|");
     }
-    println!("   exit {}", pumped.exit.code());
+    let exit = match pumped.outcome {
+        zaru_cli::terminal::Pumped::Left(exit) => exit,
+        zaru_cli::terminal::Pumped::Switch(id) => {
+            panic!("the pump asked to switch to {id} rather than leaving")
+        }
+    };
+    println!("   exit {}", exit.code());
 
     // ADR-0010 D4's "re-renders the last stretch of transcript so the user can
     // see where they were" is the frame the shell opens with.
@@ -322,7 +328,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
         "the transcript left the pane when a command ran"
     );
 
-    assert_eq!(pumped.exit.code(), 0, "the shell did not exit 0 on `/exit`");
+    assert_eq!(exit.code(), 0, "the shell did not exit 0 on `/exit`");
     assert_eq!(
         surface.restores, 0,
         "the pump restored the terminal itself; giving it back is the guard's, and a pump that \
@@ -1392,4 +1398,198 @@ fn corpus_an_interrupt_says_so_on_the_pane_in_the_register_a_decision_takes() {
         "an interruption is a decision rather than a failure, and this is in the error register: \
          {line}"
     );
+}
+
+/// A bare `zaru` at a terminal opens a **new** session's shell.
+///
+/// # The terminal half of [ADR-0015] D2's 2026-09-06 Update
+///
+/// `terminal::open::mint` is what a bare `zaru` reaches when somebody is
+/// watching. It is driven directly here rather than through `take_over`,
+/// because that function's other half is `std::io::IsTerminal` over this
+/// process's own standard output and no check owns that.
+///
+/// What is asserted is that a session appeared that was not there before, that
+/// it holds [ADR-0010] D1's three files, and that its `meta.toml` records this
+/// process's own directory — the field D4's `--continue` selects on, so a mint
+/// that recorded nothing would produce sessions `--continue` could never find.
+///
+/// **The accepting sibling is `Opening::Existing`**, which resolves a staged
+/// session and mints nothing: without it, a resolver that minted for every
+/// opening would pass the first three assertions.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell() {
+    use zaru_cli::terminal::Opening;
+
+    let scratch = Scratch::new("bare-terminal");
+    let sessions = scratch.path().join(".zaru").join("sessions");
+    let before = std::fs::read_dir(&sessions)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+
+    // **The whole dispatch, under a scratch root.** `resolve` reads `$HOME` to
+    // find the store, so a check driving it would mint into the developer's
+    // own `~/.zaru` -- which it did, once, before `resolve_in` took the root
+    // as a parameter. `resolve_in` is the implementation and `resolve` is it
+    // with the default root, so what is driven here is the product's own
+    // three-arm dispatch rather than a function beside it.
+    //
+    // This machine holds no provider key under a scratch home, so the mint
+    // takes the `None` branch -- which is the case that matters: a person on a
+    // fresh machine has no key, and refusing to *start* a session for them is
+    // the survey's row 1, that they could not reach the interactive surface at
+    // all.
+    let overrides = zaru_cli::cli::invocation::Overrides::default();
+    let minted = zaru_cli::terminal::resolve_in(
+        &Opening::New,
+        scratch.path().join(".zaru"),
+        "0.0.0",
+        "https://x",
+        &overrides,
+    )
+    .expect("a bare `zaru` at a terminal mints a session");
+    assert_ne!(
+        minted,
+        scratch.id,
+        "the mint answered with the session this check staged rather than a new one"
+    );
+
+    let directory = sessions.join(minted.as_str());
+    for file in ["meta.toml", "transcript.jsonl", "context.json"] {
+        assert!(
+            directory.join(file).exists(),
+            "ADR-0010 D1's `{file}` is missing from a session this harness minted"
+        );
+    }
+    let after = std::fs::read_dir(&sessions)
+        .expect("the store exists")
+        .count();
+    assert_eq!(
+        after,
+        before + 1,
+        "a bare `zaru` at a terminal must mint exactly one session"
+    );
+
+    let meta = zaru_cli::session::MetaFile::at(directory.join("meta.toml"))
+        .read_if_present()
+        .expect("the meta this harness just wrote parses")
+        .expect("and it is there");
+    let here = zaru_cli::tools::WorkingDirectory::of_this_process().expect("a working directory");
+    assert_eq!(
+        meta.directory,
+        here.root(),
+        "a minted session records nowhere the directory it began in, so `--continue` could never \
+         find it"
+    );
+
+    assert_eq!(
+        meta.provider, None,
+        "a session minted with no provider recorded a kind it never reached"
+    );
+
+    // The accepting sibling: naming a session resolves to it and mints
+    // nothing, so the assertions above cannot pass against a resolver that
+    // minted for every opening. This half reaches no `$HOME`, because
+    // `Opening::Existing` is answered without touching a store at all.
+    let named = zaru_cli::terminal::resolve_in(
+        &Opening::Existing(scratch.id.clone()),
+        scratch.path().join(".zaru"),
+        "0.0.0",
+        "https://x",
+        &overrides,
+    )
+    .expect("a named session resolves to itself");
+    assert_eq!(named, scratch.id, "`--resume <id>` resolved to another id");
+    assert_eq!(
+        std::fs::read_dir(&sessions).expect("the store").count(),
+        after,
+        "resolving a named session minted one"
+    );
+}
+
+/// `/session resume <id>` and `/session continue` reach the same operation the
+/// flags do.
+///
+/// [ADR-0010] D4: "**Inside a session the same operation is `/session resume
+/// <id>` and `/session continue`** — one operation with two entry points, per
+/// ADR-0015 D2's namespace table, which governs both spellings. Settled
+/// 2026-09-05 under directive 20." Both verbs refused with a full sentence
+/// until 2026-09-06, which is the survey's row 17.
+///
+/// `switch_for` is the mapping and it is pure, for the reason `request_for` is
+/// pure: what a spelling *means* and what running it *does* are two things,
+/// and doing it here would mint or open a session directory.
+///
+/// The accepting sibling is `/session list`, which is a command rather than a
+/// switch: without it, a mapping that switched on every `/session` verb would
+/// pass.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn corpus_session_resume_in_session_names_what_the_flag_names() {
+    use zaru_cli::terminal::{Opening, switch_for};
+    use zaru_tui::shell::Command;
+
+    let id = zaru_cli::session::SessionId::parse("01JQZX8N3K4M5P6R7S8T9V0W1X").expect("a ULID");
+
+    assert_eq!(
+        switch_for(&Command {
+            slash: "/session",
+            verb: Some("resume"),
+            words: vec![id.to_string()],
+        }),
+        Some(Opening::Existing(id.clone())),
+        "`/session resume <id>` must name the session `--resume <id>` names"
+    );
+    assert_eq!(
+        switch_for(&Command {
+            slash: "/session",
+            verb: Some("continue"),
+            words: Vec::new(),
+        }),
+        Some(Opening::MostRecentHere),
+        "`/session continue` must mean what `--continue` means"
+    );
+
+    // The accepting siblings. A command is not a switch, and a `resume` whose
+    // word is not a session id falls through to the refusal that surface
+    // already has rather than being answered with a guess.
+    for command in [
+        Command {
+            slash: "/session",
+            verb: Some("list"),
+            words: Vec::new(),
+        },
+        Command {
+            slash: "/session",
+            verb: Some("rm"),
+            words: vec![id.to_string()],
+        },
+        Command {
+            slash: "/runtime",
+            verb: None,
+            words: Vec::new(),
+        },
+        Command {
+            slash: "/session",
+            verb: Some("resume"),
+            words: vec!["not-a-ulid".to_owned()],
+        },
+        Command {
+            slash: "/session",
+            verb: Some("resume"),
+            words: Vec::new(),
+        },
+    ] {
+        assert_eq!(
+            switch_for(&command),
+            None,
+            "`{} {:?}` was read as a switch",
+            command.slash,
+            command.verb
+        );
+    }
 }

@@ -176,8 +176,35 @@ pub enum Turnable<'a> {
 /// What one turn of the pump produced.
 #[derive(Debug)]
 pub struct Pump {
-    /// What the process should exit with.
-    pub exit: Exit,
+    /// Whether the person left, or asked to be somewhere else.
+    pub outcome: Pumped,
+}
+
+/// The two ways a pump ends.
+///
+/// # Why there is a second one
+///
+/// [ADR-0010] D4: "**Inside a session the same operation is `/session resume
+/// <id>` and `/session continue`** — one operation with two entry points."
+/// Outside a session that operation *puts the person inside the named
+/// session*, so inside one it does the same thing, which is a switch. Both
+/// verbs refused with a full sentence until 2026-09-06, and they were the
+/// in-session half the record had already settled.
+///
+/// Two states and no `Option`, so a caller cannot ignore the second: a pump
+/// whose switch was dropped would leave the user in the session they asked to
+/// leave, saying nothing.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[derive(Debug)]
+pub enum Pumped {
+    /// The person left. The process exits with this.
+    Left(Exit),
+    /// The person asked to be in another session, already resolved.
+    ///
+    /// Resolved rather than named, because the lookup can fail and its
+    /// refusal has to reach the pane: see the `Action::Run` arm of [`run`].
+    Switch(crate::session::SessionId),
 }
 
 /// [ADR-0010] D4's interruption, held by a resumed session and told once.
@@ -1360,12 +1387,49 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
             Action::Leave(leaving) => {
                 surface.draw(shell)?;
                 return Ok(Pump {
-                    exit: exit_for(leaving),
+                    outcome: Pumped::Left(exit_for(leaving)),
                 });
             }
             Action::Run(command) => {
-                for line in dispatch(runner, &command) {
-                    shell.notice(line);
+                // ADR-0010 D4's in-session half, asked before the command is
+                // dispatched. A switch is not a `Request` the out-of-session
+                // `Run` executes -- outside a session those two verbs are
+                // *flags*, because there is no session to be inside -- so it
+                // cannot arrive through `request_for`, and `switch_for` is its
+                // own pure mapping for the reason that one is: a check has to
+                // be able to ask what a spelling means without doing it.
+                if let Some(opening) = switch_for(&command) {
+                    // Resolved **here**, where the pane is: a terminal in raw
+                    // mode has no echo, so a refusal written to standard error
+                    // goes into the alternate screen and the person sees
+                    // nothing. `Overrides::default()` is not a loss --
+                    // `resolve` reads them only to mint, and a switch never
+                    // mints.
+                    match crate::terminal::open::resolve(
+                        &opening,
+                        runner.version,
+                        runner.report_at,
+                        &crate::cli::invocation::Overrides::default(),
+                    ) {
+                        Ok(id) => {
+                            surface.draw(shell)?;
+                            return Ok(Pump {
+                                outcome: Pumped::Switch(id),
+                            });
+                        }
+                        Err(exit) => {
+                            if let Exit::Failed(classified) = &*exit {
+                                shell.notice(Line::new(
+                                    Register::Failed,
+                                    crate::failure::Presentation::of(classified).headline,
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    for line in dispatch(runner, &command) {
+                        shell.notice(line);
+                    }
                 }
             }
             Action::Task(task) => {
@@ -1393,7 +1457,11 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                         let session = turns.session;
                         match after(turned, &mut turns.interrupted, session, redactor) {
                             AfterTurn::Carries(lines) => lines,
-                            AfterTurn::Stops(exit) => return Ok(Pump { exit }),
+                            AfterTurn::Stops(exit) => {
+                                return Ok(Pump {
+                                    outcome: Pumped::Left(exit),
+                                });
+                            }
                         }
                     }
                     Turnable::Cannot(lines) => lines.clone(),
@@ -1410,7 +1478,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
     // does not do this -- crossterm blocks -- and a check does, which is what
     // stops a pump that never returns from hanging one.
     Ok(Pump {
-        exit: Exit::Succeeded,
+        outcome: Pumped::Left(Exit::Succeeded),
     })
 }
 
@@ -1579,6 +1647,41 @@ pub(crate) fn dispatch(runner: &crate::cli::Run<'_>, command: &Command) -> Vec<L
 /// A pure mapping is the seam that makes the question answerable without the
 /// side effect, and it is a better shape besides: what a slash spelling
 /// *means* and what running it *does* are two things.
+/// Which session a slash command asks to be in, deciding nothing and doing
+/// nothing.
+///
+/// **Separate from [`run`] for the reason [`request_for`] is separate from
+/// [`dispatch`]**: what a spelling *means* and what running it *does* are two
+/// things, and a check has to be able to ask the first without the second --
+/// which here would mean minting or opening a session directory.
+///
+/// [ADR-0010] D4 names both verbs and [ADR-0015] D2 governs both spellings.
+/// `/session resume <id>` names one; `/session continue` is this directory's
+/// most recent, which is the same sentence `--continue` implements and reaches
+/// it through the same [`crate::session::most_recent_in`].
+///
+/// A `resume` whose word is not a ULID answers `None` and falls through to
+/// [`dispatch`], which refuses it in the sentence that surface already has --
+/// the same shape `("/session", Some("rm"))` already takes.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[must_use]
+pub fn switch_for(command: &Command) -> Option<crate::terminal::open::Opening> {
+    use crate::terminal::open::Opening;
+    match (command.slash, command.verb) {
+        ("/session", Some("resume")) => command
+            .words
+            .first()
+            .and_then(|word| crate::session::SessionId::parse(word).ok())
+            .map(Opening::Existing),
+        ("/session", Some("continue")) if command.words.is_empty() => {
+            Some(Opening::MostRecentHere)
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn request_for(command: &Command) -> Option<Request> {
     match (command.slash, command.verb) {
         ("/runtime", None) => Some(Request::Runtime),
@@ -1604,10 +1707,9 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
             .first()
             .and_then(|word| crate::config::Key::new(word).ok())
             .map(|key| Request::ConfigExplain { key }),
-        // ADR-0010 D4's two in-session spellings. Resuming from inside a
-        // session is a different operation from resuming into one, and no
-        // record says what it does to the session you are already in, so it
-        // is refused rather than answered.
+        // ADR-0010 D4's two in-session spellings are not requests: outside a
+        // session they are *flags*, because there is no session to be inside.
+        // `switch_for` above maps them, and `run` asks it before it dispatches.
         ("/session", Some("resume" | "continue")) => None,
         _ => None,
     }

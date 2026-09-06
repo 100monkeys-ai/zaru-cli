@@ -1285,3 +1285,77 @@ fn adr_0007_d7s_add_names_each_argument_it_was_not_given() {
         too_many.stderr
     );
 }
+
+/// A bare `zaru` through a pipe prints the usage and mints nothing.
+///
+/// # [ADR-0015] D2's flag-surface contract, and both of its readers
+///
+/// The survey's row 1 was "`zaru` at a terminal prints `usage:` and exits.
+/// **There is no way to open a session at a terminal.**" The Update of
+/// 2026-09-06 makes a bare `zaru` the request to be in a session and leaves
+/// `--help` exactly as it was, with the reader deciding which answer it gets —
+/// which is [ADR-0010] D4's own two-readers shape.
+///
+/// **This is the pipe half, and it is the half a check can drive**: no check
+/// in this repository can allocate a pseudo-terminal without a dependency
+/// ADR-0003 D2's table does not name. What it asserts is that the piped
+/// answer did not change and that nothing was minted for it — a session
+/// directory created by asking the binary a question would be state created in
+/// order to read state.
+///
+/// The accepting sibling is a staged session that must **survive**: a check
+/// that only asserted "no new session" would pass against a build that deleted
+/// the store, and one that only counted would pass against a build that minted
+/// and removed.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn corpus_a_bare_zaru_through_a_pipe_prints_the_usage_and_mints_nothing() {
+    let home = Home::new("bare-pipe");
+    let staged = stage_a_session(&home, 1_700_000_007_000);
+    let sessions = home.path().join(".zaru").join("sessions");
+    let before: Vec<_> = std::fs::read_dir(&sessions)
+        .expect("the staged store is there")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
+
+    let bare = zaru(&home, &[]);
+    assert_eq!(bare.code, 0, "stderr: {}", bare.stderr);
+    assert_eq!(
+        bare.lines().first().copied(),
+        Some(concat!("zaru ", env!("CARGO_PKG_VERSION"))),
+        "the artefact's first line is its own version"
+    );
+    assert!(
+        bare.stdout.contains("usage:"),
+        "a bare `zaru` through a pipe prints the usage, unchanged: {}",
+        bare.stdout
+    );
+
+    let after: Vec<_> = std::fs::read_dir(&sessions)
+        .expect("the store is still there")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "a bare `zaru` nobody is watching minted a session; asking the binary a question must \
+         create no state"
+    );
+    // The accepting sibling: the staged session survives, so the assertion
+    // above cannot be satisfied by a build that emptied the store.
+    assert!(
+        sessions.join(staged.as_str()).is_dir(),
+        "the staged session is gone, so `after == before` says nothing"
+    );
+
+    // `--help` is unchanged and is a different request, which is the half of
+    // the Update that is about not changing anything.
+    let helped = zaru(&home, &["--help"]);
+    assert_eq!(helped.code, 0);
+    assert_eq!(
+        helped.stdout, bare.stdout,
+        "`--help` and a bare `zaru` print the same bytes through a pipe"
+    );
+}

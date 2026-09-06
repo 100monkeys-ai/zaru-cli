@@ -89,8 +89,29 @@ impl Overrides {
 /// arrive without `main`, `--help` and the renderer each answering for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    /// `zaru --help`, and `zaru` with no arguments at all.
+    /// `zaru --help`.
     Help,
+    /// `zaru`, with no arguments at all.
+    ///
+    /// # One request, and the reader decides what it means
+    ///
+    /// **A bare `zaru` was [`Request::Help`] until 2026-09-06**, and both
+    /// readers got the usage. [ADR-0015] D2's flag-surface contract gains an
+    /// accepted Update under directive 25: `--help` is unchanged and still
+    /// lists exactly what runs, and a bare `zaru` is not `--help` — it is the
+    /// request to be in a session. At a terminal a new session's shell opens;
+    /// through a pipe the usage is printed and nothing is minted.
+    ///
+    /// **The parser does not make that decision**, which is why this is one
+    /// request rather than two. [`parse`](crate::cli::parse) takes an iterator
+    /// precisely so it reads no process state, and a parser that called
+    /// `isatty` would be a second reader of the terminal beside
+    /// [`crate::terminal::open`]'s. The test lives where [ADR-0010] D4's
+    /// two-readers ruling already put it.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Session,
     /// `zaru --version`.
     Version,
     /// `zaru runtime` — [ADR-0001] D2's datum.

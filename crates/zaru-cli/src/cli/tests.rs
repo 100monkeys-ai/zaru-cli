@@ -393,9 +393,14 @@ fn help_is_answered_even_beside_a_line_that_would_otherwise_be_refused() {
     );
     assert_eq!(
         accepted(&[]).request,
-        Request::Help,
-        "`zaru` with no arguments answers the question the user asked by typing the name"
+        Request::Session,
+        "`zaru` with no arguments is the request to be in a session, and which answer a reader \
+         gets is `terminal::open`'s rather than the parser's"
     );
+    // The two are not the same request, which is the whole of the 2026-09-06
+    // Update: a bare `zaru` at a terminal opens a session and `--help` never
+    // does, however it is spelled.
+    assert_eq!(accepted(&["--help"]).request, Request::Help);
 }
 
 /// Nothing reaches the rest of the program as a string it has to re-read.

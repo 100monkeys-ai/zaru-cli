@@ -985,6 +985,91 @@ pub async fn run_one(
 /// Run one turn for `task` in a session of its own, and say what the process
 /// exits with.
 ///
+/// [ADR-0010] D1's session, minted: the directory, its three files, and the
+/// context the first of them holds.
+///
+/// # One minting, because there are two callers now
+///
+/// This was inline in [`task`] until 2026-09-06, when a bare `zaru` at a
+/// terminal became the second thing that starts a session — see
+/// [`crate::terminal::open`]. Two mintings would be two `meta.toml` writers
+/// and two first checkpoints, agreeing until a field was added to one.
+///
+/// **The provider is an `Option`, and that is what lets a terminal open a
+/// session it cannot run a turn in.** `task` always has one, because it
+/// refuses before it mints; a shell opens whether or not a provider resolved,
+/// exactly as `--resume` already does, and a session with none records `None`
+/// rather than a kind nobody chose. D1 makes that field optional for this
+/// reason.
+///
+/// The context is built here rather than by the caller because [ADR-0010] D3's
+/// checkpoint holds it: `session::checkpoint` writes an opaque value it never
+/// interprets, and [`SessionContext`] is the one type that knows what goes in
+/// it. On a session that has not had a turn that is an empty layer 6, and it
+/// is that shape because the type says so rather than because a literal agrees
+/// with the type by hand.
+///
+/// # Errors
+///
+/// The classified refusal for a store that cannot be reached, a ULID that
+/// cannot be minted, or a `meta.toml` or checkpoint that cannot be written.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+pub fn start(
+    root: std::path::PathBuf,
+    tier: ResolvedTier,
+    provider: Option<ProviderKind>,
+    here: &std::path::Path,
+    surface: &Surface<'_>,
+) -> Result<(crate::session::Session, SessionContext), Box<crate::failure::Classified>> {
+    let session_store = SessionStore::open(root).map_err(|failure| surface.session(&failure))?;
+    let id = SessionId::mint(&SystemWallClock).map_err(|failure| {
+        Box::new(Surface::session_not_started(&failure))
+    })?;
+    let session = session_store
+        .start(id.clone())
+        .map_err(|failure| surface.session(&failure))?;
+    let evidence = session.evidence();
+    let meta = Meta::new(
+        tier,
+        // ADR-0001 D1 gives `bare` no cortex, and nothing here attaches one.
+        None,
+        provider.map(|kind| kind.to_string()),
+        // ADR-0010 D4's `--continue` scope, and it is ADR-0011 D4's boundary
+        // rather than a second reading of the process: the caller canonicalised
+        // it once, and a session that recorded a different answer to one
+        // question would be found under one path and written under another.
+        here.to_path_buf(),
+        id.minted_at(),
+    );
+    MetaFile::at(session.meta_path())
+        .write(&meta)
+        .map_err(|failure| Box::new(Surface::meta(&failure, evidence.clone())))?;
+    let context = SessionContext::opened(context::prefix_for(), layers::context_limits());
+    Checkpoint::at(session.checkpoint_path())
+        .write(&context.checkpoint())
+        .map_err(|failure| Box::new(Surface::checkpoint(&failure, evidence.clone())))?;
+    // **D1's third file, created empty and closed again.**
+    //
+    // Clause 1 is "a session directory is created with the three files", and
+    // until 2026-09-06 that was true only *after* a turn: the transcript was
+    // created by the first `Transcript::append_to` the turn made, so a session
+    // held two files until something was written to it. That was unobservable
+    // while every session ran a turn immediately. A bare `zaru` at a terminal
+    // can be opened and left, so it is observable now, and the clause is what
+    // decides it rather than the convenience.
+    //
+    // `append_to` creates or opens; dropping the handle leaves the file at
+    // `FILE_MODE` with nothing in it, which is what a session that has said
+    // nothing has. The turn's own `append_to` then opens the same file and
+    // appends, so nothing else changes.
+    drop(
+        Transcript::append_to(session.transcript_path())
+            .map_err(|failure| Box::new(Surface::transcript(&failure, evidence)))?,
+    );
+    Ok((session, context))
+}
+
 /// The out-of-session surface, and it is exactly what it was: resolve, open a
 /// session, run turn one. `version` and `report_at` are the binary's own
 /// package metadata, for [ADR-0016] D3's report.
@@ -1002,45 +1087,17 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     let mut owed = Owed::of(&prepared, &crate::session::AlreadySaid::none());
 
     // --- ADR-0010 D1's session, and the first `meta.toml` a product writes --
-    let session_store = match SessionStore::open(prepared.store_root.clone()) {
-        Ok(store) => store,
-        Err(failure) => return Ran::refused(surface.session(&failure)),
-    };
-    let id = match SessionId::mint(&SystemWallClock) {
-        Ok(id) => id,
-        Err(failure) => return Ran::refused(Surface::session_not_started(&failure)),
-    };
-    let session = match session_store.start(id.clone()) {
-        Ok(session) => session,
-        Err(failure) => return Ran::refused(surface.session(&failure)),
+    let (session, mut context) = match start(
+        prepared.store_root.clone(),
+        prepared.tier,
+        Some(prepared.kind),
+        prepared.here.root(),
+        &surface,
+    ) {
+        Ok(started) => started,
+        Err(refused) => return Ran::refused(*refused),
     };
     let evidence = session.evidence();
-    let meta = Meta::new(
-        prepared.tier,
-        // ADR-0001 D1 gives `bare` no cortex, and nothing here attaches one.
-        None,
-        Some(prepared.kind.to_string()),
-        // ADR-0010 D4's `--continue` scope, and it is ADR-0011 D4's boundary
-        // rather than a second reading of the process: `prepare` canonicalised
-        // it once, above, and a session that recorded a different answer to
-        // one question would be found under one path and written under another.
-        prepared.here.root().to_path_buf(),
-        id.minted_at(),
-    );
-    if let Err(failure) = MetaFile::at(session.meta_path()).write(&meta) {
-        return Ran::refused(Surface::meta(&failure, evidence));
-    }
-    // ADR-0013's context, opened before ADR-0010 D3's checkpoint because the
-    // checkpoint's contents are that record's: `session::checkpoint` writes an
-    // opaque value it never interprets, and `SessionContext` is the one type
-    // that knows what goes in it. On a session that has not had a turn that is
-    // an empty layer 6 -- and it is that shape because the type says so rather
-    // than because a literal here agrees with the type by hand.
-    let mut context = SessionContext::opened(context::prefix_for(), layers::context_limits());
-    let checkpoint = Checkpoint::at(session.checkpoint_path());
-    if let Err(failure) = checkpoint.write(&context.checkpoint()) {
-        return Ran::refused(Surface::checkpoint(&failure, evidence));
-    }
 
     // ADR-0011 D3's prompt over the terminal. `None` when standard input is
     // not one, at which point a call that needed a confirmation is refused

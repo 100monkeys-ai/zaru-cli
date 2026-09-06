@@ -37,18 +37,59 @@ use crate::terminal::vocabulary::{Transcript, Vocabulary};
 use std::io::IsTerminal;
 use zaru_tui::shell::{Shell, Status};
 
-/// Whether this invocation would open a shell if there were a terminal.
+/// Which session a shell is being asked to open.
 ///
-/// **Two requests and no others.** A shell that opened for `zaru runtime`
+/// # Three, and each is a spelling a record names
+///
+/// [`Opening::New`] is a bare `zaru` at a terminal, decided 2026-09-06 as an
+/// accepted Update on [ADR-0015] D2's flag-surface contract under directive 25
+/// — the survey's row 1 was "there is no way to open a session at a terminal",
+/// because the shell was reachable only through `--resume` or `--continue` and
+/// both need a session a *non-interactive* run already created.
+/// [`Opening::Existing`] is `--resume <id>` and `/session resume <id>`, and
+/// [`Opening::MostRecentHere`] is `--continue` and `/session continue` —
+/// [ADR-0010] D4's "one operation with two entry points", which is why the
+/// two flags and the two slash verbs resolve through this one type.
+///
+/// **Named `Opening` and not `Target`**, because [ADR-0011] D4's
+/// [`Target`](crate::tools::Target) is a path classified against the working
+/// directory and this is a session to open. [Ubiquitous Language]'s rule is
+/// that the newcomer qualifies.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [Ubiquitous Language]: https://100monkeys-ai.cortex.page/zaru/p/architecture/ubiquitous-language
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opening {
+    /// Mint one. A bare `zaru` at a terminal.
+    New,
+    /// The one named.
+    Existing(SessionId),
+    /// [ADR-0010] D4's most recent session started in this directory.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    MostRecentHere,
+}
+
+/// Which session this invocation asks for, if it asks for one.
+///
+/// **Three requests and no others.** A shell that opened for `zaru runtime`
 /// would turn a question into a session, and [ADR-0010] D1 makes a session a
 /// directory on disk — so opening one to answer a question would create state
 /// in order to read state, which the configuration loader already refuses to
-/// do for the same reason.
+/// do for the same reason. A bare `zaru` is not a question: it is the request
+/// to be in a session, which is what the 2026-09-06 Update decided.
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 #[must_use]
-pub const fn is_a_session(request: &Request) -> bool {
-    matches!(request, Request::Resume { .. } | Request::Continue)
+pub fn opening_for(request: &Request) -> Option<Opening> {
+    match request {
+        Request::Session => Some(Opening::New),
+        Request::Resume { id } => Some(Opening::Existing(id.clone())),
+        Request::Continue => Some(Opening::MostRecentHere),
+        _ => None,
+    }
 }
 
 /// Whether standard output is a terminal.
@@ -198,7 +239,103 @@ pub fn restored_context(
     }
 }
 
-/// Open the shell over a session and pump it until the user leaves.
+/// Which session an [`Opening`] names, minting one where it says to.
+///
+/// # Errors
+///
+/// The classified [`Exit`] for a store that cannot be reached, a directory
+/// that holds no session, or a session that cannot be minted.
+pub fn resolve(
+    opening: &Opening,
+    version: &str,
+    report_at: &str,
+    overrides: &Overrides,
+) -> Result<SessionId, Box<Exit>> {
+    let classify = Classify::new(version, report_at);
+    let root = SessionStore::default_root()
+        .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
+    resolve_in(opening, root, version, report_at, overrides)
+}
+
+/// The same, under a named session store.
+///
+/// **The root is a parameter for the reason `compose::turn::start`'s is**: the
+/// three arms below are one dispatch and a check has to be able to drive all
+/// three, including the one that mints. [`SessionStore::default_root`] reads
+/// `$HOME`, so a check driving [`resolve`] would mint into the developer's own
+/// `~/.zaru` — which it did, once, before this took a parameter.
+///
+/// # Errors
+///
+/// The classified [`Exit`] for a store that cannot be reached, a directory
+/// that holds no session, or a session that cannot be minted.
+pub fn resolve_in(
+    opening: &Opening,
+    root: std::path::PathBuf,
+    version: &str,
+    report_at: &str,
+    overrides: &Overrides,
+) -> Result<SessionId, Box<Exit>> {
+    match opening {
+        Opening::Existing(id) => Ok(id.clone()),
+        Opening::MostRecentHere => most_recent_in_store(root, version, report_at),
+        Opening::New => mint(root, version, report_at, overrides),
+    }
+}
+
+/// [ADR-0010] D1's session, minted for a bare `zaru` at a terminal.
+///
+/// # It mints whether or not a provider resolved
+///
+/// `compose::turn::start` takes the provider as an `Option` for exactly this
+/// caller. A shell opens over a session it cannot run a turn in — that is what
+/// `--resume` has always done, and the refusal is shown when the user types a
+/// task rather than at the door, which is the sentence [`open`] already
+/// carries. Refusing to *start* one would make a person on a fresh machine
+/// unable to reach the interactive surface at all, which is the survey's row 1
+/// and the whole reason this exists.
+///
+/// The tier comes from the resolved configuration and the directory from
+/// [`WorkingDirectory::of_this_process`](crate::tools::WorkingDirectory::of_this_process),
+/// which is the one place the process is asked where it is.
+///
+/// # Errors
+///
+/// The classified [`Exit`] for configuration that will not resolve, a tier
+/// that will not, a store that cannot be reached, or a session that cannot be
+/// written.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+pub fn mint(
+    root: std::path::PathBuf,
+    version: &str,
+    report_at: &str,
+    overrides: &Overrides,
+) -> Result<SessionId, Box<Exit>> {
+    let classify = Classify::new(version, report_at);
+    let resolution = crate::cli::layers::resolve_from_process(overrides)
+        .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
+    let tier = ResolvedTier::from_configuration(&resolution)
+        .map_err(|refusal| Box::new(Exit::Failed(classify.tier(&refusal))))?;
+    let here = crate::tools::WorkingDirectory::of_this_process()
+        .map_err(|failure| Box::new(Exit::Failed(Classify::working_directory(&failure))))?;
+    // The provider is whatever `prepare` could resolve, and `None` where it
+    // could not: D1 makes the field optional, and a session that records a
+    // kind it never reached would be a worse record than one that records
+    // none.
+    let provider = crate::compose::turn::prepare(version, report_at, &resolution)
+        .ok()
+        .map(|prepared| prepared.kind());
+    let (session, _) = crate::compose::turn::start(root, tier, provider, here.root(), &classify)
+        .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
+    Ok(session.id().clone())
+}
+
+/// Open the shell over one session and pump it until the person leaves it.
+///
+/// Returns a [`Pumped`](crate::terminal::driver::Pumped), because leaving a
+/// session and asking for another one are two different things — see
+/// [`open`], which is what loops over them.
 ///
 /// # Errors
 ///
@@ -207,12 +344,15 @@ pub fn restored_context(
 /// reported as a defect by [ADR-0016] D3's boundary in `main`.
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-pub fn open(
+fn one_session(
     id: &SessionId,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
-) -> Result<Exit, Box<Exit>> {
+    guard: &mut Guard<Crossterm>,
+    runtime: &tokio::runtime::Runtime,
+    source: &Source,
+) -> Result<crate::terminal::driver::Pumped, Box<Exit>> {
     let (mut shell, _, trie, resumed) = shell_for(id, version, report_at, overrides)?;
 
     // ADR-0008 D1's turns, resolved once for the whole session. Everything
@@ -285,11 +425,75 @@ pub fn open(
         );
     }
 
-    // **One runtime for the session, built before the terminal is taken.**
-    // Every turn of this session is polled on it, where until 2026-09-05 each
-    // turn built and dropped one of its own; and it is what lets the pump race
-    // a turn against the terminal at all, since a turn is a future now rather
-    // than a call that blocks.
+    let runner = crate::cli::Run { version, report_at };
+
+    // The guard is what restores, and it is the caller's: a switch keeps the
+    // terminal rather than giving it back and taking it again, which would
+    // flash the alternate screen between two sessions.
+    let pumped = {
+        let surface: &mut Crossterm = guard.get_mut().expect("the guard holds the terminal");
+        runtime.block_on(crate::terminal::driver::run(
+            &mut shell,
+            surface,
+            source,
+            &Beat,
+            &runner,
+            &trie,
+            &Vocabulary,
+            &mut turns,
+        ))
+    };
+
+    Ok(match pumped {
+        Ok(pump) => pump.outcome,
+        // A terminal that stopped answering is not the user's fault and is not
+        // a defect in the harness either; the session is over and the shell
+        // gave the terminal back.
+        Err(_) => crate::terminal::driver::Pumped::Left(Exit::Succeeded),
+    })
+}
+
+/// Open a session's shell, and every session the person switches to after it.
+///
+/// # One terminal, one runtime, and a loop over sessions
+///
+/// [ADR-0010] D4's in-session half — `/session resume <id>` and `/session
+/// continue` — is "one operation with two entry points", and outside a session
+/// that operation puts the person *inside* the named session. So inside one it
+/// does the same thing, and the pump hands back the session it was asked for
+/// rather than an exit.
+///
+/// The terminal and the runtime are taken **once**, before the first session
+/// and outside the loop. A switch that gave the terminal back and took it
+/// again would leave and re-enter the alternate screen between two sessions,
+/// which a person sees as a flash and a lost frame.
+///
+/// **A switch resolves before the current shell is replaced**, inside the pump
+/// — see [`crate::terminal::driver::run`]'s `Action::Run` arm. The target is
+/// looked up while the old pane is still alive, so a `/session resume` naming
+/// a session that does not exist paints its refusal where the person is
+/// looking. A terminal in raw mode has no echo, and writing to standard error
+/// there is writing into the alternate screen; this loop therefore only ever
+/// receives a session that resolved.
+///
+/// # Errors
+///
+/// Returns the classified [`Exit`] for anything that stopped it before the
+/// terminal was taken.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+pub fn open(
+    opening: &Opening,
+    version: &str,
+    report_at: &str,
+    overrides: &Overrides,
+) -> Result<Exit, Box<Exit>> {
+    let mut id = resolve(opening, version, report_at, overrides)?;
+
+    // **One runtime for the whole shell, built before the terminal is taken.**
+    // Every turn of every session it opens is polled on it, and it is what
+    // lets the pump race a turn against the terminal at all, since a turn is a
+    // future rather than a call that blocks.
     //
     // The `expect` is the one `compose::turn::block_on` already carried and is
     // deliberately not a classification: a reactor that will not register with
@@ -299,41 +503,34 @@ pub fn open(
     // defect as a user error".
     let runtime = crate::compose::turn::runtime()
         .expect("a current-thread runtime with the io and time drivers");
-
     let crossterm = Crossterm::take().map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
-    let runner = crate::cli::Run { version, report_at };
 
-    // The terminal's own reader, on a thread of its own. It stops within
-    // `terminal::POLL` of this value being dropped, which is before the guard
-    // gives the terminal back.
+    // The terminal's own reader, on a thread of its own, and one for every
+    // session: a second reader would race the first for the same keystrokes.
+    // It stops within `terminal::POLL` of being dropped, which is before the
+    // guard gives the terminal back.
     let source = Source::over_the_terminal();
 
-    // The guard is what restores. Every path out of this block -- the pump
-    // returning, an I/O error, a panic unwinding through it -- drops it.
-    let pumped = {
-        let surface: &mut Crossterm = guard.get_mut().expect("the guard was just constructed");
-        runtime.block_on(crate::terminal::driver::run(
-            &mut shell,
-            surface,
-            &source,
-            &Beat,
-            &runner,
-            &trie,
-            &Vocabulary,
-            &mut turns,
-        ))
+    let exit = loop {
+        match one_session(
+            &id, version, report_at, overrides, &mut guard, &runtime, &source,
+        ) {
+            Ok(crate::terminal::driver::Pumped::Left(exit)) => break exit,
+            // Already resolved, and resolved **inside** the pump so a refusal
+            // reached the pane rather than a terminal in raw mode. See
+            // `driver::run`'s `Action::Run` arm.
+            Ok(crate::terminal::driver::Pumped::Switch(next)) => id = next,
+            Err(exit) => {
+                drop(source);
+                guard.restore_now();
+                return Err(exit);
+            }
+        }
     };
     drop(source);
     guard.restore_now();
-
-    Ok(match pumped {
-        Ok(pump) => pump.exit,
-        // A terminal that stopped answering is not the user's fault and is not
-        // a defect in the harness either; the session is over and the shell
-        // gave the terminal back.
-        Err(_) => Exit::Succeeded,
-    })
+    Ok(exit)
 }
 
 /// Which session `--continue` means, per [ADR-0010] D4.
@@ -351,12 +548,14 @@ pub fn open(
 /// or no session in this directory exists.
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-pub fn most_recent(version: &str, report_at: &str) -> Result<SessionId, Box<Exit>> {
+pub fn most_recent_in_store(
+    root: std::path::PathBuf,
+    version: &str,
+    report_at: &str,
+) -> Result<SessionId, Box<Exit>> {
     let classify = Classify::new(version, report_at);
     let here = crate::tools::WorkingDirectory::of_this_process()
         .map_err(|failure| Box::new(Exit::Failed(Classify::working_directory(&failure))))?;
-    let root = SessionStore::default_root()
-        .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
     let store = SessionStore::reading(root);
     crate::session::most_recent_in(&store, here.root())
         .map_err(|failure| Box::new(Exit::Failed(classify.continuing(&failure))))?
@@ -369,18 +568,12 @@ pub fn most_recent(version: &str, report_at: &str) -> Result<SessionId, Box<Exit
 /// which is the signal to fall through to the out-of-session surface.
 #[must_use]
 pub fn take_over(line: &CommandLine, version: &str, report_at: &str) -> Option<Exit> {
-    if !is_a_session(&line.request) || !a_person_is_watching() {
+    let opening = opening_for(&line.request)?;
+    if !a_person_is_watching() {
         return None;
     }
-    let id = match &line.request {
-        Request::Resume { id } => Ok(id.clone()),
-        Request::Continue => most_recent(version, report_at),
-        _ => return None,
-    };
-    Some(
-        match id.and_then(|id| open(&id, version, report_at, &line.overrides)) {
-            Ok(exit) => exit,
-            Err(exit) => *exit,
-        },
-    )
+    Some(match open(&opening, version, report_at, &line.overrides) {
+        Ok(exit) => exit,
+        Err(exit) => *exit,
+    })
 }

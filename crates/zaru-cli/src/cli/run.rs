@@ -90,6 +90,12 @@ impl Run<'_> {
         let surface = Surface::new(self.version, self.report_at);
         match &line.request {
             Request::Help => Outcome::printed(help::lines(self.version)),
+            // A bare `zaru` reaching this surface is one nobody is watching:
+            // `terminal::take_over` answers the other reader before `execute`
+            // is called. Printing the usage is what it has always printed
+            // through a pipe, byte for byte, and it mints nothing -- asking
+            // the binary a question still writes nothing to the user's home.
+            Request::Session => Outcome::printed(help::lines(self.version)),
             Request::Version => Outcome::printed(version_lines(self.version)),
             Request::Runtime => {
                 self.configured(
