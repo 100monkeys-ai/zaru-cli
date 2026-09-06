@@ -112,7 +112,11 @@ fn zaru_in(home: &Home, directory: &Path, arguments: &[&str]) -> Ran {
             .expect("the binary was killed by a signal rather than exiting"),
     };
 
-    println!("-- zaru {} (in {}) --", arguments.join(" "), directory.display());
+    println!(
+        "-- zaru {} (in {}) --",
+        arguments.join(" "),
+        directory.display()
+    );
     for line in ran.stdout.lines() {
         println!("   {line}");
     }
@@ -483,8 +487,8 @@ fn stage_a_session_in(
     };
 
     let store = SessionStore::open(home.path().join(".zaru")).expect("a scratch session store");
-    let id = SessionId::from_parts(Millis::new(minted_at), [entropy; 10])
-        .expect("a well-formed ULID");
+    let id =
+        SessionId::from_parts(Millis::new(minted_at), [entropy; 10]).expect("a well-formed ULID");
     let session = store.start(id.clone()).expect("a session directory");
 
     // The directory as the product records it: canonical, because
@@ -770,8 +774,7 @@ fn corpus_continue_is_the_most_recent_session_started_in_this_directory() {
         from_c.stdout
     );
     assert!(
-        !from_c.stdout.contains(newer_in_a.as_str())
-            && !from_c.stdout.contains(only_in_b.as_str()),
+        !from_c.stdout.contains(newer_in_a.as_str()) && !from_c.stdout.contains(only_in_b.as_str()),
         "no session from another directory may be resumed by `--continue`: {}",
         from_c.stdout
     );

@@ -170,7 +170,12 @@ pub fn most_recent_in(
     store: &SessionStore,
     here: &std::path::Path,
 ) -> Result<Option<SessionId>, ContinueFailure> {
-    for id in store.ids().map_err(ContinueFailure::Store)?.into_iter().rev() {
+    for id in store
+        .ids()
+        .map_err(ContinueFailure::Store)?
+        .into_iter()
+        .rev()
+    {
         let session = store.existing(&id).map_err(ContinueFailure::Store)?;
         let meta = MetaFile::at(session.meta_path())
             .read_if_present()

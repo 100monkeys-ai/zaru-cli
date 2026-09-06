@@ -1452,8 +1452,7 @@ fn corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell() {
     )
     .expect("a bare `zaru` at a terminal mints a session");
     assert_ne!(
-        minted,
-        scratch.id,
+        minted, scratch.id,
         "the mint answered with the session this check staged rather than a new one"
     );
 

@@ -832,9 +832,9 @@ pub enum Turned {
     /// The user interrupted it, and the turn's future was dropped. The
     /// session stays open and the next typed line is the next turn.
     ///
-    /// **It carries [`Narrated`], which cannot be built outside
-    /// [`crate::compose::iterate`]**, so this variant cannot be produced
-    /// without the pane having been told — see
+    /// **It carries [`crate::compose::Narrated`], which cannot be built
+    /// outside [`crate::compose::iterate`]**, so this variant cannot be
+    /// produced without the pane having been told — see
     /// [`crate::compose::Narrator::interrupted`] for the mutation that
     /// survived until it did.
     Interrupted(crate::compose::Narrated),
@@ -844,9 +844,12 @@ pub enum Turned {
 
 /// What the pump does with a turn that ended.
 ///
-/// **Separate from [`run`] for the reason [`request_for`] is separate from
-/// [`dispatch`]: a check has to be able to ask this question without answering
-/// it.** Reaching the arm through `run` needs a [`Turns`], which needs a
+/// **Separate from [`run`] for the reason `request_for` is separate from
+/// `dispatch`: a check has to be able to ask this question without answering
+/// it.** Those two are `pub(crate)` and named in prose rather than linked,
+/// because rustdoc is right to refuse a public page pointing at something a
+/// reader of that page cannot open — the rule [`PaneNarrator`] already
+/// records. Reaching the arm through `run` needs a [`Turns`], which needs a
 /// [`Prepared`](crate::compose::Prepared), which needs a provider client and a
 /// key — so the one decision that says whether a session survives its own
 /// interruption would be reachable only from a machine holding a credential.
@@ -1069,9 +1072,9 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         // time instead, which is a rule the type system was not holding.
         match raced {
             Raced::Ran(ran) => Ok(ran),
-            Raced::Interrupted => Err(Turned::Interrupted(
-                crate::compose::Narrator::interrupted(&narrator),
-            )),
+            Raced::Interrupted => Err(Turned::Interrupted(crate::compose::Narrator::interrupted(
+                &narrator,
+            ))),
             Raced::SourceEnded => Err(Turned::SourceEnded),
         }
     };
@@ -1637,7 +1640,7 @@ pub(crate) fn dispatch(runner: &crate::cli::Run<'_>, command: &Command) -> Vec<L
 
 /// Which request a slash command names, deciding nothing and doing nothing.
 ///
-/// **Separate from [`dispatch`] because a check has to be able to ask this
+/// **Separate from `dispatch` because a check has to be able to ask this
 /// question without answering it.** The first form of the coverage check below
 /// walked the vocabulary through `dispatch`, which *executes* — and `/init` is
 /// [ADR-0009](https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators)
@@ -1650,10 +1653,12 @@ pub(crate) fn dispatch(runner: &crate::cli::Run<'_>, command: &Command) -> Vec<L
 /// Which session a slash command asks to be in, deciding nothing and doing
 /// nothing.
 ///
-/// **Separate from [`run`] for the reason [`request_for`] is separate from
-/// [`dispatch`]**: what a spelling *means* and what running it *does* are two
-/// things, and a check has to be able to ask the first without the second --
-/// which here would mean minting or opening a session directory.
+/// **Separate from [`run`] for the reason `request_for` is separate from
+/// `dispatch`**: what a spelling *means* and what running it *does* are two
+/// things, and a check has to be able to ask the first without the second —
+/// which here would mean minting or opening a session directory. Both are
+/// `pub(crate)` and named in prose rather than linked, for the reason
+/// [`PaneNarrator`] records.
 ///
 /// [ADR-0010] D4 names both verbs and [ADR-0015] D2 governs both spellings.
 /// `/session resume <id>` names one; `/session continue` is this directory's
@@ -1661,7 +1666,7 @@ pub(crate) fn dispatch(runner: &crate::cli::Run<'_>, command: &Command) -> Vec<L
 /// it through the same [`crate::session::most_recent_in`].
 ///
 /// A `resume` whose word is not a ULID answers `None` and falls through to
-/// [`dispatch`], which refuses it in the sentence that surface already has --
+/// `dispatch`, which refuses it in the sentence that surface already has —
 /// the same shape `("/session", Some("rm"))` already takes.
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -1675,9 +1680,7 @@ pub fn switch_for(command: &Command) -> Option<crate::terminal::open::Opening> {
             .first()
             .and_then(|word| crate::session::SessionId::parse(word).ok())
             .map(Opening::Existing),
-        ("/session", Some("continue")) if command.words.is_empty() => {
-            Some(Opening::MostRecentHere)
-        }
+        ("/session", Some("continue")) if command.words.is_empty() => Some(Opening::MostRecentHere),
         _ => None,
     }
 }

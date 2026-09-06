@@ -1023,9 +1023,8 @@ pub fn start(
     surface: &Surface<'_>,
 ) -> Result<(crate::session::Session, SessionContext), Box<crate::failure::Classified>> {
     let session_store = SessionStore::open(root).map_err(|failure| surface.session(&failure))?;
-    let id = SessionId::mint(&SystemWallClock).map_err(|failure| {
-        Box::new(Surface::session_not_started(&failure))
-    })?;
+    let id = SessionId::mint(&SystemWallClock)
+        .map_err(|failure| Box::new(Surface::session_not_started(&failure)))?;
     let session = session_store
         .start(id.clone())
         .map_err(|failure| surface.session(&failure))?;

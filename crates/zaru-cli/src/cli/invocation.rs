@@ -103,7 +103,7 @@ pub enum Request {
     /// through a pipe the usage is printed and nothing is minted.
     ///
     /// **The parser does not make that decision**, which is why this is one
-    /// request rather than two. [`parse`](crate::cli::parse) takes an iterator
+    /// request rather than two. `cli::parse::parse` takes an iterator
     /// precisely so it reads no process state, and a parser that called
     /// `isatty` would be a second reader of the terminal beside
     /// [`crate::terminal::open`]'s. The test lives where [ADR-0010] D4's
