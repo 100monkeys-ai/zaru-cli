@@ -88,6 +88,12 @@ const RESOLVED_ID: &str = "a96c9dde-becf-4ff0-836e-ad8bef46ff42";
 /// The cursor the fixture's `pages.list` issues for its second page.
 const SECOND_PAGE: &str = "cursor-4c7e";
 
+/// A workspace the fixture answers in a shape no reader here accepts.
+///
+/// Named rather than spelled at the call site, so the accepting check and the
+/// refusing one differ by exactly one value.
+const UNREADABLE_ID: &str = "00000000-0000-0000-0000-000000000000";
+
 /// What the fixture answers `tools/list` with before anything changes.
 const FIRST_SCOPE: [&str; 4] = [
     "pages.read",
@@ -280,6 +286,49 @@ impl ServerHandler for FakeNotes {
                 .to_string(),
             )])
             .into()),
+            // A search answers the same container a listing does and carries
+            // its own cursor, which this client deliberately does not follow:
+            // a `nextCursor` here is what a check asserts is IGNORED.
+            "search.global" => {
+                let workspace = arguments
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        McpError::invalid_params("search.global needs a workspace", None)
+                    })?;
+                let query = arguments
+                    .get("q")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::invalid_params("search.global needs a query", None))?;
+                if workspace == UNREADABLE_ID {
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
+                        serde_json::json!({"results": [{"path": "adrs/0006"}]}).to_string(),
+                    )])
+                    .into());
+                }
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::json!({
+                        "results": [
+                            {"kind": "page", "path": "adrs/0006", "title": format!("{query} in {workspace} ✦")}
+                        ],
+                        "nextCursor": SECOND_PAGE
+                    })
+                    .to_string(),
+                )])
+                .into())
+            }
+            "cortex.ground" => {
+                let workspace = arguments
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        McpError::invalid_params("cortex.ground needs a workspace", None)
+                    })?;
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "grounding for {workspace} ✦"
+                ))])
+                .into())
+            }
             other => Err(McpError::new(
                 ErrorCode::METHOD_NOT_FOUND,
                 format!("no such tool: {other}"),
@@ -859,5 +908,92 @@ async fn a_cursor_that_does_not_advance_is_refused_rather_than_followed_forever(
     assert!(
         repeated.to_string().contains("advances"),
         "the refusal must say what was expected of the cursor: {repeated}"
+    );
+}
+
+#[tokio::test]
+async fn adr_0006_d4s_last_read_tool_names_its_workspace_and_stops_at_one_page() {
+    let attached = attach().await;
+    let workspace = WorkspaceId::new(RESOLVED_ID);
+
+    let found = attached
+        .session
+        .search("membrane", &workspace)
+        .await
+        .expect("the fixture serves a search");
+
+    assert_eq!(
+        found.len(),
+        1,
+        "a search is ranked, so the first page is the answer; following its cursor would fetch \
+         the tail nobody asked for: {found:?}"
+    );
+    assert_eq!(found[0].path, "adrs/0006");
+
+    let wire = attached.wire_text();
+    assert!(
+        wire.contains(r#""q":"membrane""#),
+        "the query never reached the server: {wire:?}"
+    );
+    assert!(
+        wire.contains(&format!(r#""workspace":"{RESOLVED_ID}""#)),
+        "the search did not name its workspace, which is the rule that will bite you: {wire:?}"
+    );
+    assert!(
+        !wire.contains(&format!(r#""cursor":"{SECOND_PAGE}""#)),
+        "the search followed the cursor the server offered, which a listing does and a ranked \
+         answer must not: {wire:?}"
+    );
+}
+
+#[tokio::test]
+async fn adr_0013s_layer_two_is_read_by_a_tool_and_names_its_workspace() {
+    let attached = attach().await;
+    // **`cortex.ground` is deliberately not in this fixture's default scope**,
+    // because that scope is ADR-0006 D4's composer set and D4 does not name it.
+    // The grounding belongs to the agent, whose access D3 leaves at whatever
+    // the user granted, so the widening here is the record's own boundary
+    // showing up as a line of test code rather than an inconvenience.
+    attached
+        .server
+        .scope
+        .lock()
+        .expect("the fixture's scope lock is not poisoned")
+        .push(zaru_notes::session::GROUND.to_owned());
+    let workspace = WorkspaceId::new(RESOLVED_ID);
+
+    let grounding = attached
+        .session
+        .ground(&workspace)
+        .await
+        .expect("the fixture serves a grounding");
+    assert_eq!(grounding, format!("grounding for {RESOLVED_ID} ✦"));
+
+    let wire = attached.wire_text();
+    assert!(
+        wire.contains(zaru_notes::session::GROUND),
+        "the grounding was not asked for by the tool this record names: {wire:?}"
+    );
+    assert!(
+        wire.contains(&format!(r#""workspace":"{RESOLVED_ID}""#)),
+        "the grounding read did not name its workspace: {wire:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_search_that_answers_in_another_shape_is_refused_naming_the_expectation() {
+    // The accepting sibling is the check two above. This one drives the same
+    // reader down its refusing branch, so "the shape is expected and fails
+    // loudly" is asserted rather than described.
+    let attached = attach().await;
+    let refusal = attached
+        .session
+        .search("membrane", &WorkspaceId::new(UNREADABLE_ID))
+        .await
+        .expect_err("the fixture answers this workspace with a shape no reader accepts");
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains("search.global") && rendered.contains("could not read"),
+        "the refusal names neither the tool nor what was expected: {rendered}"
     );
 }

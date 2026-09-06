@@ -72,6 +72,27 @@ pub const LIST_PAGES: &str = "pages.list";
 /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
 pub const LIST_ATOMS: &str = "atoms.list";
 
+/// The tool that searches a workspace.
+///
+/// In [ADR-0006] D4's `read_only_memory` set, spelled as that record spells it,
+/// and the last of that set's six with a caller here.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+pub const SEARCH_GLOBAL: &str = "search.global";
+
+/// The tool that answers with an instance's and a workspace's grounding.
+///
+/// **Not in [ADR-0006] D4's composer set, and that is the point.** D4 scopes
+/// the composer's credential to `read_only_memory` plus
+/// `me.set_current_workspace`, and this is neither; what wants a grounding is
+/// the agent, whose access D3 leaves at "whatever scope the user granted".
+/// [ADR-0013] D1 puts it at layer 2 of the context, "Grounding, session-start",
+/// never discarded silently.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub const GROUND: &str = "cortex.ground";
+
 /// What a session negotiated when it attached.
 ///
 /// Deliberately this crate's own type rather than `rmcp`'s `InitializeResult`:
@@ -385,6 +406,78 @@ impl Session {
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     pub async fn atoms(&self, workspace: &WorkspaceId) -> Result<Vec<Listed>, NotesError> {
         self.listing(LIST_ATOMS, workspace).await
+    }
+
+    /// Search a workspace, for [ADR-0005] D3's server tier.
+    ///
+    /// # Why this does not follow its cursor and a listing does
+    ///
+    /// [`Self::pages`] follows its cursor because a listing that stopped early
+    /// would under-populate the trie, and a trie missing entries is
+    /// indistinguishable from a cortex that does not hold them. A search is the
+    /// opposite: its answer is **ranked**, so the first page is the part that
+    /// matters and following the cursor would fetch the tail nobody asked for
+    /// — on the composer's hot path, against a rate-limit bucket
+    /// [ADR-0006](https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces)
+    /// counts.
+    ///
+    /// # Errors
+    ///
+    /// [`NotesError::Call`] when the server refuses, and
+    /// [`NotesError::Unreadable`] when the answer does not carry a listing.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    pub async fn search(
+        &self,
+        query: &str,
+        workspace: &WorkspaceId,
+    ) -> Result<Vec<Listed>, NotesError> {
+        let mut arguments = JsonObject::new();
+        arguments.insert("q".to_owned(), Value::String(query.to_owned()));
+        arguments.insert(
+            "workspace".to_owned(),
+            Value::String(workspace.as_str().to_owned()),
+        );
+        let answer = self.call(SEARCH_GLOBAL, arguments).await?;
+        Ok(listing::read(SEARCH_GLOBAL, &answer)?.listed)
+    }
+
+    /// The grounding [ADR-0013] D1 puts at layer 2, for the workspace named.
+    ///
+    /// The answer is returned exactly as the tool gave it, for the reason
+    /// [`Self::read_page`] gives: this crate does not model a grounding
+    /// document and a client that paraphrased one would be a second, worse
+    /// source of truth for it.
+    ///
+    /// # The handshake already carries this, and `rmcp` throws it away
+    ///
+    /// Measured against Nuclear Notes on 2026-09-05: the `initialize` result
+    /// carries a fifth top-level key, `_grounding`, holding the instance
+    /// grounding and the attached workspace's — 11,050 and 14,890 bytes on that
+    /// connection — which is [ADR-0156]'s auto-ground arriving free on the
+    /// handshake. **It cannot be read through this SDK.**
+    /// `rmcp::model::InitializeResult` declares five fields and no catch-all,
+    /// and `serde` drops an unknown key silently, so the bytes reach the
+    /// process and are discarded before any code here could see them.
+    ///
+    /// That is why this is a tool call rather than a field on
+    /// [`Negotiated`]: a second round trip for something the first already
+    /// carried, and the alternative is a change to the SDK. Recorded rather
+    /// than worked around.
+    ///
+    /// # Errors
+    ///
+    /// [`NotesError::Call`] when the server refuses.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    /// [ADR-0156]: https://cortex.page/adrs/p/0156-workspace-grounding-metadata-schema-and-auto-ground
+    pub async fn ground(&self, workspace: &WorkspaceId) -> Result<String, NotesError> {
+        let mut arguments = JsonObject::new();
+        arguments.insert(
+            "workspace".to_owned(),
+            Value::String(workspace.as_str().to_owned()),
+        );
+        self.call(GROUND, arguments).await
     }
 
     /// Every page of one listing, following the cursor until it stops.
