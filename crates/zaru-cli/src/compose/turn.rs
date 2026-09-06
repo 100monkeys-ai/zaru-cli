@@ -796,6 +796,44 @@ pub async fn run_one(
         return Ran::refused_having_said(lines, Surface::transcript(&failure, evidence));
     }
 
+    // --- ADR-0010 D2's seventh producer, the user's half -------------------
+    //
+    // Written **here**: after the two records above and before anything the
+    // loop emits, so that `cat transcript.jsonl` reads in the order the turn
+    // happened -- the question, then `turn_started`, then the work. It is also
+    // the last moment it can be written at all, because `Executor` below
+    // borrows `transcript` for the length of the turn.
+    //
+    // **Before the loop rather than beside the answer, and that is what makes
+    // an interruption legible.** A killed process writes nothing, so a `user`
+    // half with no `zaru` half after it *is* the interruption -- the mechanism
+    // `Phase::Started` already carries for a tool call, and the only one a
+    // reader can be given. A turn that merely *stopped* stays distinguishable,
+    // because it has a `turn_ended` record and an interrupted one does not.
+    //
+    // **Deferring it costs more than the order, which the mutation showed and
+    // this comment did not predict.** Moving the write to sit beside the
+    // answer was expected to reverse two records; what it actually did was
+    // lose the question altogether, because every refusal between here and
+    // there returns through `Ran::refused_having_said` and never reaches that
+    // point. So a turn that failed -- the turn a person is most likely to
+    // read back -- would have recorded neither half. Measured 2026-09-06
+    // against a closed provider endpoint.
+    //
+    // **A resumed turn writes nothing.** `Start::Resumed` carries no task --
+    // "the work and the conversation are what the policy restored" -- and
+    // minting a user line for it would be the harness putting words in the
+    // person's mouth.
+    if let Start::Task(task) = start
+        && let Err(failure) = transcript.record(&crate::compose::boundary::spoken_by_the_user(
+            &prepared.held,
+            n,
+            task,
+        ))
+    {
+        return Ran::refused_having_said(lines, Surface::transcript(&failure, evidence));
+    }
+
     // --- ADR-0011's acting half, over every port it needs ------------------
     let mut overflow = crate::tools::SessionOverflow::in_session(session.directory());
     let allowlist = match crate::tools::Allowed::from_configuration(resolution) {
@@ -936,7 +974,7 @@ pub async fn run_one(
         return Ran::refused_having_said(lines, Surface::transcript(failure, evidence));
     }
 
-    let mut ran = match outcome {
+    let (mut ran, answer) = match outcome {
         Ok(outcome) => rendered(&provider, &outcome, &mut lines),
         Err(error) => {
             // The class of an inner-loop failure is the **inner** port's, off
@@ -950,6 +988,25 @@ pub async fn run_one(
             return Ran::refused_having_said(lines, classified);
         }
     };
+
+    // --- ADR-0010 D2's seventh producer, the harness's half ----------------
+    //
+    // After the turn and before ADR-0009 D4's line, so the recommendation's
+    // own `Record::Said` stays last on the file exactly as it was.
+    //
+    // **A turn that did not answer writes nothing**, and that absence is not a
+    // gap: `Event::TurnEnded` already carries how the turn finished, and the
+    // pane renders it as `turn 3 stopped without an answer`. Writing an empty
+    // `zaru` half would be a claim that the harness said something.
+    if let Some(answer) = &answer
+        && let Err(failure) = transcript.record(&crate::compose::boundary::spoken_by_zaru(
+            &prepared.held,
+            n,
+            answer,
+        ))
+    {
+        return Ran::refused_having_said(ran.lines, Surface::transcript(&failure, evidence));
+    }
 
     // --- ADR-0009 D4's line, at the end of the turn that caused it ---------
     //
@@ -1161,10 +1218,65 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
 /// nothing here adds a cost, because "nothing publishes any" pricing.
 ///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-fn rendered(provider: &Classifying<'_>, outcome: &TurnOutcome, lines: &mut Vec<String>) -> Ran {
+/// What an iterating turn says when every declared validator passed.
+///
+/// Named because two callers compose it: the line the reader is shown, and
+/// [`answer_of`] below, which is what [ADR-0010] D2's seventh producer keeps.
+/// Two spellings of one sentence are two things that can come to disagree.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+fn satisfied(iterations: u32) -> String {
+    format!("the declared validators are satisfied after {iterations} iteration(s)")
+}
+
+/// What this turn **answered**, if it answered anything.
+///
+/// # This is not [`Ran::lines`], and that is the whole point of it
+///
+/// By the time a turn is recorded, its lines also carry [ADR-0011] D2's
+/// not-a-sandbox notice, [ADR-0013] D2's compaction announcements and
+/// [ADR-0012] D7's usage line. **Each of those is already on the transcript**
+/// — the first two as [`crate::session::Record::Said`] and
+/// [`crate::session::Record::Compacted`], written by this same function's
+/// caller — so recording the joined lines as the answer would put three
+/// producers' words on that file a second time. [ADR-0010] D3 exists to keep
+/// one thing from having two stores; this keeps one *sentence* from having
+/// two.
+///
+/// # `None` is a fact, not a gap
+///
+/// Three of the five outcomes answered nothing: the model stopped, the turn
+/// reached its ceiling, or the iteration loop was exhausted. Each already has
+/// a carrier a reader sees — `Event::TurnEnded` renders as `turn 3 stopped
+/// without an answer` — so writing an empty `zaru` half would be the harness
+/// claiming it said something. The absence is what the pair with no closer
+/// means, and it is the same absence an interrupted turn leaves.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub(crate) fn answer_of(outcome: &TurnOutcome) -> Option<String> {
+    match outcome {
+        TurnOutcome::Answered { text, .. } => Some(text.clone()),
+        TurnOutcome::Iterated(zaru_core::iteration::Outcome::Succeeded { iterations, .. }) => {
+            Some(satisfied(*iterations))
+        }
+        TurnOutcome::Stopped { .. }
+        | TurnOutcome::Exhausted { .. }
+        | TurnOutcome::Iterated(zaru_core::iteration::Outcome::Exhausted { .. }) => None,
+    }
+}
+
+fn rendered(
+    provider: &Classifying<'_>,
+    outcome: &TurnOutcome,
+    lines: &mut Vec<String>,
+) -> (Ran, Option<String>) {
     use crate::providers::Provider as _;
 
     let mut lines = core::mem::take(lines);
+    let answer = answer_of(outcome);
     let exit = match outcome {
         TurnOutcome::Answered { text, .. } => {
             lines.push(text.clone());
@@ -1184,9 +1296,7 @@ fn rendered(provider: &Classifying<'_>, outcome: &TurnOutcome, lines: &mut Vec<S
         // ran and did not satisfy the validators is `Expected` at ADR-0016
         // D5's `1` and never the error register.
         TurnOutcome::Iterated(zaru_core::iteration::Outcome::Succeeded { iterations, .. }) => {
-            lines.push(format!(
-                "the declared validators are satisfied after {iterations} iteration(s)"
-            ));
+            lines.push(satisfied(*iterations));
             Exit::Succeeded
         }
         TurnOutcome::Iterated(zaru_core::iteration::Outcome::Exhausted {
@@ -1203,7 +1313,7 @@ fn rendered(provider: &Classifying<'_>, outcome: &TurnOutcome, lines: &mut Vec<S
         lines.push(String::new());
         lines.push(crate::cli::render::usage(&usage));
     }
-    Ran { lines, exit }
+    (Ran { lines, exit }, answer)
 }
 
 /// A current-thread runtime, built once by whoever is going to poll a turn.

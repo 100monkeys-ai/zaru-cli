@@ -1142,3 +1142,106 @@ fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     futures_lite_block_on(session.at_turn_boundary(&Counting::answering("x"), &held))
         .expect("the boundary is reachable once no turn holds the context");
 }
+
+/// [ADR-0010] D2's seventh producer records the **answer**, not the turn's
+/// output, and three of the five outcomes answer nothing.
+///
+/// # What this is defending
+///
+/// By the time `run_one` records a turn, `Ran::lines` also carries
+/// [ADR-0011] D2's not-a-sandbox notice, [ADR-0013] D2's compaction
+/// announcements and [ADR-0012] D7's usage line. The first two are already on
+/// the transcript as `Record::Said` and `Record::Compacted`, written by the
+/// same function a few lines earlier. So recording the joined lines as the
+/// answer would put those sentences on that file a **second** time — which is
+/// exactly the second store ADR-0010 D3 separates the checkpoint from the
+/// transcript to prevent, arriving inside the transcript instead of beside it.
+///
+/// It is checked here, on a pure function over the outcome, because `run_one`
+/// itself needs a real provider client to reach — `Prepared` holds a
+/// `GeminiClient` and no stub can be substituted for it — so the decision was
+/// given a seam that an offline check can drive rather than being left where
+/// only the artefact could see it.
+///
+/// # The mutants
+///
+/// **`Some` for the three that answered nothing**, which is what an
+/// `unwrap_or_default` or a `format!` over the outcome produces: the harness
+/// would claim it said something on exactly the turns where it did not, and a
+/// reader could no longer tell a stopped turn from an interrupted one by the
+/// file. **`None` for `Answered`**, which is the arc's whole subject going
+/// missing. Both are held by the table below, which walks every variant.
+///
+/// The accepting half is inside the same table: two outcomes must answer and
+/// carry their own words, so a function returning `None` for everything — the
+/// cheapest way to satisfy the three absences — fails on the first two rows.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[test]
+fn adr_0010_d2s_conversation_records_the_answer_and_not_the_turns_output() {
+    use crate::compose::turn::answer_of;
+    use zaru_core::iteration::{ExhaustionReason, Outcome as Inner};
+    use zaru_core::tool_call::Outcome;
+
+    let answered = Outcome::Answered {
+        text: "one, two, three".to_owned(),
+        rounds: 1,
+        tokens: 12,
+    };
+    assert_eq!(
+        answer_of(&answered).as_deref(),
+        Some("one, two, three"),
+        "the model's own words are the answer, and nothing composes around them"
+    );
+
+    let iterated = Outcome::Iterated(Inner::Succeeded {
+        iterations: 2,
+        total_elapsed: core::time::Duration::from_secs(3),
+    });
+    let satisfied = answer_of(&iterated).expect("a turn whose validators passed answered");
+    assert!(
+        satisfied.contains("satisfied after 2 iteration(s)"),
+        "an iterating turn's answer is the sentence the reader was shown, in one spelling \
+         rather than two: {satisfied:?}"
+    );
+
+    // The three that answered nothing. Each already has a carrier a reader
+    // sees -- `Event::TurnEnded` -- so an empty `zaru` half would be the
+    // harness claiming it spoke.
+    for (what, outcome) in [
+        (
+            "a model that stopped",
+            Outcome::Stopped {
+                reason: "SAFETY".to_owned(),
+                rounds: 1,
+                tokens: 4,
+            },
+        ),
+        (
+            "a turn that reached its ceiling",
+            Outcome::Exhausted {
+                rounds: 8,
+                calls: 8,
+                tokens: 99,
+            },
+        ),
+        (
+            "an iteration loop that was exhausted",
+            Outcome::Iterated(Inner::Exhausted {
+                iterations: 3,
+                reason: ExhaustionReason::CeilingReached,
+                last_failure: Some("greets: failed".to_owned()),
+            }),
+        ),
+    ] {
+        assert_eq!(
+            answer_of(&outcome),
+            None,
+            "{what} answered nothing, and recording an answer for it would be the harness \
+             saying it spoke when it did not"
+        );
+    }
+}

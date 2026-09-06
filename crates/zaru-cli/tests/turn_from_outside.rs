@@ -936,6 +936,161 @@ fn a_project_that_declares_validators_takes_adr_0009_d4s_other_branch() {
     );
 }
 
+/// [ADR-0010] D2's seventh producer, on the file, ahead of the turn it opens.
+///
+/// D5 says "The user can read every byte the harness stores about them with
+/// `cat`", and until 2026-09-06 `cat transcript.jsonl` showed a person loop
+/// bookkeeping and not one word of what they had asked. This is the
+/// out-of-session half of that, read with `std::fs` from the binary's own
+/// output rather than through any reader this workspace owns.
+///
+/// # Three properties, and the third is what an interruption looks like
+///
+/// **The words are the task's.** Not a count, not a hash: the line the person
+/// typed is on the file.
+///
+/// **It precedes `turn_started`.** The record is written before
+/// `tool_call::run`, so `cat` reads in the order the turn happened. Asserted
+/// as a byte offset rather than as presence, because both records present in
+/// either order is a file a reader cannot follow.
+///
+/// **And this turn writes no `zaru` half**, because it never reached an
+/// answer — the provider endpoint is a closed port. That absence is not a
+/// gap: it is exactly the shape an *interrupted* turn leaves, which is how
+/// ADR-0010 D4's interruption is read from a `Phase::Started` with nothing
+/// closing it, and the turn stays distinguishable from an interrupted one
+/// because it has a `turn_ended` record.
+///
+/// **What this check does not hold** is that an answering turn writes the
+/// other half. `run_one` needs a real provider — `Prepared` holds a
+/// `GeminiClient` and no stub substitutes for it — so that half is held by
+/// `compose::tests::adr_0010_d2s_conversation_records_the_answer_and_not_the_turns_output`
+/// over every outcome, by
+/// `redaction::tests::adr_0010_d2s_conversation_records_are_built_through_the_port`
+/// over the constructor, and by this arc's artefact over two real turns. Said
+/// rather than implied.
+///
+/// The mutant: writing the `user` half after `tool_call::run` rather than
+/// before it, which leaves both records on the file and reverses them.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn adr_0010_d2s_conversation_puts_the_task_on_the_transcript_before_the_turn() {
+    let home = Home::new("conversation-task");
+    let (value, _core) = nonce("conversation-task");
+    store_a_key(&home, "gemini", &value);
+
+    let task = "remember the word saffron";
+    let ran = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", task],
+    );
+    assert_eq!(
+        ran.code, 3,
+        "the staging is a turn that ran and could not reach a model"
+    );
+
+    let transcript = transcript_of(&home);
+    let spoken = transcript
+        .find(r#"{"conversation":{"n":1,"voice":"user""#)
+        .unwrap_or_else(|| {
+            panic!(
+                "ADR-0010 D2's seventh producer wrote nothing, so `cat` still shows this reader \
+                 none of what they asked:\n{transcript}"
+            )
+        });
+    assert!(
+        transcript[spoken..].starts_with(&format!(
+            r#"{{"conversation":{{"n":1,"voice":"user","text":"{task}"}}}}"#
+        )),
+        "the record does not carry the task in the words it was typed in, and it carries them \
+         bare: the `user:` a reader sees is `vocabulary::spoken`'s, so that the record holds \
+         the person's words and `voice` holds who said them:\n{transcript}"
+    );
+
+    let started = transcript
+        .find(r#"{"turn_loop":{"turn_started""#)
+        .expect("a turn that ran started");
+    assert!(
+        spoken < started,
+        "the task is on the file after the turn it opened, so `cat` reads the work before the \
+         question that caused it:\n{transcript}"
+    );
+
+    assert!(
+        !transcript.contains(r#""voice":"zaru""#),
+        "a turn that never reached an answer recorded one, which is the harness claiming it \
+         spoke -- and it is the absence ADR-0010 D4's interruption is read from:\n{transcript}"
+    );
+}
+
+/// A stored provider key spoken in a task does not reach the **transcript**
+/// either, and this is the check that forced the record to be redacted at all.
+///
+/// # Why this is not in tension with an unredacted transcript
+///
+/// [ADR-0010]'s Negative section says the transcript "contains whatever the
+/// session contained, **including secrets that appeared in command output**",
+/// and every other record on that file is verbatim. [ADR-0008] clause 6's
+/// port is a different obligation — it is over values the harness itself
+/// **holds** — and `absent_everywhere` has walked every file under the scratch
+/// home since before this producer existed. So a raw conversation record would
+/// have been the first path in this harness that writes a value it holds into
+/// a file, and would have reddened a standing check rather than raising a
+/// question. The reading is on both records.
+///
+/// # What discriminates
+///
+/// The **control** travels in the same task, so a record that carried nothing
+/// could not satisfy the absence by being empty; and the record must be found
+/// at all, so a harness that stopped writing the producer could not satisfy it
+/// by writing no file. The mutant is `compose::boundary::utterance` building
+/// its text from the argument rather than through `Redacted::by`.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn corpus_a_stored_key_spoken_in_a_task_does_not_reach_the_transcript_either() {
+    let home = Home::new("conversation-redaction");
+    let (value, core) = nonce("conversation-redaction");
+    store_a_key(&home, "gemini", &value);
+
+    let control = format!("control-{}", std::process::id());
+    let ran = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &[
+            "--model",
+            "gemini-3.6-flash",
+            &format!("echo {value} and {control}"),
+        ],
+    );
+    assert_eq!(ran.code, 3, "the staging is a turn that ran");
+
+    let transcript = transcript_of(&home);
+    assert!(
+        transcript.contains(r#""voice":"user""#),
+        "no conversation record was written, so the absences below are about a file that holds \
+         nothing rather than about redaction:\n{transcript}"
+    );
+    assert!(
+        transcript.contains(&control),
+        "the task's own words did not reach the record, so the absences below are satisfied by \
+         an empty record:\n{transcript}"
+    );
+    for (what, needle) in [
+        ("by value", value.as_str()),
+        ("by its ASCII core", core.as_str()),
+    ] {
+        assert!(
+            !transcript.contains(needle),
+            "the stored provider key reached ADR-0010 D2's transcript {what}:\n{transcript}"
+        );
+    }
+    absent_everywhere(&home, &ran, &value, &core, "the stored provider key");
+}
+
 /// The one session's transcript, as bytes.
 fn transcript_of(home: &Home) -> String {
     std::fs::read_to_string(home.one_session().join("transcript.jsonl"))
