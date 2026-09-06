@@ -1061,9 +1061,6 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         // ADR-0028 D3's subscriber says the narrative stopped, and it says it
         // **here** because this is where it is still alive: the pane's borrow
         // ends with this block and the narrator holds the lock it needs.
-        // ADR-0028 D3's subscriber says the narrative stopped, and it says it
-        // **here** because this is where it is still alive: the pane's borrow
-        // ends with this block and the narrator holds the lock it needs.
         //
         // The witness travels out of the block *inside* the value, so there is
         // no `Option` and no `expect` between the announcement and the arm
