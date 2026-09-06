@@ -25,13 +25,23 @@
 //! page with the workspace named explicitly, and reports the three signals
 //! [ADR-0007] D6 invalidates a tool-scope cache on.
 //!
-//! **What is not here is a transport.** [`session::Endpoint`] is a port with
-//! no implementation in this crate's product tree, exactly as `zaru-core`
-//! declares ports it does not implement and `zaru-cli` declares sealing as
-//! another. The streamable HTTP transport [ADR-0103] names waits for an arc
-//! that holds a token and can prove it works; it reaches this crate through
-//! `rmcp`'s own `transport-streamable-http-client-reqwest` feature and needs no
-//! new row in [ADR-0003] D2's table, because `reqwest` is already in it.
+//! **What is here as of 2026-09-05 is a transport**, and the two sentences that
+//! stood here until then said the opposite. They said "what is not here is a
+//! transport" and that [`session::Endpoint`] "is a port with no implementation
+//! in this crate's product tree", and both stopped being true when a token was
+//! issued that an arc could open a session with: [`session::HttpEndpoint`] is
+//! that implementation, over the streamable HTTP surface [ADR-0103] mounts. The
+//! sentences are corrected rather than left, because a crate whose own
+//! documentation says it cannot reach a network is worse than one that says
+//! nothing.
+//!
+//! What replaces the claim they made is narrower and is still structural. A
+//! [`session::Session`] reaches a network **only** through the
+//! [`session::Endpoint`] it was handed, and it is handed one per call rather
+//! than finding one: every check in this crate hands it the in-process `rmcp`
+//! server over `tokio::io::duplex` instead, so no check here can open a socket
+//! and none does. See [`session::transport`] for the three dependency shapes
+//! that were measured and why the generic one was taken.
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store

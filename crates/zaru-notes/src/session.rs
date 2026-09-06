@@ -45,6 +45,7 @@ pub mod endpoint;
 pub mod error;
 pub mod invalidation;
 pub mod listing;
+pub mod transport;
 
 pub use address::{Instance, WorkspaceId, WorkspaceSlug};
 pub use attachment::{Attachment, AttachmentRefused};
@@ -54,6 +55,7 @@ pub use endpoint::{Endpoint, EndpointFailure};
 pub use error::{CallRefused, NotesError};
 pub use invalidation::Invalidation;
 pub use listing::Listed;
+pub use transport::{HttpEndpoint, MCP_PATH};
 
 #[cfg(test)]
 pub(crate) mod fixtures;

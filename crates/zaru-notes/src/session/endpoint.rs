@@ -3,28 +3,34 @@
 
 //! Where a session's bytes go, as a port with no implementation here.
 //!
-//! # Why this is a port and not code
+//! # Why this is a port, and what now implements it
 //!
-//! [ADR-0103] mounts Nuclear Notes' MCP surface over streamable HTTP, and
-//! `rmcp` implements a client for it behind
-//! `transport-streamable-http-client-reqwest`. Taking that feature needs no
-//! amendment to [ADR-0003] D2 — `reqwest` is already a row in that table and
-//! the transport reaches it through `rmcp`'s own optional dependency rather
-//! than through a new one.
+//! [ADR-0103] mounts Nuclear Notes' MCP surface over streamable HTTP, and this
+//! port is what a session opens that surface through.
 //!
-//! It is not taken here for a different reason. **No check in this crate may
-//! open a socket and no credential exists in this arc**, so every one of the
-//! 113 further packages that feature resolves — `reqwest`, `hyper`, `rustls`,
-//! `aws-lc-sys` under `cmake`, and the rest — would arrive unexercised.
-//! [ADR-0003]'s own trigger clause 7 wants each dependency present "with a
-//! caller that uses it", and a transport nothing constructs is not that. So
-//! the shape that is honest is a declared seam with no implementation, exactly
-//! as `zaru-core` declares ports it does not implement and `zaru-cli`
-//! declares sealing as another.
+//! **It had no implementation until 2026-09-05, and the paragraph that stood
+//! here explained the absence with a number that is no longer the number.** It
+//! said the transport would cost "113 further packages … `reqwest`, `hyper`,
+//! `rustls`, `aws-lc-sys` under `cmake`, and the rest", measured 2026-09-04
+//! against a 53-package lock with no `reqwest` in the tree at all. `reqwest`
+//! landed for the Gemini client the following day, so the measurement stopped
+//! describing this workspace: taken as [`transport`](super::transport) takes
+//! it, the cost is **three packages**, 314 to 317, with no `aws-lc-sys` and no
+//! `cmake`. That module carries the three shapes and their numbers.
 //!
-//! What that buys is not merely deferral. Because there is no transport in this
-//! crate's product tree, **nothing here can reach a network**, and that is a
-//! property of what exists rather than a claim about a code path.
+//! It also said that because there is no transport here, "**nothing here can
+//! reach a network**, and that is a property of what exists rather than a claim
+//! about a code path". That is now false as written and its argument survives
+//! one level down: a [`Session`](super::Session) reaches a network only through
+//! the endpoint it is **handed**, so a caller that hands it
+//! `crate::session::fixtures`' in-process server over `tokio::io::duplex` has
+//! a session with no socket to open. Every check in this crate is such a
+//! caller, which is still a property of what a value holds rather than a claim
+//! about a code path.
+//!
+//! The port stays a port. [`super::transport::HttpEndpoint`] is one
+//! implementation and a check's fixture is another, which is what lets the
+//! session be driven end to end with no server anywhere.
 //!
 //! # This is also the only thing a [`Bearer`] is handed to
 //!

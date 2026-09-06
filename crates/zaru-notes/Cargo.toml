@@ -13,7 +13,30 @@ publish = false
 workspace = true
 
 [dependencies]
-rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
+# `transport-streamable-http-client` is the GENERIC half of the streamable
+# HTTP transport [ADR-0103] mounts Nuclear Notes on: the
+# `StreamableHttpClient` trait and the worker that drives it, with no HTTP
+# client of its own. The SDK's ready-made client lives behind
+# `transport-streamable-http-client-reqwest` instead, and is refused for a
+# reason that is a measurement rather than a preference -- see
+# `crate::session::transport` for the three shapes and their numbers.
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-async-rw",
+    "transport-streamable-http-client",
+] }
+# The HTTP client the transport is implemented over: the workspace's own
+# `reqwest`, at the one version this tree carries. `stream` is what gives
+# `Response::bytes_stream`, which is the only way to hand a response body to
+# an SSE parser as it arrives rather than after it ends -- and a server
+# notification stream that only yielded once the connection closed would make
+# [ADR-0007] D6's first invalidation signal useless.
+reqwest = { workspace = true, features = ["stream"] }
+# The two crates `rmcp` spells `StreamableHttpClient` in and does not
+# re-export. See `[workspace.dependencies]` for the reading and for the
+# measurement that both cost nothing.
+futures = { workspace = true }
+sse-stream = { workspace = true }
 # `rmcp` re-exports `serde_json`, but only behind its `macros` feature, which
 # also pulls a proc-macro crate and a paste crate this client never uses. The
 # format crate is already in `[workspace.dependencies]` and already resolved in

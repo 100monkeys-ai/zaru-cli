@@ -115,6 +115,42 @@ serde_json = { version = "1.0.151", default-features = false, features = [
 # it works.
 rmcp = { version = "3.2.0", default-features = false }
 
+# `sse-stream` and `futures` are read as part of `rmcp`'s own row's role
+# rather than as two new roles, in the shape D2's `serde_json` line already
+# blessed for `serde`: "the format crate is read as part of the role the table
+# already carries rather than as a new dependency, and that reading is recorded
+# as a proposed amendment on ADR-0003 rather than made silently here."
+#
+# **The reading is narrower than `serde_json`'s and that is the point.** These
+# two are not a capability this workspace chose; they are the types `rmcp`
+# spells its own public trait in. `StreamableHttpClient` -- the seam the
+# streamable-HTTP transport is implemented against when the SDK's own reqwest
+# client is not taken -- has `BoxStream<'static, Result<Sse, SseError>>` in
+# three of its six method signatures, and `rmcp` re-exports **only** `SseError`
+# (`pub use sse_stream::Error as SseError`). `Sse` is not re-exported,
+# `futures` is not re-exported, and `bounded_sse_stream` and
+# `DEFAULT_MAX_SSE_EVENT_SIZE` are `pub(crate)`. Measured by reading
+# `rmcp-3.2.0/src/transport/streamable_http_client.rs` and
+# `.../common/client_side_sse.rs`, not inferred: implementing that trait
+# outside the SDK is not possible without naming both crates.
+#
+# **Both cost zero packages, by both instruments.** `Cargo.lock` already
+# carries `futures 0.3.34` (ten `futures*` rows) and gains `sse-stream 0.2.6`
+# from `rmcp`'s own `client-side-sse` feature whether this row exists or not.
+# The whole lock delta for the transport is three packages -- `base64 0.23.1`,
+# `sse-stream 0.2.6` and `wasm-streams 0.4.2`, the last a `wasm32` target
+# dependency of `reqwest`'s `stream` feature that no build on this platform
+# compiles -- measured 314 to 317 with `grep -c '^\[\[package\]\]'`.
+#
+# `futures` takes `std` alone. Its default adds `async-await` and `executor`,
+# and this crate wants neither: what it uses is `StreamExt::map` and
+# `StreamExt::boxed`, and an executor in a crate that is handed someone else's
+# runtime is a second reactor nobody asked for. `sse-stream` declares
+# `default = []` and its one optional feature is `tracing`, which has no
+# caller here.
+futures = { version = "0.3.34", default-features = false, features = ["std"] }
+sse-stream = { version = "0.2.6", default-features = false }
+
 ratatui = { version = "0.29.0", default-features = false }
 tui-textarea = { version = "0.7.0", default-features = false, features = [
     "no-backend",
