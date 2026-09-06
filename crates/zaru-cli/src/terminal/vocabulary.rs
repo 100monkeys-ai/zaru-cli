@@ -396,22 +396,39 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
         // read rather than retyped, because the refinement prompt composes
         // the same phrase for the same condition and a person and a model
         // must not be told it in two different words.
+        //
+        // **A skip is the one outcome that says nothing at all**, and the
+        // difference is not tidiness. `produced no output` is a statement
+        // about a command that ran; ADR-0009 D2's `skipped` is a validator
+        // whose prerequisite failed, so it was *never run* -- that record's
+        // own amendment of 2026-09-04 says the runner "is not called at all"
+        // for one. Telling a reader it produced no output would be the
+        // harness asserting something about an execution that did not
+        // happen, which is the same class of untruth the empty detail was.
+        // `cli::render::validator_outcome` spells that outcome "did not
+        // run", so the old rendering read `lint: did not run — produced no
+        // output`: a sentence that contradicts itself in six words. A skip
+        // carries no clause at all, and the separator goes with the thing it
+        // was there to introduce.
         Event::ValidatorEvaluated {
             name,
             outcome,
             detail,
-        } => Line::new(
-            Register::Plain,
-            format!(
-                "{name}: {} — {}",
-                crate::cli::render::validator_outcome(*outcome),
-                if detail.trim().is_empty() {
-                    zaru_core::iteration::PRODUCED_NO_OUTPUT
-                } else {
-                    detail
+        } => Line::new(Register::Plain, {
+            let word = crate::cli::render::validator_outcome(*outcome);
+            match (outcome, detail.trim().is_empty()) {
+                (_, false) => format!("{name}: {word} — {detail}"),
+                (zaru_core::iteration::ValidatorOutcome::Skipped, true) => {
+                    format!("{name}: {word}")
                 }
-            ),
-        ),
+                (_, true) => {
+                    format!(
+                        "{name}: {word} — {}",
+                        zaru_core::iteration::PRODUCED_NO_OUTPUT
+                    )
+                }
+            }
+        }),
         Event::IterationFailed { n, reason, elapsed } => Line::new(
             Register::Plain,
             format!("iteration {n} failed: {reason} · {}", seconds(*elapsed)),

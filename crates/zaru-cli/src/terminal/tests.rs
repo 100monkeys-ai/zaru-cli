@@ -3461,6 +3461,63 @@ fn a_validator_that_printed_nothing_says_so_on_the_pane() {
     );
 }
 
+/// A **skipped** validator says nothing, because it never ran.
+///
+/// **The mutant**: the phrase is composed for every silent outcome, which is
+/// what this arc wrote first and what running the real binary caught —
+/// `greets: passed — produced no output` reads correctly and
+/// `lint: skipped — produced no output` does not, because ADR-0009 D2's skip
+/// means the runner "is not called at all". A statement about a command that
+/// never ran is the same class of untruth the bare em dash was.
+#[test]
+fn a_skipped_validator_says_nothing_because_it_never_ran() {
+    let line =
+        crate::terminal::vocabulary::loop_line(&zaru_core::iteration::Event::ValidatorEvaluated {
+            name: "lint".to_owned(),
+            outcome: zaru_core::iteration::ValidatorOutcome::Skipped,
+            detail: String::new(),
+        });
+
+    // `cli::render::validator_outcome` spells ADR-0009 D2's `skipped` as
+    // "did not run", which makes the old rendering read
+    // `lint: did not run — produced no output` -- a sentence that contradicts
+    // itself in six words.
+    assert_eq!(line.text, "lint: did not run");
+    assert!(
+        !line.text.contains(zaru_core::iteration::PRODUCED_NO_OUTPUT),
+        "a validator that never ran was said to have produced no output: {:?}",
+        line.text
+    );
+    assert!(
+        !line.text.contains('—'),
+        "the separator is still there with nothing to introduce: {:?}",
+        line.text
+    );
+}
+
+/// A **passing** validator that printed nothing says so, like a failing one.
+///
+/// The common case: `grep -q` is silent when it succeeds too. Without this
+/// arm, restricting the phrase to failures would leave `greets: passed —`
+/// trailing exactly the dangling separator row 21 is about.
+#[test]
+fn a_passing_validator_that_printed_nothing_also_says_so() {
+    let line =
+        crate::terminal::vocabulary::loop_line(&zaru_core::iteration::Event::ValidatorEvaluated {
+            name: "greets".to_owned(),
+            outcome: zaru_core::iteration::ValidatorOutcome::Passed,
+            detail: String::new(),
+        });
+
+    assert_eq!(
+        line.text,
+        format!(
+            "greets: passed — {}",
+            zaru_core::iteration::PRODUCED_NO_OUTPUT
+        )
+    );
+}
+
 /// The accepting sibling: a validator that spoke is quoted verbatim.
 ///
 /// **The mutant**: the phrase replaces every detail rather than an empty one.
