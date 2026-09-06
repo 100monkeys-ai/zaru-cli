@@ -93,7 +93,7 @@ pub mod turn;
 pub use boundary::SessionContext;
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
-pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrator};
+pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrated, Narrator};
 pub use model::Classifying;
 pub use shared::Shared;
 pub use sink::{Records, ToolLines};

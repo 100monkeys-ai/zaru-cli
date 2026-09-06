@@ -128,6 +128,31 @@ impl Recorded {
             frames: Vec::new(),
         }
     }
+
+    /// The same, on a terminal wide enough not to clip a line.
+    ///
+    /// **The pane clips every line at its own width, silently** — an Open
+    /// High row on `operations/known-defects`, found by the
+    /// `harness-look-and-feel` survey and owned by the `pane-text` arc. A
+    /// check about *what a line says* must not also be a check about how wide
+    /// the terminal is, or it fails for a reason it is not about and passes
+    /// again when somebody widens the constant above. 160 columns is wider
+    /// than any line this file asserts on.
+    fn wide() -> Self {
+        Self {
+            terminal: Terminal::new(TestBackend::new(160, 14)).expect("test terminal"),
+            restores: 0,
+            frames: Vec::new(),
+        }
+    }
+
+    /// The rows of the last frame painted.
+    ///
+    /// Read out of the buffer rather than out of whatever was handed to the
+    /// shell, so what is asserted is what a person would see.
+    fn rows(&self) -> Vec<String> {
+        self.frames.last().cloned().unwrap_or_default()
+    }
 }
 
 /// A beat an outside caller implements, so the port is asserted reachable from
@@ -643,11 +668,8 @@ fn corpus_an_interrupt_between_two_tool_calls_leaves_at_most_the_event_in_flight
             ))
     };
     assert!(
-        matches!(
-            raced,
-            zaru_cli::terminal::driver::Raced::Interrupted(zaru_tui::shell::Leaving::Interrupt)
-        ),
-        "`Ctrl-C` between two tool calls did not leave: {raced:?}"
+        matches!(raced, zaru_cli::terminal::driver::Raced::Interrupted),
+        "`Ctrl-C` between two tool calls did not stop the turn: {raced:?}"
     );
 
     let after = resumed(&directory);
@@ -1110,5 +1132,264 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         restored.exchanges().len(),
         1,
         "the sibling must restore, or the refusal above is a reader that refuses everything",
+    );
+}
+
+/// An interrupted turn is the one ending the pump carries on from, and it
+/// leaves the next turn owing the model the call that did not complete.
+///
+/// # The 2026-09-06 ruling, held where a check can reach it
+///
+/// [ADR-0015]'s Status tracking said, until this arc: "**Interrupt-and-stay
+/// was considered and not built, because giving one key two meanings depending
+/// on whether a turn is running is a decision no record makes.**" It is made
+/// now, as an accepted Update on that record under directive 25.
+///
+/// **Reaching this through `driver::run` would need a `Prepared`, which needs
+/// a provider client and a key**, so the one decision that says whether a
+/// session survives its own interruption would be checkable only on a machine
+/// holding a credential. `driver::after` is that decision, taking what it
+/// needs and nothing else, for the same reason `request_for` is separate from
+/// `dispatch`.
+///
+/// The three arms discriminate: a build that stopped on every ending, or
+/// carried on from every one, fails a different arm. The interrupted arm also
+/// asserts [ADR-0010] D4's carrier is re-derived, with the uninterrupted
+/// session as its accepting sibling — without which the check would pass
+/// against an `after` that reported something owed for every turn.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
+    use zaru_cli::terminal::driver::{Pending, Turned};
+    use zaru_cli::terminal::{AfterTurn, after};
+    use zaru_tui::shell::port::{Line, Register};
+
+    let redactor = zaru_cli::redaction::HeldSecrets::none();
+
+    // Two real sessions: one whose turn was interrupted between two calls, and
+    // one whose every call closed.
+    let interrupted_scratch = Scratch::new("after-interrupted");
+    let whole_scratch = Scratch::new("after-whole");
+    let mut sessions = Vec::new();
+    for (scratch, interrupt) in [(&interrupted_scratch, true), (&whole_scratch, false)] {
+        let directory = scratch
+            .path()
+            .join(".zaru")
+            .join("sessions")
+            .join(scratch.id.to_string());
+        let transcript_path = directory.join("transcript.jsonl");
+        let mut shell = Shell::open(Status::new("bare", scratch.id.to_string()));
+        let trie = NotesTrie::nothing_cached("zaru");
+        let mut surface = Recorded::of();
+        let source = Source::scripted(if interrupt {
+            vec![
+                press(Key::Char('h')),
+                Input {
+                    key: Key::Char('c'),
+                    ctrl: true,
+                    alt: false,
+                    shift: false,
+                },
+            ]
+        } else {
+            vec![press(Key::Char('h'))]
+        });
+        let mut now = std::time::Duration::ZERO;
+        {
+            let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+                &mut shell,
+                &mut surface,
+            ));
+            let _ = zaru_cli::compose::turn::runtime()
+                .expect("a runtime")
+                .block_on(zaru_cli::terminal::driver::race(
+                    &pane,
+                    &source,
+                    &Beats::default(),
+                    &trie,
+                    &mut now,
+                    None,
+                    a_turn_that_stops_between_two_calls(&transcript_path, !interrupt),
+                ));
+        }
+        let store = zaru_cli::session::SessionStore::reading(scratch.path().join(".zaru"));
+        sessions.push(
+            store
+                .existing(&scratch.id)
+                .expect("the staged session directory is there"),
+        );
+    }
+    let (interrupted_session, whole_session) = (&sessions[0], &sessions[1]);
+
+    // **Over the *interrupted* session on purpose.** A turn that ran to
+    // completion owes the model nothing whatever is on disk beside it, so an
+    // `after` that re-derived on every ending would report something owed
+    // here — and against a session with no interruption it would not, which
+    // is how that mutation survives a check staged the obvious way round.
+    let mut owed = Pending::none();
+    let ran = after(
+        Turned::Ran(vec![Line::new(Register::Plain, "an answer")]),
+        &mut owed,
+        interrupted_session,
+        &redactor,
+    );
+    let AfterTurn::Carries(lines) = ran else {
+        panic!("a turn that ran ended the session: {ran:?}");
+    };
+    assert_eq!(
+        lines.len(),
+        1,
+        "a turn that ran must hand its own lines to the pane"
+    );
+    assert!(
+        !owed.is_owed(),
+        "a turn that ran to completion left the next one owing the model something, so the \
+         re-derivation fires on every ending rather than on an interruption"
+    );
+
+    // The arm this arc changed. Until 2026-09-06 it produced a `Pump` and the
+    // process left the alternate screen.
+    //
+    // **The witness is why this staging goes through a real narrator.**
+    // `Turned::Interrupted` carries a `compose::Narrated`, which has no
+    // constructor outside `compose::iterate`, so the only way to reach this
+    // arm at all is to have told a pane — which is the property a mutation
+    // deleting the call from `run_a_turn` used to leave green.
+    let mut shell = Shell::open(Status::new("bare", "01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    let mut surface = Recorded::wide();
+    let narrated = {
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+            &mut shell,
+            &mut surface,
+        ));
+        let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
+        zaru_cli::compose::Narrator::interrupted(&narrator)
+    };
+    let mut owed = Pending::none();
+    let interrupted = after(
+        Turned::Interrupted(narrated),
+        &mut owed,
+        interrupted_session,
+        &redactor,
+    );
+    let AfterTurn::Carries(lines) = interrupted else {
+        panic!(
+            "`Ctrl-C` during a turn ended the whole session, and the ruling of 2026-09-06 is that \
+             it stops the turn and the session stays: {interrupted:?}"
+        );
+    };
+    assert!(
+        lines.is_empty(),
+        "an interrupt adds no line here: the narrator has already painted the one there is, and a \
+         second would be two statements of one event"
+    );
+    assert!(
+        owed.is_owed(),
+        "the interrupt left a `Started` with no `Completed` on disk and the next turn owes the \
+         model nothing about it, so ADR-0010 D4's carrier was not re-derived in this process"
+    );
+
+    // The accepting sibling, through the same arm: a session whose every call
+    // closed owes nothing, so the assertion above cannot pass against an
+    // `after` that reports an interruption for every turn.
+    let mut owed = Pending::none();
+    let mut shell = Shell::open(Status::new("bare", "01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    let mut surface = Recorded::wide();
+    let narrated = {
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+            &mut shell,
+            &mut surface,
+        ));
+        let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
+        zaru_cli::compose::Narrator::interrupted(&narrator)
+    };
+    let _ = after(
+        Turned::Interrupted(narrated),
+        &mut owed,
+        whole_session,
+        &redactor,
+    );
+    assert!(
+        !owed.is_owed(),
+        "a session whose every call closed owes the model nothing, and this reported an \
+         interruption for a session that had none"
+    );
+
+    // The arm that discriminates in the other direction. A mapping that
+    // carried on from everything would leave a check's pump hanging on a
+    // source that has stopped answering.
+    let mut owed = Pending::none();
+    let ended = after(Turned::SourceEnded, &mut owed, whole_session, &redactor);
+    assert!(
+        matches!(ended, AfterTurn::Stops(_)),
+        "a terminal that stopped answering must end the pump: {ended:?}"
+    );
+}
+
+/// The one line an interrupt-and-stay paints, and where its words come from.
+///
+/// [ADR-0028] D3 makes the pane a consumer of the loop's own events, so the
+/// consumer that narrates the loop is the consumer that says the narration
+/// stopped. The wording is `compose::prose::INTERRUPTED` — one authored
+/// constant, quoted verbatim on ADR-0015's Updates — and this check reads it
+/// out of the rendered frame rather than out of the constant it came from, so
+/// a line composed somewhere else would not satisfy it.
+///
+/// `Register::Announced` and not `Register::Failed`: an interruption is the
+/// user's decision rather than one of [ADR-0016] D1's five classes, which is
+/// the rule `BUSY` already follows and which [ADR-0016] states for an
+/// interruption in as many words.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn corpus_an_interrupt_says_so_on_the_pane_in_the_register_a_decision_takes() {
+    use zaru_cli::compose::Narrator;
+
+    let mut shell = Shell::open(Status::new("bare", "01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    let mut surface = Recorded::wide();
+
+    let painted = {
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+            &mut shell,
+            &mut surface,
+        ));
+        let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
+        let _: zaru_cli::compose::Narrated = Narrator::interrupted(&narrator);
+        narrator.contended()
+    };
+    assert_eq!(
+        painted, 0,
+        "the pane refused the line, so an interrupt would be silent on a contended lock"
+    );
+
+    let rows = surface.rows();
+    let joined = rows.join("\n");
+    assert!(
+        joined.contains("turn interrupted"),
+        "an interrupt paints nothing, so a person cannot tell it from a hang:\n{joined}"
+    );
+    assert!(
+        joined.contains("the session stays open"),
+        "the line must say the session survived, which is the half that distinguishes this from \
+         leaving:\n{joined}"
+    );
+    assert!(
+        joined.contains("in the transcript"),
+        "and the half that is ADR-0010 D2's own promise about what was already written:\n{joined}"
+    );
+    // The register, read off the glyph the frame carries rather than off the
+    // enum: `◈` is ADR-0002 D4's announcement marker, and `✗` is ADR-0016 D2's.
+    let line = rows
+        .iter()
+        .find(|row| row.contains("turn interrupted"))
+        .expect("the line is on the frame");
+    assert!(
+        line.contains('◈') && !line.contains('✗'),
+        "an interruption is a decision rather than a failure, and this is in the error register: \
+         {line}"
     );
 }

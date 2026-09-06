@@ -100,6 +100,36 @@ pub const NO_VALIDATORS: &str = "no validators are declared, so the iteration lo
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 pub const DECLARE_ONE: &str = "declare one in `./zaru.toml`";
 
+/// What the pane says when a turn was interrupted and the session was kept.
+///
+/// # This one is authored, and here is exactly what it is
+///
+/// **No record supplies it**, and that is stated rather than implied.
+/// [ADR-0015]'s ruling of 2026-09-05 gave `Ctrl-C` one meaning — leave — and
+/// recorded that "interrupt-and-stay was considered and **not** built, because
+/// giving one key two meanings depending on whether a turn is running is a
+/// decision no record makes". That decision was made on 2026-09-06 as an
+/// accepted Update on the same record, under directive 25's "it should look
+/// and feel similar to harnesses such as Claude Code", and the line below came
+/// with it: **a person who interrupts and sees nothing cannot tell an
+/// interrupt from a hang**, which is the failure the whole survey was about.
+///
+/// It is a delegated coordinator ruling open to Jeshua's veto, in the shape
+/// [`ITERATION_IS_ONE_EXCHANGE`] and [`NO_PERSONA`] already have, and its text
+/// is quoted verbatim on ADR-0015's Updates so the record owns the words
+/// rather than this file.
+///
+/// **Both halves are facts and neither is reassurance.** That the turn stopped
+/// is what the key did; that what it had already written is on disk is
+/// [ADR-0010] D2's own promise — "a crash loses at most the event in flight" —
+/// arriving without a crash, which is the sentence `terminal-source` recorded
+/// for the drop this line now narrates.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+pub const INTERRUPTED: &str = "turn interrupted · the session stays open, and what the turn had \
+                               already written is in the transcript";
+
 /// What [ADR-0013] D1's layer 1 says when there is no persona to put in it.
 ///
 /// # This one is not transcribed, and here is exactly what it is

@@ -399,7 +399,75 @@ pub struct Kept {
 pub trait Narrator: Sync {
     /// Receive one event. Called once per event, in emission order.
     fn narrate(&self, event: &zaru_core::iteration::Event);
+
+    /// The turn stopped because the user interrupted it, and the session was
+    /// kept.
+    ///
+    /// # Why this is on the port rather than beside it
+    ///
+    /// It is the one thing a narrating consumer must be told that
+    /// [`zaru_core::iteration::Event`] cannot carry. The interruption is a
+    /// **dropped future**: the turn's own poll ends between two events, so
+    /// there is no event to emit and [ADR-0008] D2 keeps `zaru-core` headless,
+    /// which makes widening D3's event list that record's decision rather than
+    /// an implementer's — the same boundary [`Narrator`] itself exists to
+    /// respect.
+    ///
+    /// So the port gains a method and no second seam is built. A consumer that
+    /// paints the loop's narrative is the consumer that should say the
+    /// narrative stopped; routing it through [`crate::terminal::driver::Pane`]
+    /// directly would be a second place the pane is told about a turn, and
+    /// [ADR-0028] D3's "the harness renders the loop's typed events" would
+    /// then be true of every line but this one.
+    ///
+    /// **It takes no argument**, because there is nothing about the
+    /// interruption a caller knows that the transcript does not already hold:
+    /// a call in flight left a `Phase::Started` with no `Phase::Completed`, and
+    /// that pair *is* the interruption [ADR-0010] D4 derives on the next read.
+    /// Authoring anything else here would be inventing a record of what
+    /// happened.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    fn announce_interrupted(&self);
+
+    /// Say it, and hand back the proof that it was said.
+    ///
+    /// # The witness, because the mutation reddened nothing
+    ///
+    /// `run_a_turn` needs a [`Prepared`](crate::compose::Prepared) to reach,
+    /// which needs a provider client and a key, so **no offline check can
+    /// drive it** — and a mutation that deleted the call from its interrupted
+    /// arm left every check green. That is the same finding
+    /// [`crate::terminal::driver::Pane`]'s `Drop` records for the streamed
+    /// line, and it has the same answer: put the property where the compiler
+    /// holds it rather than where somebody remembers it.
+    ///
+    /// [`Narrated`] has one constructor and it is inside this module, so the
+    /// only way to obtain one is this method, which always announces first.
+    /// `driver::Turned::Interrupted` carries one, so an interrupted turn that
+    /// did not tell the pane **does not compile**.
+    ///
+    /// Provided rather than required, so an implementer writes
+    /// [`Self::announce_interrupted`] and cannot accidentally mint a witness
+    /// without announcing.
+    fn interrupted(&self) -> Narrated {
+        self.announce_interrupted();
+        Narrated(())
+    }
 }
+
+/// Proof that a [`Narrator`] was told a turn had been interrupted.
+///
+/// One private field and no constructor outside this module, which is the
+/// absent-constructor mechanism [ADR-0008] clause 6's `Redacted` already uses:
+/// a rule the type system holds rather than one a reader keeps. See
+/// [`Narrator::interrupted`] for the mutation that produced it.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+#[derive(Debug)]
+pub struct Narrated(());
 
 /// A [`Narrator`] as the slice's [`EventSink`].
 ///

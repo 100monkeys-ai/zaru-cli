@@ -2411,8 +2411,8 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
 
     assert_eq!(
         raced,
-        crate::terminal::driver::Raced::Interrupted(zaru_tui::shell::Leaving::Interrupt),
-        "`Ctrl-C` during a turn did not leave"
+        crate::terminal::driver::Raced::Interrupted,
+        "`Ctrl-C` during a turn did not stop the turn"
     );
     assert!(
         !staged.finished.load(Ordering::SeqCst),

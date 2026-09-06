@@ -1286,6 +1286,15 @@ fn one_emission_of_the_inner_loops_stream_reaches_the_transcript_and_a_subscribe
                 .expect("the subscriber's lock is uncontended")
                 .push(event.clone());
         }
+
+        /// This run is not interrupted, and asserting that is the point.
+        ///
+        /// The port's other method is reached only from a dropped turn, which
+        /// this check does not stage: a panic here says the inner loop called
+        /// it, which would mean an ordinary run reported itself interrupted.
+        fn announce_interrupted(&self) {
+            panic!("an uninterrupted run told its subscriber the turn had been interrupted");
+        }
     }
 
     let scratch = Scratch::new("one-emission");

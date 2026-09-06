@@ -603,6 +603,33 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
             }
         }
     }
+
+    /// The one line an interrupt-and-stay paints.
+    ///
+    /// [`Register::Announced`], and not [`Register::Failed`], for the reason
+    /// [`BUSY`] already carries: an interruption is the user's own decision
+    /// rather than one of [ADR-0016] D1's five classes, and "a refusal that is
+    /// a decision … is rendered in whatever register it renders a decision in,
+    /// and never in the error one". [ADR-0016]'s own reading is that an
+    /// interruption is not a failure.
+    ///
+    /// The wording is [`crate::compose::prose::INTERRUPTED`], where the other
+    /// lines a person reads live and where the account of it being authored
+    /// is. Nothing is composed here.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    fn announce_interrupted(&self) {
+        match self.pane.try_lock() {
+            Ok(mut pane) => pane.note(Line::new(
+                Register::Announced,
+                crate::compose::prose::INTERRUPTED,
+            )),
+            Err(_) => {
+                self.contended
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// [ADR-0011] D3's question, asked and answered in the pane.
@@ -775,10 +802,97 @@ pub const BUSY: &str = "a turn is already running · this line stays in the prom
 pub enum Turned {
     /// The turn finished. These are the lines to leave on the pane.
     Ran(Vec<Line>),
-    /// The user left while it was running, and the turn's future was dropped.
-    Interrupted(zaru_tui::shell::Leaving),
+    /// The user interrupted it, and the turn's future was dropped. The
+    /// session stays open and the next typed line is the next turn.
+    ///
+    /// **It carries [`Narrated`], which cannot be built outside
+    /// [`crate::compose::iterate`]**, so this variant cannot be produced
+    /// without the pane having been told — see
+    /// [`crate::compose::Narrator::interrupted`] for the mutation that
+    /// survived until it did.
+    Interrupted(crate::compose::Narrated),
     /// The terminal stopped answering. A product terminal does not do this.
     SourceEnded,
+}
+
+/// What the pump does with a turn that ended.
+///
+/// **Separate from [`run`] for the reason [`request_for`] is separate from
+/// [`dispatch`]: a check has to be able to ask this question without answering
+/// it.** Reaching the arm through `run` needs a [`Turns`], which needs a
+/// [`Prepared`](crate::compose::Prepared), which needs a provider client and a
+/// key — so the one decision that says whether a session survives its own
+/// interruption would be reachable only from a machine holding a credential.
+/// It is a total function over three variants instead, and
+/// `an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from` walks all
+/// three.
+#[derive(Debug)]
+pub enum AfterTurn {
+    /// The session stays open. These lines go on the pane.
+    Carries(Vec<Line>),
+    /// The session is over and the process exits with this.
+    Stops(Exit),
+}
+
+/// Which of [`AfterTurn`]'s two a finished turn is, and what it leaves owed.
+///
+/// **Exhaustive with no wildcard arm**, so a fourth [`Turned`] cannot arrive
+/// without somebody deciding whether it ends the session.
+///
+/// The interrupted arm is the 2026-09-06 ruling: `Ctrl-C` mid-turn stops the
+/// turn and the session stays, where until then it returned a [`Pump`] and the
+/// process left. It carries no lines because the narrator has already painted
+/// the one there is — see [`crate::compose::prose::INTERRUPTED`] — and because
+/// everything the turn itself painted is already on the pane.
+///
+/// # The re-derivation is here rather than in [`run_a_turn`], and that is a
+/// mutation's doing
+///
+/// [ADR-0010] D4's carrier is `resumed-turn`'s [`Pending`], built by
+/// [`crate::terminal::open`] from `session::resume` when the shell opens.
+/// Before 2026-09-06 that was enough, because an interrupt ended the process;
+/// an interrupt that keeps the session has to derive it again, in this
+/// process, from the transcript the drop just left.
+///
+/// It was written inside `run_a_turn` first, and **a mutation deleting it
+/// reddened nothing**: that function needs a
+/// [`Prepared`](crate::compose::Prepared), which needs a provider client and a
+/// key, so no offline check can drive it. This function needs a
+/// [`Session`](crate::session::Session), a [`Pending`] and a redactor, all of
+/// which a check can build — so the rule lives where it can be falsified. It
+/// is the same finding [`Pane`]'s `Drop` records, with the same answer.
+///
+/// `session::resume` is the same reader `terminal::open` used, so there is one
+/// derivation rather than two, and what it finds is whatever the drop left: a
+/// `Phase::Started` with no `Phase::Completed`, if a call was in flight.
+///
+/// **A read that fails leaves nothing owed rather than ending the session.**
+/// The interruption is on disk either way, so the next `--resume` derives it
+/// again — `resumed-turn`'s own once-per-process argument — and closing a
+/// session the user did not ask to leave, in order to report a transcript that
+/// will be read again in a moment, is the worse answer.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[must_use]
+pub fn after<R: Redactor + ?Sized>(
+    turned: Turned,
+    owed: &mut Pending,
+    session: &crate::session::Session,
+    redactor: &R,
+) -> AfterTurn {
+    match turned {
+        Turned::Ran(lines) => AfterTurn::Carries(lines),
+        Turned::Interrupted(_) => {
+            *owed = crate::session::resume(session.directory(), 0)
+                .map(|resumed| Pending::of(&resumed, redactor))
+                .unwrap_or_default();
+            AfterTurn::Carries(Vec::new())
+        }
+        // The terminal stopped answering mid-turn. A product terminal does
+        // not; a script does, and this is what stops a pump that never left
+        // from hanging a check.
+        Turned::SourceEnded => AfterTurn::Stops(Exit::Succeeded),
+    }
 }
 
 /// Run one turn of this session for `task`, painting it as it happens.
@@ -880,7 +994,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let (sender, mut deltas) = tokio::sync::mpsc::unbounded_channel();
     turns.prepared.client().stream_deltas_to(sender);
 
-    let raced = {
+    let outcome: Result<crate::compose::Ran, Turned> = {
         let pane = std::sync::Mutex::new(Pane::of(shell, surface));
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
@@ -891,7 +1005,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         // `PaneNarrator`.
         let narrator = PaneNarrator::over(&pane);
 
-        race(
+        let raced = race(
             &pane,
             source,
             pace,
@@ -913,7 +1027,26 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
                 &mut turns.context,
             ),
         )
-        .await
+        .await;
+        // ADR-0028 D3's subscriber says the narrative stopped, and it says it
+        // **here** because this is where it is still alive: the pane's borrow
+        // ends with this block and the narrator holds the lock it needs.
+        // ADR-0028 D3's subscriber says the narrative stopped, and it says it
+        // **here** because this is where it is still alive: the pane's borrow
+        // ends with this block and the narrator holds the lock it needs.
+        //
+        // The witness travels out of the block *inside* the value, so there is
+        // no `Option` and no `expect` between the announcement and the arm
+        // that reports the interruption. A version that carried it in an
+        // `Option` compiled with the announcement deleted and panicked at run
+        // time instead, which is a rule the type system was not holding.
+        match raced {
+            Raced::Ran(ran) => Ok(ran),
+            Raced::Interrupted => Err(Turned::Interrupted(
+                crate::compose::Narrator::interrupted(&narrator),
+            )),
+            Raced::SourceEnded => Err(Turned::SourceEnded),
+        }
     };
     // The provisional streamed line is already gone: `Pane`'s `Drop` took it
     // when the block above ended the turn's borrow of the shell. See that
@@ -922,10 +1055,12 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let tool_lines = tools.taken();
     let redactor = turns.prepared.redactor();
 
-    let ran = match raced {
-        Raced::Ran(ran) => ran,
-        Raced::Interrupted(leaving) => return Turned::Interrupted(leaving),
-        Raced::SourceEnded => return Turned::SourceEnded,
+    // What an interruption owes the next turn is `after`'s, not this
+    // function's: this one needs a provider to reach, so a rule stated here is
+    // a rule no offline check can drive.
+    let ran = match outcome {
+        Ok(ran) => ran,
+        Err(turned) => return turned,
     };
 
     // ADR-0013 D1's layer 6, so the next turn assembles over this one, and
@@ -1035,8 +1170,16 @@ pub fn refresh_status(
 pub enum Raced<T> {
     /// The future finished.
     Ran(T),
-    /// The user left while it was running. The future was dropped.
-    Interrupted(zaru_tui::shell::Leaving),
+    /// The user interrupted it. The future was dropped.
+    ///
+    /// **It carries no [`Leaving`](zaru_tui::shell::Leaving), and that is the
+    /// 2026-09-06 ruling rather than a simplification.** Mid-turn the key does
+    /// not leave — it stops the turn and the session stays — so a value naming
+    /// *how the user left* would be describing something that did not happen.
+    /// `zaru_tui::shell::leaves` is still the one place the key is spelled;
+    /// what *stop* means is the caller's, which is the sentence that function
+    /// already carried about the interruption being the host's business.
+    Interrupted,
     /// The terminal stopped answering.
     SourceEnded,
 }
@@ -1074,8 +1217,12 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
 
             input = source.next() => {
                 let Some(input) = input else { break Raced::SourceEnded };
-                if let Some(leaving) = zaru_tui::shell::leaves(&input) {
-                    break Raced::Interrupted(leaving);
+                // The one rule, called from its second caller. Mid-turn it
+                // stops the turn; at the prompt `Shell::key` turns the same
+                // answer into `Action::Leave`. One key, one meaning -- stop --
+                // and what stop does is where it was pressed.
+                if zaru_tui::shell::leaves(&input).is_some() {
+                    break Raced::Interrupted;
                 }
                 *now += Duration::from_millis(1);
                 read_while_busy(pane, input, *now, entries);
@@ -1228,29 +1375,25 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // reason to close the thing the user is inside. **A user who
                 // left in the middle of one is a different thing**, and that
                 // is the one way out of this arm.
+                // **A user who interrupted a turn has not left**, which is
+                // the ruling of 2026-09-06: the narrator has already painted
+                // the one line there is, the composer still holds whatever was
+                // typed during the turn -- `Shell::key` never ran, so nothing
+                // cleared it, which is ADR-0005 D1 -- and the next typed line
+                // is the next turn, told first about the call that did not
+                // complete. `after` is where that is decided, so a check can
+                // ask without a provider.
                 let lines = match turns {
                     Turnable::Ready(turns) => {
-                        match turns_of_one_line(
+                        let turned = turns_of_one_line(
                             shell, surface, source, pace, entries, &mut now, turns, &task,
                         )
-                        .await
-                        {
-                            Turned::Ran(lines) => lines,
-                            Turned::Interrupted(leaving) => {
-                                surface.draw(shell)?;
-                                return Ok(Pump {
-                                    exit: exit_for(leaving),
-                                });
-                            }
-                            // The terminal stopped answering mid-turn. A
-                            // product terminal does not; a script does, and
-                            // this is what stops a pump that never left from
-                            // hanging a check.
-                            Turned::SourceEnded => {
-                                return Ok(Pump {
-                                    exit: Exit::Succeeded,
-                                });
-                            }
+                        .await;
+                        let redactor = turns.prepared.redactor();
+                        let session = turns.session;
+                        match after(turned, &mut turns.interrupted, session, redactor) {
+                            AfterTurn::Carries(lines) => lines,
+                            AfterTurn::Stops(exit) => return Ok(Pump { exit }),
                         }
                     }
                     Turnable::Cannot(lines) => lines.clone(),
