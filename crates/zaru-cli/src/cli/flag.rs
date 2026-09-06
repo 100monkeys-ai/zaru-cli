@@ -77,7 +77,14 @@ pub enum Flag {
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     Resume,
-    /// D4's `--continue`.
+    /// D4's `--continue`, which is scoped to the directory it is run in.
+    ///
+    /// The summary below said "the same, for the most recent session" until
+    /// 2026-09-06, which agreed with the code and disagreed with the record:
+    /// [ADR-0010] D4 is "the most recent session **in this directory**". The
+    /// code is what changed; this line is corrected to it.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     Continue,
     /// `--help`.
     Help,
@@ -134,7 +141,7 @@ impl Flag {
             Self::Model => "set model.default for this run, at the same layer",
             Self::Mode => "set tools.mode for this run, at the same layer: ask, allow or yolo",
             Self::Resume => "restore a session and print its transcript",
-            Self::Continue => "the same, for the most recent session",
+            Self::Continue => "the same, for the most recent session started in this directory",
             Self::Help => "print this",
             Self::Version => "print the version and what this binary is composed of",
         }

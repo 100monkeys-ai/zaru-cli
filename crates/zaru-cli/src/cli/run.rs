@@ -140,10 +140,7 @@ impl Run<'_> {
     /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     fn init(&self) -> Outcome {
-        let here = match std::env::current_dir()
-            .map_err(crate::tools::TreeError::from_current_directory)
-            .and_then(crate::tools::WorkingDirectory::at)
-        {
+        let here = match crate::tools::WorkingDirectory::of_this_process() {
             Ok(here) => here,
             Err(failure) => return Outcome::failed(Surface::working_directory(&failure)),
         };
@@ -268,16 +265,20 @@ impl Run<'_> {
             Ok(store) => store,
             Err(outcome) => return *outcome,
         };
-        let ids = match store.ids() {
-            Ok(ids) => ids,
-            Err(failure) => return Outcome::failed(surface.session(&failure)),
+        // ADR-0010 D4 is "the most recent session **in this directory**", and
+        // `most_recent_in` is the one place that sentence is implemented --
+        // `terminal::open::most_recent` is its other caller. Until 2026-09-06
+        // this function and that one each took `ids().last()`, which is a
+        // recency test where the clause asks for a locality one; the register
+        // recorded the cause as "structural rather than one call site".
+        let here = match crate::tools::WorkingDirectory::of_this_process() {
+            Ok(here) => here,
+            Err(failure) => return Outcome::failed(Surface::working_directory(&failure)),
         };
-        // A ULID sorts lexically by creation time and `ids` sorts, so the last
-        // is the most recent -- D1's own reason for choosing a ULID over a
-        // UUID, rather than a second reading of any clock.
-        match ids.last() {
-            Some(id) => self.resume(id),
-            None => Outcome::failed(surface.no_session_to_continue()),
+        match crate::session::most_recent_in(&store, here.root()) {
+            Ok(Some(id)) => self.resume(&id),
+            Ok(None) => Outcome::failed(surface.no_session_to_continue()),
+            Err(failure) => Outcome::failed(surface.continuing(&failure)),
         }
     }
 

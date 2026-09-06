@@ -24,6 +24,10 @@ fn awkward() -> Meta {
         // ADR-0010's Update refused one.
         Some("a\"b\\c\nd\te\u{7}f é\u{301}𝄞".to_owned()),
         Some("anthropic".to_owned()),
+        // The seventh key, and it carries the same awkward bytes for the same
+        // reason: a working directory is a path a user chose and may hold a
+        // quote or a newline exactly as a workspace name may.
+        std::path::PathBuf::from("/tmp/a\"b\\c\nd"),
         Millis::new(1_788_579_000_000),
     )
 }
@@ -83,6 +87,7 @@ fn the_supplying_layer_is_recorded_by_the_word_the_explain_block_prints() {
             ResolvedTier::supplied(Tier::Bare, layer),
             None,
             None,
+            std::path::PathBuf::from("/tmp/somewhere"),
             Millis::new(1),
         );
         store.write(&meta).expect("written");

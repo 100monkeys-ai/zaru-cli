@@ -466,10 +466,7 @@ pub fn prepare(
     };
 
     // --- ADR-0011 D4's boundary, canonicalised once ------------------------
-    let here = match std::env::current_dir()
-        .map_err(crate::tools::TreeError::from_current_directory)
-        .and_then(WorkingDirectory::at)
-    {
+    let here = match WorkingDirectory::of_this_process() {
         Ok(here) => here,
         Err(failure) => return Err(Box::new(Ran::refused(Surface::working_directory(&failure)))),
     };
@@ -1023,6 +1020,11 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         // ADR-0001 D1 gives `bare` no cortex, and nothing here attaches one.
         None,
         Some(prepared.kind.to_string()),
+        // ADR-0010 D4's `--continue` scope, and it is ADR-0011 D4's boundary
+        // rather than a second reading of the process: `prepare` canonicalised
+        // it once, above, and a session that recorded a different answer to
+        // one question would be found under one path and written under another.
+        prepared.here.root().to_path_buf(),
         id.minted_at(),
     );
     if let Err(failure) = MetaFile::at(session.meta_path()).write(&meta) {

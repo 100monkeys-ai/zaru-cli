@@ -537,14 +537,34 @@ impl<'a> Surface<'a> {
     pub fn no_session_to_continue(&self) -> Classified {
         Classified::UserCorrectable {
             statement: Statement::sanitised(
-                "there is no session to continue: nothing on this machine has ever started one"
+                "there is no session to continue: no session has been started in this directory"
                     .to_owned(),
             ),
             remedy: act(
-                "a session is written the first time this harness runs a task, and it cannot run \
-                 one yet"
+                "run a task here to start one, or name a session from anywhere with `zaru \
+                 --resume <id>`"
                     .to_owned(),
             ),
+        }
+    }
+
+    /// [`ContinueFailure`](crate::session::ContinueFailure), which is two
+    /// classes rather than one.
+    ///
+    /// The store is the user's and a `meta.toml` this harness wrote is ours;
+    /// that type's own documentation carries the argument, and this function
+    /// is the whole of what it buys — the two are told apart by **which
+    /// variant**, never by anything on the value, which is what
+    /// [ADR-0016]'s Update asks for.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    #[must_use]
+    pub fn continuing(&self, failure: &crate::session::ContinueFailure) -> Classified {
+        match failure {
+            crate::session::ContinueFailure::Store(store) => self.session(store),
+            crate::session::ContinueFailure::Meta { evidence, failure } => {
+                Self::meta(failure, evidence.clone())
+            }
         }
     }
 

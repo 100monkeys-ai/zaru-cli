@@ -234,6 +234,7 @@ fn a_session_records_what_it_is_and_reads_it_back_from_outside_the_crate() {
         ResolvedTier::supplied(Tier::Linked, zaru_cli::config::Layer::Environment),
         Some(planted.clone()),
         Some("anthropic".to_owned()),
+        std::path::PathBuf::from("/tmp/a-project"),
         Millis::new(1_788_580_000_000),
     );
     store.write(&written).expect("a session records itself");
@@ -507,4 +508,109 @@ fn the_scratch_root_is_removed_and_its_absence_reads_four_ways() {
         "a home with no config.toml contributes an empty layer"
     );
     println!("removed {}; control survives", removed.display());
+}
+
+/// One function decides what "the working directory" is, and it canonicalises.
+///
+/// # Why this is a source walk and not a behavioural check
+///
+/// Four places want this process's working directory: [ADR-0011] D4's boundary
+/// in `compose::turn::prepare`, [ADR-0009] D6's `zaru init`, and the two entry
+/// points of [ADR-0010] D4's `--continue`. Each spelled `std::env::current_dir()`
+/// followed by `WorkingDirectory::at` until 2026-09-06, and four spellings of
+/// one rule are four chances for one of them to skip the canonicalisation.
+///
+/// **The mutation that removes the canonicalisation is behaviour-neutral for
+/// `--continue` on Linux, measured rather than assumed**, which is why the
+/// property this holds is *one call* rather than *canonical*. `getcwd(2)`
+/// resolves the working directory, so `std::env::current_dir()` returns a path
+/// with no symbolic link left in it even for a process started through one —
+/// checked by starting a shell in a symlinked directory, where `pwd -P` and
+/// `os.getcwd()` both printed the resolved path. And both sides of
+/// `most_recent_in`'s comparison come from one call, so a mutant that
+/// canonicalises neither still agrees with itself. What a *second* call would
+/// break is the pair: a session recorded under one answer and looked for under
+/// another, with nothing saying why. That is what this asserts, and its
+/// mutant — a planted `current_dir` under one of the four — is caught here.
+///
+/// The canonicalisation still earns its place for `WorkingDirectory`'s other
+/// role, classifying a candidate path against the root under ADR-0011 D4, and
+/// that half has its own checks in `tests/tool_surface_from_outside.rs`.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn corpus_one_thing_decides_a_working_directory() {
+    /// The one place the process may be asked where it is.
+    const DECIDER: &str = "src/tools/tree.rs";
+    const NEEDLE: &str = "env::current_dir";
+
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut scanned = 0usize;
+    let mut lines = 0usize;
+    let mut offences: Vec<String> = Vec::new();
+
+    let mut stack = vec![source.clone()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory).expect("a product directory") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            // `#[cfg(test)]` trees are not the product. A check that stages a
+            // directory may ask the process where it is; what must have one
+            // answer is what the binary does.
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name == "tests.rs" || name == "fixtures.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            scanned += 1;
+            lines += text.lines().count();
+            let relative = path
+                .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            for (number, line) in text.lines().enumerate() {
+                // A doc comment naming the call is prose about the rule, not
+                // an instance of it.
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                if line.contains(NEEDLE) && relative != DECIDER {
+                    offences.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    // Liveness, so a walk that read the wrong directory fails loudly rather
+    // than passing vacuously — the arm `no_network_call_can_originate_from_session_storage`
+    // already carries and the one that caught a scan of three files.
+    println!("scanned {scanned} product file(s), {lines} line(s)");
+    assert!(
+        scanned > 100 && lines > 20_000,
+        "this scan read {scanned} product file(s) and {lines} line(s), which is too few to have \
+         asserted anything about where the working directory is decided",
+    );
+    assert!(
+        std::fs::read_to_string(source.join("tools/tree.rs"))
+            .expect("the decider is there")
+            .contains(NEEDLE),
+        "{DECIDER} is exempted as the one place that asks the process where it is, and it does \
+         not ask",
+    );
+    assert!(
+        offences.is_empty(),
+        "the working directory has one answer, and {} other place(s) ask for it: {}",
+        offences.len(),
+        offences.join("\n  "),
+    );
 }

@@ -205,6 +205,34 @@ impl WorkingDirectory {
         Ok(Self { root })
     }
 
+    /// This process's own working directory, canonicalised once.
+    ///
+    /// # One function, so "the working directory" has one answer
+    ///
+    /// Four places want it: [ADR-0011] D4's boundary in
+    /// `compose::turn::prepare`, [ADR-0009] D6's `zaru init`, and the two
+    /// entry points of [ADR-0010] D4's `--continue`. Each spelled
+    /// `std::env::current_dir()` followed by [`WorkingDirectory::at`], and
+    /// four spellings of one rule are four chances for one of them to skip
+    /// the canonicalisation — at which point a session started through a
+    /// symbolic link records one path in `meta.toml` and is looked for under
+    /// another, with nothing saying why. `corpus_one_thing_decides_a_working_directory`
+    /// asserts that this is the only construction in the product tree.
+    ///
+    /// # Errors
+    ///
+    /// [`TreeError::NoSuchWorkingDirectory`] when the process has no working
+    /// directory, or it cannot be canonicalised.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub fn of_this_process() -> Result<Self, TreeError> {
+        std::env::current_dir()
+            .map_err(TreeError::from_current_directory)
+            .and_then(Self::at)
+    }
+
     /// The canonical root.
     #[must_use]
     pub fn root(&self) -> &Path {

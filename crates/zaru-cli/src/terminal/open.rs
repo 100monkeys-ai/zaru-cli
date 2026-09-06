@@ -338,26 +338,28 @@ pub fn open(
 
 /// Which session `--continue` means, per [ADR-0010] D4.
 ///
-/// A ULID sorts lexically by creation time and the store's listing sorts, so
-/// the last is the most recent — D1's own reason for choosing a ULID over a
-/// UUID, rather than a second reading of any clock. The same sentence
-/// `cli::run` already relies on.
+/// **The most recent session *in this directory*, which is the clause's own
+/// wording.** The selection is [`crate::session::most_recent_in`] and this
+/// function is one of its two callers; `cli::Run::resume_latest` is the other,
+/// and until 2026-09-06 each took `store.ids().last()` instead — a recency
+/// test where D4 asks for a locality one, which the `harness-look-and-feel`
+/// survey measured resuming a session from a different checkout.
 ///
 /// # Errors
 ///
-/// When the store cannot be reached or there is no session at all.
+/// When the store cannot be reached, a session's `meta.toml` will not parse,
+/// or no session in this directory exists.
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 pub fn most_recent(version: &str, report_at: &str) -> Result<SessionId, Box<Exit>> {
     let classify = Classify::new(version, report_at);
+    let here = crate::tools::WorkingDirectory::of_this_process()
+        .map_err(|failure| Box::new(Exit::Failed(Classify::working_directory(&failure))))?;
     let root = SessionStore::default_root()
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
     let store = SessionStore::reading(root);
-    let ids = store
-        .ids()
-        .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
-    ids.last()
-        .cloned()
+    crate::session::most_recent_in(&store, here.root())
+        .map_err(|failure| Box::new(Exit::Failed(classify.continuing(&failure))))?
         .ok_or_else(|| Box::new(Exit::Failed(classify.no_session_to_continue())))
 }
 

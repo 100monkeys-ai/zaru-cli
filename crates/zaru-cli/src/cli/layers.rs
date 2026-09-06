@@ -483,13 +483,24 @@ impl Files {
     /// A machine with no home directory has no layer 2, and a process whose
     /// working directory cannot be canonicalised has no layer 3. Neither is a
     /// failure: no file was opened, so the block says so.
+    ///
+    /// **The working directory is [`WorkingDirectory::of_this_process`] and
+    /// not a reading of its own**, since 2026-09-06. It was
+    /// `std::env::current_dir()` here, one of five spellings of one rule, and
+    /// this was the fifth — found by `corpus_one_thing_decides_a_working_directory`
+    /// rather than by anybody remembering it, which is the whole reason that
+    /// check is a source walk. [ADR-0014] D1's layer 3 and [ADR-0010] D4's
+    /// `--continue` scope must be the same directory or a project's
+    /// `zaru.toml` is read from one place and its sessions looked for in
+    /// another.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
     #[must_use]
     pub fn from_process() -> Self {
         Self::at(
             crate::config::home::default_root().as_deref(),
-            std::env::current_dir()
-                .ok()
-                .and_then(|here| WorkingDirectory::at(here).ok()),
+            WorkingDirectory::of_this_process().ok(),
         )
     }
 

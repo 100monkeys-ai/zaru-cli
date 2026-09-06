@@ -84,11 +84,22 @@ impl Ran {
 
 /// Run the built binary with a scratch home and a cleared environment.
 fn zaru(home: &Home, arguments: &[&str]) -> Ran {
+    zaru_in(home, &home.project(), arguments)
+}
+
+/// The same, run **in** a named directory.
+///
+/// [ADR-0010] D4's `--continue` is scoped to the directory it is run in, so a
+/// check of that clause needs more than one, and the working directory a run
+/// is given is the thing under test rather than a detail of the runner.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+fn zaru_in(home: &Home, directory: &Path, arguments: &[&str]) -> Ran {
     let output: Output = Command::new(env!("CARGO_BIN_EXE_zaru"))
         .args(arguments)
         .env_clear()
         .env("HOME", home.path())
-        .current_dir(home.project())
+        .current_dir(directory)
         .output()
         .expect("failed to execute the built zaru binary");
 
@@ -101,7 +112,7 @@ fn zaru(home: &Home, arguments: &[&str]) -> Ran {
             .expect("the binary was killed by a signal rather than exiting"),
     };
 
-    println!("-- zaru {} --", arguments.join(" "));
+    println!("-- zaru {} (in {}) --", arguments.join(" "), directory.display());
     for line in ran.stdout.lines() {
         println!("   {line}");
     }
@@ -444,15 +455,54 @@ fn asking_the_binary_a_question_writes_nothing_to_the_users_home() {
 /// session is doing what the product does when it starts one. What the binary
 /// under test does is read, and it reads through `SessionStore::reading`.
 fn stage_a_session(home: &Home, minted_at: u64) -> zaru_cli::session::SessionId {
-    use zaru_cli::session::{Millis, Record, SessionId, SessionStore, Transcript};
+    stage_a_session_in(home, minted_at, &home.project(), 1)
+}
+
+/// The same, for a session that began in a named directory.
+///
+/// It writes the `meta.toml` the product writes, through the product's own
+/// [`MetaFile`](zaru_cli::session::MetaFile), because [ADR-0010] D4's
+/// `--continue` selects on the `directory` that file records and a staging
+/// that wrote its own would be asserting against a second format.
+///
+/// `entropy` distinguishes two sessions minted in the same millisecond; the
+/// minting time is named rather than read off the machine's clock, so the
+/// order `--continue` picks from is this check's rather than the scheduler's.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+fn stage_a_session_in(
+    home: &Home,
+    minted_at: u64,
+    directory: &Path,
+    entropy: u8,
+) -> zaru_cli::session::SessionId {
+    use zaru_cli::config::Layer;
+    use zaru_cli::runtime::{ResolvedTier, Tier};
+    use zaru_cli::session::{
+        Meta, MetaFile, MetaStore, Millis, Record, SessionId, SessionStore, Transcript,
+    };
 
     let store = SessionStore::open(home.path().join(".zaru")).expect("a scratch session store");
-    // The minting time is named rather than read off the machine's clock, so
-    // the order `--continue` picks from is this check's rather than the
-    // scheduler's.
-    let id = SessionId::from_parts(Millis::new(minted_at), [1, 2, 3, 4, 5, 6, 7, 8, 9, 0])
+    let id = SessionId::from_parts(Millis::new(minted_at), [entropy; 10])
         .expect("a well-formed ULID");
     let session = store.start(id.clone()).expect("a session directory");
+
+    // The directory as the product records it: canonical, because
+    // `WorkingDirectory::of_this_process` is what `compose::turn::prepare`
+    // canonicalises and `most_recent_in` compares against. A staging that
+    // wrote the uncanonicalised path would pass against a filter that also
+    // skipped the canonicalisation, which is one of this clause's mutants.
+    let canonical = std::fs::canonicalize(directory).expect("the staged directory exists");
+    let mut meta_file = MetaFile::at(session.meta_path());
+    meta_file
+        .write(&Meta::new(
+            ResolvedTier::supplied(Tier::Bare, Layer::BuiltIn),
+            None,
+            Some("gemini".to_owned()),
+            canonical,
+            Millis::new(minted_at),
+        ))
+        .expect("a staged session records itself");
 
     let mut transcript =
         Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
@@ -636,30 +686,107 @@ fn continuing_with_no_sessions_says_there_is_nothing_to_continue() {
         "the refusal must say what is missing: {}",
         ran.stderr
     );
+    assert!(
+        ran.stderr.contains("in this directory"),
+        "ADR-0010 D4 scopes `--continue` to a directory, so the refusal says which: {}",
+        ran.stderr
+    );
 }
 
-/// `--continue` takes the most recent session and not merely the last listed.
+/// [ADR-0010] D4's `--continue` is **this directory's** most recent session.
 ///
-/// Staged out of order on purpose: the older session is created *second*, so a
-/// resume that took whatever `read_dir` happened to yield, or the one it
-/// created last, answers differently from one that reads the ULID's own order.
+/// D4, in as many words: "`zaru --continue` for the **most recent session in
+/// this directory**". Until 2026-09-06 both entry points took
+/// `store.ids().last()`, which is a recency test where the clause asks for a
+/// locality one; the `harness-look-and-feel` survey measured it from the built
+/// binary at `8179f8a` resuming a session created in a different checkout, and
+/// `operations/known-defects` carried it as a `Diagnosed` row.
+///
+/// Three directories under one home, and each arm kills a different mutant.
+///
+/// - **A** holds two sessions with the older staged *second*, so a resume that
+///   took whatever `read_dir` yielded, or the one it created last, answers
+///   differently from one that reads the ULID's own order. This is the arm the
+///   check had before the directory term existed, kept.
+/// - **B** holds one, so a filter that matched every session answers with A's.
+/// - **C** has never held one, so a resume with no directory term — today's
+///   code — answers with A's rather than refusing. **This is the arm that
+///   discriminates**, and it is the survey's own reproduction.
+/// - **`--resume` from C succeeds**, which is the accepting sibling: D4 scopes
+///   only `--continue`, so a build that refused everything outside the
+///   directory would pass the first three arms and fail this one.
+///
+/// The staged directories are canonicalised on the way in, so an
+/// implementation that compared uncanonicalised paths fails here whenever the
+/// temporary directory is reached through a symbolic link — which it is on
+/// most machines.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 #[test]
-fn continue_takes_the_most_recent_session_by_the_ulids_own_order() {
-    let home = Home::new("continue-order");
-    let newer = stage_a_session(&home, 1_700_000_009_000);
-    let older = stage_a_session(&home, 1_700_000_003_000);
-    assert!(older < newer, "the ULIDs must sort by their minting time");
+fn corpus_continue_is_the_most_recent_session_started_in_this_directory() {
+    let home = Home::new("continue-scope");
+    let a = home.path().join("a");
+    let b = home.path().join("b");
+    let c = home.path().join("c");
+    for directory in [&a, &b, &c] {
+        std::fs::create_dir_all(directory).expect("a scratch working directory");
+    }
 
-    let ran = zaru(&home, &["--continue"]);
+    let newer_in_a = stage_a_session_in(&home, 1_700_000_009_000, &a, 1);
+    let older_in_a = stage_a_session_in(&home, 1_700_000_003_000, &a, 2);
+    let only_in_b = stage_a_session_in(&home, 1_700_000_005_000, &b, 3);
     assert!(
-        ran.stdout.contains(newer.as_str()),
-        "`--continue` must take the most recent session: {}",
-        ran.stdout
+        older_in_a < newer_in_a,
+        "the ULIDs must sort by their minting time"
+    );
+
+    let from_a = zaru_in(&home, &a, &["--continue"]);
+    assert_eq!(from_a.code, 0, "stderr: {}", from_a.stderr);
+    assert!(
+        from_a.stdout.contains(newer_in_a.as_str()),
+        "`--continue` must take this directory's most recent session: {}",
+        from_a.stdout
     );
     assert!(
-        !ran.stdout.contains(older.as_str()),
+        !from_a.stdout.contains(older_in_a.as_str()),
         "and not the one created last: {}",
-        ran.stdout
+        from_a.stdout
+    );
+
+    let from_b = zaru_in(&home, &b, &["--continue"]);
+    assert_eq!(from_b.code, 0, "stderr: {}", from_b.stderr);
+    assert!(
+        from_b.stdout.contains(only_in_b.as_str()),
+        "`--continue` in B must take B's session and not A's newer one: {}",
+        from_b.stdout
+    );
+
+    // The arm that discriminates. A machine-wide `--continue` answers here
+    // with A's session and exits 0; D4's says there is nothing to continue.
+    let from_c = zaru_in(&home, &c, &["--continue"]);
+    assert_eq!(
+        from_c.code, 2,
+        "a session started elsewhere is not continued here; stdout: {}",
+        from_c.stdout
+    );
+    assert!(
+        !from_c.stdout.contains(newer_in_a.as_str())
+            && !from_c.stdout.contains(only_in_b.as_str()),
+        "no session from another directory may be resumed by `--continue`: {}",
+        from_c.stdout
+    );
+
+    // The accepting sibling: `--resume` names a session and is not scoped.
+    let resumed = zaru_in(&home, &c, &["--resume", newer_in_a.as_str()]);
+    assert_eq!(
+        resumed.code, 0,
+        "`--resume <id>` names a session and D4 scopes only `--continue`; stderr: {}",
+        resumed.stderr
+    );
+    assert!(
+        resumed.stdout.contains(newer_in_a.as_str()),
+        "`--resume` must reach a session started in another directory: {}",
+        resumed.stdout
     );
 }
 

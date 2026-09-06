@@ -42,14 +42,35 @@
 //! first of those in the defect row. The two are told apart by which port
 //! failed rather than by anything on the value.
 //!
-//! # Nothing in the product calls this yet, and that is stated rather than
-//! implied
+//! # And a seventh D1 does not name either, for a clause that could not be
+//! checked without it
 //!
-//! **The binary starts no session**, so no product path writes a `meta.toml`
-//! and none reads one. `resume` and `sessions list` are deliberately not wired
-//! to it: every session directory on every machine predates this writer, and a
-//! read wired into resume would report a defect for each of them. The arc that
-//! starts a session is the one that wires both halves.
+//! [ADR-0010] D4 is "`zaru --continue` for the **most recent session in this
+//! directory**", and until 2026-09-06 a session recorded nowhere the directory
+//! it began in — so both entry points selected on recency alone and
+//! `--continue` resumed a session from a different checkout, which the
+//! `harness-look-and-feel` survey measured from the built binary at `8179f8a`.
+//! The file therefore carries `directory`, whose value is
+//! [ADR-0011] D4's canonical root as
+//! [`crate::compose::turn::prepare`] built it, so the file and the tool
+//! surface's boundary are one reading of the process rather than two.
+//! Written as an accepted Update on ADR-0010 D1 under a delegated coordinator
+//! ruling of 2026-09-05, open to Jeshua's veto.
+//!
+//! **A canonical path that is not UTF-8 is refused rather than lost.** TOML's
+//! string is UTF-8 and a `PathBuf` on this platform is bytes, so a writer that
+//! cast would write a path nobody could read back. The refusal names the file
+//! and not the path, which is [`MetaFailure`]'s own rule.
+//!
+//! # Both halves have product callers, as of 2026-09-06
+//!
+//! This section said "**The binary starts no session**, so no product path
+//! writes a `meta.toml` and none reads one" until 2026-09-06. It was falsified
+//! on 2026-09-05 by `composer-wiring`, in a commit that never touched this
+//! file: `compose::turn::task` mints a session and writes this file for it.
+//! The reader's caller arrived with `--continue`'s directory filter — see
+//! [`crate::session::most_recent_in`], which is the one place a stored
+//! directory is compared against this process's.
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -77,6 +98,10 @@ pub const WORKSPACE_KEY: &str = "workspace";
 /// D1's `provider`.
 pub const PROVIDER_KEY: &str = "provider";
 
+/// The working directory the session began in. See the module documentation
+/// for why D1's five fields are seven here.
+pub const DIRECTORY_KEY: &str = "directory";
+
 /// D1's `started`, in milliseconds.
 pub const STARTED_KEY: &str = "started";
 
@@ -85,7 +110,7 @@ pub const ENDED_KEY: &str = "ended";
 
 /// How large a `meta.toml` this harness will parse, in bytes.
 ///
-/// Six flat keys, so a file anywhere near this is not one this harness wrote.
+/// Seven flat keys, so a file anywhere near this is not one this harness wrote.
 /// A separate number from [`crate::cli::FILE_CEILING_BYTES`] because they bound
 /// different things: that one bounds a file a person hand-writes, and this one
 /// bounds a file only this harness writes.
@@ -155,6 +180,17 @@ impl MetaFile {
             ResolvedTier::supplied(tier, supplied_by),
             self.optional_text(&document, WORKSPACE_KEY)?,
             self.optional_text(&document, PROVIDER_KEY)?,
+            // Absent on every session directory written before 2026-09-06,
+            // and an empty path is what says so: `most_recent_in` compares it
+            // against a canonical root, which is absolute, so a session that
+            // recorded nothing is not this directory's and not any other
+            // directory's either. That is the honest reading of a file that
+            // does not carry the field, and it is what makes the absence a
+            // datum rather than a defect -- the distinction `file-readers`
+            // already drew for the file as a whole.
+            self.optional_text(&document, DIRECTORY_KEY)?
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default(),
             Millis::new(self.millis(&document, STARTED_KEY)?.ok_or_else(|| {
                 self.wrong(format_args!(
                     "`{STARTED_KEY}` is absent, and a session started"
@@ -257,11 +293,37 @@ impl MetaFile {
                 toml::Value::String(provider.clone()),
             );
         }
+        if !meta.directory.as_os_str().is_empty() {
+            document.insert(DIRECTORY_KEY.to_owned(), self.directory(&meta.directory)?);
+        }
         document.insert(STARTED_KEY.to_owned(), self.reading(meta.started)?);
         if let Some(ended) = meta.ended {
             document.insert(ENDED_KEY.to_owned(), self.reading(ended)?);
         }
         Ok(document.to_string())
+    }
+
+    /// A working directory as TOML holds a string.
+    ///
+    /// TOML's string is UTF-8 and a path on this platform is bytes, so the
+    /// conversion is checked rather than lossy: `to_string_lossy` would write
+    /// a path that reads back as a *different* directory, and
+    /// [`crate::session::most_recent_in`] would then compare two values that
+    /// were never equal and never say why.
+    ///
+    /// **The refusal carries the file and not the path.** A working directory
+    /// is the user's, exactly as `workspace` and `provider` are, and
+    /// [`MetaFailure`]'s own documentation is that a refusal is the text that
+    /// gets pasted into a bug report.
+    fn directory(&self, directory: &Path) -> Result<toml::Value, MetaFailure> {
+        directory
+            .to_str()
+            .map(|text| toml::Value::String(text.to_owned()))
+            .ok_or_else(|| {
+                self.wrong(format_args!(
+                    "this session's working directory is not UTF-8, and TOML's string is"
+                ))
+            })
     }
 
     /// A clock reading as TOML holds a whole number.

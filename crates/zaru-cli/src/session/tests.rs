@@ -326,20 +326,29 @@ fn a_session_hands_adr_0016_d3_the_transcript_it_will_actually_write() {
 }
 
 // ---------------------------------------------------------------------------
-// meta.toml — a port with no product implementation
+// meta.toml — written by whoever mints a session, not by the directory
 // ---------------------------------------------------------------------------
 
-/// Nothing in the product tree writes `meta.toml`, so a session directory
-/// holds two of D1's three files and the third is a declared seam.
+/// **Starting a session writes no `meta.toml`; the thing that mints one does.**
+///
+/// The heading above this check said "a port with no product implementation"
+/// and this comment said "nothing in the product tree writes `meta.toml`",
+/// both of which stopped being true on 2026-09-05 when `composer-wiring` made
+/// `compose::turn::task` mint a session and write the file for it. What the
+/// check actually holds is narrower and still worth holding:
+/// [`SessionStore::start`] makes a directory and nothing else, so the file is
+/// written by whoever decides what is in it rather than as a side effect of
+/// the directory existing.
 ///
 /// The check is in two halves because the first alone is satisfied by a store
 /// that does nothing at all: the port is driven by a double, so the *value*
 /// D1 asks for is asserted to exist and to carry what the record names.
 ///
-/// The mutant: writing a `meta.toml` from the product, which is the
-/// dependency stop this arc refused.
+/// The mutant: writing a `meta.toml` from `SessionStore::start`, which would
+/// make the file a property of the directory and put a tier nobody resolved
+/// in it.
 #[test]
-fn nothing_in_the_product_writes_meta_toml_and_the_port_carries_what_d1_names() {
+fn starting_a_session_writes_no_meta_toml_and_the_port_carries_what_d1_names() {
     let scratch = ScratchRoot::new();
     let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
     let session = store
@@ -348,8 +357,8 @@ fn nothing_in_the_product_writes_meta_toml_and_the_port_carries_what_d1_names() 
 
     assert!(
         !session.meta_path().exists(),
-        "something in the product tree wrote meta.toml, and ADR-0003 D2's table names no TOML \
-         crate — the amendment that would add one is the same one holding ADR-0007 clause 4",
+        "`SessionStore::start` wrote a meta.toml, so the file is a property of the directory \
+         rather than of whoever resolved what goes in it",
     );
 
     let mut held = InMemoryMeta::default();
@@ -358,6 +367,7 @@ fn nothing_in_the_product_writes_meta_toml_and_the_port_carries_what_d1_names() 
         ResolvedTier::supplied(Tier::Bare, Layer::BuiltIn),
         Some(planted.clone()),
         Some("a-provider".to_owned()),
+        std::path::PathBuf::from("/tmp/somewhere"),
         Millis::new(1_700_000_000_000),
     );
     held.write(&meta).expect("the double refused a write");

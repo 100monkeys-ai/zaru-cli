@@ -131,6 +131,7 @@ fn an_outside_caller_resolves_a_tier_records_it_and_reads_what_it_engages() {
         tier,
         Some(workspace.clone()),
         Some("a-provider".to_owned()),
+        std::path::PathBuf::from("/tmp/somewhere"),
         Millis::new(1_700_000_000_000),
     );
     assert_eq!(meta.tier(), Tier::Linked);

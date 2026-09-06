@@ -41,8 +41,22 @@ use core::fmt;
 /// recorded as absent rather than as an empty string, so a reader can tell a
 /// session that had no workspace from one whose workspace was `""`.
 ///
+/// **`directory` is not an `Option`, and that is the difference between a
+/// session this harness starts and a file it reads back.** Every session is
+/// minted inside [ADR-0011] D4's boundary, which
+/// [`crate::compose::turn::prepare`] canonicalises before anything else
+/// happens and refuses when it cannot — so a session being *started* always
+/// has one. A session directory written before 2026-09-06 records none, and
+/// that absence is the reader's problem rather than this type's: see
+/// [`file::MetaFile::read_if_present`], which yields `None` for the whole
+/// value only when the file is absent and refuses a file that carries a key
+/// it cannot read. A session that recorded no directory is not this
+/// directory's, which is what [ADR-0010] D4's `--continue` needs and all it
+/// needs.
+///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
@@ -63,6 +77,27 @@ pub struct Meta {
     pub workspace: Option<String>,
     /// The provider alias this session generated with, where there is one.
     pub provider: Option<String>,
+    /// The working directory this session began in, canonical.
+    ///
+    /// **A seventh key D1 does not name, and [ADR-0010] D4 is why it has to
+    /// exist.** That clause is "`zaru --continue` for the **most recent
+    /// session in this directory**", and until 2026-09-06 no session recorded
+    /// the directory it began in — so both entry points selected on recency
+    /// alone and `--continue` resumed a session from a different checkout.
+    /// Accepted as an Update on D1 under directive 20 of 2026-09-05, open to
+    /// Jeshua's veto.
+    ///
+    /// **It is [ADR-0011] D4's canonical root and never a second reading of
+    /// the process.** [`crate::compose::turn::prepare`] canonicalises the
+    /// working directory once, through
+    /// [`WorkingDirectory::at`](crate::tools::WorkingDirectory::at), and this
+    /// is that value. A second `current_dir` call here would be a second
+    /// answer to one question, and the two would differ the first time a
+    /// session was started through a symbolic link.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub directory: std::path::PathBuf,
     /// When the session started.
     pub started: Millis,
     /// When it ended, or `None` while it is still running.
@@ -79,12 +114,14 @@ impl Meta {
         tier: ResolvedTier,
         workspace: Option<String>,
         provider: Option<String>,
+        directory: std::path::PathBuf,
         started: Millis,
     ) -> Self {
         Self {
             tier,
             workspace,
             provider,
+            directory,
             started,
             ended: None,
         }
@@ -149,10 +186,15 @@ impl std::error::Error for MetaFailure {}
 /// wants no filesystem implements it in memory, and because whatever starts a
 /// session should be able to say where its metadata goes.
 ///
-/// **Nothing in the product calls either half yet**: the binary starts no
-/// session, so no `meta.toml` is written anywhere and a session directory on
-/// any real machine still holds two files rather than three.
+/// **Both halves have product callers.** `composer-wiring` gave the writer one
+/// on 2026-09-05 when `zaru "<task>"` began minting a session, and
+/// `session-entry` gave the reader one on 2026-09-06 when [ADR-0010] D4's
+/// `--continue` began filtering on the directory the file records. The
+/// sentence here said "nothing in the product calls either half yet" until
+/// then; it was falsified by `compose::turn::task`, in a commit that never
+/// touched this file.
 ///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 /// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 pub trait MetaStore {
     /// Record what this session is.
