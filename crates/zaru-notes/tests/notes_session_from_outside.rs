@@ -301,16 +301,31 @@ impl ServerHandler for FakeNotes {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::invalid_params("search.global needs a query", None))?;
                 if workspace == UNREADABLE_ID {
+                    // A hit that cannot locate itself: ADR-0006 D6's four
+                    // parts are what `found::read` requires and this has one.
                     return Ok(CallToolResult::success(vec![ContentBlock::text(
-                        serde_json::json!({"results": [{"path": "adrs/0006"}]}).to_string(),
+                        serde_json::json!({"hits": [
+                            {"path": "adrs/0006", "title": "ADR-0006"}
+                        ]})
+                        .to_string(),
                     )])
                     .into());
                 }
+                // The container and the fields the live server was measured to
+                // send on 2026-09-06, not the ones this client first guessed.
                 Ok(CallToolResult::success(vec![ContentBlock::text(
                     serde_json::json!({
-                        "results": [
-                            {"kind": "page", "path": "adrs/0006", "title": format!("{query} in {workspace} ✦")}
-                        ],
+                        "query": query,
+                        "scope": "workspace",
+                        "hits": [{
+                            "kind": "page",
+                            "path": "adrs/0006",
+                            "title": format!("{query} in {workspace} ✦"),
+                            "workspaceSlug": "zaru",
+                            "snippet": format!("…<mark>{query}</mark>…"),
+                            "permalink": "https://example.invalid/zaru/p/adrs/0006",
+                            "uri": "nn://workspace/zaru/p/adrs/0006"
+                        }],
                         "nextCursor": SECOND_PAGE
                     })
                     .to_string(),
@@ -929,6 +944,16 @@ async fn adr_0006_d4s_last_read_tool_names_its_workspace_and_stops_at_one_page()
          the tail nobody asked for: {found:?}"
     );
     assert_eq!(found[0].path, "adrs/0006");
+    // ADR-0006 D6's four parts, off a search rather than composed here: a hit
+    // carries everything `Attachment::new` requires, which a listing row does
+    // not.
+    assert_eq!(found[0].workspace, "zaru");
+    assert_eq!(
+        found[0].permalink,
+        "https://example.invalid/zaru/p/adrs/0006"
+    );
+    assert_eq!(found[0].uri, "nn://workspace/zaru/p/adrs/0006");
+    assert!(found[0].snippet.contains("<mark>membrane</mark>"));
 
     let wire = attached.wire_text();
     assert!(
@@ -984,7 +1009,11 @@ async fn adr_0013s_layer_two_is_read_by_a_tool_and_names_its_workspace() {
 async fn a_search_that_answers_in_another_shape_is_refused_naming_the_expectation() {
     // The accepting sibling is the check two above. This one drives the same
     // reader down its refusing branch, so "the shape is expected and fails
-    // loudly" is asserted rather than described.
+    // loudly" is asserted rather than described. The hit it refuses carries a
+    // path and a title and **not** the workspace slug, which is the half of
+    // ADR-0006 D6's identity pair that makes a hit locatable at all -- so the
+    // refusal names the one field whose absence would turn a search result
+    // into something that resolves nowhere.
     let attached = attach().await;
     let refusal = attached
         .session
@@ -993,7 +1022,7 @@ async fn a_search_that_answers_in_another_shape_is_refused_naming_the_expectatio
         .expect_err("the fixture answers this workspace with a shape no reader accepts");
     let rendered = refusal.to_string();
     assert!(
-        rendered.contains("search.global") && rendered.contains("could not read"),
-        "the refusal names neither the tool nor what was expected: {rendered}"
+        rendered.contains("search.global") && rendered.contains("workspaceSlug"),
+        "the refusal names neither the tool nor the field that was missing: {rendered}"
     );
 }

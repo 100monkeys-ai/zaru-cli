@@ -247,15 +247,16 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
     if listed.is_empty() {
         return vec![
             "no tokens".to_owned(),
-            // Rewritten 2026-09-05: this said sealing was a port with no
-            // implementation and that no secret is written anywhere, which
-            // stopped being true the day sealing landed. A line telling a user
-            // why they cannot do something has to name the reason that is
-            // actually stopping them, and that reason is now the surface
-            // rather than the store.
-            "  nothing in this harness can add one yet: ADR-0007 D7's `notes tokens add` is not \
-             built, and it needs a Nuclear Notes server to authenticate against"
-                .to_owned(),
+            // **Rewritten twice on 2026-09-05, and the second rewrite is the
+            // one that matters.** It first said sealing was a port with no
+            // implementation; then that `notes tokens add` "is not built, and
+            // it needs a Nuclear Notes server to authenticate against". Both
+            // were true when written and both stopped being true the same day.
+            // A line telling a user why they cannot do something, on a surface
+            // where they now can, is worse than no line -- so this one stopped
+            // being an excuse and became the command, which is ADR-0016 D2's
+            // rule that a remedy names something the binary runs.
+            "  add one with: zaru notes tokens add <alias> <host>".to_owned(),
         ];
     }
 

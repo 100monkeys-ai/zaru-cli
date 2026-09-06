@@ -34,13 +34,16 @@ use crate::session::address::{Instance, WorkspaceId, WorkspaceSlug};
 use crate::session::bearer::Bearer;
 use crate::session::endpoint::Endpoint;
 use crate::session::error::{CallRefused, NotesError, TOOL_ERROR};
+use crate::session::found::{self, Found};
 use crate::session::invalidation::Invalidation;
 use crate::session::listing::{self, Listed};
 use core::fmt;
 use rmcp::ClientHandler;
 use rmcp::model::{CallToolRequestParams, ContentBlock, JsonObject};
 use rmcp::serve_client;
-use rmcp::service::{NotificationContext, RoleClient, RunningService, ServiceError};
+use rmcp::service::{
+    ClientInitializeError, NotificationContext, RoleClient, RunningService, ServiceError,
+};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -186,7 +189,7 @@ impl Session {
         let service = serve_client(Watcher { list_changed: tx }, transport)
             .await
             .map_err(|error| NotesError::Attach {
-                detail: error.to_string(),
+                detail: attach_detail(&error),
             })?;
 
         let peer = service.peer_info().ok_or_else(|| NotesError::Attach {
@@ -421,17 +424,24 @@ impl Session {
     /// [ADR-0006](https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces)
     /// counts.
     ///
+    /// # The answer's shape was measured on 2026-09-06 and was not the guess
+    ///
+    /// It is a JSON object carrying an array **`hits`**, not the `results` a
+    /// listing carries, and every row locates itself. See
+    /// [`found`](super::found), which exists because the first live call
+    /// refused rather than quietly returning nothing.
+    ///
     /// # Errors
     ///
     /// [`NotesError::Call`] when the server refuses, and
-    /// [`NotesError::Unreadable`] when the answer does not carry a listing.
+    /// [`NotesError::Unreadable`] when the answer does not carry `hits`.
     ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     pub async fn search(
         &self,
         query: &str,
         workspace: &WorkspaceId,
-    ) -> Result<Vec<Listed>, NotesError> {
+    ) -> Result<Vec<Found>, NotesError> {
         let mut arguments = JsonObject::new();
         arguments.insert("q".to_owned(), Value::String(query.to_owned()));
         arguments.insert(
@@ -439,7 +449,7 @@ impl Session {
             Value::String(workspace.as_str().to_owned()),
         );
         let answer = self.call(SEARCH_GLOBAL, arguments).await?;
-        Ok(listing::read(SEARCH_GLOBAL, &answer)?.listed)
+        found::read(SEARCH_GLOBAL, &answer)
     }
 
     /// The grounding [ADR-0013] D1 puts at layer 2, for the workspace named.
@@ -597,9 +607,64 @@ fn service_failure(tool: &str, error: &ServiceError) -> NotesError {
             detail: mcp.message.to_string(),
         }),
         other => NotesError::Transport {
-            detail: other.to_string(),
+            detail: innermost(other),
         },
     }
+}
+
+/// What a failed handshake says, with the SDK's type parameters left out.
+///
+/// [`ClientInitializeError::TransportError`] renders as
+/// `"Send message error {error}, when {context}"`, and `{error}` is a
+/// `DynamicTransportError` whose own `Display` prints the transport's Rust
+/// type. **Its inner error is `#[source]`, but the enum variant above it does
+/// not mark the field, so the chain is broken at exactly the link
+/// [`innermost`] would need** — measured by running the binary and reading what
+/// a real refusal printed. So this reaches through that one variant by name and
+/// leaves every other to the chain.
+fn attach_detail(error: &ClientInitializeError) -> String {
+    match error {
+        ClientInitializeError::TransportError { error, .. } => innermost(error.error.as_ref()),
+        other => innermost(other),
+    }
+}
+
+/// The last sentence in an error's `source` chain.
+///
+/// # Why the innermost and not the outermost
+///
+/// **Found by running the binary rather than by reading it.** `rmcp`'s
+/// outermost `Display` for a transport failure interpolates the transport's
+/// own Rust type, so a real refusal reached a user as:
+///
+/// ```text
+/// Send message error Transport [rmcp::transport::worker::WorkerTransport<
+/// rmcp::transport::streamable_http_client::StreamableHttpClientWorker<
+/// zaru_notes::session::transport::http::ReqwestHttp>>] error: Auth required,
+/// when send initialize request
+/// ```
+///
+/// The five words that matter are `Auth required`. [ADR-0016] D2 says an error
+/// message whose reader cannot act "is a stack trace with better grammar", and
+/// a sentence naming three generic parameters of this crate's own private
+/// module is exactly that.
+///
+/// **This chooses between sentences the SDK already wrote; it does not
+/// paraphrase one.** Walking to the end of the chain is what the standard
+/// library's `source` is for, and the innermost link is the thing that actually
+/// went wrong — `Auth required`, or
+/// `error sending request for url (https://…)`. Rewriting either would be this
+/// crate inventing a diagnosis, which is what
+/// [ADR-0006](https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces)
+/// D7 forbids about a workspace refusal and the same argument forbids here.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+fn innermost(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut deepest = error;
+    while let Some(next) = deepest.source() {
+        deepest = next;
+    }
+    deepest.to_string()
 }
 
 /// Fold a gate failure into D7's single indistinguishable refusal, and let

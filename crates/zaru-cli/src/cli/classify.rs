@@ -805,14 +805,44 @@ impl<'a> Surface<'a> {
                         .to_owned(),
                 ),
             ),
+            // **Reachable since `notes tokens add` landed on 2026-09-05, and
+            // found by running rather than by reading**: this arm was
+            // `undecided` for every one of the five, on the sentence "nothing
+            // this harness runs can add or re-role a stored token". Adding one
+            // is what `notes tokens add` does, so an apex token offered on a
+            // machine with no terminal reached this arm and was reported as a
+            // **defect in Zaru with a report URL** — ADR-0016 D3's own
+            // "never present a defect as a user error", inverted.
+            //
+            // ADR-0007 D8's confirmation could not be asked. The user's: they
+            // chose `apex` and they choose where they run it.
+            StoreError::ApexNeedsConfirmation { .. } => correctable(
+                failure,
+                act(
+                    "run it again at a terminal, where the question can be asked; or leave the \
+                     word `apex` off to store an instance-locked credential, which is what \
+                     ADR-0007 D8 makes the default"
+                        .to_owned(),
+                ),
+            ),
+            // **Not an error at all.** The user was asked and said no, and the
+            // harness did exactly what they said. ADR-0016 D1: an expected
+            // failure "is the mechanism operating, and colouring it like a
+            // crash teaches users to fear the thing that makes the product
+            // work".
+            StoreError::ApexDeclined { alias } => Classified::Expected(
+                crate::failure::Expected::new(Statement::sanitised(format!(
+                    "\"{alias}\" was not stored, because the confirmation ADR-0007 D8 requires \
+                     was declined"
+                ))),
+            ),
             StoreError::UnknownAlias { .. }
-            | StoreError::ApexNeedsConfirmation { .. }
-            | StoreError::ApexDeclined { .. }
             | StoreError::SecondComposerRole { .. }
             | StoreError::ComposerScopeExceeded { .. }
-            // Nothing this harness runs can add or re-role a stored token, so
-            // a store failure of one of these shapes reaching a user is this
-            // harness in a state it has no path to.
+            // Still no path: nothing this harness runs grants a composer role
+            // or re-roles a stored token, so a store failure of one of these
+            // three shapes reaching a user is this harness in a state it has
+            // no path to.
             => undecided(self.version, self.report_at, session, line!()),
         }
     }
