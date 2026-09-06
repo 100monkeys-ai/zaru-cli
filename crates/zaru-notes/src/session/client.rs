@@ -428,7 +428,7 @@ impl Session {
     ///
     /// It is a JSON object carrying an array **`hits`**, not the `results` a
     /// listing carries, and every row locates itself. See
-    /// [`found`](super::found), which exists because the first live call
+    /// [`found`], which exists because the first live call
     /// refused rather than quietly returning nothing.
     ///
     /// # Errors
