@@ -878,7 +878,7 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
 
     // A session that said two things, checkpointed through the product's own
     // writer rather than by writing JSON here.
-    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits);
+    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits, 0);
     said.record(zaru_core::context::Exchange::of_turn(
         "user: remember the word saffron",
         &[],
@@ -925,7 +925,7 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
     // holds the span it replaced. Restoring the transcript's records instead
     // would bring the span back.
     let span = format!("user: the raw span {NONCE} nobody should restore");
-    let mut compacted = SessionContext::opened(zaru_cli::compose::prefix_for(), limits);
+    let mut compacted = SessionContext::opened(zaru_cli::compose::prefix_for(), limits, 0);
     compacted.record(zaru_core::context::Exchange::summary(
         "a summary standing for earlier turns",
     ));
@@ -1070,12 +1070,11 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
     let reopened = resumed(&directory);
     let error = SessionContext::restored(
         zaru_cli::compose::prefix_for(),
-        limits,
+        limits, 0,
         reopened
             .checkpoint
             .as_ref()
-            .expect("a checkpoint is on disk"),
-    )
+            .expect("a checkpoint is on disk"))
     .expect_err("a document this type did not write is refused, not read as an empty session");
     // And the door refuses it too, rather than only the constructor.
     let refused = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
@@ -1129,7 +1128,7 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
     }
 
     // The accepting sibling: the same document, well-formed.
-    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits);
+    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits, 0);
     said.record(zaru_core::context::Exchange::verbatim(secret.clone()));
     zaru_cli::session::Checkpoint::at(directory.join("context.json"))
         .write(&said.checkpoint())

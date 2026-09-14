@@ -181,7 +181,7 @@ async fn layers_one_to_four_are_byte_identical_across_every_turn_of_a_long_sessi
     let summariser = StagedSummariser::costing(3);
     let prefix = staged_prefix();
     let expected: String = prefix.as_str().to_owned();
-    let mut context = Context::opened(prefix, limits(400, 60));
+    let mut context = Context::opened(prefix, limits(400, 60), 0);
 
     let mut compactions = 0_usize;
     let mut drops = 0_usize;
@@ -243,7 +243,7 @@ async fn crossing_the_threshold_compacts_the_oldest_span_of_layer_six_first() {
     // two oldest exchanges and no more.
     let counter = WordCounter;
     let summariser = StagedSummariser::costing(3);
-    let mut context = Context::opened(staged_prefix(), limits(400, 54));
+    let mut context = Context::opened(staged_prefix(), limits(400, 54), 0);
     for n in 1..=5 {
         context.record_exchange(staged_exchange(n, 10));
     }
@@ -316,7 +316,7 @@ async fn the_announcement_carries_the_counts_the_counter_measured() {
     let counter = WordCounter;
     let summariser = StagedSummariser::costing(SUMMARY_WORDS);
     let prefix = staged_prefix();
-    let mut context = Context::opened(prefix, limits(400, 44));
+    let mut context = Context::opened(prefix, limits(400, 44), 0);
     for n in 1..=4 {
         context.record_exchange(staged_exchange(n, EXCHANGE_WORDS));
     }
@@ -367,7 +367,7 @@ async fn the_announcement_carries_the_counts_the_counter_measured() {
 async fn nothing_below_the_threshold_is_compacted_and_no_model_is_called() {
     let counter = WordCounter;
     let summariser = StagedSummariser::costing(3);
-    let mut context = Context::opened(staged_prefix(), limits(4_000, 3_000));
+    let mut context = Context::opened(staged_prefix(), limits(4_000, 3_000), 0);
     for n in 1..=4 {
         context.record_exchange(staged_exchange(n, 10));
     }
@@ -403,7 +403,7 @@ async fn nothing_below_the_threshold_is_compacted_and_no_model_is_called() {
 async fn a_failing_summariser_leaves_every_exchange_where_it_was() {
     let counter = WordCounter;
     let summariser = StagedSummariser::failing();
-    let mut context = Context::opened(staged_prefix(), limits(400, 1));
+    let mut context = Context::opened(staged_prefix(), limits(400, 1), 0);
     for n in 1..=4 {
         context.record_exchange(staged_exchange(n, 10));
     }
@@ -432,7 +432,7 @@ async fn a_summary_is_compacted_again_like_any_other_exchange() {
     // nothing it is allowed to free, which routes straight to D7.
     let counter = WordCounter;
     let summariser = StagedSummariser::costing(4);
-    let mut context = Context::opened(staged_prefix(), limits(400, 1));
+    let mut context = Context::opened(staged_prefix(), limits(400, 1), 0);
     for n in 1..=4 {
         context.record_exchange(staged_exchange(n, 10));
     }
@@ -475,7 +475,7 @@ async fn a_dropped_attachment_is_named_with_its_workspace_and_says_how_to_get_it
     // last": last, but not never.
     let counter = WordCounter;
     let summariser = StagedSummariser::costing(3);
-    let mut context = Context::opened(staged_prefix(), limits(400, 40));
+    let mut context = Context::opened(staged_prefix(), limits(400, 40), 0);
     for n in 1..=3 {
         context.attach(staged_attachment(n, 12));
     }
@@ -615,7 +615,7 @@ async fn the_newest_failure_reaches_the_model_byte_for_byte_through_a_real_loop_
     // than by rendering layer 7 on its own. The bytes compared come from the
     // fixture, not from anything the renderer computed.
     let counter = WordCounter;
-    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000));
+    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000), 0);
     for n in 1..=3 {
         context.record_iteration(staged_iteration(n));
     }
@@ -684,7 +684,7 @@ async fn a_held_secret_in_layer_seven_is_absent_from_the_prompt_the_model_is_giv
     let holding = HoldingOne::new(held.clone(), "work");
 
     let counter = WordCounter;
-    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000));
+    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000), 0);
     for n in 1..=3 {
         context.record_iteration(staged_iteration(n));
     }
@@ -745,7 +745,7 @@ fn a_held_secret_in_layer_six_is_absent_from_the_assembled_context() {
     let holding = HoldingOne::new(held.clone(), "work");
     let counter = WordCounter;
 
-    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000));
+    let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000), 0);
     context.record_exchange(Exchange::verbatim(held.clone()));
 
     let assembled = context
@@ -795,7 +795,7 @@ async fn a_loop_run_under_pressure_compacts_nothing() {
     // take. A threshold the prefix already crosses would leave this arm
     // satisfied by a context with no layer 6 in it at all — awkward on the
     // wrong axis, which is how the first version of this check was found.
-    let mut context = Context::opened(staged_prefix(), limits(100_000, 60));
+    let mut context = Context::opened(staged_prefix(), limits(100_000, 60), 0);
     for n in 1..=6 {
         context.record_exchange(staged_exchange(n, 10));
     }
@@ -853,7 +853,7 @@ async fn a_loop_run_under_pressure_compacts_nothing() {
 #[test]
 fn assembly_refuses_rather_than_rewriting_when_the_window_would_be_exceeded() {
     let counter = WordCounter;
-    let mut context = Context::opened(staged_prefix(), limits(30, 20));
+    let mut context = Context::opened(staged_prefix(), limits(30, 20), 0);
     for n in 1..=6 {
         context.record_exchange(staged_exchange(n, 10));
     }
@@ -884,7 +884,7 @@ fn assembly_refuses_rather_than_rewriting_when_the_window_would_be_exceeded() {
 async fn usage_is_readable_between_turns_and_falls_when_a_compaction_frees_room() {
     let counter = WordCounter;
     let summariser = StagedSummariser::costing(3);
-    let mut context = Context::opened(staged_prefix(), limits(400, 40));
+    let mut context = Context::opened(staged_prefix(), limits(400, 40), 0);
     for n in 1..=5 {
         context.record_exchange(staged_exchange(n, 10));
     }
@@ -960,4 +960,103 @@ fn limits_that_cannot_describe_a_real_window_are_refused_at_the_boundary() {
             "a refusal should name the value it refused: {said}"
         );
     }
+}
+
+/// [`Context::reserved`] is on every whole-context measurement and on no
+/// fragment measurement.
+///
+/// # Why one check covers four call sites
+///
+/// The reserve is what a request spends outside the context, so it belongs to
+/// every number that answers "does this request fit" — `usage`, `assemble`
+/// and the threshold comparison inside `compact` — and to no number that
+/// answers "how big is this exchange". Asserting the four together is what
+/// makes the *asymmetry* the property, rather than four separate assertions
+/// any one of which could drift into agreeing with the others.
+///
+/// The arithmetic is the fixture's own: four prefix layers of
+/// `PREFIX_WORDS` words and exchanges staged with a chosen word count, under
+/// a counter costing one token per word. So every number below is one this
+/// file chose.
+///
+/// Watched red three ways:
+///
+/// - reserve left out of `usage` — *"a context reserving 100 reports 124
+///   where the same context reserving nothing reports 24, so the reserve is
+///   not on the number a window is read against"*;
+/// - reserve added inside `oldest_span_covering` — the compaction took **one**
+///   exchange where it takes three without it, because each exchange looked
+///   100 tokens larger than it is;
+/// - reserve added to the announcement's `before` — the line reported 130
+///   for a span holding 30 words, which is D3's "real before-and-after
+///   counts" reporting bytes the span never held.
+#[tokio::test]
+async fn the_reserve_is_on_the_whole_context_and_on_no_single_exchange() {
+    let prefix = staged_prefix();
+    let bare = Context::opened(prefix.clone(), limits(4_000, 3_000), 0);
+    let reserving = Context::opened(prefix, limits(4_000, 3_000), 100);
+    let counter = WordCounter;
+    let held = NothingHeld;
+
+    let empty = bare.usage(&counter, &held).used();
+    assert_eq!(
+        reserving.usage(&counter, &held).used(),
+        empty + 100,
+        "a reserve of 100 is 100 more on the number a window is read against"
+    );
+    assert_eq!(
+        reserving
+            .assemble(&counter, &held, "")
+            .expect("it fits")
+            .usage()
+            .used(),
+        bare.assemble(&counter, &held, "")
+            .expect("it fits")
+            .usage()
+            .used()
+            + 100,
+        "the reserve is on what `assemble` refuses against too, or a request \
+         that does not fit is assembled"
+    );
+
+    // Three exchanges of ten words each, a threshold twenty-five words below
+    // what they cost together, and a reserve of a hundred on top. The span
+    // taken has to be the same span it would be without the reserve: the
+    // overage is bigger by the reserve, but each exchange is still ten.
+    let mut context = Context::opened(staged_prefix(), limits(4_000, 24 + 4 * PREFIX_WORDS as u64), 100);
+    for n in 1..=3 {
+        context.record_exchange(Exchange::verbatim(staged_text(&format!("said-{n}"), 10)));
+    }
+    let summariser = StagedSummariser::costing(3);
+    let compaction = context
+        .compact(&summariser, &counter, &held)
+        .await
+        .expect("the staged summariser succeeds");
+
+    let taken = summariser.spans();
+    assert_eq!(
+        taken.len(),
+        1,
+        "exactly one span crossed the port: {} did",
+        taken.len()
+    );
+    assert_eq!(
+        taken[0].len(),
+        3,
+        "three exchanges of ten cost thirty, and the overage is a hundred and \
+         six; each exchange is ten whatever the reserve is, so all three go. \
+         {} went",
+        taken[0].len()
+    );
+
+    let Some(Announcement::Compacted { turns, before, .. }) = compaction.announcements.first()
+    else {
+        panic!("a compaction that took a span announces it");
+    };
+    assert_eq!(*turns, 3);
+    assert_eq!(
+        *before, 30,
+        "the announcement's before-count is the span's own thirty words. A \
+         reserve on it would report bytes the span never held"
+    );
 }

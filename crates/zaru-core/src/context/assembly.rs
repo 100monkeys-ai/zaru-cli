@@ -166,19 +166,62 @@ pub struct Context {
     exchanges: Vec<Exchange>,
     iterations: Vec<IterationRecord>,
     limits: ContextLimits,
+    reserved: u64,
 }
 
 impl Context {
     /// Open a session's context around a prefix that is now fixed.
+    ///
+    /// `reserved` is what **every request spends that this context does not
+    /// contain** — see [`Self::reserved`]. Pass zero for a caller that sends
+    /// the context and nothing else.
     #[must_use]
-    pub const fn opened(prefix: StablePrefix, limits: ContextLimits) -> Self {
+    pub const fn opened(prefix: StablePrefix, limits: ContextLimits, reserved: u64) -> Self {
         Self {
             prefix,
             attachments: Vec::new(),
             exchanges: Vec::new(),
             iterations: Vec::new(),
             limits,
+            reserved,
         }
+    }
+
+    /// What every request spends that this context does not contain.
+    ///
+    /// # Why a window is compared against more than the context
+    ///
+    /// ADR-0013 measures a context against a provider's window, and what the
+    /// provider measures against that window is **the request** — which for
+    /// every provider this workspace speaks to carries a tool surface beside
+    /// the prompt. The context does not contain it and never will: the tools
+    /// are the loop's, declared per exchange, and putting them into layer 6
+    /// would put them into the conversation the model is shown twice.
+    ///
+    /// **Measured, 2026-09-14, from the release binary against a local
+    /// Ollama through a logging proxy:** the first exchange of a session sent
+    /// **231 bytes** of message content and **1,760 bytes** of tool schema,
+    /// and the provider reported **465** prompt tokens. So a count over the
+    /// message content alone is *below* the provider's own count — which is
+    /// the direction that overflows a window silently, and the opposite of
+    /// what [`TokenCounter`]'s only implementation in this workspace claims
+    /// for itself.
+    ///
+    /// This number closes that gap. It is added to what
+    /// [`Self::usage`] reports, to what [`Self::assemble`] refuses on, and to
+    /// what [`Self::compact`] compares against the threshold — and it is
+    /// deliberately **not** added when a single exchange is measured, because
+    /// those measurements answer a different question:
+    ///
+    /// - [`Self::oldest_span_covering`] asks how many of the oldest exchanges
+    ///   it takes to cover an overage. A fixed addend on each exchange would
+    ///   make every exchange look larger than it is and take too few.
+    /// - ADR-0013 D3's announcement carries the before-and-after counts of
+    ///   the span that was replaced. A fixed addend there would report a
+    ///   compaction that saved bytes it never held.
+    #[must_use]
+    pub const fn reserved(&self) -> u64 {
+        self.reserved
     }
 
     /// The stable prefix. Borrowed, never handed over.
@@ -227,7 +270,10 @@ impl Context {
     #[must_use]
     pub fn usage<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> Usage {
         let text = Redacted::by(redactor, &self.render(""));
-        Usage::new(counter.count(text.as_str()), self.limits.window().get())
+        Usage::new(
+            counter.count(text.as_str()).saturating_add(self.reserved),
+            self.limits.window().get(),
+        )
     }
 
     /// Assemble what the model sees for the iteration about to begin.
@@ -248,7 +294,7 @@ impl Context {
         tail: &str,
     ) -> Result<Assembled, Exceeded> {
         let text = Redacted::by(redactor, &self.render(tail));
-        let needed = counter.count(text.as_str());
+        let needed = counter.count(text.as_str()).saturating_add(self.reserved);
         let window = self.limits.window().get();
         if needed > window {
             return Err(Exceeded { needed, window });
@@ -337,7 +383,9 @@ impl Context {
     /// a marker is not the same length as the value it replaced, so counting
     /// the raw render would be counting text nobody will ever be shown.
     fn measured<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> u64 {
-        counter.count(Redacted::by(redactor, &self.render("")).as_str())
+        counter
+            .count(Redacted::by(redactor, &self.render("")).as_str())
+            .saturating_add(self.reserved)
     }
 
     /// How many of the oldest exchanges it takes to cover `overage`.

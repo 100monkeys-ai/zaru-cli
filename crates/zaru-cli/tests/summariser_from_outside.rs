@@ -200,7 +200,7 @@ fn tight() -> ContextLimits {
 
 /// Stage enough layer 6 to cross the threshold, with `planted` inside it.
 fn session_carrying(planted: &str) -> SessionContext {
-    let mut session = SessionContext::opened(prefix_for(), tight());
+    let mut session = SessionContext::opened(prefix_for(), tight(), 0);
     session.record(Exchange::of_turn(
         "read the deploy notes",
         // A tool result is where a captured secret actually arrives, which is
@@ -441,7 +441,7 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
     // authenticated with cannot appear in the request's body.
     let held = held_secrets_for_redaction(&store, &keys).expect("the store reopens what it sealed");
 
-    let mut session = SessionContext::opened(prefix_for(), tight());
+    let mut session = SessionContext::opened(prefix_for(), tight(), 0);
     let staged = [
         "we agreed the indentation is four spaces and never tabs",
         "the deploy script is `just ship`, and it refuses on a dirty tree",
@@ -585,7 +585,7 @@ fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
     let stored = saved.checkpoint();
     let expected = saved.usage(&held).used();
 
-    let restored = SessionContext::restored(prefix_for(), tight(), &stored)
+    let restored = SessionContext::restored(prefix_for(), tight(), 0, &stored)
         .expect("the checkpoint this type wrote is one it can read");
 
     assert_eq!(
@@ -620,9 +620,9 @@ fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
     // The empty case, so the check above cannot be satisfied by a `restored`
     // that returns whatever it likes: a checkpoint with no exchanges must
     // report the prefix alone, and that is a smaller number than the one above.
-    let empty = SessionContext::opened(prefix_for(), tight());
+    let empty = SessionContext::opened(prefix_for(), tight(), 0);
     assert!(
-        SessionContext::restored(prefix_for(), tight(), &empty.checkpoint())
+        SessionContext::restored(prefix_for(), tight(), 0, &empty.checkpoint())
             .expect("an empty checkpoint is legal")
             .usage(&held)
             .used()

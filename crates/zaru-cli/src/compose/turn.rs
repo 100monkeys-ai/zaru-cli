@@ -1274,7 +1274,7 @@ pub fn start(
     MetaFile::at(session.meta_path())
         .write(&meta)
         .map_err(|failure| Box::new(Surface::meta(&failure, evidence.clone())))?;
-    let context = SessionContext::opened(context::prefix_for(), layers::context_limits());
+    let context = SessionContext::opened(context::prefix_for(), layers::context_limits(), 0);
     Checkpoint::at(session.checkpoint_path())
         .write(&context.checkpoint())
         .map_err(|failure| Box::new(Surface::checkpoint(&failure, evidence.clone())))?;

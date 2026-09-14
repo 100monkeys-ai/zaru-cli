@@ -56,6 +56,12 @@
 //! summarisation costs a model call and ADR-0012 owns providers. **Nothing in
 //! this crate's product tree implements either port.**
 //!
+//! **What a request spends outside the context arrives as a parameter too.**
+//! A provider measures a *request* against its window, and a request carries
+//! a tool surface this context does not contain and must not — see
+//! [`Context::reserved`], which is on every whole-context measurement and on
+//! no measurement of a single exchange.
+//!
 //! # What is serialisable here, and what is deliberately only half so
 //!
 //! [ADR-0010] D2 makes the transcript the event stream and D3 makes

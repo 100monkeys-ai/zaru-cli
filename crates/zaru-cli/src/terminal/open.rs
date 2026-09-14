@@ -444,11 +444,11 @@ pub fn restored_context(
     let prefix = crate::compose::prefix_for();
     let limits = crate::cli::layers::context_limits();
     match &resumed.checkpoint {
-        Some(checkpoint) => crate::compose::SessionContext::restored(prefix, limits, checkpoint)
+        Some(checkpoint) => crate::compose::SessionContext::restored(prefix, limits, 0, checkpoint)
             .map_err(|error| {
                 Box::new(Exit::Failed(classify.checkpoint_contents(&error, evidence)))
             }),
-        None => Ok(crate::compose::SessionContext::opened(prefix, limits)),
+        None => Ok(crate::compose::SessionContext::opened(prefix, limits, 0)),
     }
 }
 

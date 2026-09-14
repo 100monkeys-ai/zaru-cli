@@ -219,7 +219,7 @@ async fn a_caller_outside_this_crate_drives_a_long_session_to_a_compaction_and_a
         PressureThreshold::new(80).expect("a threshold of eighty tokens"),
     )
     .expect("a threshold below the window");
-    let mut context = Context::opened(prefix, limits);
+    let mut context = Context::opened(prefix, limits, 0);
 
     // Per compaction: the announcement's three numbers, and the span's texts
     // as this file read them off the raw span.
@@ -414,6 +414,7 @@ async fn an_iteration_that_would_exceed_the_window_is_exhausted_and_not_an_error
             PressureThreshold::new(10).expect("threshold"),
         )
         .expect("a threshold below the window"),
+        0,
     );
     for n in 1..=4 {
         context.record_exchange(Exchange::verbatim(text_of(&format!("exchange-{n}"), 20)));

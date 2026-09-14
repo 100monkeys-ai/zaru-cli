@@ -115,9 +115,9 @@ impl fmt::Debug for SessionContext {
 impl SessionContext {
     /// Open a session's context around a prefix that is now fixed.
     #[must_use]
-    pub const fn opened(prefix: StablePrefix, limits: ContextLimits) -> Self {
+    pub const fn opened(prefix: StablePrefix, limits: ContextLimits, reserved: u64) -> Self {
         Self {
-            context: Context::opened(prefix, limits),
+            context: Context::opened(prefix, limits, reserved),
         }
     }
 
@@ -217,13 +217,14 @@ impl SessionContext {
     pub fn restored(
         prefix: StablePrefix,
         limits: ContextLimits,
+        reserved: u64,
         checkpoint: &serde_json::Value,
     ) -> Result<Self, serde_json::Error> {
         let stored = checkpoint
             .get(EXCHANGES)
             .unwrap_or(&serde_json::Value::Null);
         let exchanges: Vec<Exchange> = serde_json::from_value(stored.clone())?;
-        let mut context = Context::opened(prefix, limits);
+        let mut context = Context::opened(prefix, limits, reserved);
         for exchange in exchanges {
             context.record_exchange(exchange);
         }

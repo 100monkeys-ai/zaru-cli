@@ -1150,6 +1150,7 @@ fn the_iteration_instruction_reaches_the_model_on_the_first_exchange_and_on_ever
     let context = zaru_core::context::Context::opened(
         zaru_cli::compose::prefix_for(),
         zaru_cli::cli::layers::context_limits(),
+        0,
     );
     let policy = product_policy(&context, &held, true);
 
@@ -1214,6 +1215,7 @@ fn a_turn_with_no_declared_validators_is_not_told_an_iteration_is_one_exchange()
     let context = zaru_core::context::Context::opened(
         zaru_cli::compose::prefix_for(),
         zaru_cli::cli::layers::context_limits(),
+        0,
     );
     let policy = product_policy(&context, &held, false);
 
