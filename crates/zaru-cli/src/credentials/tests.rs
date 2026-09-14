@@ -1633,3 +1633,146 @@ fn secret_refusals_cannot_carry_a_value() {
     let _: &'static str = refusal.wanted;
     let _: &'static str = refusal.found;
 }
+
+// ADR-0005 D3's corpus, built over ADR-0006 D4's two listings.
+
+/// A staged [`Corpus`] whose two halves can be made to answer or refuse.
+struct StagedCorpus {
+    pages: Result<Vec<zaru_notes::session::Listed>, zaru_notes::session::NotesError>,
+    atoms: Result<Vec<zaru_notes::session::Listed>, zaru_notes::session::NotesError>,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl StagedCorpus {
+    fn answering(
+        pages: Vec<(&str, &str)>,
+        atoms: Vec<(&str, &str)>,
+    ) -> Self {
+        let listed = |rows: Vec<(&str, &str)>| {
+            rows.into_iter()
+                .map(|(path, title)| zaru_notes::session::Listed {
+                    path: path.to_owned(),
+                    title: title.to_owned(),
+                })
+                .collect()
+        };
+        Self {
+            pages: Ok(listed(pages)),
+            atoms: Ok(listed(atoms)),
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn refusing_atoms(pages: Vec<(&str, &str)>) -> Self {
+        let mut staged = Self::answering(pages, Vec::new());
+        staged.atoms = Err(zaru_notes::session::NotesError::Unreadable {
+            tool: "atoms.list".to_owned(),
+            expected: "a JSON array or object",
+        });
+        staged
+    }
+}
+
+impl zaru_notes::session::Corpus for StagedCorpus {
+    async fn pages(
+        &self,
+        workspace: &zaru_notes::session::WorkspaceId,
+    ) -> Result<Vec<zaru_notes::session::Listed>, zaru_notes::session::NotesError> {
+        self.asked
+            .lock()
+            .expect("no check panics holding this")
+            .push(format!("pages:{workspace}"));
+        self.pages.clone()
+    }
+
+    async fn atoms(
+        &self,
+        workspace: &zaru_notes::session::WorkspaceId,
+    ) -> Result<Vec<zaru_notes::session::Listed>, zaru_notes::session::NotesError> {
+        self.asked
+            .lock()
+            .expect("no check panics holding this")
+            .push(format!("atoms:{workspace}"));
+        self.atoms.clone()
+    }
+}
+
+/// D3's corpus is both listings, each kind tagged, each carrying the slug.
+///
+/// The workspace is asserted on every entry because a listing row does not
+/// carry one: ADR-0006 D6's identity pair is completed by the argument the
+/// call named, and an entry whose workspace came from somewhere else would
+/// group under the wrong key in `NotesTrie` and serve an empty strip.
+#[tokio::test]
+async fn the_corpus_is_both_listings_with_their_kinds_and_the_workspace_asked_for() {
+    let staged = StagedCorpus::answering(
+        vec![("adrs/0005", "Ω ✦ the composer"), ("home", "Home")],
+        vec![("concepts/workspace", "Workspace")],
+    );
+
+    let built = crate::credentials::notes::corpus_from(&staged, "a-workspace")
+        .await
+        .expect("the staged corpus answers");
+
+    assert_eq!(built.len(), 3, "both listings did not reach the corpus");
+    assert!(
+        built.iter().all(|entry| entry.workspace == "a-workspace"),
+        "an entry does not carry the workspace the call named: {built:?}"
+    );
+    let pages: Vec<_> = built
+        .iter()
+        .filter(|entry| entry.kind == zaru_notes::trie::EntryKind::Page)
+        .map(|entry| entry.path.as_str())
+        .collect();
+    let atoms: Vec<_> = built
+        .iter()
+        .filter(|entry| entry.kind == zaru_notes::trie::EntryKind::Atom)
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert_eq!(
+        pages,
+        vec!["adrs/0005", "home"],
+        "the pages were not tagged as pages, or did not keep the server's order"
+    );
+    assert_eq!(
+        atoms,
+        vec!["concepts/workspace"],
+        "the atoms were not tagged as atoms"
+    );
+    assert_eq!(
+        built[0].title, "Ω ✦ the composer",
+        "the title did not come back exactly as the server spelled it"
+    );
+}
+
+/// A refused half refuses the whole corpus rather than serving the other.
+///
+/// A trie holding the pages of a workspace whose atoms were refused is
+/// silently missing half of what D3 promises, and the strip cannot tell that
+/// from a cortex with no atoms. ADR-0005 D8's "degrade honestly" read the
+/// only way it can be read here.
+///
+/// The accepting sibling is in the same check: a workspace that genuinely has
+/// no atoms answers with an empty listing and is built, not refused — which
+/// is the shape measured against the live server on 2026-09-14.
+#[tokio::test]
+async fn a_refused_listing_refuses_the_corpus_and_an_empty_one_does_not() {
+    let refusing = StagedCorpus::refusing_atoms(vec![("home", "Home")]);
+    let refusal = crate::credentials::notes::corpus_from(&refusing, "a-workspace")
+        .await
+        .expect_err("a refused atom listing must not yield a half corpus");
+    assert!(
+        refusal.to_string().contains("atoms.list"),
+        "the refusal does not carry the client's own sentence: {refusal}"
+    );
+
+    let empty = StagedCorpus::answering(vec![("home", "Home")], Vec::new());
+    let built = crate::credentials::notes::corpus_from(&empty, "a-workspace")
+        .await
+        .expect("a workspace with no atoms is a corpus, not a refusal");
+    assert_eq!(
+        built.len(),
+        1,
+        "an empty atom listing was treated as something other than no atoms"
+    );
+}

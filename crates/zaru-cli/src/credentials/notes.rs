@@ -30,6 +30,14 @@
 //! `cli::run`. That function opens a session, and putting it in the command
 //! surface would have put `zaru_notes::session` in a second module.
 //!
+//! **[`corpus_at`] is here for exactly that reason and no other.** It belongs
+//! to the composer's fast tier rather than to credentials, and it sits in this
+//! module because it opens a session from a stored secret — the same shape and
+//! the same precedent. What it hands the listings to is
+//! [`Corpus`](zaru_notes::session::Corpus), a port of two methods, so the
+//! widest value in this file is reachable from one function and the rest of
+//! the wiring cannot name a `Session` at all.
+//!
 //! # Why the conversion is a function and not `impl From`
 //!
 //! `impl From<&Secret> for Bearer` compiles — the orphan rule permits it,
@@ -61,8 +69,10 @@ use core::fmt;
 use core::time::Duration;
 use zaru_core::iteration::Clock;
 use zaru_notes::session::{
-    Bearer, HttpEndpoint, Instance as NotesInstance, Invalidation, NotesError, Session,
+    Bearer, Corpus, HttpEndpoint, Instance as NotesInstance, Invalidation, Listed, NotesError,
+    Session, WorkspaceId as NotesWorkspaceId,
 };
+use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 
 /// The bearer a Nuclear Notes session authenticates with, from a stored secret.
 ///
@@ -357,4 +367,100 @@ pub async fn tool_scope_at(host: &str, secret: &Secret) -> Result<ToolScope, Rea
         .await
         .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
     Ok(ToolScope::new(names))
+}
+
+/// [ADR-0005] D3's corpus for one workspace, over the narrow port.
+///
+/// # Why this takes the port and not a [`Session`]
+///
+/// A `Session` offers `read_page`, `search`, `ground` and
+/// `attach_workspace`. [`Corpus`] offers two listings and there is no third —
+/// see that module for why a type carries [ADR-0006] D4's "cannot write"
+/// while no token the substrate can mint carries the scope. This function is
+/// the whole consumer of that port, so it is the one place the narrowing has
+/// to hold, and it holds by signature rather than by discipline.
+///
+/// # Both listings, and a refusal is a refusal of the whole corpus
+///
+/// A trie built from the pages of a workspace whose atoms were refused is a
+/// trie that is silently missing half of what D3 promises, and
+/// [`crate::terminal::trie::NotesTrie`] cannot tell the difference — an empty
+/// atom listing and a refused one produce the same strip. So the first
+/// refusal ends it. That is [ADR-0005] D8's "degrade honestly" read the only
+/// way it can be read here: say nothing was reached rather than serve a
+/// corpus whose shape is an accident.
+///
+/// **An empty answer is not a refusal.** A workspace holding no atoms
+/// answers `[]`, measured against the live server on 2026-09-14, and that is
+/// a cortex with no atoms rather than one that would not say.
+///
+/// # Errors
+///
+/// [`ReachFailure::Session`] carrying the client's own sentence and never the
+/// token.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+pub async fn corpus_from(
+    source: &impl Corpus,
+    workspace: &str,
+) -> Result<Vec<CachedEntry>, ReachFailure> {
+    let id = NotesWorkspaceId::new(workspace);
+
+    let pages = source
+        .pages(&id)
+        .await
+        .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
+    let atoms = source
+        .atoms(&id)
+        .await
+        .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
+
+    // The workspace on every entry is the slug the caller asked for, not one
+    // read back off a row. A listing row carries `path` and `title` and no
+    // workspace at all -- ADR-0006 D6's identity pair is completed by the
+    // argument the call named, which is the same reasoning `session::listing`
+    // gives for `Listed` carrying two fields and no identifier.
+    let entry = |listed: Listed, kind: CachedKind| {
+        CachedEntry::new(workspace, listed.path, listed.title, kind)
+    };
+    Ok(pages
+        .into_iter()
+        .map(|listed| entry(listed, CachedKind::Page))
+        .chain(atoms.into_iter().map(|listed| entry(listed, CachedKind::Atom)))
+        .collect())
+}
+
+/// The same, opening a session against a real instance first.
+///
+/// # The session is closed as soon as the corpus is built
+///
+/// [ADR-0005] D3's second tier is a live `search.global` on the composer's
+/// hot path and is **not built**; holding this session open for it would buy
+/// D8's thirty-minute idle eviction and the transparent re-initialisation
+/// that clause asks for, neither of which exists. So the session is dropped
+/// here, and the day tier two arrives it opens its own.
+///
+/// # Errors
+///
+/// [`ReachFailure::Endpoint`] when no HTTP client can be built, and
+/// [`ReachFailure::Session`] when the instance will not complete a session or
+/// a listing is refused.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+pub async fn corpus_at(
+    host: &str,
+    secret: &Secret,
+    workspace: &str,
+) -> Result<Vec<CachedEntry>, ReachFailure> {
+    let endpoint =
+        HttpEndpoint::new().map_err(|failure| ReachFailure::Endpoint(failure.to_string()))?;
+    let session = Session::attach(
+        &endpoint,
+        NotesInstance::new(host),
+        bearer_for_dispatch(secret),
+    )
+    .await
+    .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
+    corpus_from(&session, workspace).await
 }
