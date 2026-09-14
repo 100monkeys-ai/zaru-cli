@@ -1446,7 +1446,10 @@ fn the_pane_lines_are_exactly_what_the_pane_was_given_and_what_is_arriving() {
         Register::Plain,
         format!("{TRANSCRIPT_NONCE}-from-the-file"),
     )]));
-    shell.notice(Line::new(Register::Failed, "a refusal this session produced"));
+    shell.notice(Line::new(
+        Register::Failed,
+        "a refusal this session produced",
+    ));
     shell.stream_delta("an answer arriving");
 
     let given = shell.given_lines();
@@ -2332,4 +2335,539 @@ fn corpus_a_block_wider_than_the_frame_is_submitted_whole() {
         key(&mut short, Key::Enter),
         Action::Task("a short one".to_owned())
     );
+}
+
+// ------------------- ADR-0028 D1 and D5 on the screen, 2026-09-14
+
+/// A pane over-subscribed by a streaming answer: forty transcript rows and an
+/// answer of `arriving` rows.
+///
+/// The proportions are the ones measured from the release binary at `cb9f4fc`
+/// rather than numbers chosen here: a forty-line answer against a pane of
+/// twenty-two, which is what a request for forty numbers one per line
+/// produced.
+fn over_subscribed(arriving: usize) -> Shell {
+    let mut shell = shell();
+    shell.refresh(&StagedTranscript(
+        (0..40)
+            .map(|n| Line::new(Register::Plain, format!("{TRANSCRIPT_NONCE}-{n}")))
+            .collect(),
+    ));
+    for n in 1..=arriving {
+        shell.stream_delta(&format!("{}{n}", if n == 1 { "" } else { "\n" }));
+    }
+    shell
+}
+
+/// The three widths every check in this section runs at: the crate's own, and
+/// the two the defect was measured at.
+const MEASURED: [(u16, u16); 3] = [(WIDTH, HEIGHT), (100, 30), (40, 24)];
+
+/// Whether every row `line` becomes at `width` is a row the pane painted.
+///
+/// **Width-honest, and that is not a detail.** A line wider than the pane
+/// becomes several rows with a continuation indent, so asking whether the
+/// pane's joined text contains the line's own text answers "no" for a line
+/// that is entirely on the screen — which is what the first run of
+/// `corpus_an_out_of_tree_marking_is_on_the_pane_while_an_answer_streams`
+/// measured at 40 columns, where `— outside the working directory` wraps.
+/// Deriving the expected rows through [`Line::rows`] asks the question the
+/// clause is actually about: did the whole line reach the reader.
+fn every_row_is_on_the_pane(line: &Line, width: u16, pane: &[String]) -> bool {
+    line.rows(width).iter().map(Row::joined).all(|row| {
+        pane.iter()
+            .any(|painted| painted.trim_end() == row.trim_end())
+    })
+}
+
+/// A line the pane was given during a turn is visible in **every** frame until
+/// the turn ends.
+///
+/// # The clause, and the defect
+///
+/// [ADR-0028] D1 has the loop's events "surface as plain-English events inline
+/// in the conversation" and D5 requires them "**as the work proceeds**"; that
+/// record's Update of 2026-09-14 reads both as claims about the screen. Until
+/// this check existed, `Shell::pane_lines` put every line
+/// [`Shell::notice`] was given *above* the streamed answer and
+/// [`Shell::visible`] showed the tail, so a growing answer pushed the whole
+/// narrative off the pane within a beat or two. Measured from the release
+/// binary at `cb9f4fc`: visible for 2.55 s of a 76 s turn, with 725
+/// consecutive frames holding nothing but the answer's own rows.
+///
+/// # Why it asserts every frame rather than the last
+///
+/// The defect is not that the line is lost — it comes back when the turn ends
+/// and the provisional line is cleared. The defect is that it is gone for the
+/// length of the answer, which is the whole time the person is watching. So
+/// the notice is planted mid-stream and a frame is read after **every**
+/// subsequent delta, and one frame without it fails.
+///
+/// **The mutant**: `pane_and_stream` returning `(pane, None)` unconditionally,
+/// which is the tree before this commit.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn a_line_the_pane_was_given_mid_stream_is_visible_in_every_frame_until_the_turn_ends() {
+    const MID_STREAM: &str = "iteration 1 failed: greets:";
+
+    for (width, height) in MEASURED {
+        let mut shell = over_subscribed(20);
+        shell.notice(Line::new(Register::Setback, MID_STREAM));
+
+        // Every beat after the notice was painted. The answer goes on growing
+        // past the pane's height, which is the condition that produced the
+        // defect.
+        let mut frames = Vec::new();
+        for n in 21..=40 {
+            shell.stream_delta(&format!("\n{n}"));
+            frames.push(pane_rows(&shell, width, height).join("\n"));
+        }
+        let missing: Vec<usize> = frames
+            .iter()
+            .enumerate()
+            .filter(|(_, frame)| !frame.contains(MID_STREAM))
+            .map(|(beat, _)| beat)
+            .collect();
+        assert!(
+            frames.len() == 20 && !frames[0].is_empty(),
+            "this check painted {} frame(s) and the first is {:?}, so it asserted nothing at \
+             {width}x{height}",
+            frames.len(),
+            frames[0]
+        );
+        assert!(
+            missing.is_empty(),
+            "at {width}x{height} the line the pane was given left the visible tail at beat(s) \
+             {missing:?} of 20 while the answer was still arriving; the frame at that beat was \
+             {:?}",
+            frames[missing[0]]
+        );
+
+        // The turn ends: the provisional line goes and the turn's own rendered
+        // lines arrive. The notice is still there, because it was never the
+        // streamed line's to take away.
+        shell.clear_streaming();
+        shell.notice(Line::new(Register::Plain, "the answer"));
+        assert!(
+            pane_rows(&shell, width, height)
+                .join("\n")
+                .contains(MID_STREAM),
+            "at {width}x{height} the line left the pane when the turn ended"
+        );
+    }
+}
+
+/// The accepting sibling of the check above: the same line, with nothing
+/// streaming, is on the pane too.
+///
+/// Without it, a renderer that painted this one line and nothing else would
+/// satisfy that check completely.
+#[test]
+fn a_line_the_pane_was_given_is_visible_when_nothing_is_streaming() {
+    const GIVEN: &str = "iteration 1 failed: greets:";
+
+    for (width, height) in MEASURED {
+        let mut shell = over_subscribed(0);
+        assert_eq!(
+            shell.streaming(),
+            None,
+            "the sibling staged a stream, so it is not the sibling"
+        );
+        shell.notice(Line::new(Register::Setback, GIVEN));
+        let painted = pane_rows(&shell, width, height).join("\n");
+        assert!(
+            painted.contains(GIVEN),
+            "at {width}x{height} the newest line is not on a pane with nothing streaming: \
+             {painted:?}"
+        );
+    }
+}
+
+/// The execution narrative **and** the answer are on the screen at once.
+///
+/// # Both arms, because either alone passes against a broken pane
+///
+/// A check that asserted only the narrative would be satisfied by a renderer
+/// that stopped painting the streamed answer altogether, which is a worse
+/// harness than the one this fixes. A check that asserted only the answer is
+/// the behaviour before this commit. So the newest narration and the newest
+/// row of the answer are both required, in one frame.
+///
+/// The lines are the ones the release binary actually painted during the
+/// measured turn, rather than lines invented here.
+///
+/// **The mutant**: `transcript_floor` returning `0`, which gives the answer
+/// every row it asks for.
+#[test]
+fn the_execution_narrative_is_on_the_pane_while_the_answer_streams() {
+    const NARRATION: [&str; 3] = [
+        "turn 1, up to 8 exchange(s)",
+        "iteration 2 of 2",
+        "generated 1877 tokens · 6.74s",
+    ];
+
+    for (width, height) in MEASURED {
+        let mut shell = over_subscribed(0);
+        for line in NARRATION {
+            shell.notice(Line::new(Register::Plain, line));
+        }
+        for n in 1..=40 {
+            shell.stream_delta(&format!("{}{n}", if n == 1 { "" } else { "\n" }));
+        }
+
+        let painted = pane_rows(&shell, width, height);
+        let absent: Vec<&str> = NARRATION
+            .into_iter()
+            .filter(|line| {
+                !every_row_is_on_the_pane(&Line::new(Register::Plain, *line), width, &painted)
+            })
+            .collect();
+        assert!(
+            absent.is_empty(),
+            "at {width}x{height} the narrative is off the screen while the answer streams: \
+             {absent:?} is missing from {painted:#?}"
+        );
+        assert!(
+            painted.iter().any(|row| row.trim_end() == "  40"),
+            "at {width}x{height} the answer's newest row is not on the screen, so the narrative \
+             is visible because the answer is not: {painted:#?}"
+        );
+    }
+}
+
+/// A pane that is **not** over-subscribed paints what it painted before.
+///
+/// # Why this is the check the whole design is written around
+///
+/// The split exists for the case where the rows do not fit. Everywhere else —
+/// nothing streaming, and a transcript and an answer that fit together — the
+/// renderer must take the branch it took before, because a person whose answer
+/// is three lines long should not be able to tell that any of this happened.
+///
+/// **Two arms that share no code.** One shell streams, has its stream cleared
+/// the way `Pane`'s `Drop` clears it, and is given the answer as a rendered
+/// line; the other is given the same line and never streamed at all. Their
+/// buffers are compared **cell by cell**, cursor included. That is the "final
+/// frame is byte-identical" property, and it holds by construction rather than
+/// by arithmetic: with nothing streaming there is nothing to split.
+///
+/// **The mutant**: deleting the fits-together early return from
+/// `pane_and_stream`, so the split fires whenever anything is streaming.
+#[test]
+fn a_pane_that_is_not_over_subscribed_paints_what_it_painted_before() {
+    for (width, height) in MEASURED {
+        // The end of a turn: the provisional line is taken away and the
+        // authoritative one arrives.
+        let mut streamed = over_subscribed(20);
+        streamed.clear_streaming();
+        streamed.notice(Line::new(Register::Plain, "the answer, rendered once"));
+
+        let mut never = over_subscribed(0);
+        never.notice(Line::new(Register::Plain, "the answer, rendered once"));
+
+        let (after, cursor_after) = cells(&streamed, width, height, Palette::Coloured);
+        let (control, cursor_control) = cells(&never, width, height, Palette::Coloured);
+        assert!(
+            after
+                .iter()
+                .any(|row| row.iter().any(|(symbol, _)| symbol.trim() != "")),
+            "nothing was painted at {width}x{height}, so this comparison asserted nothing"
+        );
+        assert_eq!(
+            after, control,
+            "at {width}x{height} the frame at the end of a turn that streamed is not the frame \
+             of a turn that did not"
+        );
+        assert_eq!(cursor_after, cursor_control);
+
+        // And an answer short enough to fit beside what the pane holds is one
+        // contiguous block: no gap opens between the two, because no split
+        // happened.
+        let mut short = shell();
+        short.notice(Line::new(Register::Plain, "one line the pane was given"));
+        short.stream_delta("a short answer");
+        let rows = pane_rows(&short, width, height);
+        let filled: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.trim().is_empty())
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(
+            filled,
+            vec![0, 1],
+            "at {width}x{height} a short answer did not sit immediately under the line above it; \
+             the pane is {rows:#?}"
+        );
+    }
+}
+
+/// The answer's own region shows the answer's **tail**.
+///
+/// A person watching an answer arrive is reading the newest text, which is the
+/// same argument [ADR-0010] D4's tail is taken for and the same one that made
+/// `Shell::visible` count rows rather than records.
+///
+/// **The mutant**: the answer's region taking `rows[..height]`.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn the_arriving_answers_region_shows_its_own_tail() {
+    for (width, height) in MEASURED {
+        let shell = over_subscribed(40);
+        let painted = pane_rows(&shell, width, height).join("\n");
+        assert!(
+            painted.lines().any(|row| row.trim_end() == "  40"),
+            "at {width}x{height} the answer's newest row is not painted: {painted:?}"
+        );
+        assert!(
+            !painted.lines().any(|row| row.trim_end() == "  1"),
+            "at {width}x{height} the answer's region shows its head rather than its tail: \
+             {painted:?}"
+        );
+    }
+}
+
+/// Top to bottom: what the pane was given, then the answer arriving, then the
+/// queued task pinned above the composer.
+///
+/// # Why the order is asserted rather than left to the constraints
+///
+/// Three regions now come out of one rect and two of them are optional. The
+/// queued row is [ADR-0015]'s amendment of 2026-09-13 and must stay
+/// immediately above the composer; the answer must stay below the lines the
+/// pane was given, or a notice would be the thing that scrolls away.
+///
+/// **The mutants**: the two `Layout` constraints in `pane_and_stream` swapped,
+/// and `pane_and_stream` applied before `pane_and_queue` — the second moves
+/// the queued row, which
+/// `a_queued_task_paints_above_the_composer_and_survives_a_streaming_answer`
+/// reddens on its own.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn the_regions_go_what_was_given_then_what_is_arriving_then_the_queued_row() {
+    const GIVEN: &str = "iteration 2 of 2";
+
+    for (width, height) in MEASURED {
+        let mut shell = over_subscribed(40);
+        shell.notice(Line::new(Register::Plain, GIVEN));
+        shell.queue(crate::shell::Queued::of("read src/main.rs"));
+
+        let rows = pane_rows(&shell, width, height);
+        let given_at = rows
+            .iter()
+            .position(|row| row.contains(GIVEN))
+            .unwrap_or_else(|| panic!("the line the pane was given is not on it: {rows:#?}"));
+        let arriving_at = rows
+            .iter()
+            .position(|row| row.trim_end() == "  40")
+            .unwrap_or_else(|| panic!("the answer's newest row is not on the pane: {rows:#?}"));
+        assert!(
+            given_at < arriving_at,
+            "at {width}x{height} the answer is painted above the line the pane was given: \
+             {given_at} then {arriving_at} in {rows:#?}"
+        );
+
+        // The queued row is the pane's last row, immediately above the
+        // composer, exactly where `composer-input` put it.
+        assert_eq!(
+            rows.last().map(String::as_str),
+            Some("  queued read src/main.rs"),
+            "at {width}x{height} the queued task is not the row above the composer: {rows:#?}"
+        );
+    }
+}
+
+/// The answer reaches the buffer **once** when the split fires.
+///
+/// Two regions painting from one shell is two chances to paint one thing
+/// twice, and an answer that appeared in both would be the defect
+/// `the_streamed_line_is_cleared_so_the_answer_is_painted_once` exists to
+/// prevent, arriving by a different door.
+///
+/// **The mutant**: painting `pane_lines`'s tail into the upper region instead
+/// of `given_lines`'s.
+#[test]
+fn the_arriving_answer_reaches_the_buffer_exactly_once_when_the_split_fires() {
+    const NONCE: &str = "an-answer-4f2c";
+
+    for (width, height) in MEASURED {
+        let mut shell = over_subscribed(0);
+        shell.stream_delta(&format!("{NONCE}\n"));
+        for n in 1..=40 {
+            shell.stream_delta(&format!("{n}\n"));
+        }
+        shell.stream_delta(NONCE);
+
+        let painted = pane_rows(&shell, width, height).join("\n");
+        assert_eq!(
+            painted.matches(NONCE).count(),
+            1,
+            "at {width}x{height} the answer's newest row reached the buffer {} time(s): \
+             {painted:?}",
+            painted.matches(NONCE).count()
+        );
+    }
+}
+
+/// [ADR-0005] D2, one layer out: the input row does not move because an answer
+/// is arriving.
+///
+/// D2: "its height changes never reflow the text the user is composing … it is
+/// entirely avoidable by **reserving space rather than growing into it**". The
+/// shell reserves [`COMPOSER_ROWS`] at the foot and splits only the region
+/// above, so this holds by construction — and a construction is exactly the
+/// kind of thing that stops holding when somebody adds a fourth region. Pinned
+/// rather than argued.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+#[test]
+fn the_input_row_is_byte_identical_while_an_answer_streams() {
+    for (width, height) in MEASURED {
+        let input_row = usize::from(height - COMPOSER_ROWS);
+        let quiet = over_subscribed(0);
+        let (before, cursor_before) = painted(&quiet, width, height);
+
+        for arriving in [1_usize, 20, 40] {
+            let shell = over_subscribed(arriving);
+            let (after, cursor_after) = painted(&shell, width, height);
+            assert_eq!(
+                after[input_row], before[input_row],
+                "at {width}x{height} the input row moved while {arriving} row(s) were arriving: \
+                 {:?} then {:?}",
+                before[input_row], after[input_row]
+            );
+            assert_eq!(
+                cursor_after, cursor_before,
+                "at {width}x{height} the cursor moved while {arriving} row(s) were arriving"
+            );
+        }
+    }
+}
+
+/// A pane with no rows to give neither panics nor paints.
+///
+/// A terminal can be one row tall while it is being resized, and the split
+/// divides a height that may be zero. The property worth keeping is the one
+/// [`crate::shell::wrap::rows`] keeps for a budget of zero: the function
+/// returns.
+#[test]
+fn a_pane_with_almost_no_rows_still_returns() {
+    for height in [COMPOSER_ROWS + 1, COMPOSER_ROWS + 2, COMPOSER_ROWS + 3] {
+        for width in [1_u16, 8, 100] {
+            let shell = over_subscribed(40);
+            let (rows, _) = painted(&shell, width, height);
+            assert_eq!(
+                rows.len(),
+                usize::from(height),
+                "a {width}x{height} frame is not {height} rows"
+            );
+        }
+    }
+}
+
+// --------------------------------- the security corpus, 2026-09-14
+
+/// [ADR-0011] D4's out-of-tree marking is on the pane while an answer streams.
+///
+/// # Why this is a corpus case and not a rendering one
+///
+/// D4 requires a call above the ordinary class to "render **differently in the
+/// transcript** at every mode", and the marking is appended after a resolved
+/// absolute path on a `Call` line — which is exactly what `PaneSink::emit`
+/// paints during a turn, one crate over. Before this commit that line was
+/// painted and then pushed off the visible tail by the answer arriving below
+/// it, so the marking was rendered and unreadable for the length of the
+/// answer. **A marking nobody can see is not a rendering.**
+///
+/// This is the same clause `corpus_an_out_of_tree_marking_survives_a_pane_too_\
+/// narrow_for_the_line` holds against a narrow frame, one dimension over: that
+/// one is about the right edge and this one is about the top.
+///
+/// **The accepting sibling** is an in-tree call line in the same frame, which
+/// must also be visible — so the check cannot be satisfied by a pane that
+/// happens to keep everything, and cannot be satisfied by one that keeps
+/// nothing.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn corpus_an_out_of_tree_marking_is_on_the_pane_while_an_answer_streams() {
+    const MARKED: &str = "fs.write /etc/hosts — outside the working directory";
+    const IN_TREE: &str = "fs.write ./notes.txt";
+
+    for (width, height) in MEASURED {
+        let mut shell = over_subscribed(0);
+        shell.notice(Line::new(Register::Call, IN_TREE));
+        shell.notice(Line::new(Register::Call, MARKED));
+        for n in 1..=40 {
+            shell.stream_delta(&format!("{}{n}", if n == 1 { "" } else { "\n" }));
+        }
+
+        let painted = pane_rows(&shell, width, height);
+        assert!(
+            every_row_is_on_the_pane(&Line::new(Register::Call, MARKED), width, &painted),
+            "at {width}x{height} the out-of-tree marking is off the screen while an answer \
+             streams, so a call a record marks is indistinguishable from one it does not: \
+             {painted:#?}"
+        );
+        assert!(
+            every_row_is_on_the_pane(&Line::new(Register::Call, IN_TREE), width, &painted),
+            "at {width}x{height} the in-tree call line is off the screen, so this check is \
+             passing because the pane keeps the newest line rather than because it keeps a \
+             marked one: {painted:#?}"
+        );
+    }
+}
+
+/// [ADR-0011] D3's prompt and the call it is about are on the screen together.
+///
+/// # The measurement this is written from
+///
+/// Driving the release binary at `cb9f4fc` over a pseudo-terminal, the model
+/// asked to run `cmd.run ls -la` and the `[y/N]` stood in the composer's area
+/// for **65.64 seconds** while the pane above it held twenty-two rows of the
+/// answer and nothing else. The `exchange 1, call 1: cmd.run` line that says
+/// what is being permitted was off the screen for the whole life of the
+/// prompt.
+///
+/// D3 makes `ask` "prompt before any write or command", and [ADR-0016] D2's
+/// test — "an error message whose reader cannot act is a stack trace with
+/// better grammar" — is the look-and-feel survey's own reading of a question
+/// whose reader cannot see its subject. A prompt answered blind is a
+/// permission model in name only.
+///
+/// **The accepting sibling** is the same frame with no question standing,
+/// where the call line must also be visible.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn corpus_the_call_a_permission_prompt_is_about_is_on_the_pane_while_an_answer_streams() {
+    const CALL: &str = "exchange 1, call 1: cmd.run ls -la";
+
+    for (width, height) in MEASURED {
+        for asking in [true, false] {
+            let mut shell = over_subscribed(0);
+            shell.notice(Line::new(Register::Call, CALL));
+            for n in 1..=40 {
+                shell.stream_delta(&format!("{}{n}", if n == 1 { "" } else { "\n" }));
+            }
+            if asking {
+                shell.ask(Confirmation::new(
+                    "Allow cmd.run ls -la?".to_owned(),
+                    "[y/N]".to_owned(),
+                    false,
+                ));
+            }
+
+            let painted = pane_rows(&shell, width, height);
+            assert!(
+                every_row_is_on_the_pane(&Line::new(Register::Call, CALL), width, &painted),
+                "at {width}x{height} with a question standing: {asking}, the call the prompt is \
+                 about is off the screen, so the question is answered blind: {painted:#?}"
+            );
+        }
+    }
 }

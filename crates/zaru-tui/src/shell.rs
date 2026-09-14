@@ -184,6 +184,41 @@ pub const QUEUED: &str = "queued";
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 pub const STRIP_ROWS: u16 = 6;
 
+/// How much of the pane the lines it was given keep while an answer streams.
+///
+/// **Drafted under a delegated coordinator ruling of 2026-09-14, open to
+/// Jeshua's veto**, in the same shape as [`STRIP_ROWS`], [`QUEUED`] and the
+/// seven register glyphs: no record names a number and one is needed. It is
+/// recorded on [ADR-0028]'s Update of that day together with the two
+/// alternatives that were rejected and the measurement that decides it.
+///
+/// # Why a share rather than a row count
+///
+/// A fixed reservation of six rows is 38% of a 24-row pane and 13% of a
+/// 50-row one, and the thing being reserved for — the execution narrative a
+/// turn produces — scales with the screen rather than with a widget. So this
+/// takes the pane's own height and returns a fraction of it.
+///
+/// # Why a half
+///
+/// **It is the only division that asserts nothing about which of the two
+/// matters more.** [ADR-0028] D1 has the loop's events "surface as
+/// plain-English events **inline in the conversation**", which makes the
+/// narrative a peer of the answer rather than a footnote under it, and a
+/// number that gave either side more would be this crate deciding a question
+/// D1 has already answered the other way.
+///
+/// It is a **floor and not an allocation**: the lines the pane was given take
+/// this many rows only if they have that many, and every row they do not want
+/// goes to the answer. In the turn this was measured against, the narrative
+/// wanted three rows of the eleven it could have had.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[must_use]
+pub const fn transcript_floor(pane: u16) -> u16 {
+    pane / 2
+}
+
 /// How many rows the composer's area occupies, at the foot of the screen.
 ///
 /// One for the input and [`STRIP_ROWS`] for the strip. **Fixed**, which is

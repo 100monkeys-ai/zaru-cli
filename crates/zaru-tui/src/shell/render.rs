@@ -51,7 +51,7 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
-use crate::shell::{COMPOSER_ROWS, Line, Palette, Row, Shell};
+use crate::shell::{COMPOSER_ROWS, Line, Palette, Row, Shell, transcript_floor};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line as TextLine;
@@ -177,6 +177,82 @@ impl Shell {
         (above, Some(pinned))
     }
 
+    /// The region the lines the pane was given get, and the region the answer
+    /// still arriving gets, if the two do not fit together.
+    ///
+    /// # The defect this closes
+    ///
+    /// [`Shell::pane_lines`] is the transcript, then this session's notices,
+    /// then the answer being streamed, and [`Shell::visible`] shows the
+    /// **tail**. So every line [`Shell::notice`] is given sits *above* a line
+    /// that grows without bound, and the three callers of it in the driver —
+    /// [ADR-0008] clause 3's turn events, [ADR-0028] D3's loop events, and the
+    /// interrupt line — are pushed off the visible tail within a beat or two
+    /// of an answer starting to arrive.
+    ///
+    /// Measured from the release binary at `cb9f4fc` over a pseudo-terminal:
+    /// at 100 columns the narrative was visible for **2.55 s of a 76 s turn**,
+    /// and 725 consecutive reconstructed frames held nothing but the answer's
+    /// own rows. Six of the nineteen rows that appeared when the turn ended
+    /// are iteration events painted the moment they arrived, and not one of
+    /// them was visible for a single frame while the work it narrates was
+    /// happening. [ADR-0028] D1 has the loop render "as narrative" and D5
+    /// requires it "**as the work proceeds**"; that record's Update of
+    /// 2026-09-14 reads both as claims about the screen rather than about the
+    /// emission, and this is that reading as a layout.
+    ///
+    /// # It fires only when the pane is over-subscribed
+    ///
+    /// With nothing streaming, and with the lines and the answer fitting
+    /// together, this returns `(pane, None)` — the branch the renderer took
+    /// before this existed, rather than an equivalent of it. So a short answer
+    /// in a fresh session is painted exactly where it was painted, with no
+    /// gap, no boundary and no re-ordering, and the frame at the end of every
+    /// turn is the frame it was by **construction**:
+    /// [`Shell::clear_streaming`] leaves nothing to split.
+    ///
+    /// When they do not fit, the lines the pane was given keep
+    /// [`transcript_floor`] of it or their own height, whichever is smaller,
+    /// and the answer takes every remaining row it can use. Each region then
+    /// shows its own tail, so the newest narration and the newest text of the
+    /// answer are on the screen at once.
+    ///
+    /// # Why it is applied after the queued row and not before
+    ///
+    /// [`Shell::pane_and_queue`] pins a queued task to the foot of the pane,
+    /// and that row is [ADR-0015]'s amendment of 2026-09-13. Splitting the
+    /// stream out of the whole pane first would put the answer's region below
+    /// it and move the row, which
+    /// `a_queued_task_paints_above_the_composer_and_survives_a_streaming_answer`
+    /// reddens.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    fn pane_and_stream(&self, pane: Rect) -> (Rect, Option<Rect>) {
+        let Some(streamed) = self.streamed_line() else {
+            return (pane, None);
+        };
+        let arriving = streamed.rows(pane.width).len();
+        let given: usize = self
+            .given_lines()
+            .iter()
+            .map(|line| line.rows(pane.width).len())
+            .sum();
+        if given + arriving <= usize::from(pane.height) {
+            return (pane, None);
+        }
+
+        let kept = given.min(usize::from(transcript_floor(pane.height)));
+        // `pane.height` is at least `kept` by the line above, so this cannot
+        // wrap; and it cannot exceed `u16::MAX`, because it is bounded by a
+        // `u16` the caller handed in.
+        let height = arriving.min(usize::from(pane.height) - kept) as u16;
+        let [above, below] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).areas(pane);
+        (above, Some(below))
+    }
+
     /// Paint the whole shell into `area`.
     ///
     /// `palette` decides whether the registers' colours are painted, and it
@@ -189,6 +265,7 @@ impl Shell {
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect, palette: Palette) {
         let [status, pane, composer] = Self::regions(area);
         let (pane, queued) = self.pane_and_queue(pane);
+        let (pane, arriving) = self.pane_and_stream(pane);
 
         frame.render_widget(
             Paragraph::new(TextLine::from(self.status().painted(status.width))),
@@ -199,8 +276,16 @@ impl Shell {
         // has already broken every row to `pane.width`, and a widget
         // re-wrapping them would measure a continuation's indent as content
         // and break it again one column early.
-        let visible: Vec<TextLine<'_>> = self
-            .visible(pane.height, pane.width)
+        // The rows the pane was given, and the rows of the answer still
+        // arriving, come from the same `tail` -- so the two regions cannot
+        // come to disagree about what a tail is. When `arriving` is `None`
+        // the first of these is `visible` itself, which is the branch this
+        // renderer took before a stream had a region of its own.
+        let rows = match arriving {
+            None => self.visible(pane.height, pane.width),
+            Some(_) => tail(&self.given_lines(), pane.height, pane.width),
+        };
+        let visible: Vec<TextLine<'_>> = rows
             .into_iter()
             // Two spans rather than one joined string: the marker column
             // carries the register's colour and the producer's words carry
@@ -220,6 +305,25 @@ impl Shell {
             .collect();
         if !visible.is_empty() {
             frame.render_widget(Paragraph::new(visible), pane);
+        }
+
+        // The answer still arriving, in the region of its own it gets when the
+        // pane cannot hold both. Painted through the same two spans and the
+        // same `tail`, so nothing about a streamed row differs from a
+        // transcript row except which rectangle it lands in.
+        if let (Some(area), Some(streamed)) = (arriving, self.streamed_line()) {
+            let streaming: Vec<TextLine<'_>> = tail(&[streamed], area.height, area.width)
+                .into_iter()
+                .map(|row| {
+                    TextLine::from(vec![
+                        Span::styled(row.lead, palette.marker(row.register)),
+                        Span::raw(row.text),
+                    ])
+                })
+                .collect();
+            if !streaming.is_empty() {
+                frame.render_widget(Paragraph::new(streaming), area);
+            }
         }
 
         // The queued task, on its own row immediately above the composer. It
