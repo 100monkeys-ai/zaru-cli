@@ -12,20 +12,26 @@
 //! grow one — so a `ToolCallError::Port` cannot be classified by anything
 //! downstream of it.
 //!
-//! [`crate::providers::gemini`] already says what to do about that, in its own
+//! Each provider client already says what to do about that, in its own
 //! `Model::respond`:
 //!
-//! > The one place `GeminiFailure` becomes `PortFailure`. The port carries a
+//! > The one place a typed failure becomes `PortFailure`. The port carries a
 //! > sentence and nothing else, so the class ADR-0016 puts this failure in is
 //! > lost here — which is right for `zaru-core`, whose loop has no taxonomy,
-//! > and is why `GeminiClient::exchange` is public: **the command surface
-//! > classifies the typed failure**, and only the loop sees the flattened one.
+//! > and is why `exchange` is public: **the command surface classifies the
+//! > typed failure**, and only the loop sees the flattened one.
 //!
 //! This is the command surface doing that. [`Classifying`] wraps the client,
-//! calls [`GeminiClient::exchange`] — **the same inherent function the
+//! calls [`ProviderClient::exchange`] — **the same inherent function the
 //! client's own `respond` calls**, not a second copy of the mapping — keeps the
-//! typed [`GeminiFailure`] where the surface can read it, and hands the loop
+//! typed [`ProviderFailure`] where the surface can read it, and hands the loop
 //! the identical `PortFailure` it would have had.
+//!
+//! **Since 2026-09-14 it wraps a [`ProviderClient`] rather than one client's
+//! concrete type**, because a second client landed and naming one of them here
+//! would have made this module work for exactly half the providers this build
+//! carries. The enum is closed, so `taken()` still hands the surface a typed
+//! value and `cli::classify` still matches it without a wildcard.
 //!
 //! **Nothing on any port changes.** `PortFailure` gains no field, `Model`
 //! gains no method, `Provider` gains no method, and the client is not edited.
@@ -35,7 +41,7 @@
 //!
 //! # Why the failure is kept in a lock
 //!
-//! The same reason `GeminiClient::last` is:
+//! The same reason each client's own `last` slot is:
 //! [`Model::respond`] returns
 //! `impl Future + Send` over `&self`, so the client is reachable from more
 //! than one task and anything it mutates has to be safe to read from all of
@@ -49,9 +55,9 @@
 //! to lose. Keeping a list would be storing something no caller can ask about.
 //!
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-//! [`GeminiClient::exchange`]: crate::providers::gemini::GeminiClient::exchange
+//! [`ProviderClient::exchange`]: crate::providers::ProviderClient::exchange
 
-use crate::providers::gemini::{GeminiClient, GeminiFailure};
+use crate::providers::{ProviderClient, ProviderFailure};
 use core::fmt;
 use std::sync::Mutex;
 use zaru_core::iteration::PortFailure;
@@ -64,8 +70,8 @@ use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
 /// token accounting reaches [`crate::providers::Provider::usage`], which is a
 /// different trait on the same value.
 pub struct Classifying<'a> {
-    client: &'a GeminiClient,
-    last: Mutex<Option<GeminiFailure>>,
+    client: &'a ProviderClient,
+    last: Mutex<Option<ProviderFailure>>,
 }
 
 impl fmt::Debug for Classifying<'_> {
@@ -86,7 +92,7 @@ impl fmt::Debug for Classifying<'_> {
 impl<'a> Classifying<'a> {
     /// Wrap a client for one turn.
     #[must_use]
-    pub const fn over(client: &'a GeminiClient) -> Self {
+    pub const fn over(client: &'a ProviderClient) -> Self {
         Self {
             client,
             last: Mutex::new(None),
@@ -95,7 +101,7 @@ impl<'a> Classifying<'a> {
 
     /// The client, for the questions the loop does not ask it.
     #[must_use]
-    pub const fn client(&self) -> &'a GeminiClient {
+    pub const fn client(&self) -> &'a ProviderClient {
         self.client
     }
 
@@ -107,7 +113,7 @@ impl<'a> Classifying<'a> {
     /// classifies it under ADR-0016 D1; a caller that has any other error must
     /// not, and the port kind is what tells them apart.
     #[must_use]
-    pub fn taken(&self) -> Option<GeminiFailure> {
+    pub fn taken(&self) -> Option<ProviderFailure> {
         match self.last.lock() {
             Ok(slot) => slot.clone(),
             // A poisoned lock means a panic happened while it was held, which

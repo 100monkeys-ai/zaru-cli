@@ -66,7 +66,7 @@ use super::endpoint::NUM_THREAD;
 use super::failure::OllamaFailure;
 use super::wire;
 use serde_json::Value;
-use zaru_core::tool_call::{ModelRequest, ModelResponse, ToolRequest, TokenUsage};
+use zaru_core::tool_call::{ModelRequest, ModelResponse, TokenUsage, ToolRequest};
 
 /// The role an assistant turn carries.
 pub const ROLE_ASSISTANT: &str = "assistant";

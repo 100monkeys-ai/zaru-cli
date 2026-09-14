@@ -94,6 +94,7 @@ use crate::compose::{Classifying, ModelSummariser, Records, SessionContext, cont
 use crate::config::Resolution;
 use crate::credentials::{CredentialStore, HarnessKeys, OsKeyring};
 use crate::failure::{Classified, Exit, SessionEvidence};
+use crate::providers::ProviderClient;
 use crate::providers::gemini::{Endpoint, GeminiClient};
 use crate::providers::{ModelAlias, ModelTable, ProviderKind, ResolvedModel};
 use crate::redaction::{HeldSecrets, held_secrets_for_redaction};
@@ -169,7 +170,7 @@ impl Ran {
 /// 2026-09-05, open to Jeshua's veto.
 ///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-pub const KINDS_WITH_A_CLIENT: [ProviderKind; 1] = [ProviderKind::Gemini];
+pub const KINDS_WITH_A_CLIENT: [ProviderKind; 2] = [ProviderKind::Gemini, ProviderKind::Ollama];
 
 /// Which of D3's five kinds this machine holds a key for.
 ///
@@ -219,7 +220,7 @@ pub struct Prepared {
     manifest: Option<crate::manifest::Manifest>,
     kind: ProviderKind,
     held: HeldSecrets,
-    client: GeminiClient,
+    client: ProviderClient,
     witness: ToolCalling,
     store_root: std::path::PathBuf,
 }
@@ -301,7 +302,7 @@ impl Prepared {
     /// A surface with no pane never calls it, and the client then builds no
     /// delta at all.
     #[must_use]
-    pub const fn client(&self) -> &GeminiClient {
+    pub const fn client(&self) -> &ProviderClient {
         &self.client
     }
 
@@ -513,27 +514,67 @@ pub fn prepare(
             )));
         }
     };
-    // The one kind with a client, and only if this machine has its key. The
-    // two refusals are different classes and the difference is what the user
-    // can do: a machine with no key at all has a key to add, and a machine
-    // holding keys only for kinds this build cannot reach has configured
-    // something correctly that this build does not carry.
+    // --- Which kind serves this alias -------------------------------------
+    //
+    // **A proposed reading of 2026-09-14, settled in code nowhere**; the rule
+    // and its reasoning are `crate::providers::selection`'s, and the amendment
+    // was written on ADR-0012 before this line existed.
+    //
+    // This block chose the first kind with a client that the store held a key
+    // for, and that was a complete answer while every kind with a client
+    // needed a key. `ollama` needs none, so credential presence alone can no
+    // longer express the question: an explicit `provider.<alias>.kind` decides
+    // it, and absent that key each kind is asked for its own requirement.
     let held_kinds = kinds_held(&store);
-    let kind = match KINDS_WITH_A_CLIENT
-        .into_iter()
-        .find(|kind| held_kinds.contains(kind))
-    {
-        Some(kind) => kind,
-        None if held_kinds.is_empty() => {
+    let configured_kind = match resolution.get(&crate::providers::kind_key(ModelAlias::Default)) {
+        Some(crate::config::Value::Text(named)) => match ProviderKind::parse(named) {
+            Some(kind) => Some(kind),
+            // A kind nobody can spell is the user's to fix, and naming the
+            // five is what makes it fixable.
+            None => {
+                return Err(Box::new(Ran::refused(Surface::unknown_provider_kind(
+                    ModelAlias::Default,
+                    named,
+                ))));
+            }
+        },
+        _ => None,
+    };
+    let kind = match crate::providers::select(
+        ModelAlias::Default,
+        configured_kind,
+        &KINDS_WITH_A_CLIENT,
+        |kind| held_kinds.contains(&kind),
+        // "An endpoint set at any layer other than the built-in default":
+        // nothing declares a layer-1 value for this key, so a value resolving
+        // at all is a value a user set.
+        |kind| {
+            matches!(
+                resolution.get(&kind.endpoint_key()),
+                Some(crate::config::Value::Text(_))
+            )
+        },
+    ) {
+        Ok(kind) => kind,
+        // The two refusals are different classes and the difference is what
+        // the user can do: a machine holding keys only for kinds this build
+        // cannot reach has configured something correctly that this build does
+        // not carry, and a machine with nothing at all has two routes out.
+        Err(refusal) if !held_kinds.is_empty() => {
+            drop(refusal);
+            return Err(Box::new(Ran::refused(
+                surface.no_client_for_the_kinds_held(&model, &held_kinds),
+            )));
+        }
+        // Nothing on this machine says who should answer. The refusal names
+        // both routes out -- a stored key, or a configured keyless kind --
+        // because since 2026-09-14 there are two.
+        Err(refusal) => {
+            drop(refusal);
             return Err(Box::new(Ran::refused(Surface::no_key_for(
                 &KINDS_WITH_A_CLIENT,
                 &model,
             ))));
-        }
-        None => {
-            return Err(Box::new(Ran::refused(
-                surface.no_client_for_the_kinds_held(&model, &held_kinds),
-            )));
         }
     };
 
@@ -559,21 +600,31 @@ pub fn prepare(
         }
     };
 
-    // --- The key, and the redactor over everything the store holds ---------
+    // --- The key, where this kind needs one, and the redactor always -------
+    //
+    // **The key is read only for a kind whose requirement is a held key.**
+    // Before 2026-09-14 every kind with a client needed one, so this was
+    // unconditional; `ollama` is reached with no credential at all, and
+    // reading a secret that does not exist would refuse a provider that works.
     let keyring = OsKeyring::for_store(&store_root);
     let keys = HarnessKeys::from_process(&keyring);
     let alias = kind.credential_alias();
-    let secret = match store.secret(&alias, &keys) {
-        Ok(secret) => secret,
-        Err(failure) => {
-            return Err(Box::new(Ran::refused(
-                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
-            )));
-        }
+    let secret = match crate::providers::Requirement::of(kind) {
+        crate::providers::Requirement::HeldKey => match store.secret(&alias, &keys) {
+            Ok(secret) => Some(secret),
+            Err(failure) => {
+                return Err(Box::new(Ran::refused(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                )));
+            }
+        },
+        crate::providers::Requirement::ConfiguredEndpoint => None,
     };
-    // ADR-0008 clause 6's port, over every value the store holds -- including
-    // the one this turn is about to send, which is why it is built from the
-    // store rather than from the secret above.
+    // ADR-0008 clause 6's port, over every value the store holds -- built from
+    // the store rather than from the secret above, which is why it is
+    // unconditional even for a kind that sends none: the harness's OTHER
+    // secrets must still not reach a model, and a local provider is not a
+    // reason to relax that.
     let held: HeldSecrets = match held_secrets_for_redaction(&store, &keys) {
         Ok(held) => held,
         Err(failure) => {
@@ -593,12 +644,51 @@ pub fn prepare(
                 }
             }
         }
-        _ => Endpoint::default_endpoint(),
+        // Each kind's own default, which D5 leaves to whoever proposes one.
+        // A wildcard-free match, so a kind that gains a client without
+        // proposing a default fails to compile here rather than silently
+        // borrowing another provider's origin.
+        _ => match kind {
+            ProviderKind::Gemini => Endpoint::default_endpoint(),
+            ProviderKind::Ollama => crate::providers::ollama::Endpoint::default_endpoint(),
+            ProviderKind::Anthropic | ProviderKind::OpenAiCompatible | ProviderKind::Aegis => {
+                return Err(Box::new(Ran::refused(
+                    surface.no_client_for_the_kinds_held(&model, &held_kinds),
+                )));
+            }
+        },
     };
 
-    let client = match GeminiClient::new(endpoint, model.clone(), alias, secret) {
-        Ok(client) => client,
-        Err(failure) => return Err(Box::new(Ran::refused(Surface::provider(&failure)))),
+    // A wildcard-free match, so a third client cannot be added to
+    // `KINDS_WITH_A_CLIENT` without being built here.
+    let client = match (kind, secret) {
+        (ProviderKind::Gemini, Some(secret)) => {
+            match GeminiClient::new(endpoint, model.clone(), alias, secret) {
+                Ok(client) => ProviderClient::Gemini(client),
+                Err(failure) => {
+                    return Err(Box::new(Ran::refused(Surface::provider(&failure.into()))));
+                }
+            }
+        }
+        (ProviderKind::Ollama, None) => {
+            match crate::providers::ollama::OllamaClient::new(endpoint, model.clone()) {
+                Ok(client) => ProviderClient::Ollama(client),
+                Err(failure) => {
+                    return Err(Box::new(Ran::refused(Surface::provider(&failure.into()))));
+                }
+            }
+        }
+        // Unreachable while `Requirement::of` and `KINDS_WITH_A_CLIENT` agree:
+        // the selection above returns only a kind with a client, and the
+        // secret above is `Some` exactly for a kind whose requirement is a
+        // held key. Written as a refusal rather than an `expect` because the
+        // two facts live in different modules and a panic here would be this
+        // harness reporting its own disagreement as a crash.
+        _ => {
+            return Err(Box::new(Ran::refused(
+                surface.no_client_for_the_kinds_held(&model, &held_kinds),
+            )));
+        }
     };
 
     // --- ADR-0012 clause 3: the model is asked before the loop starts ------

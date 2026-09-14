@@ -263,11 +263,7 @@ fn a_streamed_tool_call_arrives_whole_in_one_frame() {
     // accumulates partial arguments, so if this ever stops holding it stops
     // loudly at the serde boundary rather than quietly truncating.
     let frames = frames_of(RECORDED_CALLS);
-    let call = &frames[0]
-        .message
-        .as_ref()
-        .expect("a message")
-        .tool_calls[0];
+    let call = &frames[0].message.as_ref().expect("a message").tool_calls[0];
     assert_eq!(call.function.name, "get_weather");
     assert_eq!(
         call.function.arguments["city"], "Paris",
@@ -321,7 +317,8 @@ fn the_folded_usage_is_the_last_frames_and_is_not_a_sum() {
     let mapped = map::response_from(&folded, RECORDED_TEXT.len()).expect("the fold maps");
     assert_eq!(mapped.tokens().prompt, 31);
     assert_eq!(
-        mapped.tokens().completion, 6,
+        mapped.tokens().completion,
+        6,
         "the completion count is not the terminal frame's; a sum over six frames would report 6 \
          here only by accident, since five of them carry no count"
     );
@@ -374,7 +371,8 @@ fn a_model_request_becomes_ollamas_documented_chat_body() {
         tools: &tools,
         results: &[],
     };
-    let body = map::request_from(&request, &mut answered, "llama3.2:3b").expect("the schema is JSON");
+    let body =
+        map::request_from(&request, &mut answered, "llama3.2:3b").expect("the schema is JSON");
     let json = serde_json::to_value(&body).expect("the body serialises");
 
     assert_eq!(json["model"], "llama3.2:3b");
@@ -387,8 +385,7 @@ fn a_model_request_becomes_ollamas_documented_chat_body() {
     );
     assert_eq!(json["tools"][0]["function"]["name"], "fs.read");
     assert_eq!(
-        json["tools"][0]["function"]["parameters"]["properties"]["path"]["type"],
-        "string",
+        json["tools"][0]["function"]["parameters"]["properties"]["path"]["type"], "string",
         "the schema was not offered whole; unlike the gemini client this one narrows nothing"
     );
     assert_eq!(
@@ -437,7 +434,8 @@ fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
         tools: &tools,
         results: &results,
     };
-    let body = map::request_from(&request, &mut answered, "llama3.2:3b").expect("no schema to read");
+    let body =
+        map::request_from(&request, &mut answered, "llama3.2:3b").expect("no schema to read");
     let json = serde_json::to_value(&body).expect("the body serialises");
 
     assert_eq!(
@@ -445,7 +443,10 @@ fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
         "the model's own turn is missing from the history, so the result below answers a call the \
          model has no record of making: {json}"
     );
-    assert_eq!(json["messages"][1]["tool_calls"][0]["function"]["name"], "fs.read");
+    assert_eq!(
+        json["messages"][1]["tool_calls"][0]["function"]["name"],
+        "fs.read"
+    );
     assert_eq!(json["messages"][2]["role"], "tool");
     assert_eq!(
         json["messages"][2]["tool_name"], "fs.read",
@@ -484,7 +485,8 @@ fn a_new_turn_forgets_what_the_last_turn_asked_for() {
         tools: &tools,
         results: &[],
     };
-    let body = map::request_from(&request, &mut answered, "llama3.2:3b").expect("no schema to read");
+    let body =
+        map::request_from(&request, &mut answered, "llama3.2:3b").expect("no schema to read");
     assert_eq!(
         body.messages.len(),
         1,
@@ -658,7 +660,8 @@ fn a_model_the_server_does_not_have_is_the_users_and_names_the_remedy() {
     // ADR-0016 D1 row 2's "bad config". There is no `gemini` counterpart: a
     // key is rejected there before a model name is considered, so for a
     // keyless kind this is the first thing a misconfigured machine meets.
-    let failure = OllamaFailure::from_status(404, RECORDED_NOT_FOUND.as_bytes(), "no-such-model:1b");
+    let failure =
+        OllamaFailure::from_status(404, RECORDED_NOT_FOUND.as_bytes(), "no-such-model:1b");
     match &failure {
         OllamaFailure::ModelNotFound { model, .. } => assert_eq!(model, "no-such-model:1b"),
         other => panic!("a 404 was not read as a missing model: {other:?}"),

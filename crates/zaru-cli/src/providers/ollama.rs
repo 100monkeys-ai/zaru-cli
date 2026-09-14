@@ -168,11 +168,12 @@ impl OllamaClient {
         // one and `web.fetch` cannot drift about cookies, TLS and redirects.
         // What this caller differs on is passed as an argument: its own
         // timeout, and `reqwest`'s default redirect policy.
-        let http = crate::web::client::build(EXCHANGE_TIMEOUT, reqwest::redirect::Policy::default())
-            .map_err(|error| OllamaFailure::Unreachable {
-                endpoint: endpoint.clone(),
-                detail: error.detail().to_owned(),
-            })?;
+        let http =
+            crate::web::client::build(EXCHANGE_TIMEOUT, reqwest::redirect::Policy::default())
+                .map_err(|error| OllamaFailure::Unreachable {
+                    endpoint: endpoint.clone(),
+                    detail: error.detail().to_owned(),
+                })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
             configured: endpoint,
@@ -241,14 +242,13 @@ impl OllamaClient {
         // asked for a stream, and a malformed body answered 400 the same way.
         // So the body is taken whole here and the frame reader never sees it.
         if !status.is_success() {
-            let bytes =
-                response
-                    .bytes()
-                    .await
-                    .map_err(|error| OllamaFailure::Unavailable {
-                        code: status.as_u16(),
-                        detail: error.to_string(),
-                    })?;
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| OllamaFailure::Unavailable {
+                    code: status.as_u16(),
+                    detail: error.to_string(),
+                })?;
             return Err(OllamaFailure::from_status(
                 status.as_u16(),
                 &bytes,

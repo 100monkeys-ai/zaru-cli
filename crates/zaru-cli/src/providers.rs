@@ -58,6 +58,7 @@
 
 pub mod alias;
 pub mod capability;
+pub mod client;
 pub mod endpoint;
 pub mod gemini;
 pub mod inference;
@@ -66,23 +67,26 @@ pub mod negotiation;
 pub mod ollama;
 pub mod port;
 pub mod resolution;
+pub mod selection;
 pub mod usage;
 
 pub use alias::ModelAlias;
 pub use capability::{CapabilityRefused, ProviderCapabilities};
+pub use client::{ProviderClient, ProviderFailure};
 pub use endpoint::{EndpointRefused, ProviderEndpoint};
 pub use gemini::{GeminiClient, GeminiFailure};
 pub use inference::{Inference, InferenceRefused, Placement};
 pub use kind::ProviderKind;
-pub use ollama::{OllamaClient, OllamaFailure};
 pub use negotiation::{
     AliasNegotiation, Disagreement, NegotiationFailure, RemoteModelId, disagreements,
 };
+pub use ollama::{OllamaClient, OllamaFailure};
 pub use port::Provider;
 pub use resolution::{
     ModelId, ModelIdRefused, ModelTable, ResolvedModel, TableRefused, declare, endpoint_of, fields,
     inference_of,
 };
+pub use selection::{NoKindSelected, Requirement, kind_key, select};
 pub use usage::{Cost, CostRefused, TokenUsage};
 
 #[cfg(test)]

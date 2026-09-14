@@ -308,37 +308,65 @@ impl<'a> Surface<'a> {
         }
     }
 
-    /// A model resolved and this machine holds no provider key at all.
+    /// A model resolved and nothing on this machine says who should answer.
     ///
     /// **User-correctable, and the remedy is a command this binary runs.**
     /// They configured a model, which is half of what a turn needs; the other
-    /// half is [ADR-0007]'s store, and `zaru providers keys add <kind>` is the
-    /// surface that fills it. It names the kinds this build can actually
-    /// reach rather than all five of [ADR-0012] D3's, because a remedy naming
-    /// a kind with no client is a remedy whose reader cannot act.
+    /// half is a provider this machine can actually reach. It names the kinds
+    /// this build can reach rather than all five of [ADR-0012] D3's, because a
+    /// remedy naming a kind with no client is a remedy whose reader cannot
+    /// act.
+    ///
+    /// **Since 2026-09-14 there are two routes out and it names both.** Until
+    /// then every kind with a client needed a key, so "store a key" was the
+    /// whole answer. `ollama` needs none — what it needs is an endpoint and a
+    /// running server — so a refusal naming only the store would send a reader
+    /// looking for a credential that does not exist for the provider they
+    /// have. The keyed route stays first and stays a command, because it is
+    /// the one this binary can perform.
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     #[must_use]
     pub fn no_key_for(kinds: &[ProviderKind], model: &ModelId) -> Classified {
-        let named: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+        use crate::providers::Requirement;
+        let keyed: Vec<&str> = kinds
+            .iter()
+            .filter(|kind| Requirement::of(**kind) == Requirement::HeldKey)
+            .map(|kind| kind.as_str())
+            .collect();
+        let keyless: Vec<&str> = kinds
+            .iter()
+            .filter(|kind| Requirement::of(**kind) == Requirement::ConfiguredEndpoint)
+            .map(|kind| kind.as_str())
+            .collect();
+        let second_route = if keyless.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ". Or point it at a provider that needs no key — {keyless} — by setting `{key}` \
+                 and starting its server, which is where a local model is reached",
+                keyless = keyless.join(", "),
+                key = crate::providers::kind_key(ModelAlias::Default),
+            )
+        };
         Classified::UserCorrectable {
             statement: Statement::sanitised(format!(
                 "the alias `{alias}` resolves to {model:?} and this machine holds no provider \
                  key, so there is nothing to authenticate the request with. The key is never in \
                  configuration and never in an argument, because an argument is \
-                 in the shell's history and in `ps`",
+                 in the shell's history and in `ps`{second_route}",
                 alias = ModelAlias::Default,
                 model = model.as_str(),
             )),
             remedy: run(
                 &format!(
-                    "store one for the kind this build can reach ({})",
-                    named.join(", ")
+                    "store one for a kind this build can reach ({})",
+                    keyed.join(", ")
                 ),
                 &format!(
                     "providers keys add {}",
-                    kinds.first().map_or("gemini", |kind| kind.as_str())
+                    keyed.first().copied().unwrap_or("gemini")
                 ),
             ),
         }
@@ -1083,15 +1111,44 @@ impl Surface<'_> {
         )
     }
 
+    /// A configured provider kind that names none of the five.
+    ///
+    /// User-correctable, and the remedy names every kind [ADR-0012] D3
+    /// declares — including the three with no client, because a user who wrote
+    /// `anthropic` has spelled a real kind and needs to be told this build
+    /// cannot reach it rather than that the word is wrong.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    #[must_use]
+    pub fn unknown_provider_kind(alias: crate::providers::ModelAlias, named: &str) -> Classified {
+        let every: Vec<&str> = ProviderKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        let with_a_client: Vec<&str> = crate::compose::KINDS_WITH_A_CLIENT
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(format!(
+                "`{key}` is set to {named:?}, which names no provider kind; there are {count}, \
+                 and they are {every}",
+                key = crate::providers::kind_key(alias),
+                count = every.len(),
+                every = every.join(", "),
+            )),
+            remedy: act(format!(
+                "set it to one this build carries a client for: {}",
+                with_a_client.join(" or ")
+            )),
+        }
+    }
+
     /// The provider client could not be built at all.
     ///
-    /// Environmental and never the user's: the only way
-    /// [`GeminiClient::new`](crate::providers::GeminiClient::new) fails is a
-    /// machine with no usable TLS backend, which is what that constructor's
-    /// own documentation says. Nothing the reader types fixes it, so the wait
-    /// says so.
+    /// Environmental and never the user's: the only way either client's
+    /// constructor fails is a machine with no usable TLS backend, which is
+    /// what both constructors' own documentation says. Nothing the reader
+    /// types fixes it, so the wait says so.
     #[must_use]
-    pub fn provider(failure: &crate::providers::GeminiFailure) -> Classified {
+    pub fn provider(failure: &crate::providers::ProviderFailure) -> Classified {
         Classified::Environmental {
             statement: Statement::sanitised(failure.to_string()),
             wait: Wait::NoWaitWillHelp(Statement::sanitised(
@@ -1271,7 +1328,7 @@ impl Surface<'_> {
     pub fn turn(
         &self,
         error: &zaru_core::tool_call::ToolCallError,
-        provider: Option<&crate::providers::GeminiFailure>,
+        provider: Option<&crate::providers::ProviderFailure>,
         session: SessionEvidence,
     ) -> Classified {
         use zaru_core::tool_call::{PortKind, ToolCallError};
@@ -1321,7 +1378,7 @@ impl Surface<'_> {
     pub fn summarisation(
         &self,
         failure: &zaru_core::iteration::PortFailure,
-        provider: Option<&crate::providers::GeminiFailure>,
+        provider: Option<&crate::providers::ProviderFailure>,
         session: SessionEvidence,
     ) -> Classified {
         match provider {
@@ -1342,18 +1399,103 @@ impl Surface<'_> {
         }
     }
 
-    /// One provider failure, in the class [ADR-0016]'s own table gives it.
+    /// One provider failure, in the class its own record's table gives it.
     ///
-    /// The table is that record's Status tracking of 2026-09-05, written when
-    /// the client landed and measured against the live endpoint. This is a
-    /// wildcard-free match over the six, so a seventh shape fails to compile
-    /// here rather than taking a neighbouring class — which is how the sixth
-    /// arrived: `ResultsDoNotMatchCalls` was added to `GeminiFailure` and
-    /// this function stopped compiling until it was placed.
+    /// **Dispatched over the kind that failed, and each arm below is its own
+    /// wildcard-free match**, so a shape added to either taxonomy — or a third
+    /// client's taxonomy added beside them — fails to compile rather than
+    /// taking a neighbouring class. That is how `GeminiFailure`'s sixth shape
+    /// arrived: it was added and this function stopped compiling until it was
+    /// placed.
     ///
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     #[must_use]
     pub fn provider_failure(
+        &self,
+        failure: &crate::providers::ProviderFailure,
+        session: SessionEvidence,
+    ) -> Classified {
+        match failure {
+            crate::providers::ProviderFailure::Gemini(gemini) => {
+                self.gemini_failure(gemini, session)
+            }
+            crate::providers::ProviderFailure::Ollama(ollama) => {
+                self.ollama_failure(ollama, session)
+            }
+        }
+    }
+
+    /// The `ollama` client's taxonomy, in [ADR-0016] D1's classes.
+    ///
+    /// **Two of these read differently from the `gemini` client's, and D1 is
+    /// why.** Row 2 — the user's — names "Missing key, **unreachable
+    /// endpoint**, bad config"; row 3 — neither's — names "provider outage". A
+    /// hosted provider that cannot be reached is row 3, because the reader
+    /// cannot fix it. A **local** server that is not running is row 2, because
+    /// starting it is exactly what the reader does. [ADR-0012] D5's "not a
+    /// second-class code path that breaks quietly" is the argument: giving a
+    /// local failure the class its hosted sibling happens to use, when a
+    /// different person can act on it, is the quiet break that clause forbids.
+    ///
+    /// **No class was added**; D1's five are untouched.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    fn ollama_failure(
+        &self,
+        failure: &crate::providers::OllamaFailure,
+        session: SessionEvidence,
+    ) -> Classified {
+        use crate::providers::OllamaFailure as F;
+        match failure {
+            // The server is not running, or is not where it was said to be.
+            F::Unreachable { .. } => correctable(
+                failure,
+                act(
+                    "start the local model server, or set `provider.ollama.endpoint` to where it \
+                     is listening"
+                        .to_owned(),
+                ),
+            ),
+            // The server has no such model. D1 row 2's "bad config", and the
+            // one failure of this kind with no `gemini` counterpart: there a
+            // key is rejected before a model name is ever considered.
+            F::ModelNotFound { model, .. } => correctable(
+                failure,
+                act(format!(
+                    "pull it with `ollama pull {model}`, or set `model.default` to a model the \
+                     server already holds"
+                )),
+            ),
+            // The server failed on its own side -- the one class this kind
+            // shares with a hosted provider, for the same reason it does.
+            F::Unavailable { .. } => Classified::Environmental {
+                statement: Statement::sanitised(failure.to_string()),
+                wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                    "this harness has no retry policy and nothing states one, so it stops here \
+                     and says so rather than retrying on a policy nobody chose. Running the same \
+                     command again is the retry"
+                        .to_owned(),
+                )),
+            },
+            // The harness built the request, mapped the response, or supplied
+            // the descriptor, so none of these is the reader's to fix.
+            F::RequestRefused { .. }
+            | F::Unreadable { .. }
+            | F::ToolSchemaUnreadable { .. }
+            | F::ResultsDoNotMatchCalls { .. } => {
+                undecided(self.version, self.report_at, session, line!())
+            }
+        }
+    }
+
+    /// The `gemini` client's taxonomy, in [ADR-0016] D1's classes.
+    ///
+    /// The table is that record's Status tracking of 2026-09-05, written when
+    /// the client landed and measured against the live endpoint.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    fn gemini_failure(
         &self,
         failure: &crate::providers::GeminiFailure,
         session: SessionEvidence,
@@ -1495,7 +1637,7 @@ impl Surface<'_> {
     pub fn inner_loop(
         &self,
         error: &zaru_core::iteration::IterationError,
-        provider: Option<&crate::providers::GeminiFailure>,
+        provider: Option<&crate::providers::ProviderFailure>,
         session: SessionEvidence,
     ) -> Classified {
         use zaru_core::iteration::{IterationError, PortKind};

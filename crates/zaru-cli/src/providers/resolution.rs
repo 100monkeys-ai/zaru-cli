@@ -311,6 +311,32 @@ pub fn fields() -> Vec<(Key, Field)> {
             .map(|alias| (Inference::key(alias), Field::free(FieldKind::Text))),
     );
 
+    // `provider.<alias>.kind` -- which provider kind answers for an alias.
+    //
+    // **Refused to the project layer, on the same argument the endpoint key
+    // below is refused on**, and the argument is if anything stronger. An
+    // endpoint redirects a user's prompts to a different address; a kind
+    // redirects them to a different *provider*, which for a user running
+    // locally means off the machine entirely. ADR-0014 D6's "a repository the
+    // user cloned must not be able to configure its way to more privilege than
+    // the user granted" is exactly that, so refusing is the direction to be
+    // wrong in -- and it is the same direction `providers::inference`'s own
+    // note points, where a project choosing a LOCAL model is "choosing less
+    // reach rather than more" and is therefore free.
+    //
+    // A proposed reading of 2026-09-14 rather than a settled one; see
+    // `crate::providers::selection`.
+    declared.extend(ModelAlias::ALL.into_iter().map(|alias| {
+        (
+            crate::providers::selection::kind_key(alias),
+            Field::refused_to_projects(
+                FieldKind::Text,
+                "which provider answers for an alias decides where a user's prompts are sent, and \
+                 a repository they cloned must not be able to send them somewhere else",
+            ),
+        )
+    }));
+
     declared.extend(ProviderKind::ALL.into_iter().map(|kind| {
         (
             kind.endpoint_key(),
