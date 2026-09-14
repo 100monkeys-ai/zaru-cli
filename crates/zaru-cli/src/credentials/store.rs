@@ -50,7 +50,7 @@ compile_error!(
 );
 
 use crate::credentials::alias::Alias;
-use crate::credentials::entry::{Entry, Held, Reach, Role, ToolScope};
+use crate::credentials::entry::{Description, Entry, Held, Reach, Role, ToolScope};
 use crate::credentials::family::Family;
 use crate::credentials::port::Confirm;
 use crate::credentials::sealing::blob::Sealed;
@@ -402,6 +402,29 @@ struct StoredFile {
     entries: BTreeMap<String, Record>,
 }
 
+/// What [`CredentialStore::remove`] took out.
+///
+/// # One field, and what it is not
+///
+/// It carries **no secret, no ciphertext and no record** — only whether the
+/// credential that is now gone held [ADR-0007] D4's composer role, which is
+/// the one consequence of removing it that a person cannot see in the listing
+/// afterwards, because the thing that would have shown it is the row that was
+/// removed.
+///
+/// Returning the [`Record`] instead would have been the obvious shape and is
+/// the wrong one: a `Record` owns a [`Sealed`], so the caller would be holding
+/// a removed credential's ciphertext for no reason any surface has. D3's rule
+/// is that a bearer value never leaves the store except through the two named
+/// functions that exist for it, and this is not one of them.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Removed {
+    /// Whether the credential removed carried the composer role.
+    pub held_composer_role: bool,
+}
+
 /// The local store of named tokens.
 #[derive(Debug)]
 pub struct CredentialStore {
@@ -637,6 +660,133 @@ impl CredentialStore {
         };
         self.entries.insert(alias, record);
         self.save()
+    }
+
+    /// [ADR-0007] D7's `describe`: replace one credential's description.
+    ///
+    /// # It replaces the line rather than editing it
+    ///
+    /// D2 calls `description` "One line on what this token is for", and D7
+    /// calls this surface "set or edit the description". One line has no
+    /// interior for an edit to address, so setting it is the whole operation
+    /// and there is nothing to append to.
+    ///
+    /// # The text is a [`Description`], so the refusal cannot be skipped
+    ///
+    /// It takes the parsed type rather than a `&str`, which means a newline —
+    /// or any other control character — is refused by [`Description::new`]
+    /// **before this is called**, at the one place that rule lives. A
+    /// signature taking `&str` would let a call site store a description this
+    /// store would not have accepted from [`Self::add`], and D7's listing
+    /// renders both through the same column.
+    ///
+    /// Until now that refusal had no reachable caller: the only description
+    /// this harness composed was `notes_entry`'s machine-made sentence, which
+    /// cannot carry a control character. It is the user's to trip now, and it
+    /// is classified as the user's.
+    ///
+    /// # The family is a parameter, on this store's own precedent
+    ///
+    /// `family` is what the *calling surface* is for, and a record of the
+    /// other family answers [`StoreError::UnknownAlias`] — the same reading
+    /// [`Self::grant_composer_role`] and [`Self::move_composer_role`] already
+    /// take of a provider key, because from the caller's side "there is no
+    /// Nuclear Notes token by that name" is exactly what happened. The
+    /// accepted Update of 2026-09-05 states the rule it serves: **"D7's
+    /// listing does not lie about what it lists."** `zaru notes tokens` is
+    /// filtered to Notes tokens, so a `notes tokens` verb that reached past
+    /// that filter would act on a credential its own listing cannot show.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownAlias`] when nothing answers to `alias` and when
+    /// what answers belongs to the other family,
+    /// [`StoreError::UnknownProviderKind`] when the stored record names a kind
+    /// this build does not have, and [`StoreError::Io`] from the write.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub fn describe(
+        &mut self,
+        alias: &Alias,
+        text: &Description,
+        family: Family,
+    ) -> Result<(), StoreError> {
+        // --- every refusal, before anything is written ---
+        self.of_family(alias, family)?;
+
+        // --- nothing above this line has written; nothing below it refuses ---
+        self.entries
+            .get_mut(alias)
+            .expect("the record was found above")
+            .description = text.as_str().to_owned();
+        self.save()
+    }
+
+    /// [ADR-0007] D7's `rm`: remove one credential, and its secret with it.
+    ///
+    /// # The sealed value goes in the same write
+    ///
+    /// [`Record`] owns its [`Sealed`] and the file is the serialisation of the
+    /// map, so dropping the entry drops the ciphertext: there is no second
+    /// place a removed credential could persist and no tombstone left behind.
+    /// [`Self::save`] writes through [`crate::atomic::write`], so a reader —
+    /// or a crash — sees the whole file with the entry or the whole file
+    /// without it, never a store in between.
+    ///
+    /// # It removes the composer's token, deliberately
+    ///
+    /// D4 flags exactly one token `composer`, and this will remove it if that
+    /// is the alias named. **Revoking a credential is the person's to do**,
+    /// and a store that refused would leave someone unable to remove a token
+    /// they had revoked on the server. What D4 does not say is what happens
+    /// when *no* token carries the role, and that is answered — measured, on
+    /// every machine that exists — by the amendment of 2026-09-14 on
+    /// [the amendments page]: a lone stored token still serves the composer's
+    /// reads, several with no role serve nothing.
+    ///
+    /// So [`Removed`] carries whether the role was held, and the caller says
+    /// so in its outcome rather than leaving a person to discover at the next
+    /// session that their hint strip went quiet.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownAlias`] when nothing answers to `alias` and when
+    /// what answers belongs to the other family,
+    /// [`StoreError::UnknownProviderKind`] when the stored record names a kind
+    /// this build does not have, and [`StoreError::Io`] from the write.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// [the amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store-updates
+    pub fn remove(&mut self, alias: &Alias, family: Family) -> Result<Removed, StoreError> {
+        // --- every refusal, before anything is written ---
+        self.of_family(alias, family)?;
+        let held_composer_role = self.composer().is_some_and(|(held_by, _)| held_by == alias);
+
+        // --- nothing above this line has written; nothing below it refuses ---
+        self.entries
+            .remove(alias)
+            .expect("the record was found above");
+        self.save()?;
+        Ok(Removed { held_composer_role })
+    }
+
+    /// The record under `alias`, refusing one that is not `family`'s.
+    ///
+    /// Shared by [`Self::describe`] and [`Self::remove`] so the two cannot
+    /// come to disagree about which credentials a surface may reach.
+    fn of_family(&self, alias: &Alias, family: Family) -> Result<&Record, StoreError> {
+        let record = self
+            .entries
+            .get(alias)
+            .ok_or_else(|| StoreError::UnknownAlias {
+                alias: alias.clone(),
+            })?;
+        if record.family()? != family {
+            return Err(StoreError::UnknownAlias {
+                alias: alias.clone(),
+            });
+        }
+        Ok(record)
     }
 
     /// Take a token's bearer value back out, for dispatch and nothing else.

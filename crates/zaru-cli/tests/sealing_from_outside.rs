@@ -46,8 +46,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use zaru_cli::credentials::{
-    Alias, CredentialStore, Description, Entry, FromKeyring, HarnessKeys, Instance, KeyStore,
-    Keyring, OsKeyring, Reach, SealingError, SealingKey, Secret,
+    Alias, CredentialStore, Description, Entry, Family, FromKeyring, HarnessKeys, Instance,
+    KeyStore, Keyring, OsKeyring, Reach, SealingError, SealingKey, Secret,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -264,6 +264,135 @@ fn the_file_carries_ciphertext_and_a_reader_that_is_not_the_store_opens_it() {
         "the file's ciphertext opens under an alias it was not sealed against, so a blob moved \
          between entries would serve one token's bearer under another token's name"
     );
+}
+
+/// What `rm` leaves behind, read by a reader that is not the store.
+///
+/// # The arm that must not travel through the code under test
+///
+/// The sibling above establishes that the file carries ciphertext which opens
+/// to the value that was stored. This one removes the credential and asserts
+/// the file no longer carries **anything** that opens to it — and it does that
+/// with `serde_json` and `aes-gcm` directly, holding the key it minted, rather
+/// than by asking the store whether it still has the entry. A store that
+/// answered "gone" while the bytes stayed on disk would satisfy every
+/// assertion its own accessors can make.
+///
+/// Two credentials are stored and one is removed, so the absence asserted is
+/// the removed one's specifically: a `save` that wrote an empty document would
+/// pass a check that stored only one.
+#[test]
+fn what_rm_removes_is_gone_from_the_file_as_a_reader_that_is_not_the_store_sees_it() {
+    let home = ScratchHome::new("rm-outside");
+    let key = SealingKey::mint();
+    let keys = StagedKey(key.clone());
+    let mut store = CredentialStore::open(home.store_root()).expect("a fresh root opens");
+
+    let (going, removed_value) = staged_entry("going");
+    let going_alias = going.alias().clone();
+    store
+        .add(going, &keys, None)
+        .expect("the first token is stored");
+
+    let (staying, kept_value) = staged_entry("staying");
+    let staying_alias = staying.alias().clone();
+    store
+        .add(staying, &keys, None)
+        .expect("the second token is stored");
+
+    // The control: before the removal the file carries both, so the absence
+    // asserted afterwards is the removal's doing and not the fixture's.
+    let before = std::fs::read_to_string(store.path()).expect("the store wrote a file");
+    let removed_core = ascii_core(&removed_value);
+    let kept_core = ascii_core(&kept_value);
+    assert!(!removed_core.is_empty() && !kept_core.is_empty());
+    assert!(
+        before.contains(going_alias.as_str()) && before.contains(staying_alias.as_str()),
+        "the file does not carry both aliases before the removal: {before}"
+    );
+    let opens_to = |text: &str, alias: &Alias| -> Option<String> {
+        let document: serde_json::Value = serde_json::from_str(text).ok()?;
+        let sealed_hex = document["entries"][alias.as_str()]["sealed"].as_str()?;
+        let bytes = decode_hex(sealed_hex);
+        let cipher = Aes256Gcm::new_from_slice(&decode_hex(&key.expose_for_the_keyring()))
+            .expect("256 bits are a key");
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(&bytes[1..13])
+            .expect("twelve bytes are a nonce");
+        let mut associated = vec![1u8];
+        associated.extend_from_slice(alias.as_str().as_bytes());
+        let opened = cipher
+            .decrypt(
+                &nonce,
+                Payload {
+                    msg: &bytes[13..],
+                    aad: &associated,
+                },
+            )
+            .ok()?;
+        String::from_utf8(opened).ok()
+    };
+    assert_eq!(
+        opens_to(&before, &going_alias).as_deref(),
+        Some(removed_value.as_str()),
+        "the check cannot open what it is about to assert the absence of"
+    );
+
+    let removed = store
+        .remove(&going_alias, Family::Notes)
+        .expect("a stored Notes token is removed");
+    assert!(!removed.held_composer_role);
+
+    // Read the file again. Not through the store.
+    let after = std::fs::read_to_string(store.path()).expect("the store rewrote the file");
+
+    assert!(
+        !after.contains(going_alias.as_str()),
+        "the removed alias is still in the file: {after}"
+    );
+    assert!(
+        opens_to(&after, &going_alias).is_none(),
+        "a blob under the removed alias still opens to its bearer value"
+    );
+    assert!(
+        !after.contains(&removed_value),
+        "the file carries the removed bearer value verbatim: {after}"
+    );
+    assert!(
+        !after.contains(removed_core),
+        "the file carries the removed bearer value's ASCII core {removed_core:?}: {after}"
+    );
+    let core_as_hex: String = removed_core.bytes().map(|b| format!("{b:02x}")).collect();
+    assert!(
+        !after.contains(&core_as_hex),
+        "the file carries the removed value hexadecimal-encoded: {core_as_hex} is in {after}"
+    );
+    // No ciphertext anywhere in the document opens to it either, whatever
+    // alias it might have been filed under -- which is what catches a `remove`
+    // that unlinked the key and left the blob.
+    assert!(
+        !after.contains(&hex_of(&removed_value)),
+        "the removed value's plaintext bytes are in the file hexadecimal-encoded"
+    );
+
+    // The accepting sibling: the one that stayed is untouched and still opens.
+    assert!(after.contains(staying_alias.as_str()));
+    assert_eq!(
+        opens_to(&after, &staying_alias).as_deref(),
+        Some(kept_value.as_str()),
+        "removing one credential disturbed the one beside it"
+    );
+    assert_eq!(
+        store
+            .secret(&staying_alias, &keys)
+            .expect("the survivor still opens through the store")
+            .expose_for_dispatch(),
+        kept_value
+    );
+}
+
+/// A value's bytes, hexadecimal, for an absence assertion.
+fn hex_of(value: &str) -> String {
+    value.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The store's whole round trip through its own public door, under a key that

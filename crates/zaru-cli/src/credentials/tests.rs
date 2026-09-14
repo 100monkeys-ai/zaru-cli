@@ -841,6 +841,237 @@ use crate::credentials::projection::{NAMESPACE_PREFIX, Namespace};
 use crate::credentials::store::StoreError;
 
 /// Stages a store holding one composer-scoped token and one agent token.
+// ---------------------------------------------------------------------------
+// ADR-0007 D7's `describe` and `rm`, the two surfaces clause 10 was missing.
+// ---------------------------------------------------------------------------
+
+// D7: "set or edit the description". A description that only changed the map
+// in memory would pass any check that kept the store it wrote to, so this one
+// drops the store and opens the root again.
+//
+// The mutant: `describe` sets the field and returns `Ok(())` without `save`.
+#[test]
+fn a_description_is_replaced_and_survives_a_reopen() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let (entry, _) = staged_entry("describe");
+    let alias = entry.alias().clone();
+    let first = entry.description().as_str().to_owned();
+
+    {
+        let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+        store.add(entry, &keys, None).expect("an entry is added");
+    }
+
+    let replacement = Description::new(nonce("replacement")).expect("a nonce is one line");
+    {
+        let mut store = CredentialStore::open(scratch.store_root()).expect("the root reopens");
+        store
+            .describe(&alias, &replacement, Family::Notes)
+            .expect("a stored Notes token takes a description");
+    }
+
+    let store = CredentialStore::open(scratch.store_root()).expect("the written root reopens");
+    let record = store.record(&alias).expect("the entry is still there");
+    assert_eq!(record.description, replacement.as_str());
+    assert_ne!(
+        record.description, first,
+        "the description read back is the one `add` wrote, so nothing was replaced"
+    );
+
+    // What `describe` must not touch: it edits one line of metadata, and a
+    // credential whose secret or scope moved with its description would be a
+    // different credential under the same name.
+    assert_eq!(record.tools(), vec!["pages.read", "search.global"]);
+    assert_eq!(record.workspace(), Some("zaru"));
+    assert_eq!(record.kind(), "personal");
+}
+
+// The store never sees a newline, because the type it takes cannot carry one.
+// Asserted at the door rather than through the store, which is the point: a
+// `describe` taking `&str` could be handed text `add` would have refused.
+//
+// The mutant: give `describe` a `&str` parameter and build the `Description`
+// inside it with `unwrap_or`, and this stops compiling rather than failing --
+// which is the outcome wanted.
+#[test]
+fn a_description_carrying_a_newline_is_refused_before_the_store_is_reached() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let (entry, _) = staged_entry("newline");
+    let alias = entry.alias().clone();
+    let original = entry.description().as_str().to_owned();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    store.add(entry, &keys, None).expect("an entry is added");
+
+    for (offered, what) in [
+        (
+            "one line\nand a second",
+            "a newline, which forges a listing row",
+        ),
+        (
+            "a\rcarriage return",
+            "a carriage return, which overwrites the row",
+        ),
+        ("a\u{7}bell", "a bell, which a terminal rings"),
+        ("a\u{1b}[31mcolour", "an escape, which repaints the listing"),
+    ] {
+        let refusal = Description::new(offered)
+            .expect_err(&format!("a description carrying {what} must be refused"));
+        // The refusal quotes the description, which is the user's own words
+        // and not a credential -- and it names what to do about it.
+        assert!(
+            refusal.to_string().contains("control character"),
+            "the refusal does not say what is wrong with it: {refusal}"
+        );
+    }
+
+    // Nothing above reached the store, so the description `add` wrote stands.
+    assert_eq!(
+        store
+            .record(&alias)
+            .expect("the entry is there")
+            .description,
+        original
+    );
+}
+
+// The 2026-09-05 accepted Update: "D7's listing does not lie about what it
+// lists." `zaru notes tokens` is filtered to Notes tokens, so a verb under it
+// must not reach a provider key -- and the reading is the one
+// `grant_composer_role` and `move_composer_role` already take, which is that
+// from the caller's side there is no Notes token by that name.
+//
+// The mutant: drop the family comparison from `of_family`, and both halves
+// below act on the provider key.
+#[test]
+fn a_notes_verb_does_not_reach_a_provider_key_and_says_so_as_an_unknown_alias() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (provider, value) = staged_provider_entry(ProviderKind::Gemini);
+    let alias = provider.alias().clone();
+    let description = provider.description().as_str().to_owned();
+    store
+        .add(provider, &keys, None)
+        .expect("a provider key is added");
+
+    let replacement = Description::new(nonce("reached")).expect("a nonce is one line");
+    match store.describe(&alias, &replacement, Family::Notes) {
+        Err(StoreError::UnknownAlias { alias: named }) => assert_eq!(named, alias),
+        other => panic!("a provider key was described through a Notes verb: {other:?}"),
+    }
+    match store.remove(&alias, Family::Notes) {
+        Err(StoreError::UnknownAlias { alias: named }) => assert_eq!(named, alias),
+        other => panic!("a provider key was removed through a Notes verb: {other:?}"),
+    }
+
+    // Unchanged on both counts, and the secret still opens -- a refusal that
+    // wrote first would leave a key described by somebody else's command.
+    let record = store
+        .record(&alias)
+        .expect("the provider key is still stored");
+    assert_eq!(record.description, description);
+    assert_eq!(
+        store
+            .secret(&alias, &keys)
+            .expect("the key is still openable")
+            .expose_for_dispatch(),
+        value
+    );
+
+    // And the surface that *is* the provider key's reaches it.
+    store
+        .describe(&alias, &replacement, Family::Provider(ProviderKind::Gemini))
+        .expect("the providers surface reaches a provider key");
+    assert_eq!(
+        store.record(&alias).expect("still stored").description,
+        replacement.as_str()
+    );
+}
+
+// An alias nothing holds is refused by both verbs, and the store is untouched.
+//
+// The mutant: `of_family` answers `Ok` for a missing alias by inserting a
+// default record, and the count below moves.
+#[test]
+fn an_unknown_alias_is_refused_by_both_verbs_and_changes_nothing() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+    let (entry, _) = staged_entry("bystander");
+    let bystander = entry.alias().clone();
+    store.add(entry, &keys, None).expect("an entry is added");
+
+    let absent = Alias::new(&nonce("absent")).expect("a nonce is a legal alias");
+    let text = Description::new(nonce("text")).expect("a nonce is one line");
+
+    for refusal in [
+        store
+            .describe(&absent, &text, Family::Notes)
+            .expect_err("describe refuses an alias nothing holds"),
+        store
+            .remove(&absent, Family::Notes)
+            .map(|_| ())
+            .expect_err("rm refuses an alias nothing holds"),
+    ] {
+        match &refusal {
+            StoreError::UnknownAlias { alias } => assert_eq!(alias, &absent),
+            other => panic!("an absent alias was refused for the wrong reason: {other}"),
+        }
+        assert!(
+            refusal.to_string().contains(absent.as_str()),
+            "the refusal does not name the alias that was asked for: {refusal}"
+        );
+    }
+
+    assert_eq!(store.len(), 1);
+    assert!(store.record(&bystander).is_some());
+}
+
+// D4's role, and the one consequence of removing a token that the listing
+// afterwards cannot show -- because the row that would have shown it is the
+// row that went.
+//
+// The mutant: `Removed::held_composer_role` hard-coded `false`, which is what
+// a caller composing its outcome from the alias alone would effectively do.
+#[test]
+fn removing_the_role_holder_says_so_and_leaves_no_composer() {
+    let (_scratch, _keys, mut store, composer_alias, agent_alias) = staged_pair();
+    assert_eq!(
+        store.composer().expect("the role is held").0,
+        &composer_alias
+    );
+
+    // Removing the token that does *not* hold it says nothing about the role,
+    // and the incumbent still holds it. Without this arm a `Removed` that
+    // always answered `true` would pass.
+    let removed = store
+        .remove(&agent_alias, Family::Notes)
+        .expect("a stored Notes token is removed");
+    assert!(
+        !removed.held_composer_role,
+        "removing a token that never held the role claimed it did"
+    );
+    assert_eq!(
+        store.composer().expect("the role is still held").0,
+        &composer_alias
+    );
+
+    let removed = store
+        .remove(&composer_alias, Family::Notes)
+        .expect("the role holder is the person's to remove");
+    assert!(
+        removed.held_composer_role,
+        "the role holder was removed and the store did not say so"
+    );
+    assert!(
+        store.composer().is_none(),
+        "a token still carries the composer role after the holder was removed"
+    );
+    assert!(store.is_empty());
+}
+
 fn staged_pair() -> (ScratchRoot, StagedKey, CredentialStore, Alias, Alias) {
     let scratch = ScratchRoot::new();
     let keys = StagedKey::minted();
