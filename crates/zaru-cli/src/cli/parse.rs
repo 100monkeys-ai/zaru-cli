@@ -374,12 +374,12 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
                 })
             }
             [tokens, extra, ..] if tokens == TOKENS => Err(CommandRefused::UnknownVerb {
-                namespace,
+                command: format!("{namespace} {TOKENS}"),
                 offered: extra.escape_debug().to_string(),
                 nearest: crate::config::nearest::nearest([ADD], extra),
             }),
             [extra, ..] => Err(CommandRefused::UnknownVerb {
-                namespace,
+                command: namespace.to_string(),
                 offered: extra.escape_debug().to_string(),
                 nearest: crate::config::nearest::nearest([TOKENS, USE], extra),
             }),
@@ -396,7 +396,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             }),
             [keys, add, kind] if keys == KEYS && add == ADD => Ok(Request::ProviderKeysAdd {
                 kind: ProviderKind::parse(kind).ok_or_else(|| CommandRefused::UnknownVerb {
-                    namespace,
+                    command: format!("{namespace} {KEYS} {ADD}"),
                     offered: kind.escape_debug().to_string(),
                     nearest: crate::config::nearest::nearest(
                         ProviderKind::ALL.iter().map(|kind| kind.as_str()),
@@ -404,19 +404,28 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
                     ),
                 })?,
             }),
-            [keys, extra] if keys == KEYS => Err(CommandRefused::UnknownVerb {
-                namespace,
-                offered: extra.escape_debug().to_string(),
-                nearest: crate::config::nearest::nearest([ADD], extra),
-            }),
             [keys, add, _, extra, ..] if keys == KEYS && add == ADD => {
                 Err(CommandRefused::UnexpectedWord {
                     command: format!("{namespace} {KEYS} {ADD}"),
                     offered: extra.escape_debug().to_string(),
                 })
             }
+            // **Open-ended, and it was `[keys, extra]` -- exactly two words --
+            // until 2026-09-14.** A three-word spelling whose second word is
+            // not `add` matched no arm above and fell all the way to
+            // `[other, ..]`, which named `keys` itself as the unknown verb:
+            // `zaru providers keys rm gemini` answered *"`zaru providers` has
+            // no `keys` verb"*, calling unknown the one word in the line that
+            // is a verb. Measured from the release binary at `a8539ac`. It
+            // sits below the `add` arms because an open-ended pattern here
+            // would otherwise shadow them.
+            [keys, extra, ..] if keys == KEYS => Err(CommandRefused::UnknownVerb {
+                command: format!("{namespace} {KEYS}"),
+                offered: extra.escape_debug().to_string(),
+                nearest: crate::config::nearest::nearest([ADD], extra),
+            }),
             [other, ..] => Err(CommandRefused::UnknownVerb {
-                namespace,
+                command: namespace.to_string(),
                 offered: other.escape_debug().to_string(),
                 nearest: crate::config::nearest::nearest(namespace.verbs().iter().copied(), other),
             }),
@@ -455,7 +464,7 @@ fn verb(
     };
     if !namespace.verbs().contains(&offered.as_str()) {
         return Err(CommandRefused::UnknownVerb {
-            namespace,
+            command: namespace.to_string(),
             offered: offered.escape_debug().to_string(),
             nearest: crate::config::nearest::nearest(namespace.verbs().iter().copied(), offered),
         });

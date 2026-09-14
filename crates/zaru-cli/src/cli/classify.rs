@@ -168,11 +168,30 @@ impl<'a> Surface<'a> {
             CommandRefused::VerbMissing { namespace } => {
                 act(format!("give it one of: {}", namespace.verbs().join(", ")))
             }
+            // The remedy is composed from the command the word was offered
+            // under, not from its namespace, because the two differ wherever
+            // the grammar is more than one word deep -- and where they differ
+            // the namespace produces a command that does not exist. See
+            // `CommandRefused::UnknownVerb`, which carries the measurement.
+            //
+            // **It is `run` rather than `act`, and that is the second half of
+            // the same defect.** Until 2026-09-14 this was a *described*
+            // action whose prose quoted a command in backticks, so
+            // `Action::command` answered `None` and
+            // `every_command_a_remedy_suggests_is_one_the_parser_accepts` --
+            // the check whose whole purpose is to refuse a remedy naming a
+            // command this binary does not run -- skipped it on every line.
+            // A command a reader is told to run belongs in the field built for
+            // one, where that check can see it and where a terminal can paste
+            // it.
             CommandRefused::UnknownVerb {
-                namespace, nearest, ..
+                command, nearest, ..
             } => match nearest {
-                Some(nearest) => act(format!("run `zaru {namespace} {nearest}`")),
-                None => act(format!("`zaru {namespace}` takes no verb")),
+                Some(nearest) => run(
+                    "run the nearest verb it takes:",
+                    &format!("zaru {command} {nearest}"),
+                ),
+                None => act(format!("`zaru {command}` takes no verb")),
             },
             CommandRefused::UnexpectedWord { command, .. } => {
                 act(format!("run `zaru {command}` with nothing after it"))

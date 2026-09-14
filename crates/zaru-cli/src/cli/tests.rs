@@ -538,10 +538,7 @@ fn an_argument_that_is_not_text_is_refused_rather_than_becoming_a_defect() {
 fn a_namespaces_verbs_are_one_list_read_by_both_the_parser_and_the_help_text() {
     assert!(matches!(
         refused(&["sessions", "lst"]),
-        CommandRefused::UnknownVerb {
-            namespace: Namespace::Session,
-            ..
-        }
+        CommandRefused::UnknownVerb { ref command, .. } if command == "sessions"
     ));
     assert!(matches!(
         refused(&["sessions"]),
@@ -679,6 +676,21 @@ fn refusable_lines() -> Vec<(String, Vec<OsString>)> {
         vec!["--continue", "models"],
         vec!["config", "explain", "runtime..tier"],
         vec!["sessions", "rm", "not-a-ulid"],
+        // **The two-word-deep namespaces, added 2026-09-14, and their absence
+        // was the whole defect.** Every line above is one word deep, so
+        // `every_command_a_remedy_suggests_is_one_the_parser_accepts` -- whose
+        // entire purpose is to catch a remedy naming a command the binary
+        // refuses -- had never once been handed a refusal raised *under* a
+        // verb. It passed while `zaru notes tokens rm x` answered "run `zaru
+        // notes add`", which is not a command. [Verification lessons] §9: a
+        // fixture that is too well-behaved asserts less than its name claims.
+        //
+        // [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+        vec!["notes", "nope"],
+        vec!["notes", "tokens", "nope"],
+        vec!["providers", "nope"],
+        vec!["providers", "keys", "nope"],
+        vec!["providers", "keys", "add", "nope"],
     ]
     .into_iter()
     .map(|words| (words.join(" "), typed(&words)))
@@ -724,6 +736,30 @@ fn variant_of(refusal: &CommandRefused) -> &'static str {
     }
 }
 
+/// Whether a suggested command is one this binary runs.
+///
+/// # An argument it still needs is not the same as a command it does not have
+///
+/// The rule was `parse(...).is_ok()` until 2026-09-14, which asks for a
+/// **complete invocation** and not for a command. `zaru notes tokens add` is a
+/// command this binary runs; parsed on its own it is refused with
+/// [`CommandRefused::ArgumentMissing`] naming what to add, which is the
+/// surface working rather than failing. `zaru notes add` is refused with
+/// [`CommandRefused::UnknownVerb`], and that is the refusal that means the
+/// spelling does not exist — which is what a remedy must never name, and what
+/// this binary printed at `a8539ac`.
+///
+/// So the two refusals are told apart rather than both counted as failure. A
+/// stem plus `ArgumentMissing` tells a reader the command and what it wants;
+/// anything else means the remedy sent them somewhere that is not there.
+fn names_a_command(command: &str) -> bool {
+    let rest: Vec<&str> = command.split_whitespace().skip(1).collect();
+    matches!(
+        parse(typed(&rest)),
+        Ok(_) | Err(CommandRefused::ArgumentMissing { .. })
+    )
+}
+
 /// A remedy that names a command names one `--help` lists.
 ///
 /// The command surface is what made `Action::runnable` usable at all — before
@@ -747,8 +783,7 @@ fn every_command_a_remedy_suggests_is_one_the_parser_accepts() {
                 continue;
             };
             suggested.push(command.to_owned());
-            let rest: Vec<&str> = command.split_whitespace().skip(1).collect();
-            if parse(typed(&rest)).is_err() {
+            if !names_a_command(command) {
                 unrunnable.push(command.to_owned());
             }
         }
@@ -763,6 +798,93 @@ fn every_command_a_remedy_suggests_is_one_the_parser_accepts() {
         "a remedy suggested a command this binary refuses, which is ADR-0016 D2's stack trace \
          with better grammar: {unrunnable:?}"
     );
+}
+
+/// A word refused under a verb names that verb, not its namespace.
+///
+/// # The two sentences this pins, measured from the release binary
+///
+/// At `a8539ac`, `zaru notes tokens rm x` printed *"`zaru notes` has no `rm`
+/// verb"* with the remedy *"run `zaru notes add`"*, and `zaru providers keys
+/// rm gemini` printed *"`zaru providers` has no `keys` verb"*. The first
+/// remedy names a command that does not exist — the real one is `zaru notes
+/// tokens add` — and the second statement calls unknown the one word in the
+/// line that is a verb.
+///
+/// `every_command_a_remedy_suggests_is_one_the_parser_accepts` is the check
+/// that should have caught the first, and it passed, because
+/// [`refusable_lines`] carried no line two words deep. That corpus now does,
+/// so this check and that one fail together on a regression; this one exists
+/// as well because it names the **statement**, which the remedy check cannot
+/// see, and because a corpus is a list somebody has to remember to extend.
+#[test]
+fn a_word_refused_under_a_verb_names_the_verb_it_was_offered_under() {
+    let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
+
+    // The command each refusal must name, and the word each must call
+    // unknown. `notes tokens rm x` is four words: `rm` is what was not
+    // understood, under `notes tokens`.
+    for (words, command, offered) in [
+        (vec!["notes", "tokens", "rm", "x"], "notes tokens", "rm"),
+        (
+            vec!["notes", "tokens", "describe", "x"],
+            "notes tokens",
+            "describe",
+        ),
+        (
+            vec!["providers", "keys", "rm", "gemini"],
+            "providers keys",
+            "rm",
+        ),
+        (
+            vec!["providers", "keys", "add", "nope"],
+            "providers keys add",
+            "nope",
+        ),
+        // One word deep, where the namespace and the command are the same
+        // spelling: the fix must not move these.
+        (vec!["notes", "nope"], "notes", "nope"),
+        (vec!["sessions", "lst"], "sessions", "lst"),
+    ] {
+        let refusal = refuse(typed(&words));
+        let statement = refusal.to_string();
+        assert_eq!(
+            statement,
+            format!("`zaru {command}` has no `{offered}` verb"),
+            "`zaru {}` was refused naming the wrong command",
+            words.join(" ")
+        );
+
+        let classified = surface.command(&refusal);
+        let crate::failure::Classified::UserCorrectable { remedy, .. } = &classified else {
+            panic!(
+                "`zaru {}` is the user's and must be correctable",
+                words.join(" ")
+            );
+        };
+        let named: Vec<String> = remedy
+            .actions()
+            .filter_map(|action| action.command().map(str::to_owned))
+            .collect();
+        assert!(
+            !named.is_empty(),
+            "`zaru {}` was refused with no command to run",
+            words.join(" ")
+        );
+        for suggested in named {
+            assert!(
+                suggested.starts_with(&format!("zaru {command} ")),
+                "`zaru {}` was answered with `{suggested}`, which is not a spelling of `zaru \
+                 {command}`",
+                words.join(" ")
+            );
+            assert!(
+                names_a_command(&suggested),
+                "`zaru {}` was answered with `{suggested}`, which this binary refuses",
+                words.join(" ")
+            );
+        }
+    }
 }
 
 /// A file this harness wrote and cannot read back is reported as ours.

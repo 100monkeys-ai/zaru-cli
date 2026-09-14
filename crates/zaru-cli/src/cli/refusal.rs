@@ -68,13 +68,40 @@ pub enum CommandRefused {
         /// Which namespace.
         namespace: Namespace,
     },
-    /// A verb this namespace does not take.
+    /// A verb the command it was offered under does not take.
+    ///
+    /// # It carries the command rather than the namespace, and that is a fix
+    ///
+    /// Until 2026-09-14 this carried a [`Namespace`], and both the statement
+    /// and the remedy were composed from it alone. That is right for a
+    /// grammar one word deep and **false for the two that are deeper**:
+    /// `notes tokens <extra>` and `providers keys <extra>` raise this refusal
+    /// with a word that was offered under `notes tokens` and `providers
+    /// keys`, and the namespace is the wrong half of the spelling to name.
+    ///
+    /// Measured from the release binary at `a8539ac`, both halves wrong at
+    /// once: `zaru notes tokens rm x` answered *"`zaru notes` has no `rm`
+    /// verb"* with the remedy *"run `zaru notes add`"* — and **`zaru notes
+    /// add` is not a command**, the real one being `zaru notes tokens add`.
+    /// `zaru providers keys rm gemini` answered *"`zaru providers` has no
+    /// `keys` verb"*, naming as unknown the one word in the line that **is** a
+    /// verb. [ADR-0016] D2's own bar is that a remedy names something the
+    /// binary runs; a remedy naming a command that does not exist is the
+    /// failure that record calls "an error message whose reader cannot act".
+    ///
+    /// So this carries `command`, spelled as `--help` spells it, exactly as
+    /// [`CommandRefused::UnexpectedWord`] and
+    /// [`CommandRefused::ArgumentMissing`] beside it already do. One field
+    /// rather than a namespace plus a depth means the statement and the
+    /// remedy cannot come to disagree about which command was being typed.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     UnknownVerb {
-        /// Which namespace.
-        namespace: Namespace,
+        /// The command the word was offered under, as `--help` spells it.
+        command: String,
         /// What was typed, escaped.
         offered: String,
-        /// The nearest verb the namespace takes, absent when it takes none.
+        /// The nearest verb that command takes, absent when it takes none.
         nearest: Option<&'static str>,
     },
     /// A command that takes no further word was given one.
@@ -166,8 +193,8 @@ impl fmt::Display for CommandRefused {
                 "`zaru {namespace}` is a namespace rather than a command, and it was given no verb"
             ),
             Self::UnknownVerb {
-                namespace, offered, ..
-            } => write!(f, "`zaru {namespace}` has no `{offered}` verb"),
+                command, offered, ..
+            } => write!(f, "`zaru {command}` has no `{offered}` verb"),
             Self::UnexpectedWord { command, offered } => write!(
                 f,
                 "`zaru {command}` takes no further word, and it was given {offered:?}"
