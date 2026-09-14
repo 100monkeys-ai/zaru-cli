@@ -1302,3 +1302,122 @@ fn every_recorded_stream_parses_through_the_products_own_reader() {
         assert!(!frames.is_empty(), "{name} produced no frames");
     }
 }
+
+#[test]
+fn a_transport_failure_says_what_went_wrong_and_not_only_that_something_did() {
+    // **The measurement this exists for.** `reqwest::Error`'s own `Display` for
+    // a failed send is `error sending request for url (…)` and nothing else;
+    // the part a reader can act on is three links down the `source` chain.
+    // Measured 2026-09-14: connection-refused and DNS failures are
+    // indistinguishable at the top level and obvious at the bottom.
+    #[derive(Debug)]
+    struct Link(&'static str, Option<Box<Link>>);
+    impl core::fmt::Display for Link {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for Link {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|link| link as &dyn std::error::Error)
+        }
+    }
+
+    // The measured connect chain, reproduced.
+    let refused = Link(
+        "error sending request for url (http://127.0.0.1:11999/v1/chat/completions)",
+        Some(Box::new(Link(
+            "client error (Connect)",
+            Some(Box::new(Link(
+                "tcp connect error",
+                Some(Box::new(Link("Connection refused (os error 111)", None))),
+            ))),
+        ))),
+    );
+    let said = super::failure::transport_detail(&refused);
+    assert!(
+        said.contains("Connection refused (os error 111)"),
+        "the actionable cause reaches the reader: {said}",
+    );
+    assert!(
+        said.starts_with("error sending request for url"),
+        "and the top-level sentence is still first: {said}",
+    );
+
+    // The measured DNS chain, which the top level does not distinguish from it.
+    let dns = Link(
+        "error sending request for url (http://nonexistent.invalid/v1/chat/completions)",
+        Some(Box::new(Link(
+            "client error (Connect)",
+            Some(Box::new(Link(
+                "dns error",
+                Some(Box::new(Link(
+                    "failed to lookup address information: Name or service not known",
+                    None,
+                ))),
+            ))),
+        ))),
+    );
+    let dns_said = super::failure::transport_detail(&dns);
+    assert!(dns_said.contains("Name or service not known"), "{dns_said}",);
+    // The accepting sibling, and the whole point: the two are different
+    // problems with different remedies, and at the top level they are the same
+    // sentence but for a URL.
+    assert_ne!(
+        said, dns_said,
+        "two different failures must not read identically",
+    );
+}
+
+#[test]
+fn a_transport_chain_is_bounded_and_a_link_that_repeats_its_parent_is_dropped() {
+    #[derive(Debug)]
+    struct Deep(usize);
+    impl core::fmt::Display for Deep {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "link-{}", self.0)
+        }
+    }
+    impl std::error::Error for Deep {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            // A chain that never ends, which is what the bound is for.
+            Some(Box::leak(Box::new(Deep(self.0 + 1))))
+        }
+    }
+    let said = super::failure::transport_detail(&Deep(0));
+    let links = said.matches("link-").count();
+    assert_eq!(
+        links,
+        super::failure::CHAIN_DEPTH + 1,
+        "the head plus at most CHAIN_DEPTH links, so an unbounded chain cannot make an unbounded \
+         refusal: {said}",
+    );
+
+    // A link whose Display is its parent's adds nothing and is dropped --
+    // `reqwest` does this at least once.
+    #[derive(Debug)]
+    struct Echo;
+    impl core::fmt::Display for Echo {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("the same sentence")
+        }
+    }
+    impl std::error::Error for Echo {}
+    #[derive(Debug)]
+    struct Parent;
+    impl core::fmt::Display for Parent {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("the same sentence")
+        }
+    }
+    impl std::error::Error for Parent {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&Echo)
+        }
+    }
+    assert_eq!(
+        super::failure::transport_detail(&Parent),
+        "the same sentence",
+        "a link that only repeats its parent costs the reader a clause and says nothing",
+    );
+}

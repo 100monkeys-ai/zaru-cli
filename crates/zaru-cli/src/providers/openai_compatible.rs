@@ -266,7 +266,12 @@ impl OpenAiCompatibleClient {
             // where that argument is hardest and how it is resolved.
             OpenAiCompatibleFailure::Unreachable {
                 endpoint: self.configured.clone(),
-                detail: error.to_string(),
+                // **The whole chain, not `reqwest`'s top-level sentence.**
+                // See `failure::transport_detail`: `to_string()` alone gives
+                // "error sending request for url (…)" and drops "Connection
+                // refused" three links below it, which is the only part a
+                // reader can act on.
+                detail: failure::transport_detail(&error),
             }
         })?;
 
@@ -288,7 +293,7 @@ impl OpenAiCompatibleClient {
                     .await
                     .map_err(|error| OpenAiCompatibleFailure::Unavailable {
                         code: Some(status.as_u16()),
-                        detail: error.to_string(),
+                        detail: failure::transport_detail(&error),
                     })?;
             return Err(OpenAiCompatibleFailure::from_status(
                 status.as_u16(),
@@ -316,7 +321,7 @@ impl OpenAiCompatibleClient {
                     .await
                     .map_err(|error| OpenAiCompatibleFailure::Unreachable {
                         endpoint: self.configured.clone(),
-                        detail: error.to_string(),
+                        detail: failure::transport_detail(&error),
                     })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();

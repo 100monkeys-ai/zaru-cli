@@ -63,8 +63,10 @@ pub struct Request {
 ///
 /// A server that ignores the field sends no usage frame and this client
 /// reports `0 + 0` rather than inventing one. See
-/// [`super::OpenAiCompatibleClient::capabilities`] for why the descriptor
-/// still declares token accounting.
+/// [`Provider::capabilities`] on [`super::OpenAiCompatibleClient`] for why the
+/// descriptor still declares token accounting.
+///
+/// [`Provider::capabilities`]: crate::providers::Provider::capabilities
 ///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
