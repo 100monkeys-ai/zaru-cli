@@ -5729,3 +5729,167 @@ fn one_failure_of_each_class_renders_whole_and_in_its_own_register() {
         }
     }
 }
+
+/// **A typed newline is escaped once, on both surfaces.**
+///
+/// [ADR-0007] D7 renders an alias and a description into a terminal listing,
+/// so a control character in either is refused. Both refusals *pre-escaped*
+/// the value at construction and then rendered it through `{:?}`, which
+/// escapes a second time -- so a typed newline came back as `\\n` and [ADR-0016]
+/// D2's remedy asked the reader to "remove the control character from
+/// `"one line\\nand a second"`", naming a backslash they never typed. A remedy
+/// that misquotes the reader's own input is worse than no remedy: it sends
+/// them looking for a character that is not there.
+///
+/// # Why both surfaces, and why the sentence rather than the field
+///
+/// The value is one field read by two renderers -- `Presentation`'s `Display`
+/// through a pipe, and the pane through `vocabulary::refusal_lines` -- and
+/// [ADR-0015] D2 says the two spellings of a command show the same remedy. A
+/// check on the field alone would pass against a pane that escaped a third
+/// time. So this reads the sentence each surface actually produces.
+///
+/// The accepting sibling is an ordinary alias and an ordinary description,
+/// which must reach both surfaces verbatim. Without it the check passes
+/// against a renderer that escapes nothing at all, or prints nothing at all.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-command-surface
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn a_typed_newline_is_escaped_once_on_both_surfaces() {
+    const TYPED: &str = "one line\nand a second";
+    /// What `{:?}` makes of TYPED: one backslash, then `n`.
+    const ONCE: &str = r"one line\nand a second";
+    /// What escaping it twice made of it, and the sentence the reader saw.
+    const TWICE: &str = r"one line\\nand a second";
+
+    let refusals: [(&str, crate::failure::Classified); 2] = [
+        (
+            "an alias",
+            crate::credentials::Alias::new(TYPED)
+                .expect_err("a newline is a control character")
+                .into(),
+        ),
+        (
+            "a description",
+            crate::credentials::Description::new(TYPED)
+                .expect_err("a newline is a control character")
+                .into(),
+        ),
+    ];
+
+    for (what, classified) in refusals {
+        // Surface one: the pipe, which is what `zaru notes tokens add` reaches.
+        let piped = crate::failure::Presentation::of(&classified).to_string();
+        // Surface two: the pane, which is what `/notes tokens add` reaches.
+        let mut shell = shell();
+        for line in crate::terminal::vocabulary::refusal_lines(&classified) {
+            shell.notice(line);
+        }
+        let painted = painted_text(&cells_at(&shell, 100, 30, Palette::Coloured));
+
+        for (surface, shown) in [("out of session", &piped), ("in a session", &painted)] {
+            assert!(
+                !shown.contains(TWICE),
+                "{what}, {surface}: the value is escaped twice, so the remedy asks the reader to \
+                 remove a backslash they did not type:\n{shown}",
+            );
+            assert!(
+                shown.contains(ONCE),
+                "{what}, {surface}: the typed newline is not shown as {ONCE:?} at all, so the \
+                 reader cannot tell which character was refused:\n{shown}",
+            );
+        }
+    }
+
+    // The accepting sibling: nothing above holds against a renderer that
+    // escapes nothing, or one that prints nothing.
+    let ordinary = crate::credentials::Alias::new("work: not a name")
+        .expect_err("a colon is the namespace separator");
+    let classified: crate::failure::Classified = ordinary.into();
+    let shown = crate::failure::Presentation::of(&classified).to_string();
+    assert!(
+        shown.contains("work: not a name"),
+        "an alias carrying no control character must reach the reader verbatim, and this one \
+         did not:\n{shown}",
+    );
+}
+
+/// **A control character in a refused value reaches no line the pane is given.**
+///
+/// The security corpus case that goes with deleting the pre-escape. [ADR-0007]
+/// D7 refuses a control character in an alias because the alias is "rendered
+/// into a terminal listing, where one can erase or overwrite a neighbouring
+/// row" -- so the refusal must not itself carry the raw character to a
+/// terminal. The escaping still happens; it happens **once**, at the render,
+/// where `{:?}` and `Statement::sanitised` both do it.
+///
+/// # Why the lines and not the painted cells
+///
+/// This was written first as an assertion over the cells of a frame, and it
+/// **could not fail**: it passed against a render emitting the raw value with
+/// `{}` instead of `{:?}`, and it passed again against `Statement::sanitised`
+/// stripped of its escaping. A `ratatui` cell holds one grapheme and the
+/// buffer never stores a control character, so a frame-level assertion here
+/// restates what the terminal library guarantees and says nothing about any
+/// decision in this tree. The decision is made in the text handed to the pane,
+/// which is where a raw character could actually appear, so that is what is
+/// read.
+///
+/// # What actually holds it: two mechanisms, measured
+///
+/// Neither mutant reddens this **alone**, and that is a finding rather than a
+/// weakness. `{:?}` at the render escapes the value, and `Statement::sanitised`
+/// escapes whatever reaches it afterwards, so each covers for the other: the
+/// case goes red only when both are removed, and it does go red then, naming
+/// the raw character and the whole line. A check that passed with one of the
+/// two disabled would be worth suspecting; one that survives the loss of
+/// either and fails on the loss of both is measuring a property with a
+/// deliberate backstop, which is what ADR-0007 D7 asks for.
+///
+/// Its accepting sibling is the ordinary alias below: without it the case is
+/// satisfied by a refusal that produces no lines at all.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[test]
+fn corpus_a_control_character_in_a_refused_alias_reaches_no_line_the_pane_is_given() {
+    for raw in ['\n', '\r', '\u{1b}', '\0'] {
+        let offered = format!("work{raw}listing");
+        let classified: crate::failure::Classified = crate::credentials::Alias::new(&offered)
+            .expect_err("a control character is refused")
+            .into();
+
+        let lines = crate::terminal::vocabulary::refusal_lines(&classified);
+        assert!(
+            !lines.is_empty(),
+            "the refusal for {offered:?} produced no line at all",
+        );
+        for line in &lines {
+            assert!(
+                !line.text.contains(raw),
+                "the refusal for {offered:?} hands the pane a line carrying the raw {raw:?}: \
+                 {:?}. ADR-0007 D7 refuses that character precisely because a terminal acts on \
+                 it.",
+                line.text,
+            );
+        }
+    }
+
+    // The accepting sibling: an alias refused for a reason that is *not* a
+    // control character still reaches the pane verbatim, so nothing above is
+    // satisfied by a refusal that renders nothing.
+    let classified: crate::failure::Classified = crate::credentials::Alias::new("work: not a name")
+        .expect_err("a colon is the namespace separator")
+        .into();
+    let shown = crate::terminal::vocabulary::refusal_lines(&classified)
+        .iter()
+        .map(|line| line.text.clone())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        shown.contains("work: not a name"),
+        "an alias carrying no control character must reach the pane verbatim, and this one did \
+         not:\n{shown}",
+    );
+}

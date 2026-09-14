@@ -291,7 +291,13 @@ pub struct Description(String);
 /// The store would not take a description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescriptionRefused {
-    /// The description as it was offered, escaped.
+    /// The description as it was offered.
+    ///
+    /// **Raw, not pre-escaped.** Every render of this field goes through
+    /// `{:?}`, which escapes it once; escaping it here too produced
+    /// `"one line\\nand a second"` and a remedy asking the reader to remove a
+    /// backslash they did not type. See `Alias`' `Control` variant, which
+    /// carried the same defect.
     pub offered: String,
 }
 
@@ -321,7 +327,7 @@ impl Description {
         let offered = offered.into();
         if offered.chars().any(char::is_control) {
             return Err(DescriptionRefused {
-                offered: offered.escape_debug().to_string(),
+                offered: offered.clone(),
             });
         }
         Ok(Self(offered))

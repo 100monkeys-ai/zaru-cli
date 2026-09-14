@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zaru_cli::credentials::{
-    Alias, Confirm, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
-    SealingKey, Secret, ToolScope,
+    Alias, AliasRefused, Confirm, CredentialStore, Description, Entry, Instance, KeyStore, Reach,
+    SealingError, SealingKey, Secret, ToolScope,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -180,4 +180,59 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
     assert!(control.exists(), "the control was removed too");
     std::fs::remove_dir_all(&base).expect("the scratch tree is removable");
     assert!(!base.exists(), "the scratch tree survived removal");
+}
+
+/// **Every refusal that carries the offered value carries it as offered.**
+///
+/// [ADR-0007] D7 refuses a control character in an alias because the alias is
+/// rendered into a terminal listing. Until 2026-09-14 the `Control` variant
+/// escaped the value at construction while its three siblings stored it raw,
+/// and every one of the four is rendered through `{:?}` -- so the odd one out
+/// was escaped twice and the reader was asked to remove a backslash they had
+/// not typed. The inconsistency is the defect: one storage rule across the
+/// variants is what makes one rendering rule correct.
+///
+/// This asserts the rule directly, over every variant that carries a value, so
+/// a fifth variant cannot reintroduce the pre-escape quietly. `Empty` and
+/// `DotOrDotDot` carry nothing and have nothing to be consistent about.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[test]
+fn every_alias_refusal_carries_the_value_exactly_as_offered() {
+    // One input per variant, each chosen to trip exactly the variant named --
+    // `Alias::new` tests in order, so a value tripping two would never reach
+    // the second.
+    let offered: [(&str, &str); 4] = [
+        ("a separator", "work/notes"),
+        ("the namespace separator", "notes:work"),
+        ("a control character", "work\nnotes"),
+        ("surrounding whitespace", " work "),
+    ];
+
+    let mut carried = 0usize;
+    for (what, value) in offered {
+        let refusal = Alias::new(value).expect_err("each of these is refused");
+        let held = match &refusal {
+            AliasRefused::Separator { offered, .. }
+            | AliasRefused::NamespaceSeparator { offered }
+            | AliasRefused::Control { offered }
+            | AliasRefused::SurroundingWhitespace { offered } => offered.clone(),
+            // No wildcard: a variant added later with a value has to be given
+            // an arm here, which is the point of the check.
+            AliasRefused::Empty | AliasRefused::DotOrDotDot => {
+                panic!("{what}: {value:?} tripped a refusal that carries no value")
+            }
+        };
+        assert_eq!(
+            held, value,
+            "{what}: the refusal for {value:?} carries {held:?} instead. A value pre-escaped here \
+             is escaped a second time by the `{{:?}}` every render of it uses.",
+        );
+        carried += 1;
+    }
+
+    assert_eq!(
+        carried, 4,
+        "four variants carry the offered value and this check reached {carried}",
+    );
 }

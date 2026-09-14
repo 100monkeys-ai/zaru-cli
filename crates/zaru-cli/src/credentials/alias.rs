@@ -68,7 +68,7 @@ pub enum AliasRefused {
     /// neighbouring row, so a listing is no longer evidence about what the
     /// store holds.
     Control {
-        /// The alias as it was offered, with the offending character escaped.
+        /// The alias as it was offered.
         offered: String,
     },
     /// The alias began or ended with whitespace.
@@ -159,7 +159,7 @@ impl Alias {
         // rather than a mechanism.
         if offered.chars().any(char::is_control) {
             return Err(AliasRefused::Control {
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_owned(),
             });
         }
         if offered.trim() != offered {
