@@ -85,18 +85,20 @@ impl fmt::Display for WaitRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CeilingIsZero => f.write_str(
-                "a retry ceiling of 0 is refused; ADR-0016 D4 requires retries be bounded, and a \
-                 bound of zero is the decision not to retry rather than a bound on retrying",
+                // ADR-0016 D4 requires retries be bounded.
+                "a retry ceiling of 0 is refused; a bound of zero is the decision not to retry \
+                 rather than a bound on retrying",
             ),
             Self::BackoffIsZero => f.write_str(
-                "a retry backoff of 0 is refused; ADR-0016 D4 has transient failures retry with \
-                 backoff, and retrying without one turns a rate limit into a tighter rate limit",
+                // ADR-0016 D4 has transient failures retry with backoff.
+                "a retry backoff of 0 is refused; retrying without one turns a rate limit into a \
+                 tighter rate limit",
             ),
             Self::MoreRetriesThanTheCeiling { made, ceiling } => write!(
                 f,
-                "{made} retries were reported against a ceiling of {ceiling}; ADR-0016 D4 says \
-                 counted and bounded in one clause, so a count past the bound is a bound that \
-                 was not obeyed"
+                // ADR-0016 D4 says counted and bounded in one clause.
+                "{made} retries were reported against a ceiling of {ceiling}; a count past the \
+                 bound is a bound that was not obeyed"
             ),
         }
     }

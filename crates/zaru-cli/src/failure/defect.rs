@@ -76,8 +76,9 @@ impl fmt::Display for SessionIdRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
-                "a session id is empty; ADR-0016 D3 requires a defect report name the session, \
-                 and it cannot name nothing",
+                // ADR-0016 D3 requires a defect report name the session.
+                "a session id is empty, and a defect report that must name the session cannot \
+                 name nothing",
             ),
             Self::Control { offered } => write!(
                 f,

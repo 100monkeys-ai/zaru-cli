@@ -78,12 +78,14 @@ impl fmt::Display for PartialRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NothingCompleted => f.write_str(
-                "a partial report completed nothing; ADR-0016 D6 is about work that completed \
-                 some of its steps, and a run that completed none of them failed",
+                // ADR-0016 D6 is about work that completed some of its steps.
+                "a partial report completed nothing, and a run that completed none of its steps \
+                 failed",
             ),
             Self::NothingOutstanding => f.write_str(
-                "a partial report left nothing outstanding; ADR-0016 D6 is about work that \
-                 completed some of its steps, and a run that completed all of them succeeded",
+                // ADR-0016 D6 is about work that completed some of its steps.
+                "a partial report left nothing outstanding, and a run that completed all of its \
+                 steps succeeded",
             ),
         }
     }

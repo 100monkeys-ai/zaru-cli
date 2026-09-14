@@ -100,7 +100,7 @@ pub use defect::{DefectReport, Location, SessionEvidence, SessionId, SessionIdRe
 pub use guard::{Caught, Guarded, OwnWords, guard};
 pub use partial::{Partial, PartialRefused, StepName};
 pub use present::{Line, Presentation};
-pub use remedy::{Action, Remedy, Statement, StatementRefused};
+pub use remedy::{Action, Remedy, Statement, StatementRefused, THERE_ARE_EXACTLY, THIS_HARNESS};
 pub use wait::{Backoff, RETRY_LABEL, RetryCeiling, RetryRecord, Wait, WaitRefused};
 
 #[cfg(test)]

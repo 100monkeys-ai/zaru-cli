@@ -183,7 +183,8 @@ impl From<AliasRefused> for Remedy {
                 "remove the {found:?} from {offered:?}; an alias is a name rather than a path"
             )),
             AliasRefused::NamespaceSeparator { offered } => act(format!(
-                "remove the ':' from {offered:?}; ADR-0007 D5 separates the namespace with it"
+                // ADR-0007 D5 separates the namespace with the colon.
+                "remove the ':' from {offered:?}; the namespace is separated with it"
             )),
             AliasRefused::Control { offered } => {
                 act(format!("remove the control character from {offered:?}"))
@@ -298,10 +299,10 @@ impl From<ConfigRefused> for Classified {
                          than the value, and add the token to the credential store"
                     ))
                 } else {
+                    // ADR-0014 D4 keeps credentials out of configuration.
                     act(format!(
                         "remove the value under {key} from the {layer} and add the token to the \
-                         credential store; ADR-0014 D4 keeps credentials out of configuration \
-                         because a config file gets committed"
+                         credential store; a config file gets committed"
                     ))
                 }
             }

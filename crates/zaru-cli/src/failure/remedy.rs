@@ -71,10 +71,12 @@ pub enum StatementRefused {
 impl fmt::Display for StatementRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => f.write_str(
-                "a failure's statement is empty; ADR-0016 D1 has the class decide the \
-                 presentation and every presentation has a headline",
-            ),
+            // ADR-0016 D1 has the class decide the presentation and every
+            // presentation has a headline, which is why an empty one is
+            // refused rather than rendered.
+            Self::Empty => {
+                f.write_str("a failure's statement is empty, and every failure has a headline")
+            }
             Self::Control { offered } => write!(
                 f,
                 "the statement {offered:?} carries a control character; every presentation is \
@@ -85,6 +87,33 @@ impl fmt::Display for StatementRefused {
 }
 
 impl std::error::Error for StatementRefused {}
+
+/// The subject a sentence takes where a decision record was its subject.
+///
+/// [ADR-0016] D2's own worked example names no record, and a reader who
+/// cannot open the record cannot act on a sentence whose subject it is. A
+/// citation therefore reaches no user-facing string; where deleting it
+/// would leave a fragment, one of these two phrases takes its place and
+/// the record's number moves to the comment beside the literal.
+///
+/// Constants rather than typed-out words because the same substitution is
+/// made in seven modules, and a rule spelled seven times is a rule that
+/// diverges. `zaru-core` and `zaru-notes` need neither: [ADR-0003] D8
+/// gives them no dependency edge to share one through, and both of their
+/// sentences already name what is missing, so the citation's clause is
+/// deleted there rather than substituted.
+///
+/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub const THIS_HARNESS: &str = "this harness";
+
+/// The subject a closed set takes where a decision record was its subject.
+///
+/// See [`THIS_HARNESS`]. Used where the record was the subject
+/// of a clause that enumerates: `ADR-0001 D1 defines exactly three: …`
+/// becomes `there are exactly three: …`, so the enumeration — the only
+/// part of such a sentence the reader can act on — survives intact.
+pub const THERE_ARE_EXACTLY: &str = "there are exactly";
 
 /// One sentence saying what happened.
 ///
