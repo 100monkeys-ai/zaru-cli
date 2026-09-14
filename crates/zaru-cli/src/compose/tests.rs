@@ -1245,3 +1245,108 @@ fn adr_0010_d2s_conversation_records_the_answer_and_not_the_turns_output() {
         );
     }
 }
+
+// --------------- ADR-0010 D2's eighth producer: the run that failed after it
+
+/// A refused **checkpoint write** leaves the transcript carrying its headline,
+/// and one function writes the record for both of the places a run can fail.
+///
+/// # Why this exists beside the out-of-tree check rather than inside it
+///
+/// `turn_from_outside.rs` holds the turn's own refusal against the built
+/// binary, staged with a closed loopback port. The refusal *after* the turn
+/// cannot be staged that way: `compose::turn::task` mints a fresh session and
+/// writes [ADR-0010] D3's checkpoint into it in the same process, so making
+/// that directory unwritable between the mint and the write is a race, and
+/// [Verification lessons] §57 is exactly about not watching a defect through
+/// a widened window. The condition itself is deterministic here — a session
+/// directory at `0500`, which `crate::atomic::write` cannot create a
+/// temporary file in while an already-open transcript handle keeps working,
+/// because a directory's write bit governs creation and not writes to an open
+/// file.
+///
+/// # Two arms, and the second is the one that would rot
+///
+/// **The behavioural arm** stages the condition and asserts the headline
+/// reaches the file, with the class beside it: `Classify::checkpoint` is a
+/// **defect**, where the turn's own provider refusal is environmental, so a
+/// recorder that hard-coded either class fails one of the two checks.
+///
+/// **The call-site arm** asserts that the record is built in exactly one place
+/// and reached from exactly two, read off the module's own source. Without it
+/// a later arc could satisfy the first arm and leave `task`'s tail recording
+/// nothing, which is the state this check was written to end.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = ScratchRoot::new();
+    let root = scratch.store_root();
+    let store = crate::session::SessionStore::reading(root);
+    let id = crate::session::SessionId::mint(&crate::session::SystemWallClock)
+        .expect("a ULID is minted");
+    let session = store.start(id).expect("the scratch root takes a session");
+    std::fs::write(session.transcript_path(), b"").expect("the transcript file exists");
+
+    // The condition, deterministic: the directory cannot take a new file and
+    // the transcript already in it can still be appended to.
+    std::fs::set_permissions(session.directory(), std::fs::Permissions::from_mode(0o500))
+        .expect("the scratch directory takes a mode");
+
+    let context = crate::compose::SessionContext::opened(
+        context::prefix_for(),
+        crate::cli::layers::context_limits(),
+    );
+    let refusal = crate::compose::boundary::checkpointed(&context, &session)
+        .expect_err("a session directory at 0500 cannot take a checkpoint's temporary file");
+    let classified = crate::cli::classify::Surface::checkpoint(&refusal, session.evidence());
+    let headline = crate::failure::Presentation::of(&classified).headline;
+
+    crate::compose::turn::record_the_failure(&session, &classified);
+
+    std::fs::set_permissions(session.directory(), std::fs::Permissions::from_mode(0o700))
+        .expect("the scratch directory takes a mode back");
+    let transcript =
+        std::fs::read_to_string(session.transcript_path()).expect("the transcript reads back");
+    let last = transcript.lines().next_back().unwrap_or_else(|| {
+        panic!(
+            "a run whose checkpoint was refused wrote nothing at all, so `cat` shows a person a \
+             turn and no reason it stopped"
+        )
+    });
+    assert!(
+        last.starts_with(r#"{"failure":"#),
+        "the checkpoint was refused and the transcript's last record is not what refused it: \
+         {last}"
+    );
+    assert!(
+        last.contains(&headline),
+        "the record does not carry the headline the reader was shown. Shown: {headline:?}. \
+         Recorded: {last}"
+    );
+    assert!(
+        last.contains(r#""class":"defect""#),
+        "a refused checkpoint is ADR-0016 D1's defect and the record says otherwise, so the \
+         class is being invented rather than projected: {last}"
+    );
+
+    // The call-site arm, over this module's own product source.
+    let source = include_str!("turn.rs");
+    let built = source.matches("Record::Failure(").count();
+    assert_eq!(
+        built, 1,
+        "ADR-0010 D2's eighth producer is constructed in {built} places in `compose::turn`; one \
+         construction is what keeps the two failing paths from disagreeing the day the record \
+         gains a field"
+    );
+    let called = source.matches("record_the_failure(").count();
+    assert_eq!(
+        called, 3,
+        "`record_the_failure` appears {called} time(s) in `compose::turn`: its definition, \
+         `run_one`'s wrapper for a turn that was refused, and `task`'s tail for a checkpoint \
+         that would not write. A run can fail in both places and both owe the reader a record"
+    );
+}

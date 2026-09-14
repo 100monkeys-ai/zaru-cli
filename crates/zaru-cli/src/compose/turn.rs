@@ -1215,7 +1215,16 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         // so this is appended rather than replacing it: reporting only the
         // checkpoint failure would discard the answer, which is ADR-0016 D6's
         // "partial success is reported as partial".
-        return Ran::refused_having_said(ran.lines, Surface::checkpoint(&failure, evidence));
+        //
+        // **And it is recorded, since 2026-09-14.** A run whose turn answered
+        // and whose checkpoint would not write is a failed run, and ADR-0010
+        // D5's "every byte" is as false for it as for a turn refused at its
+        // provider -- `run_one`'s wrapper cannot see this one, because the
+        // write happens after it has returned. One recording function, two
+        // callers; see `record_the_failure`.
+        let classified = Surface::checkpoint(&failure, evidence);
+        record_the_failure(&session, &classified);
+        return Ran::refused_having_said(ran.lines, classified);
     }
 
     ran
@@ -1261,22 +1270,25 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
 /// reverse [ADR-0010] D1's reading. The check named in this module's own
 /// out-of-tree file holds that arm, so moving this up reddens.
 ///
-/// # One refusal a turn produces is outside this seam, measured and not fixed
+/// # The refusal that follows the turn is recorded too, by the same function
 ///
 /// [ADR-0010] D3's checkpoint is written **after** the turn, by the turn's
-/// callers rather than by the turn: [`task`] writes it and, on failure,
-/// returns `Ran::refused_having_said(ran.lines, Surface::checkpoint(..))`
-/// after this function has already returned, and
-/// `terminal::driver::run_a_turn` does the same two acts in the same order
-/// and paints the failure into the pane. Neither reaches a record, so a run
-/// whose turn answered and whose checkpoint would not write still leaves a
-/// transcript that does not say so. **This wrapper cannot see it by
-/// construction** — the write happens outside the function being wrapped —
-/// and closing it means either a second producer, which is what the one-seam
-/// argument above rejects, or one recording function with three callers.
-/// That is a decision rather than an implementation detail, so it is named
-/// here and left: this seam covers every refusal *the turn* produces, which
-/// is what was ruled, and the checkpoint's is one *the caller* produces.
+/// callers rather than by the turn, so this wrapper cannot see it: [`task`]
+/// writes it once this function has returned and, on failure, classifies it
+/// and returns. A run whose turn answered and whose checkpoint would not
+/// write is a failed run, and D5's "every byte" is as false for it as for a
+/// turn refused at its provider — so it is recorded, through
+/// `record_the_failure`, which is the one function that builds the variant.
+/// One `Record` variant, one construction, two places that decide a run has
+/// failed.
+///
+/// **`terminal::driver::run_a_turn` is a third such place and is deliberately
+/// untouched.** It performs the same two acts in the same order, but what it
+/// does with a refused checkpoint is paint `format!("{failure}")` into the
+/// pane — a `Display` of the failure rather than an [ADR-0016] D1
+/// classification — so recording it would mean classifying it first, which
+/// changes what a person reads. That is a decision about a user-facing line
+/// and is named here rather than taken.
 ///
 /// # A transcript that will not take the record does not replace the reason
 ///
@@ -1322,12 +1334,45 @@ pub async fn run_one(
     let Exit::Failed(classified) = &outcome.exit else {
         return outcome;
     };
+    record_the_failure(session, classified);
+    outcome
+}
+
+/// Write [ADR-0010] D2's eighth producer: what refused a turn.
+///
+/// # One function, two callers, and that is the whole design
+///
+/// A failed turn reaching no file is the defect this producer exists for, and
+/// a turn is failed by two different things: the turn itself, which
+/// [`run_one`] wraps, and the **checkpoint write that follows it**, which
+/// [`task`] performs after the turn has returned. Both are failures of one
+/// run, so both are recorded — and by *one* function rather than by two call
+/// sites each constructing the record, because two constructions of one
+/// record are two things that can come to disagree the day the record gains a
+/// field. That is the same closed-enum discipline `Record` itself carries.
+///
+/// **What it is not is a second producer.** There is one `Record` variant,
+/// one place that builds it, and two places that decide a turn has failed.
+/// `adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers`
+/// holds the count, so a third construction of the variant fails it.
+///
+/// # A transcript that will not take the record does not replace the reason
+///
+/// If the write fails, the caller's own classified failure is still what the
+/// reader is given. Reporting the bookkeeping failure instead would replace
+/// the reason the run stopped with the reason it could not be written down,
+/// which is strictly less useful to the person reading it — [ADR-0016] D6's
+/// "partial success is reported as partial", applied to a record rather than
+/// to a task.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub(super) fn record_the_failure(session: &crate::session::Session, classified: &Classified) {
     if let Ok(mut transcript) = Transcript::append_to(session.transcript_path()) {
         let _ = transcript.record(&crate::session::Record::Failure(
             crate::session::FailureLine::of(classified),
         ));
     }
-    outcome
 }
 
 /// What the reader is shown, and what the process exits with.
