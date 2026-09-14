@@ -26,8 +26,42 @@ const NOW: Duration = Duration::from_millis(10);
 /// the real vocabulary is asserted to reach the buffer.
 const STAGED_ANSWERS: &str = "[y/N]";
 
+/// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+/// D8's marking, staged here rather than imported.
+///
+/// **A literal this check owns, for `STAGED_ANSWERS`' reason one file over.**
+/// The one source is `zaru_cli::credentials::Reach::APEX_MARKING`, which this
+/// crate cannot name; what the shell owes is to carry whatever it was handed,
+/// at the rank and in the place the records give it, and a check that read the
+/// product's constant would be comparing it with itself. `zaru-cli`'s
+/// `the_marking_the_row_carries_is_the_constant_the_other_two_places_use` is
+/// where the bytes are pinned to it. What this literal has to be right about
+/// is its **width**, because the widths below are a function of these exact
+/// strings.
+const STAGED_MARKING: &str = "apex (no instance boundary)";
+
 fn shell() -> Shell {
     Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"))
+}
+
+/// A shell whose composer's credential is marked, per [ADR-0007] D8.
+///
+/// **There is no setter for this field and this fixture is why there does not
+/// need to be one.** The marking is read once, at session open, before the
+/// shell exists — so it is handed to [`Status`] rather than written onto a
+/// live one, which is the discipline the 2026-09-06 amendment to
+/// [ADR-0001](https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers)
+/// D2 already argues for the model and the mode: "a value the record fixes for
+/// the session is handed to the row once, so nothing can change it and the
+/// immutability is a shape rather than a rule anybody keeps". A check that
+/// needed a mutation surface would have been asking for one the product has no
+/// caller for.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+fn shell_marked(marking: Option<&str>) -> Shell {
+    let mut status = Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X");
+    status.credential = marking.map(str::to_owned);
+    Shell::open(status)
 }
 
 fn key(shell: &mut Shell, key: Key) -> Action {
@@ -266,7 +300,7 @@ fn the_tier_is_what_survives_a_width_too_narrow_for_the_whole_row() {
 /// host hands over; the widths below are a function of these exact strings and
 /// nothing here recomputes them.
 fn crowded() -> Shell {
-    let mut shell = shell();
+    let mut shell = shell_marked(Some(STAGED_MARKING));
     shell.set_context_usage(Some(Segment::new(
         "context 1.2k/1048.5k tokens",
         "1.2k/1048.5k",
@@ -313,6 +347,7 @@ fn the_row_keeps_the_ranks_the_records_own_at_each_of_five_widths() {
                 "runtime.tier = bare",
                 "gemini-3.6-flash",
                 "mode ask",
+                "apex (no instance boundary)",
                 "context 1.2k/1048.5k tokens",
                 "12.34s",
                 "tokens: 390 prompt + 79 completion = 469",
@@ -320,28 +355,42 @@ fn the_row_keeps_the_ranks_the_records_own_at_each_of_five_widths() {
             ],
             &[],
         ),
+        // **The width the rank decision turns on.** The whole row at its
+        // narrow spellings and without the session is 86 columns; the marking
+        // adds 30, so something has to go. At `Rank::Credential` the model
+        // and the mode go and the marking stays, which is what "marked
+        // wherever the token appears" asks for; at the rank first proposed,
+        // below the mode, the marking would be the thing that went and the
+        // two fields no record puts on this row would have outlived it.
         (
             100,
             &[
                 "runtime.tier = bare",
-                "gemini-3.6-flash",
-                "mode ask",
+                "apex (no instance boundary)",
                 "1.2k/1048.5k",
                 "12.34s",
                 "469 tokens",
             ],
-            &["session 01JQZX8N3K4M5P6R7S8T9V0W1X"],
+            &[
+                "gemini-3.6-flash",
+                "mode ask",
+                "session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+            ],
         ),
         (
             80,
             &[
                 "runtime.tier = bare",
-                "gemini-3.6-flash",
                 "1.2k/1048.5k",
                 "12.34s",
                 "469 tokens",
             ],
-            &["mode ask", "session 01JQZX8N3K4M5P6R7S8T9V0W1X"],
+            &[
+                "apex (no instance boundary)",
+                "gemini-3.6-flash",
+                "mode ask",
+                "session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+            ],
         ),
         (
             60,
@@ -351,12 +400,22 @@ fn the_row_keeps_the_ranks_the_records_own_at_each_of_five_widths() {
                 "12.34s",
                 "469 tokens",
             ],
-            &["gemini-3.6-flash", "mode ask"],
+            &[
+                "apex (no instance boundary)",
+                "gemini-3.6-flash",
+                "mode ask",
+            ],
         ),
         (
             40,
             &["runtime.tier = bare", "1.2k/1048.5k"],
-            &["12.34s", "469 tokens", "gemini-3.6-flash", "mode ask"],
+            &[
+                "apex (no instance boundary)",
+                "12.34s",
+                "469 tokens",
+                "gemini-3.6-flash",
+                "mode ask",
+            ],
         ),
     ];
 
@@ -398,6 +457,7 @@ fn the_fields_that_survive_keep_their_display_order() {
         "runtime.tier = bare",
         "gemini-3.6-flash",
         "mode ask",
+        "apex (no instance boundary)",
         "1.2k/1048.5k",
         "12.34s",
         "469 tokens",
@@ -494,6 +554,92 @@ fn the_model_and_the_mode_reach_the_row_where_the_amendment_puts_them() {
         rows[0].trim_end(),
         "runtime.tier = bare · gemini-3.6-flash · mode yolo · session 01JQZX8N3K4M5P6R7S8T9V0W1X",
         "both fields must reach the painted row, after the tier"
+    );
+}
+
+// ------------------------------------------------- ADR-0007 D8, clause 11
+
+/// [ADR-0007] D8's marking reaches the painted row, after the mode.
+///
+/// **The bytes are a nonce this check owns**, for the reason
+/// `both_records_numbers_reach_the_painted_row_in_the_order_the_arbitration_gives`
+/// states about its own two segments: what this crate owes is to carry what it
+/// was handed onto the row in the right place, and `zaru-cli` is where the
+/// text is asserted to be `Reach::APEX_MARKING` rather than a spelling. Read
+/// out of `TestBackend` rather than off `painted()`, because the claim is that
+/// a user meets it.
+///
+/// Watched red on: the field pushed into `fields` in rank order rather than
+/// display order, which puts it ahead of the model.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[test]
+fn a_credential_marking_reaches_the_row_after_the_mode() {
+    let mut shell = shell_marked(Some("a-marking-nonce-4f21"));
+    shell.describe(
+        Some("gemini-3.6-flash".to_owned()),
+        Some("mode ask".to_owned()),
+    );
+
+    let (rows, _) = painted(&shell, 160, HEIGHT);
+    assert_eq!(
+        rows[0].trim_end(),
+        "runtime.tier = bare · gemini-3.6-flash · mode ask · a-marking-nonce-4f21 · \
+         session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+        "the marking must reach the row after the mode and before the session"
+    );
+}
+
+/// An unmarked credential contributes nothing at all, separator included.
+///
+/// **This is the ordinary state and not an edge case**: [ADR-0006] D4's scope
+/// refuses the composer role to every token that can be minted today, so every
+/// machine that exists paints this row. Asserted beside a row carrying every
+/// other field, because a `None` that printed an empty segment would be
+/// invisible on the row this check's neighbour asserts and obvious here.
+///
+/// Watched red on: the arm pushing an empty field when the option is `None`.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+#[test]
+fn a_credential_that_is_not_marked_contributes_nothing_including_its_separator() {
+    let mut shell = shell_marked(None);
+    shell.describe(
+        Some("gemini-3.6-flash".to_owned()),
+        Some("mode ask".to_owned()),
+    );
+
+    assert_eq!(
+        shell.status().painted(200),
+        "runtime.tier = bare · gemini-3.6-flash · mode ask · \
+         session 01JQZX8N3K4M5P6R7S8T9V0W1X",
+        "an unmarked credential must contribute no separator"
+    );
+}
+
+/// At 40 columns the marking goes and the tier stays, byte for byte.
+///
+/// **The marking is 27 columns and the tier's own spelling is 19**, so a row
+/// carrying both is 49 and cannot fit at 40 however the session is treated.
+/// What this check pins is which one goes: [ADR-0001] D2's "at all times"
+/// outranks every other clause on this row, so the answer is the row a machine
+/// with no marking already paints — and the literal below is the one the
+/// release binary printed at 40 columns on 2026-09-14, before this field
+/// existed.
+///
+/// Watched red on: `Rank::Credential` set to 0; the marking rendered
+/// unconditionally in `joined`.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+#[test]
+fn the_marking_is_dropped_before_the_tier_at_a_width_that_cannot_hold_both() {
+    let shell = shell_marked(Some(STAGED_MARKING));
+
+    let (rows, _) = painted(&shell, 40, HEIGHT);
+    assert_eq!(
+        rows[0].trim_end(),
+        "runtime.tier = bare",
+        "at 40 columns the tier must survive and the marking must not"
     );
 }
 

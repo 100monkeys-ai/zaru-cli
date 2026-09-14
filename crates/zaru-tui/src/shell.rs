@@ -403,6 +403,30 @@ pub struct Status {
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     pub mode: Option<String>,
+    /// [ADR-0007] D8's marking, when the composer's credential is apex.
+    /// [`Rank::Credential`].
+    ///
+    /// D8: "Apex entries are **marked wherever the token appears**:
+    /// `/notes tokens`, the status line when the composer holds one, and the
+    /// description the agent reads." This is the second of those three, and
+    /// the last of them to exist.
+    ///
+    /// **The text is the host's, and it is one constant rather than a
+    /// spelling**, by exactly the argument the `tier` and `mode` fields above
+    /// already make: `zaru-cli`'s `credentials::Reach::APEX_MARKING` is read
+    /// by the listing and by the agent's projection too, and a second
+    /// rendering composed here would be free to disagree with them about a
+    /// word.
+    ///
+    /// `None` is the ordinary state and not a placeholder. It is what a store
+    /// holding no composer, a composer that is instance-locked, and a machine
+    /// with no credential store at all all look like — which is every machine
+    /// that exists, because [ADR-0006] D4's scope refuses the composer role to
+    /// every token that can be minted today.
+    ///
+    /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub credential: Option<String>,
 }
 
 /// One field of the row: what it says, and what it says when the row is narrow.
@@ -466,18 +490,43 @@ impl From<&str> for Segment {
 ///
 /// # The order is the records' and not a taste
 ///
-/// Ranks 0 to 3 each answer a clause, ordered by how absolutely the clause is
+/// Ranks 0 to 4 each answer a clause, ordered by how absolutely the clause is
 /// worded: [ADR-0001] D2's "at all times", then [ADR-0013] D6's "continuously"
 /// and its clause 5's "throughout", then [ADR-0012] clause 6's "Token counts
 /// and cost appear in the status line", then [ADR-0028] D5's "as the work
-/// proceeds". **Ranks 4 to 6 answer no clause at all**, which is why they are
-/// the three that go first — a field nobody decided should outlive a field a
-/// record required is exactly the outcome a clip produces by accident.
+/// proceeds", then [ADR-0007] D8's "marked wherever the token appears".
+/// **Ranks 5 to 7 answer no clause at all**, which is why they are the three
+/// that go first — a field nobody decided should outlive a field a record
+/// required is exactly the outcome a clip produces by accident.
+///
+/// # Why the credential marking is rank 4 and not rank 6
+///
+/// **Ruled 2026-09-14 under directives 20 and 25, open to Jeshua's veto.** The
+/// first proposal put it between [`Self::Mode`] and [`Self::Session`], and the
+/// paragraph above is what refuses that: the split at rank 4 is *answers a
+/// clause* against *answers no clause*, and [ADR-0007] D8 is a clause. A
+/// marking ranked below the model and the mode would be a field a record
+/// required being dropped before two that no record puts on this row, which is
+/// the outcome this whole order exists to prevent.
+///
+/// It was also measured rather than argued. On the row every field of which is
+/// present, at 100 columns, a rank-6 marking is dropped — the row with it is
+/// 116 columns — while `gemini-3.6-flash` and `mode ask` survive; at rank 4 it
+/// survives at 86 and those two go. **A marking that disappears whenever the
+/// terminal is busy is not "marked wherever the token appears".**
+///
+/// **It never outranks [`Self::Context`], and that was measured too.** The
+/// marking is 27 columns, so at rank 1 or 2 a 40-column row would carry it and
+/// lose [ADR-0013] D6's number — the failure the 2026-09-06 amendment to
+/// [ADR-0001] D2 exists to prevent, arriving from the other side. At rank 4 a
+/// 40-column row drops the marking instead and D6's number keeps the columns
+/// that amendment bought it.
 ///
 /// **This is the drop order, not the order the row reads in.** See
 /// [`Status::painted`].
 ///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
@@ -500,20 +549,25 @@ pub enum Rank {
     ///
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     Elapsed = 3,
+    /// [ADR-0007] D8, the last of its three marking places.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    Credential = 4,
     /// No record. Survey row 14.
-    Model = 4,
+    Model = 5,
     /// No record. Survey row 14.
-    Mode = 5,
+    Mode = 6,
     /// No record. The first thing dropped.
-    Session = 6,
+    Session = 7,
 }
 
 impl Rank {
     /// Every rank, worst first, so a check walks them rather than listing them.
-    pub const WORST_FIRST: [Self; 7] = [
+    pub const WORST_FIRST: [Self; 8] = [
         Self::Session,
         Self::Mode,
         Self::Model,
+        Self::Credential,
         Self::Elapsed,
         Self::Tokens,
         Self::Context,
@@ -572,6 +626,7 @@ impl Status {
             elapsed: None,
             model: None,
             mode: None,
+            credential: None,
         }
     }
 
@@ -583,7 +638,7 @@ impl Status {
     /// reshuffled on every resize is a row nobody can read at a glance, which
     /// is the whole purpose a status line serves.
     fn fields(&self) -> Vec<(Rank, &str, &str)> {
-        let mut fields: Vec<(Rank, &str, &str)> = Vec::with_capacity(7);
+        let mut fields: Vec<(Rank, &str, &str)> = Vec::with_capacity(8);
         // The tier's own spelling is composed here rather than stored, and it
         // is the one field with no narrow form: shortening it is what
         // ADR-0001 clause 6's check forbids.
@@ -593,6 +648,16 @@ impl Status {
         }
         if let Some(mode) = self.mode.as_deref() {
             fields.push((Rank::Mode, mode, mode));
+        }
+        // **After the mode and not after the tier**, which was the other
+        // candidate and was refused for the row's own security property: the
+        // tier's position is where ADR-0001 D2 puts the one membrane claim,
+        // and a second boundary-shaped phrase beside it would give a reader
+        // scanning the left edge two claims where that record wants one. See
+        // `zaru-cli`'s `a_configured_model_cannot_forge_a_second_tier_field`,
+        // which asserts the tier's own cell position.
+        if let Some(credential) = self.credential.as_deref() {
+            fields.push((Rank::Credential, credential, credential));
         }
         if let Some(context) = self.context.as_ref() {
             fields.push((Rank::Context, &context.full, &context.narrow));
