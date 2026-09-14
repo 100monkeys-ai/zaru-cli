@@ -547,6 +547,62 @@ fn results_that_do_not_match_the_calls_are_refused_rather_than_paired_wrongly() 
 }
 
 #[test]
+fn more_results_than_calls_is_refused_too_and_only_the_count_guard_sees_it() {
+    // The mirror of the check above, and it exists because a mutation showed
+    // the other one could not tell this client's two guards apart. With FEWER
+    // results than calls the loop runs out of results and the inner guard
+    // refuses, so disabling the outer count guard changed nothing. With MORE
+    // results than calls the loop never runs out, so the count guard is the
+    // only thing between this and a request that silently drops a result.
+    let prompt = prompt("a task");
+    let tools: [ToolDescriptor; 0] = [];
+    let results = [
+        ToolResult {
+            id: "a".to_owned(),
+            content: Redacted::by(&NothingHeld, "one"),
+            failed: false,
+        },
+        ToolResult {
+            id: "b".to_owned(),
+            content: Redacted::by(&NothingHeld, "two"),
+            failed: false,
+        },
+    ];
+    let mut answered = map::Answered::default();
+    answered.remember(
+        wire::Message {
+            role: map::ROLE_ASSISTANT.to_owned(),
+            content: String::new(),
+            tool_calls: Vec::new(),
+            tool_name: None,
+        },
+        vec![wire::ToolCall {
+            id: Some("a".to_owned()),
+            function: wire::CalledFunction {
+                name: "fs.read".to_owned(),
+                arguments: serde_json::json!({}),
+                index: None,
+            },
+        }],
+    );
+
+    let request = ModelRequest {
+        prompt: &prompt,
+        tools: &tools,
+        results: &results,
+    };
+    match map::request_from(&request, &mut answered, "llama3.2:3b") {
+        Err(OllamaFailure::ResultsDoNotMatchCalls { results, calls }) => {
+            assert_eq!((results, calls), (2, 1));
+        }
+        other => panic!(
+            "two results for one call was not refused ({other:?}); the extra result would be \
+             dropped silently, and this is the direction the inner guard cannot see"
+        ),
+    }
+}
+
+#[test]
 fn a_tool_schema_that_is_not_json_is_a_defect_and_is_named() {
     let prompt = prompt("a task");
     let tools = [ToolDescriptor {
