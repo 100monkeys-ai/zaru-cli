@@ -681,8 +681,18 @@ fn the_pane_shows_the_tail_of_a_transcript_longer_than_it_is() {
 ///
 /// A grammar that refused everything would satisfy each refusal check on its
 /// own, so this asserts the whole vocabulary parses — walked from the
-/// vocabulary rather than listed here, so a namespace added to the table is
-/// covered without anybody remembering.
+/// vocabulary this check is handed rather than listed in its body.
+///
+/// **Which vocabulary that is, corrected 2026-09-14 by the `first-run` arc.**
+/// This said "so a namespace added to the table is covered without anybody
+/// remembering". The vocabulary here is [`StagedVocabulary`], a hand-written
+/// array in this crate's own fixtures; `zaru-cli` depends on `zaru-tui` and
+/// not the reverse, so nothing here can read ADR-0015 D2's real table and a
+/// namespace added to it is covered only once somebody adds a tuple to that
+/// array. What this check holds is that the **grammar** reads every row of
+/// whatever table it is given, which is the half that belongs in this crate.
+/// The other half — that the table the product ships is the one the grammar
+/// meets — is `the_vocabulary_is_adr_0015_d2s_own_closed_set` in `zaru-cli`.
 #[test]
 fn every_namespace_the_vocabulary_carries_is_read_as_itself() {
     let vocabulary = StagedVocabulary;
@@ -840,8 +850,17 @@ fn a_line_with_no_leading_slash_is_a_task() {
 /// ADR-0015 D2: "A user command may not shadow a built-in namespace."
 ///
 /// Asserted against whatever the vocabulary carries rather than against a list
-/// written here, so an eleventh namespace spelled `/exit` is caught by this
-/// check rather than by somebody remembering.
+/// written in this check's body.
+///
+/// **Corrected 2026-09-14 by the `first-run` arc.** This said "so an eleventh
+/// namespace spelled `/exit` is caught by this check rather than by somebody
+/// remembering", and that is false of D2's table for the reason
+/// [`every_namespace_the_vocabulary_carries_is_read_as_itself`] now carries:
+/// the vocabulary here is a hand-written array in this crate's fixtures, and
+/// this crate cannot read `zaru-cli`'s `Namespace::ALL`. A namespace spelled
+/// `exit` added to the real table is caught by
+/// `the_shells_leave_word_shadows_no_namespace_in_the_real_table`, in
+/// `zaru-cli`, which walks that table and reads [`LEAVE`] from here.
 #[test]
 fn the_shells_own_leave_word_shadows_no_namespace() {
     let taken: Vec<&'static str> = StagedVocabulary

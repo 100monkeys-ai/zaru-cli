@@ -715,6 +715,42 @@ fn every_built_namespace_reaches_a_request_from_the_slash_side() {
     );
 }
 
+/// ADR-0015 D2's shadowing rule, read against the table it is about.
+///
+/// # This exists because the two checks that looked like it do not read D2's
+/// table
+///
+/// `zaru-tui`'s `the_shells_own_leave_word_shadows_no_namespace` and
+/// `every_namespace_the_vocabulary_carries_is_read_as_itself` each say, in
+/// their own documentation, that they are asserted "against whatever the
+/// vocabulary carries rather than against a list written here, so an eleventh
+/// namespace spelled `/exit` is caught by this check rather than by somebody
+/// remembering". That is true of the vocabulary they are handed and false of
+/// D2's table: both walk `StagedVocabulary`, a hand-written array in
+/// `zaru-tui`'s own fixtures, and `zaru-tui` cannot read `Namespace::ALL`
+/// because the dependency runs the other way. So a namespace added here
+/// reaches neither, and somebody does have to remember. Their documentation
+/// is corrected in the same commit as this check; the property they were
+/// written for lives here, where the real table is.
+#[test]
+fn the_shells_leave_word_shadows_no_namespace_in_the_real_table() {
+    let taken: Vec<&'static str> = Namespace::ALL.iter().map(|n| n.slash()).collect();
+    // Liveness: a walk that produced nothing would satisfy the assertion
+    // below without asserting anything, which is the shape this workspace
+    // keeps replacing.
+    assert!(
+        taken.contains(&Namespace::Runtime.slash()),
+        "this walk read {} spelling(s) and none of them is `/runtime`, so it read nothing that \
+         could shadow anything",
+        taken.len()
+    );
+    assert!(
+        !taken.contains(&zaru_tui::shell::command::LEAVE),
+        "the shell's leave word `{}` shadows one of ADR-0015 D2's namespaces: {taken:?}",
+        zaru_tui::shell::command::LEAVE
+    );
+}
+
 // --------------------------------------- ADR-0015 D2, one operation, two ways
 
 /// The clause this arc exists for. A slash command runs the **same function**

@@ -26,21 +26,33 @@
 //!
 //! # `/exit` is the shell's own word and belongs to no namespace
 //!
-//! No record names a way to leave. D2's table has ten rows and none of them is
-//! leaving, so `/exit` is **drafted under a delegated coordinator ruling of
-//! 2026-09-05, open to Jeshua's veto**, together with `Ctrl-C`. Both are
-//! recorded rather than one chosen, because a terminal user reaches for
-//! `Ctrl-C` before reading anything and a user who has read the hint strip
-//! reaches for the word.
+//! No record names a way to leave. None of D2's rows is leaving, so `/exit` is
+//! **drafted under a delegated coordinator ruling of 2026-09-05, open to
+//! Jeshua's veto**, together with `Ctrl-C`. Both are recorded rather than one
+//! chosen, because a terminal user reaches for `Ctrl-C` before reading
+//! anything and a user who has read the hint strip reaches for the word.
 //!
 //! D2's shadowing rule applies to it exactly as it applies to a user command:
 //! "A user command may not shadow a built-in namespace. Shadowing produces
 //! behaviour that depends on load order, which is unexplainable at the moment
-//! it matters." `/exit` names no namespace, and
-//! `the_shells_own_leave_word_shadows_no_namespace` asserts it against
-//! whatever the vocabulary carries rather than against a list written here —
-//! so an eleventh namespace called `exit` is caught by a check rather than by
-//! somebody remembering.
+//! it matters." `/exit` names no namespace.
+//!
+//! **Where that is asserted, corrected 2026-09-14 by the `first-run` arc.**
+//! This paragraph said `the_shells_own_leave_word_shadows_no_namespace`
+//! asserts it "against whatever the vocabulary carries rather than against a
+//! list written here — so an eleventh namespace called `exit` is caught by a
+//! check rather than by somebody remembering". That is true of the vocabulary
+//! that check is handed and **false of D2's table**: it walks
+//! `StagedVocabulary`, a hand-written array in this crate's own fixtures, and
+//! this crate cannot read `zaru-cli`'s `Namespace::ALL` because the dependency
+//! runs the other way. A namespace added to the real table reaches this check
+//! only when somebody adds a tuple to that array. The property against the
+//! real table is
+//! `the_shells_leave_word_shadows_no_namespace_in_the_real_table`, in
+//! `zaru-cli`, which walks `Namespace::ALL` and reads `LEAVE` from here. The
+//! sentence about the row count went with it: this module named ten rows and
+//! the table has had more than that since 2026-09-05, which is why it names
+//! none now.
 //!
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
