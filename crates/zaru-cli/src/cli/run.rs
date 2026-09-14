@@ -441,10 +441,17 @@ impl Run<'_> {
     /// # What a person running this sees today, and why that is the point
     ///
     /// D7 is "`/notes use <alias>` — move the composer role to another
-    /// token", and this calls `CredentialStore::grant_composer_role`, which
-    /// is the operation that clause names. That function has existed since
-    /// 2026-09-04 with **no caller outside checks**, because until `add`
-    /// landed there was no token in the store for a role to move to.
+    /// token", and this calls `CredentialStore::move_composer_role`, which is
+    /// the operation that clause names. It **moves**: the incumbent's role is
+    /// revoked and the named token's granted in one store write, so `use` can
+    /// be run as often as a person has tokens.
+    ///
+    /// It deliberately does **not** call `grant_composer_role`, which refuses
+    /// whenever any token holds the role. It did until 2026-09-14, and the
+    /// consequence was that `use` could succeed at most **once on a machine,
+    /// ever** — a dead end whose first victim is the person adding their
+    /// second token. The two operations stay two and each says which it is:
+    /// one refuses a second holder, the other replaces the holder on purpose.
     ///
     /// **It refuses every token that exists, naming the tool.** The store
     /// refuses the composer role to a credential whose cached `tools/list`
@@ -484,7 +491,7 @@ impl Run<'_> {
                 );
             }
         };
-        match store.grant_composer_role(alias) {
+        match store.move_composer_role(alias) {
             Ok(()) => Outcome::printed(vec![format!(
                 "\"{alias}\" now carries the composer role; the hint strip searches with it."
             )]),

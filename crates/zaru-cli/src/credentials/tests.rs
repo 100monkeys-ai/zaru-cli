@@ -1891,3 +1891,99 @@ fn an_apex_token_names_no_host_so_it_is_not_the_one_the_composer_opens() {
          rather than skipping what has no host"
     );
 }
+
+/// ADR-0007 D7's `use` moves the role, and a refused move changes nothing.
+///
+/// # The dead end this replaces
+///
+/// `notes use` called `grant_composer_role` until 2026-09-14, and that
+/// function refuses whenever any token holds the role. So `use` could succeed
+/// at most **once on a machine, ever**, and the person who met that was the
+/// person adding their second token. D7's own words are "move the composer
+/// role to another token".
+///
+/// Both directions are asserted, because either alone is satisfied by a wrong
+/// implementation: a move that only granted would leave two composers, and a
+/// refusal that revoked first would leave none.
+#[test]
+fn adr_0007_d7s_use_moves_the_role_and_a_refused_move_leaves_the_incumbent_holding_it() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let first = staged_notes("incumbent", vec!["pages.list", "atoms.list"], false);
+    let first_alias = first.alias().clone();
+    store.add(first, &keys, None).expect("stored");
+    let second = staged_notes("successor", vec!["pages.read", "search.global"], false);
+    let second_alias = second.alias().clone();
+    store.add(second, &keys, None).expect("stored");
+    let wide = staged_notes("wide", vec!["pages.list", "pages.apply_patch"], false);
+    let wide_alias = wide.alias().clone();
+    store.add(wide, &keys, None).expect("stored");
+
+    store
+        .move_composer_role(&first_alias)
+        .expect("a store with no composer takes the first move");
+    assert_eq!(
+        store.composer().expect("granted").0,
+        &first_alias,
+        "the first move did not put the role anywhere"
+    );
+
+    // The move. This is what `grant_composer_role` refuses and what D7 asks
+    // for.
+    store
+        .move_composer_role(&second_alias)
+        .expect("D7's `use` moves the role to another token");
+    assert_eq!(
+        store.composer().expect("held").0,
+        &second_alias,
+        "the role did not reach the token it was moved to"
+    );
+    assert_eq!(
+        store
+            .records()
+            .filter(|(_, record)| record.role() == Some("composer"))
+            .count(),
+        1,
+        "the move left more than one token carrying the role, which is exactly the configuration \
+         D4 says the store refuses"
+    );
+
+    // A refused move changes nothing. Asserted after a successful move, so the
+    // incumbent it must not disturb is one this check put there.
+    let refusal = store
+        .move_composer_role(&wide_alias)
+        .expect_err("a token whose scope leaves D4's set may not take the role");
+    assert!(
+        refusal.to_string().contains("pages.apply_patch"),
+        "the refusal does not name the tool that put the token outside the set: {refusal}"
+    );
+    assert_eq!(
+        store.composer().expect("still held").0,
+        &second_alias,
+        "a REFUSED move revoked the incumbent's role anyway, so the person asked for a change that \
+         was refused and lost the setting they already had"
+    );
+
+    // And it survives the round trip, because the move is one write.
+    let reopened = CredentialStore::reading(scratch.store_root()).expect("reopens");
+    assert_eq!(
+        reopened.composer().expect("held on disk").0,
+        &second_alias,
+        "the move did not reach the file"
+    );
+
+    // `grant_composer_role` is untouched and still refuses a second grant,
+    // which is what clause 6 asserts. Named here so that a future change to
+    // one of the two is visible as a change to both.
+    let second_grant = store
+        .grant_composer_role(&first_alias)
+        .expect_err("a second grant is still refused");
+    assert!(
+        second_grant
+            .to_string()
+            .contains("already carries the composer role"),
+        "grant_composer_role stopped refusing a second grant: {second_grant}"
+    );
+}

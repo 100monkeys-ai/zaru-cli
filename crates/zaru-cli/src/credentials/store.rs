@@ -665,7 +665,9 @@ impl CredentialStore {
     /// configuration", and a grant that silently demoted whichever token held
     /// the role would be exactly the invisible reassignment ADR-0006 D2
     /// exists to prevent. D7's `/notes use <alias>` is the surface that moves
-    /// it deliberately, and that surface is not built.
+    /// it deliberately, and **that surface is now built** — see
+    /// [`CredentialStore::move_composer_role`]. This function is unchanged and
+    /// still refuses, which is what clause 6 asserts about a *second grant*.
     ///
     /// # Errors
     ///
@@ -708,6 +710,105 @@ impl CredentialStore {
             .held
         {
             StoredHeld::Notes { role, .. } => *role = Some(Role::Composer.as_str().to_owned()),
+            StoredHeld::Provider { .. } => {
+                return Err(StoreError::UnknownAlias {
+                    alias: alias.clone(),
+                });
+            }
+        }
+        self.save()
+    }
+
+    /// [ADR-0007] D7's `use`: move the composer role to `alias`.
+    ///
+    /// # Why this is a second operation and not a flag on the grant
+    ///
+    /// [`Self::grant_composer_role`] refuses when another token holds the
+    /// role, which is right and is what clause 6 asserts: a **second grant**
+    /// is a configuration D4 says the store refuses, and a grant that silently
+    /// demoted the incumbent would be the invisible reassignment [ADR-0006] D2
+    /// exists to prevent.
+    ///
+    /// **D7's `use` is not a second grant. It is a move, and the record says
+    /// so in as many words** — "move the composer role to another token".
+    /// Built on 2026-09-14 under a delegated coordinator ruling, open to
+    /// Jeshua's veto, because a `use` that refused whenever any token held the
+    /// role could succeed at most **once on a machine, ever**, and the person
+    /// who meets that is the person adding their second token.
+    ///
+    /// So the two operations stay two: one refuses a second holder, the other
+    /// replaces the holder deliberately, and each says which it is at the call
+    /// site. Nothing about clause 6 changes.
+    ///
+    /// # The refusal decides before anything moves
+    ///
+    /// Every reason to refuse — an alias nothing holds, a provider key, a
+    /// scope reaching outside [ADR-0006] D4's set — is evaluated **before the
+    /// first field is written**, so a refused move leaves the incumbent
+    /// holding the role exactly as it found it. A revoke-then-grant that
+    /// checked the scope in between would, on a refusal, leave the store with
+    /// **no** composer at all: the person would have asked for a change that
+    /// was refused and lost the setting they already had.
+    ///
+    /// It is also one write. `save` is called once, after both fields are
+    /// set, so no reader can observe a store with two composers or none.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownAlias`] for a name nothing holds and for a
+    /// provider key, [`StoreError::ComposerScopeExceeded`] naming the first
+    /// tool outside D4's set, and [`StoreError::Io`].
+    ///
+    /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub fn move_composer_role(&mut self, alias: &Alias) -> Result<(), StoreError> {
+        // --- every refusal, before anything is written ---
+        let record = self
+            .entries
+            .get(alias)
+            .ok_or_else(|| StoreError::UnknownAlias {
+                alias: alias.clone(),
+            })?;
+
+        // A provider key has no `role` field to write, and from the caller's
+        // side "there is no Notes token by that name" is exactly what
+        // happened -- the same reading `grant_composer_role` already gives it.
+        if !record.is_notes() {
+            return Err(StoreError::UnknownAlias {
+                alias: alias.clone(),
+            });
+        }
+
+        let scope = ToolScope::new(record.tools().to_vec());
+        if let Some(tool) = scope.outside_composer_scope() {
+            return Err(StoreError::ComposerScopeExceeded {
+                alias: alias.clone(),
+                tool: tool.to_owned(),
+            });
+        }
+
+        // --- nothing above this line has written; nothing below it refuses ---
+        let incumbent = self
+            .composer()
+            .map(|(held_by, _)| held_by.clone())
+            .filter(|held_by| held_by != alias);
+
+        if let Some(held_by) = incumbent
+            && let Some(record) = self.entries.get_mut(&held_by)
+            && let StoredHeld::Notes { role, .. } = &mut record.held
+        {
+            *role = None;
+        }
+
+        match &mut self
+            .entries
+            .get_mut(alias)
+            .expect("the record was found above")
+            .held
+        {
+            StoredHeld::Notes { role, .. } => *role = Some(Role::Composer.as_str().to_owned()),
+            // Unreachable: `is_notes` refused above, before any write. Named
+            // rather than left to a wildcard so a third family fails here.
             StoredHeld::Provider { .. } => {
                 return Err(StoreError::UnknownAlias {
                     alias: alias.clone(),
