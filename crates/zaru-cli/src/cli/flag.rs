@@ -137,7 +137,8 @@ impl Flag {
     #[must_use]
     pub const fn summary(self) -> &'static str {
         match self {
-            Self::Runtime => "set runtime.tier for this run, at ADR-0014 D1's layer 5",
+            // ADR-0014 D1 makes a flag layer 5, the highest.
+            Self::Runtime => "set runtime.tier for this run, at the highest layer",
             Self::Model => "set model.default for this run, at the same layer",
             Self::Mode => "set tools.mode for this run, at the same layer: ask, allow or yolo",
             Self::Resume => "restore a session and print its transcript",

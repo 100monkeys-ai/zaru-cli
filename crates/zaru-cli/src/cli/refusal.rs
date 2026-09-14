@@ -157,7 +157,7 @@ impl fmt::Display for CommandRefused {
             }
             Self::NamespaceNotBuilt { namespace } => write!(
                 f,
-                "`{namespace}` is one of ADR-0015 D2's namespaces, governing {}, and this harness \
+                "`{namespace}` is one of this harness's namespaces, governing {}, and it \
                  does not implement it yet",
                 namespace.governs()
             ),
@@ -186,8 +186,7 @@ impl fmt::Display for CommandRefused {
             }
             Self::FlagRepeated { flag, .. } => write!(
                 f,
-                "`{flag}` was given twice, and ADR-0014 D1 says nothing about which of two flags \
-                 wins"
+                "`{flag}` was given twice, and nothing says which of two flags wins"
             ),
             Self::ResumeAndContinue => f.write_str(
                 "`--resume` names a session and `--continue` takes the most recent one, and both \

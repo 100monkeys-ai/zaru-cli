@@ -67,7 +67,8 @@ fn summaries(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
         ],
         Namespace::Init => &[(
             "init",
-            "write ADR-0009 D1's manifest into this directory, once, if there is none",
+            // The manifest is ADR-0009 D1's.
+            "write a project manifest into this directory, once, if there is none",
         )],
         Namespace::Providers => &[
             (
@@ -158,7 +159,8 @@ pub fn lines(version: &str) -> Vec<String> {
     // composition's `verdicts` is `NoMembrane` at every tier.
     lines.push("`zaru \"<task>\"` runs a turn: it asks the model, runs the tools it".to_owned());
     lines.push(
-        "asks for under ADR-0011's permission model, and writes a transcript you can".to_owned(),
+        // The permission model is ADR-0011's.
+        "asks for under the permission model, and writes a transcript you can".to_owned(),
     );
     lines.push(
         "read with `cat`. A project that declares validators in `./zaru.toml` runs".to_owned(),

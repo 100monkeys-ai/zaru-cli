@@ -325,7 +325,7 @@ pub fn initialised(path: &std::path::Path) -> Vec<String> {
     vec![
         format!("wrote {}", path.display()),
         String::new(),
-        "It is ADR-0009 D1's worked example, not a guess about this project: nothing here"
+        "It is the manifest's worked example, not a guess about this project: nothing here"
             .to_owned(),
         "infers a name, a language or a build command, because a validator set nobody can"
             .to_owned(),

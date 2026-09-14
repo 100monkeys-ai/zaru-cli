@@ -70,7 +70,8 @@ use crate::credentials::{
     CREDENTIAL_KEY_VARIABLE, SealingError, SealingKey, SecretRefused, StoreError,
 };
 use crate::failure::{
-    Action, Classified, DefectReport, Location, Remedy, SessionEvidence, Statement, Wait,
+    Action, Classified, DefectReport, Location, Remedy, SessionEvidence, Statement, THIS_HARNESS,
+    Wait,
 };
 use crate::providers::{ModelAlias, ModelId, ProviderKind};
 use crate::runtime::TierRefused;
@@ -325,7 +326,7 @@ impl<'a> Surface<'a> {
             statement: Statement::sanitised(format!(
                 "the alias `{alias}` resolves to {model:?} and this machine holds no provider \
                  key, so there is nothing to authenticate the request with. The key is never in \
-                 configuration -- ADR-0014 D4 -- and never in an argument, because an argument is \
+                 configuration and never in an argument, because an argument is \
                  in the shell's history and in `ps`",
                 alias = ModelAlias::Default,
                 model = model.as_str(),
@@ -376,7 +377,7 @@ impl<'a> Surface<'a> {
         Classified::Capability {
             statement: Statement::sanitised(format!(
                 "the alias `{alias}` resolves to {model:?}, and this build carries a client for \
-                 {reachable} of ADR-0012 D3's {total} provider kinds. A turn against that kind \
+                 {reachable} of {total} provider kinds. A turn against that kind \
                  runs; nothing you can configure gives the other {remaining} a client, because a \
                  client has to be written",
                 alias = ModelAlias::Default,
@@ -411,7 +412,7 @@ impl<'a> Surface<'a> {
             statement: Statement::sanitised(format!(
                 "the alias `{alias}` resolves to {model:?}, and the {count} provider key(s) this \
                  machine holds ({names}) are for kinds this build carries no client for. It \
-                 carries {reachable}, of ADR-0012 D3's {total}. Nothing you can configure changes \
+                 carries {reachable}, of {total}. Nothing you can configure changes \
                  that: the client has to be written",
                 alias = ModelAlias::Default,
                 model = model.as_str(),
@@ -581,11 +582,9 @@ impl<'a> Surface<'a> {
             TierRefused::NotSet { key } => act(format!(
                 "set {key} in ~/.zaru/config.toml, or give `--runtime <tier>` for one run"
             )),
-            TierRefused::WrongShape { key, .. } | TierRefused::NoSuchTier { key, .. } => {
-                act(format!(
-                    "set {key} to one of the tiers ADR-0001 D1 defines, or give `--runtime <tier>`"
-                ))
-            }
+            TierRefused::WrongShape { key, .. } | TierRefused::NoSuchTier { key, .. } => act(
+                format!("set {key} to one of the tiers, or give `--runtime <tier>`"),
+            ),
         };
         correctable(refusal, remedy)
     }
@@ -671,7 +670,8 @@ impl<'a> Surface<'a> {
             )),
             SessionError::NotASessionName { .. } => act(
                 "remove or rename whatever is in ~/.zaru/sessions/ that is not a session; \
-                 ADR-0010 D1 names a session directory by a ULID and nothing else belongs there"
+                 {THIS_HARNESS} names a session directory by a ULID and nothing else belongs \
+                 there"
                     .to_owned(),
             ),
             SessionError::NoSuchSession { .. } => run(
@@ -841,7 +841,7 @@ impl<'a> Surface<'a> {
                 act(
                     "run it again at a terminal, where the question can be asked; or leave the \
                      word `apex` off to store an instance-locked credential, which is what \
-                     ADR-0007 D8 makes the default"
+                     {THIS_HARNESS} makes the default"
                         .to_owned(),
                 ),
             ),
@@ -852,7 +852,7 @@ impl<'a> Surface<'a> {
             // work".
             StoreError::ApexDeclined { alias } => Classified::Expected(
                 crate::failure::Expected::new(Statement::sanitised(format!(
-                    "\"{alias}\" was not stored, because the confirmation ADR-0007 D8 requires \
+                    "\"{alias}\" was not stored, because the confirmation it requires \
                      was declined"
                 ))),
             ),
@@ -1288,7 +1288,8 @@ impl Surface<'_> {
             None => Classified::UserCorrectable {
                 statement: Statement::sanitised(format!(
                     "the context could not be compacted, so this turn did not run: {failure}. \
-                     ADR-0013 D2 replaces the oldest conversation with a generated summary when \
+                     {THIS_HARNESS} replaces the oldest conversation with a generated summary \
+                     when \
                      the window fills, and the summary is what did not arrive; nothing was \
                      discarded, and the transcript still holds every turn"
                 )),
@@ -1336,9 +1337,8 @@ impl Surface<'_> {
             F::Unavailable { .. } => Classified::Environmental {
                 statement: Statement::sanitised(failure.to_string()),
                 wait: Wait::NoWaitWillHelp(Statement::sanitised(
-                    "this harness has no retry policy: ADR-0016 D4 says an environmental failure \
-                     retries with backoff and no record states the numbers, so it stops here and \
-                     says so rather than retrying on a policy nobody chose. Running the same \
+                    "this harness has no retry policy and nothing states one, so it stops here \
+                     and says so rather than retrying on a policy nobody chose. Running the same \
                      command again is the retry"
                         .to_owned(),
                 )),

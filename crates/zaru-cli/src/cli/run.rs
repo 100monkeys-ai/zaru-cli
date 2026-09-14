@@ -806,7 +806,7 @@ impl Confirm for TerminalConfirm {
         };
         if write!(
             terminal,
-            "`{alias}` has {grants}.\nADR-0007 D8 asks before this is stored. Type `yes` to \
+            "`{alias}` has {grants}.\nThis is never stored without being asked. Type `yes` to \
              store it: "
         )
         .and_then(|()| terminal.flush())

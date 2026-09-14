@@ -209,8 +209,8 @@ impl<M: Model + ?Sized + Sync> Summariser for ModelSummariser<'_, M> {
                 self.spent_was(tokens);
                 Err(PortFailure::new(format!(
                     "the model asked for {} tool call(s) in answer to a summarisation, which \
-                     offered it none. ADR-0013 D2 asks for a generated summary and a tool call is \
-                     not one",
+                     offered it none. A summarisation asks for a generated summary and a tool \
+                     call is not one",
                     calls.len()
                 )))
             }
