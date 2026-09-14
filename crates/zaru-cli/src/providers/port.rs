@@ -1,26 +1,39 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! [ADR-0012] D3's "one trait", declared here and implemented nowhere.
+//! [ADR-0012] D3's "one trait", and the two kinds that implement it.
 //!
-//! **Nothing in this crate's product tree implements [`Provider`]**, exactly
-//! as nothing implements [`LayerSource`](crate::config::LayerSource), the
-//! credential store's [`Confirm`](crate::credentials::Confirm),
-//! [`ManifestSource`](crate::manifest::ManifestSource) or any of `zaru-core`'s
-//! loop ports. A check implements it; the product does not, and that is why
-//! **no code in this workspace can reach a provider at all**.
+//! **This module's own documentation said the opposite until 2026-09-14, and
+//! the sentences are corrected rather than left.** It read "**Nothing in this
+//! crate's product tree implements [`Provider`]**" and "**no code in this
+//! workspace can reach a provider at all**". Both were written on 2026-09-04,
+//! when they were exactly true, and both were falsified on 2026-09-05 by the
+//! `provider-client` arc — the day [`GeminiClient`](crate::providers::GeminiClient)
+//! implemented this trait and `zaru <task>` stopped being refused at exit 4.
+//! A doc comment that denies the existence of the type three modules down is
+//! worse than no comment, because a reader who believes it looks for a seam
+//! that is already built.
 //!
-//! # Why it is a port rather than three clients
+//! # Two kinds implement it, and three do not
+//!
+//! [`GeminiClient`](crate::providers::GeminiClient) since 2026-09-05 and
+//! [`OllamaClient`](crate::providers::OllamaClient) since 2026-09-14.
+//! `anthropic`, `openai-compatible` and `aegis` have no client: D3's own
+//! Negative consequence — "each addition is a maintenance surface with its own
+//! streaming quirks and error taxonomy" — is why none was written blind, and
+//! the two that exist were each written against a real endpoint.
+//!
+//! # Why it is a port rather than a client
 //!
 //! [ADR-0003] D2's dependency table names `rmcp`, `ratatui`, `tui-textarea`,
-//! `fastembed`, `tokio`, `serde` and `reqwest`. `reqwest` is there and it has
-//! **no caller anywhere in this workspace**, so it is not taken: a dependency
-//! arrives in the arc that has a caller, and that arc is the one holding a
-//! credential and able to prove a call. Three provider clients would also be
-//! three streaming implementations and three error taxonomies, which is ADR-
-//! 0012's own Negative consequence, and none of them can be written before
-//! ADR-0007's provider-credential question is answered — that question is open
-//! on [operations/adr-status] and this arc did not answer it.
+//! `fastembed`, `tokio`, `serde` and `reqwest`. Five provider clients would be
+//! five streaming implementations and five error taxonomies, which is
+//! ADR-0012's own Negative consequence. **What the two built so far show is
+//! that the taxonomies genuinely differ rather than merely might**: `gemini`
+//! classifies an unreachable endpoint as environmental because a hosted outage
+//! is nobody's to fix, and `ollama` classifies the same shape as
+//! user-correctable because a local server is the user's to start. One trait
+//! over two clients is what lets both be true at once.
 //!
 //! # What D3's four concerns are, and where each one is
 //!

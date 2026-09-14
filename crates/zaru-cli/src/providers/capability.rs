@@ -93,9 +93,16 @@ impl std::error::Error for CapabilityRefused {}
 
 /// What a provider says it can do, per [ADR-0012] D3.
 ///
-/// Supplied by whoever configures a provider. **Nothing in this workspace
-/// implements a provider**, so every descriptor that exists today was written
-/// by a caller.
+/// Supplied by whoever configures a provider.
+///
+/// **This sentence said "Nothing in this workspace implements a provider"
+/// until 2026-09-14, and it was false from 2026-09-05.** Two clients declare
+/// their own descriptor today — `gemini` and `ollama`, both
+/// `declared(true, true, true)` — and each is measured against its own
+/// endpoint rather than asserted. The correction matters because this type's
+/// whole purpose is that a provider **says** what it can do, and a comment
+/// claiming nobody says anything invites the next reader to treat the
+/// descriptor as decorative.
 ///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
