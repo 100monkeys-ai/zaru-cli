@@ -95,6 +95,7 @@
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use crate::config::{Field, FieldKind, Key, Layer, Resolution, Schema, Value};
+use crate::failure::THERE_ARE_EXACTLY;
 use crate::tools::decision::Invocation;
 use crate::tools::name::ToolName;
 use crate::tools::port::Allowlist;
@@ -207,8 +208,8 @@ impl fmt::Display for AllowlistRefused {
             Self::FromAClonedRepository { layer } => write!(
                 f,
                 "the key {KEY} was set in {}, and the allowlist is not that layer's to set: \
-                 {PROJECT_REFUSAL}. ADR-0014 D6: \"A repository the user cloned must not be able \
-                 to configure its way to more privilege than the user granted.\"",
+                 {PROJECT_REFUSAL}. A repository the user cloned must not be able to configure \
+                 its way to more privilege than the user granted",
                 layer.label()
             ),
             Self::WrongShape { found } => write!(
@@ -234,7 +235,7 @@ impl fmt::Display for AllowlistRefused {
             Self::NoSuchTool { position, offered } => write!(
                 f,
                 "entry {position} of {KEY} begins with {offered:?}, which names no built-in tool. \
-                 ADR-0011 D1 defines exactly seven: {}",
+                 {THERE_ARE_EXACTLY} seven: {}",
                 spellings()
             ),
         }

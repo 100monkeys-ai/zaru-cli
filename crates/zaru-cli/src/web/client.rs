@@ -437,8 +437,8 @@ fn over_ceiling(ceiling: crate::web::bounds::BodyCeiling, claimed: Option<u64>) 
     };
     format!(
         "web.fetch does not retrieve a body over {ceiling} and {observed}, so the retrieval was \
-         refused rather than cut short. ADR-0011 D5 requires that when output is truncated the \
-         full text reaches the session directory, and a body this surface stopped reading is one \
+         refused rather than cut short. When output is truncated the full text must reach the \
+         session directory, and a body this surface stopped reading is one \
          no session copy could be complete for -- so nothing is captured rather than a prefix \
          being passed off as the document"
     )

@@ -167,8 +167,9 @@ impl fmt::Display for SchemaRefused {
             ),
             Self::NoSuchFile { resolved } => write!(
                 f,
-                "there is no schema at {}; ADR-0009 D3's `json_schema` names a file that has to \
-                 be there when the validator runs",
+                // ADR-0009 D3's `json_schema` names a file.
+                "there is no schema at {}; `json_schema` names a file that has to be there when \
+                 the validator runs",
                 resolved.display(),
             ),
             Self::File(refusal) => write!(f, "{refusal}"),

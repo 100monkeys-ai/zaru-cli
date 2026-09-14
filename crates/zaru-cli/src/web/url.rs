@@ -89,13 +89,14 @@ impl fmt::Display for UrlRefused {
         match self {
             Self::NotAUrl { because } => write!(
                 f,
-                "the url given to web.fetch is not a URL: {because}. ADR-0011 D1's row for \
-                 web.fetch is \"Retrieve a URL\", so there is nothing to retrieve"
+                // ADR-0011 D1's row for web.fetch is "Retrieve a URL".
+                "the url given to web.fetch is not a URL: {because}. web.fetch retrieves a URL, \
+                 so there is nothing to retrieve"
             ),
             Self::SchemeNotRetrievable { scheme } => write!(
                 f,
                 "web.fetch retrieves {} and not {scheme:?}. A {scheme:?} URL is not a retrieval: \
-                 in particular a \"file\" one would read the filesystem without ADR-0011 D4's \
+                 in particular a \"file\" one would read the filesystem without the \
                  working-directory boundary, which is fs.read without the one rule fs.read has",
                 RETRIEVABLE_SCHEMES.join(" and "),
             ),

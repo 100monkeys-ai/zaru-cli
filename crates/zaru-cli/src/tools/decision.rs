@@ -65,7 +65,7 @@ impl fmt::Display for InvocationRefused {
             f,
             "the tool {} is not described by a bare filesystem path, so it cannot be built as a \
              call on one. `web.fetch` addresses a URL and `cmd.run` a command line, neither of \
-             which ADR-0011 D4 measures; `fs.search` addresses a path and is not described by one \
+             which the boundary measures; `fs.search` addresses a path and is not described by one \
              alone, because it carries a root and a needle. Each has its own constructor",
             self.tool
         )
@@ -389,7 +389,7 @@ impl fmt::Display for RefusedBecause {
                 "the call needed the user's confirmation and the question did not reach them — \
                  either no confirmer was supplied, or the one that was could not ask — so it was \
                  refused rather than performed. A confirmation nobody can answer is the silent \
-                 default ADR-0011 D3 exists to prevent",
+                 default the permission model exists to prevent",
             ),
             Self::TheUserDeclined => {
                 f.write_str("the user was asked about the call and did not permit it")

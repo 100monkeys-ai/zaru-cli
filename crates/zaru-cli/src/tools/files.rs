@@ -181,7 +181,7 @@ pub(crate) fn write(path: &Path, contents: &str) -> Captured {
         Some(parent) if !parent.as_os_str().is_empty() && !parent.is_dir() => {
             return failed(format!(
                 "the directory {} does not exist. fs.write creates a file and never a directory: \
-                 ADR-0011 D1's built-in set is seven and has no fs.create_dir, and a write that \
+                 the built-in set is seven and has no fs.create_dir, and a write that \
                  made its own parent would be an eighth built-in",
                 parent.display()
             ));

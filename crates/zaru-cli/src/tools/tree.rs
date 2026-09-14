@@ -101,8 +101,8 @@ impl fmt::Display for TreeError {
         match self {
             Self::NoSuchWorkingDirectory { path, source } => write!(
                 f,
-                "the working directory {} could not be resolved: {source}. ADR-0011 D4 makes it \
-                 the boundary every tool call is classified against, and a boundary whose root \
+                "the working directory {} could not be resolved: {source}. It is the boundary \
+                 every tool call is classified against, and a boundary whose root \
                  is a guess is not one",
                 path.display()
             ),

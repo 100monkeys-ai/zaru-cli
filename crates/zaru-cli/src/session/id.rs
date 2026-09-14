@@ -175,7 +175,7 @@ impl fmt::Display for MintFailure {
             Self::ClockBeyondTheEncoding { millis } => write!(
                 f,
                 "the wall clock reads {millis} milliseconds since the Unix epoch, which is past \
-                 the 48 bits a ULID's timestamp holds; ADR-0010 D1 chose a ULID so that listing \
+                 the 48 bits a ULID's timestamp holds; a ULID was chosen so that listing \
                  sessions in creation order costs a directory read, and an id whose timestamp \
                  wrapped would sort before every session that came earlier"
             ),
@@ -234,8 +234,8 @@ impl fmt::Display for SessionIdRefused {
         match self {
             Self::WrongLength { found } => write!(
                 f,
-                "a session id is {ID_LENGTH} characters and this one is {found}; ADR-0010 D1 \
-                 names a ULID, and a directory under ~/.zaru/sessions/ whose name is not one is \
+                "a session id is {ID_LENGTH} characters and this one is {found}; a session id \
+                 is a ULID, and a directory under ~/.zaru/sessions/ whose name is not one is \
                  not a session this harness wrote"
             ),
             Self::NotInTheAlphabet { at, found } => write!(
@@ -246,7 +246,7 @@ impl fmt::Display for SessionIdRefused {
             Self::BeyondTheEncoding => write!(
                 f,
                 "the leading character sets a bit a ULID's two-bit padding leaves clear, so the \
-                 timestamp would not fit in the 48 bits ADR-0010 D1's ordering depends on"
+                 timestamp would not fit in the 48 bits the ordering depends on"
             ),
         }
     }

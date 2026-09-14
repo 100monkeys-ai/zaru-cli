@@ -90,8 +90,8 @@ pub struct BudgetIsZero;
 impl fmt::Display for BudgetIsZero {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(
-            "an output budget of zero is refused; ADR-0011 D5 requires truncation to keep the \
-             head and the tail of the output and mark the elision, and zero bytes can keep \
+            "an output budget of zero is refused; truncation must keep the head and the tail \
+             of the output and mark the elision, and zero bytes can keep \
              neither, so what a caller would be shown carries nothing of what happened",
         )
     }
@@ -236,11 +236,10 @@ impl fmt::Display for PresentationRefused {
             Self::ThereWasNowhereToKeepTheRest { elided_bytes } => write!(
                 f,
                 "{elided_bytes} byte(s) of output exceed the budget and no overflow sink was \
-                 supplied, so the call was refused rather than clipped. ADR-0011 D5 requires the \
-                 full text be written where the user can read it and the path shown, and \
-                 \"a truncation the user cannot notice is how a diagnosis gets built on a \
-                 fragment\". The session directory that would hold it is ADR-0010 D1's and is \
-                 not built"
+                 supplied, so the call was refused rather than clipped. The full text must be \
+                 written where the user can read it and the path shown, because a truncation the \
+                 user cannot notice is how a diagnosis gets built on a fragment. The session \
+                 directory that would hold it is not built"
             ),
             Self::NotPreserved(failure) => write!(
                 f,

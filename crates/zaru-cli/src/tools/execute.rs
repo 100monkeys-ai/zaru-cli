@@ -158,7 +158,7 @@ impl core::fmt::Display for NotACall {
         match self {
             Self::NoSuchTool { asked } => write!(
                 f,
-                "{asked:?} is not one of the seven built-in tools ADR-0011 D1 names, so there is \
+                "{asked:?} is not one of the seven built-in tools, so there is \
                  nothing to call. The set is closed and there is no eighth"
             ),
             Self::NoTarget { tool } => write!(

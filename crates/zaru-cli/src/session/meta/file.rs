@@ -79,6 +79,7 @@
 
 use crate::config::file::{SizeCeiling, TomlFile};
 use crate::config::{Layer, Value};
+use crate::failure::THERE_ARE_EXACTLY;
 use crate::runtime::{ResolvedTier, Tier};
 use crate::session::id::Millis;
 use crate::session::meta::{Meta, MetaFailure, MetaStore};
@@ -165,13 +166,13 @@ impl MetaFile {
         let tier = self.text(&document, TIER_KEY)?;
         let tier = Tier::named(tier).ok_or_else(|| {
             self.wrong(format_args!(
-                "`{TIER_KEY}` names no runtime tier; ADR-0001 D1 defines exactly three"
+                "`{TIER_KEY}` names no runtime tier; {THERE_ARE_EXACTLY} three"
             ))
         })?;
         let supplied_by = self.text(&document, TIER_FROM_KEY)?;
         let supplied_by = Layer::named(supplied_by).ok_or_else(|| {
             self.wrong(format_args!(
-                "`{TIER_FROM_KEY}` names no configuration layer; ADR-0014 D1 has five and this \
+                "`{TIER_FROM_KEY}` names no configuration layer; there are five and this \
                  file records the label its own explain block prints"
             ))
         })?;
@@ -221,9 +222,7 @@ impl MetaFile {
                 "`{key}` is {}, and this file records it as text",
                 other.shape()
             ))),
-            None => Err(self.wrong(format_args!(
-                "`{key}` is absent, and ADR-0010 D1 says this file records it"
-            ))),
+            None => Err(self.wrong(format_args!("`{key}` is absent, and this file records it"))),
         }
     }
 

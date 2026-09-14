@@ -57,11 +57,10 @@ pub struct WindowRefused;
 impl fmt::Display for WindowRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(
-            "a retention window of zero is refused; ADR-0010 D6 prunes sessions older than the \
-             window on startup, and a window of zero deletes the session that is starting. D6 \
-             names thirty days as its default and this module carries none, because a \
-             compiled-in default is ADR-0014 D1's layer 1 and that record's schema declares no \
-             key for it",
+            "a retention window of zero is refused; sessions older than the \
+             window are pruned on startup, and a window of zero deletes the session that is \
+             starting; thirty days is the default and this module carries none, because a \
+             compiled-in default is the built-in layer and no schema declares a key for it",
         )
     }
 }
@@ -144,7 +143,7 @@ impl fmt::Display for PruneFailure {
             Self::NotRemoved { id, source } => write!(
                 f,
                 "the session {id} is past the retention window and its directory could not be \
-                 removed: {source}. ADR-0010 D6 makes deletion real rather than a tombstone, so \
+                 removed: {source}. Deletion is real rather than a tombstone, so \
                  a removal that half happened is worse than one that did not start"
             ),
         }

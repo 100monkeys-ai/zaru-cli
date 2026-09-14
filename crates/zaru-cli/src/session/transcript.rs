@@ -93,8 +93,8 @@ impl fmt::Display for TranscriptError {
             } => write!(f, "could not {action} {}: {source}", path.display()),
             Self::NotSerialisable { detail } => write!(
                 f,
-                "a transcript record could not be rendered: {detail}. ADR-0010 D2 makes the \
-                 transcript the loop's own event stream, so a record that cannot be written is \
+                "a transcript record could not be rendered: {detail}. The transcript is the \
+                 loop's own event stream, so a record that cannot be written is \
                  an event a consumer will never see"
             ),
             Self::Malformed { path, line, detail } => write!(

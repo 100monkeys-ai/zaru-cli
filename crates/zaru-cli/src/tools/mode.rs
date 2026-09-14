@@ -84,6 +84,7 @@
 //! [Autonomous Development]: https://100monkeys-ai.cortex.page/project-management/p/process/autonomous-development
 
 use crate::config::{Field, FieldKind, Key, Resolution, Schema};
+use crate::failure::THERE_ARE_EXACTLY;
 use core::fmt;
 
 /// The configuration key [ADR-0011] D3's permission mode is read from.
@@ -215,18 +216,17 @@ impl fmt::Display for ModeRefused {
             } => write!(
                 f,
                 "the key {key:?} set the permission mode to {offered:?} from {}, and the \
-                 permission mode is not that layer's to set. ADR-0014 D6: \"A repository the user \
-                 cloned must not be able to configure its way to more privilege than the user \
-                 granted.\" Set it in the user configuration, the environment or a flag instead. \
-                 This refusal is wider than D6's, which forbids only *raising* the mode: no \
-                 record states an ordering over \"ask\", \"allow\" and \"yolo\", so there is no \
-                 way to tell a raise from a lower, and that question is open on the record",
+                 permission mode is not that layer's to set. A repository the user cloned must \
+                 not be able to configure its way to more privilege than the user granted. Set it \
+                 in the user configuration, the environment or a flag instead. This refusal is \
+                 wider than forbidding only a *raise*: nothing states an ordering over \"ask\", \
+                 \"allow\" and \"yolo\", so there is no way to tell a raise from a lower",
                 layer.label()
             ),
             Self::NoSuchMode { key, offered } => write!(
                 f,
                 "the key {key:?} was set to {offered:?}, which names no permission mode. \
-                 ADR-0011 D3 defines exactly three: \"ask\", \"allow\" and \"yolo\""
+                 {THERE_ARE_EXACTLY} three: \"ask\", \"allow\" and \"yolo\""
             ),
         }
     }
