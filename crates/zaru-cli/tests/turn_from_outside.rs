@@ -230,6 +230,114 @@ fn store_a_key(home: &Home, kind: &str, value: &str) {
     );
 }
 
+/// ADR-0007 D7's `describe` and `rm` print no part of what they act on.
+///
+/// # Why these four and not the store's own accessors
+///
+/// D3's rule is that a bearer value "appears in no prompt, no transcript, no
+/// log, and no tool result", and the two surfaces this arc added are the first
+/// that **write** the store from a person's words. `describe` echoes text back
+/// and `rm` reports on a credential it has just destroyed, so both are places
+/// a value could reach a terminal — and the `rm` outcome is composed *after*
+/// the record is gone, which is exactly when a careless implementation reaches
+/// for the record it still has in hand.
+///
+/// Every assertion goes through [`absent_everywhere`], which reads what the
+/// run printed **and** every file under the scratch home with `std::fs`,
+/// rather than asking the store whether it still holds anything.
+///
+/// # The control, so no absence here is vacuous
+///
+/// Each run is asserted to name the alias it acted on. A store that had
+/// written nothing, or a command that printed nothing at all, would satisfy
+/// every absence below and fail this — it is the same guard
+/// `the_file_carries_ciphertext_and_a_reader_that_is_not_the_store_opens_it`
+/// puts in front of its own absences.
+#[test]
+fn adr_0007_d7s_describe_and_rm_print_no_part_of_the_value_they_hold() {
+    let home = Home::new("d7-surfaces-hold-nothing");
+    let (planted, core) = nonce("d7-surface");
+    store_a_key(&home, "gemini", &planted);
+
+    // The listing, which names the credential this run is about.
+    let listed = zaru(&home, &[], &["providers", "keys"]);
+    assert!(
+        listed.everything().contains("provider.gemini"),
+        "the listing does not name the key that was just stored, so every absence asserted below \
+         would pass over a store that had written nothing: {}",
+        listed.everything()
+    );
+    absent_everywhere(&home, &listed, &planted, &core, "the stored key");
+
+    // The two Nuclear Notes verbs, refusing a credential of the other family.
+    // A refusal is composed from the alias that was asked for, and the alias
+    // is the one thing here that is allowed to travel.
+    for arguments in [
+        vec![
+            "notes",
+            "tokens",
+            "describe",
+            "provider.gemini",
+            "a",
+            "description",
+        ],
+        vec!["notes", "tokens", "rm", "provider.gemini"],
+    ] {
+        let ran = zaru(&home, &[], &arguments);
+        assert_eq!(
+            ran.code,
+            2,
+            "`zaru {}` was expected to refuse: {}",
+            arguments.join(" "),
+            ran.everything()
+        );
+        assert!(
+            ran.everything().contains("provider.gemini"),
+            "`zaru {}` refused without naming the alias, so the absence below is vacuous: {}",
+            arguments.join(" "),
+            ran.everything()
+        );
+        absent_everywhere(&home, &ran, &planted, &core, "the stored key");
+    }
+
+    // A description a person typed is echoed back by the refusal that would
+    // not take it, and that echo must carry nothing but their own words.
+    let refused = zaru(
+        &home,
+        &[],
+        &["notes", "tokens", "describe", "provider.gemini", &planted],
+    );
+    assert_eq!(refused.code, 2);
+    absent_everywhere(&home, &refused, &planted, &core, "a description");
+
+    // And `rm` itself, on the credential whose value is planted. The outcome
+    // is composed after the record is gone.
+    let removed = zaru(&home, &[], &["providers", "keys", "rm", "gemini"]);
+    assert_eq!(
+        removed.code,
+        0,
+        "`zaru providers keys rm gemini` did not remove a stored key: {}",
+        removed.everything()
+    );
+    assert!(
+        removed.everything().contains("gemini"),
+        "`rm` reported nothing about what it removed: {}",
+        removed.everything()
+    );
+    absent_everywhere(&home, &removed, &planted, &core, "the removed key");
+
+    // The store is empty afterwards, and the listing says so rather than
+    // printing an empty table -- which is what the absence scan above would
+    // otherwise be reading.
+    let after = zaru(&home, &[], &["providers", "keys"]);
+    assert!(
+        after.everything().contains("no provider key"),
+        "the listing after `rm` does not say the store is empty: {}",
+        after.everything()
+    );
+    absent_everywhere(&home, &after, &planted, &core, "the removed key");
+}
+
 /// A nonce with a combining mark in it, and its ASCII core.
 ///
 /// The mark is [Verification lessons] §50's instrument: a `{:?}` rendering
