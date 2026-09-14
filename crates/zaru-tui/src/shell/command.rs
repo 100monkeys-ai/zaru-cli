@@ -146,10 +146,13 @@ impl fmt::Display for Refused {
                 }
                 None => write!(f, "there is no `/{offered}` command"),
             },
+            // ADR-0015 D2's table names the namespaces; `zaru-cli`'s own
+            // `CommandRefused::NamespaceNotBuilt` is this sentence's other
+            // spelling and says the same words.
             Self::NotBuilt { slash, governs } => write!(
                 f,
-                "`{slash}` is one of ADR-0015 D2's namespaces, governing {governs}, and this \
-                 harness does not implement it yet"
+                "`{slash}` is one of this harness's namespaces, governing {governs}, and it \
+                 does not implement it yet"
             ),
             Self::VerbMissing { slash, verbs } => write!(
                 f,

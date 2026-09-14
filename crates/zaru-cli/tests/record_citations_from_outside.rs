@@ -306,8 +306,36 @@ fn no_refusal_a_caller_can_raise_names_a_decision_record() {
         );
     }
 
+    // `zaru-tui`'s own refusal, which is the pane's half of the slash grammar
+    // and the other spelling of `zaru-cli`'s `CommandRefused`. It is reached
+    // here rather than through arm 2 because a `Refused` never becomes a
+    // `Record` -- the shell renders it straight onto the pane -- so no arm
+    // over the transcript would ever see it.
+    for refusal in [
+        zaru_tui::shell::Refused::Empty,
+        zaru_tui::shell::Refused::NotBuilt {
+            slash: "/stack",
+            governs: "AEGIS component fetch and status",
+        },
+        zaru_tui::shell::Refused::UnknownCommand {
+            offered: "help".to_owned(),
+            nearest: Some("/models"),
+        },
+        zaru_tui::shell::Refused::VerbMissing {
+            slash: "/session",
+            verbs: &["resume", "continue"],
+        },
+        zaru_tui::shell::Refused::UnknownVerb {
+            slash: "/session",
+            offered: "restart".to_owned(),
+            nearest: Some("resume"),
+        },
+    ] {
+        note("zaru-tui Refused", refusal.to_string());
+    }
+
     assert!(
-        rendered.len() >= 15,
+        rendered.len() >= 20,
         "the corpus shrank to {} refusals; a check over fewer sites than it had is a check that \
          stopped covering what it covered",
         rendered.len()
