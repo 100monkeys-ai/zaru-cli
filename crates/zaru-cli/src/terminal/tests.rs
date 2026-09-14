@@ -5616,3 +5616,116 @@ fn a_replayed_failure_puts_its_whole_refusal_on_the_pane() {
     let frame = cells_at(&shell, 100, 30, Palette::Coloured);
     a_whole_refusal_is_on_the_frame("a replayed failure", &frame, &classified);
 }
+
+/// **One failure of each of the five classes renders on a frame, whole and in
+/// its own register.** [ADR-0016] clause 1's terminal half.
+///
+/// The four checks above cover four *sites* with one class between them. This
+/// one covers the five *classes* at one site, which is the other axis and the
+/// one clause 1 names: "one failure of each class renders in its class's
+/// presentation, asserted". `fixtures::one_of_each_class` is exhaustive with no
+/// wildcard arm, so a sixth class cannot arrive without a fixture, and this
+/// check then covers it without being edited.
+///
+/// # The register arm, and why it is not decoration
+///
+/// [ADR-0016] D1 puts `Expected` outside the error register: a run that found
+/// nothing is not an error, and painting it `✗` tells the reader a lie about
+/// their own command. Every other class is in it. `Presentation` carries the
+/// class for exactly this, and `Class::is_the_error_register` is the product's
+/// own answer -- so the check reads that rather than restating the table, and a
+/// class moved between the two columns changes this check's expectation with
+/// it.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn one_failure_of_each_class_renders_whole_and_in_its_own_register() {
+    let classes = crate::failure::fixtures::one_of_each_class();
+    assert_eq!(
+        classes.len(),
+        5,
+        "ADR-0016 D1 has five classes and this check walked {}",
+        classes.len(),
+    );
+
+    for (class, classified) in classes {
+        let presentation = crate::failure::Presentation::of(&classified);
+
+        // Both routes a failure of this class reaches a pane by: raised live in
+        // this session, and replayed from the transcript on `--resume`. They
+        // are asserted together because the second is the one that can drift
+        // -- it rebuilds the register from the class the transcript *stored*,
+        // and a reader on `--resume` is looking at the same failure and must
+        // not be shown a different verdict about it.
+        for (route, lines) in [
+            (
+                "raised in this session",
+                crate::terminal::vocabulary::refusal_lines(&classified),
+            ),
+            ("replayed from the transcript", {
+                let replayed = Pane::of(&[Record::Failure(crate::session::FailureLine::of(
+                    &classified,
+                ))]);
+                replayed.lines()
+            }),
+        ] {
+            let is_the_error_register = class.is_the_error_register();
+            let class = format!("{class} ({route})");
+            let mut shell = shell();
+            for line in lines {
+                shell.notice(line);
+            }
+            let frame = cells_at(&shell, 100, 30, Palette::Coloured);
+            let painted = painted_text(&frame);
+            let normalised = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+            assert!(
+                painted.contains(&normalised(&presentation.headline)),
+                "{class}: the headline is not on the pane. The frame:\n{painted}",
+            );
+            for line in &presentation.lines {
+                let text = normalised(&crate::failure::Line::flattened(line));
+                assert!(
+                    painted.contains(&text),
+                    "{class}: ADR-0016 D2's line {text:?} is not on the pane. The frame:\n{painted}",
+                );
+            }
+
+            // The row the headline landed on, found by its text rather than by
+            // position, because the pane wraps and the headline is not always the
+            // first row.
+            let headline_row = frame
+                .iter()
+                .find(|row| {
+                    let text: String = row.iter().map(|(symbol, _)| symbol.as_str()).collect();
+                    normalised(&text).contains(&normalised(
+                        presentation
+                            .headline
+                            .split_whitespace()
+                            .take(4)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .as_str(),
+                    ))
+                })
+                .expect("the headline is on the frame, asserted above");
+            let opens_with = headline_row
+                .first()
+                .map(|(symbol, _)| symbol.clone())
+                .unwrap_or_default();
+
+            assert_eq!(
+                opens_with == Register::Failed.glyph(),
+                is_the_error_register,
+                "{class}: ADR-0016 D1 puts this class {} the error register, and its headline opens \
+             with {opens_with:?}. A class outside the register painted `✗` tells the reader their \
+             command failed when it did not. The frame:\n{painted}",
+                if is_the_error_register {
+                    "in"
+                } else {
+                    "outside"
+                },
+            );
+        }
+    }
+}

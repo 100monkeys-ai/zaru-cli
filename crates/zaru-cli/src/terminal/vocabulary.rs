@@ -138,13 +138,31 @@ impl TranscriptSource for Transcript {
 /// holds`.
 ///
 /// A fifth site cannot render half of it now, and that is held rather than
-/// asserted: `no_terminal_site_renders_a_headline_without_its_lines` refuses a
-/// `Presentation::of`, a `.headline` or a `line.lead` anywhere in this module
-/// tree but here.
+/// asserted: `corpus_one_place_in_the_terminal_renders_a_classified_failure`
+/// refuses a `Presentation::of` or a `.headline` anywhere in this module tree
+/// but here, `tests.rs` excepted.
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-pub(crate) fn failed_lines(headline: String, under: impl IntoIterator<Item = String>) -> Vec<Line> {
-    let mut lines = vec![Line::new(Register::Failed, headline)];
+/// # Why the headline's register is not always `Failed`
+///
+/// D1 puts `Expected` **outside** the error register: a run that found nothing
+/// is not an error, and painting it `✗` tells the reader their command failed
+/// when it did not. Every other class is inside it. The pane is the consumer
+/// that `Class::is_the_error_register` exists for, and until 2026-09-14 it
+/// ignored it and painted every class the same -- caught by
+/// `one_failure_of_each_class_renders_whole_and_in_its_own_register`, which
+/// walks `fixtures::one_of_each_class` onto a frame.
+///
+/// The lines under the headline stay `Plain` whatever the class: they are the
+/// remedy, and the register is carried by the line the remedy is under.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+fn whole_lines(
+    register: Register,
+    headline: String,
+    under: impl IntoIterator<Item = String>,
+) -> Vec<Line> {
+    let mut lines = vec![Line::new(register, headline)];
     lines.extend(
         under
             .into_iter()
@@ -157,12 +175,18 @@ pub(crate) fn failed_lines(headline: String, under: impl IntoIterator<Item = Str
 ///
 /// **The one place [`crate::failure::Presentation::of`] is called anywhere in
 /// `terminal`**, so the projection reaches the pane by one route. Four of
-/// [`failed_lines`]' five callers arrive here holding a `Classified`; the
+/// [`whole_lines`]' five callers arrive here holding a `Classified`; the
 /// fifth is the transcript's own [`Record::Failure`], which is already
-/// projected and already flattened and so calls [`failed_lines`] directly.
+/// projected and already flattened and so calls [`whole_lines`] directly.
 pub(crate) fn refusal_lines(classified: &crate::failure::Classified) -> Vec<Line> {
     let presentation = crate::failure::Presentation::of(classified);
-    failed_lines(
+    let register = if presentation.is_the_error_register() {
+        Register::Failed
+    } else {
+        Register::Plain
+    };
+    whole_lines(
+        register,
         presentation.headline,
         presentation
             .lines
@@ -232,7 +256,19 @@ fn lines_for(record: &Record) -> Vec<Line> {
         // `FailureLine::of` -- and this arm read only the headline, so a
         // refusal replayed on `--resume` lost its remedy a second time, on a
         // file ADR-0010 D2 calls replayable.
-        Record::Failure(failure) => failed_lines(failure.headline.clone(), failure.lines.clone()),
+        // **The same register the live refusal had**, recovered from the class
+        // the transcript stored, so a failure does not change register between
+        // the session that raised it and the `--resume` that replays it. An
+        // unknown spelling -- a transcript written by a later version that
+        // added a class -- stays in the error register, because a `Failure`
+        // record is a failure whatever its class is called.
+        Record::Failure(failure) => whole_lines(
+            crate::failure::Class::named(&failure.class)
+                .filter(|class| !class.is_the_error_register())
+                .map_or(Register::Failed, |_| Register::Plain),
+            failure.headline.clone(),
+            failure.lines.clone(),
+        ),
         // ADR-0002 D3's interrupt channel: a compaction "writes into the live
         // session", because it reports on a turn the user's own message
         // caused. The text is `crate::cli::render`'s and the glyph is the

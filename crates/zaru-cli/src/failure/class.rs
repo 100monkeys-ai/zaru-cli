@@ -65,6 +65,22 @@ impl Class {
         }
     }
 
+    /// The class a stored spelling names, if it names one.
+    ///
+    /// The reverse of [`Self::as_str`], walked over [`Self::ALL`] rather than
+    /// written as a second match arm, so the two spellings cannot drift apart
+    /// and a sixth class needs no edit here. A transcript keeps the class as
+    /// text ([ADR-0010] D2), and the pane has to get back to the register D1
+    /// gives it when that transcript is replayed.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    #[must_use]
+    pub fn named(spelling: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|class| class.as_str() == spelling)
+    }
+
     /// ADR-0016 D5's exit code for this class.
     ///
     /// A **total function over the enum with no wildcard arm**, so a sixth
