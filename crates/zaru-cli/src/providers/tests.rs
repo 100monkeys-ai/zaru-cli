@@ -1272,3 +1272,239 @@ fn a_disagreement_names_both_sides_and_nothing_reconciles_it() {
          {found:?}"
     );
 }
+
+// --- The selection rule -----------------------------------------------------
+//
+// A PROPOSED reading of 2026-09-14, written on ADR-0012's amendments page
+// before the code. These checks pin it so that deciding it the other way
+// reddens rather than passing unnoticed, which is the shape this workspace
+// already uses for the thinking-token question.
+
+use crate::providers::selection::{NoKindSelected, Requirement, kind_key, select};
+
+/// The two kinds this build carries a client for, in declaration order.
+const WITH_A_CLIENT: [ProviderKind; 2] = [ProviderKind::Gemini, ProviderKind::Ollama];
+
+#[test]
+fn an_explicit_kind_decides_it_over_every_requirement() {
+    // Part 1 of the rule. The user saying "use this one" is exactly the case
+    // where a requirement was a guess standing in for an answer, so it wins
+    // even though nothing is held and nothing is configured.
+    let chosen = select(
+        ModelAlias::Default,
+        Some(ProviderKind::Ollama),
+        &WITH_A_CLIENT,
+        |_| false,
+        |_| false,
+    )
+    .expect("an explicit kind is an answer on its own");
+    assert_eq!(
+        chosen,
+        ProviderKind::Ollama,
+        "an explicit `provider.<alias>.kind` did not decide the kind, so the key a user sets is \
+         overridden by whatever they happen to hold"
+    );
+}
+
+#[test]
+fn a_kind_this_build_cannot_reach_is_not_chosen_even_when_named() {
+    // Naming `anthropic` is naming a real kind of D3's five, and there is
+    // still nothing to build. It falls through to the requirement rule rather
+    // than being honoured into a panic.
+    let chosen = select(
+        ModelAlias::Default,
+        Some(ProviderKind::Anthropic),
+        &WITH_A_CLIENT,
+        |kind| kind == ProviderKind::Gemini,
+        |_| false,
+    )
+    .expect("the requirement rule still answers");
+    assert_eq!(chosen, ProviderKind::Gemini);
+}
+
+#[test]
+fn a_machine_with_only_a_gemini_key_resolves_exactly_as_it_did_before() {
+    // Part 2 makes the OLD behaviour the special case of a general rule rather
+    // than replacing it. This is the case that existed before 2026-09-14, and
+    // it must not have moved.
+    let chosen = select(
+        ModelAlias::Default,
+        None,
+        &WITH_A_CLIENT,
+        |kind| kind == ProviderKind::Gemini,
+        |_| false,
+    )
+    .expect("a held key is a requirement met");
+    assert_eq!(
+        chosen,
+        ProviderKind::Gemini,
+        "the rule that replaced credential presence changed what a machine holding one key does"
+    );
+}
+
+#[test]
+fn a_keyless_kind_is_reachable_by_a_configured_endpoint_alone() {
+    // The whole reason the rule has two parts. Before this, a kind with a
+    // client and no credential could not be selected at all, because the
+    // selector asked the credential store and `ollama` is never in it.
+    let chosen = select(
+        ModelAlias::Default,
+        None,
+        &WITH_A_CLIENT,
+        |_| false,
+        |kind| kind == ProviderKind::Ollama,
+    )
+    .expect("a configured endpoint is a keyless kind's requirement met");
+    assert_eq!(
+        chosen,
+        ProviderKind::Ollama,
+        "a keyless kind with its endpoint configured was not selected, which makes it unreachable \
+         by construction however the alias-to-kind key is spelled"
+    );
+}
+
+#[test]
+fn declaration_order_decides_when_both_requirements_hold() {
+    let chosen = select(
+        ModelAlias::Default,
+        None,
+        &WITH_A_CLIENT,
+        |_| true,
+        |_| true,
+    )
+    .expect("both requirements hold");
+    assert_eq!(
+        chosen,
+        ProviderKind::Gemini,
+        "the tie was not broken by KINDS_WITH_A_CLIENT's declaration order, so which provider \
+         answers depends on something a reader cannot see"
+    );
+}
+
+#[test]
+fn a_machine_with_nothing_configured_is_still_refused() {
+    // The rule must not make a keyless kind the answer on every machine. That
+    // is what "an endpoint set at any layer OTHER THAN the built-in default"
+    // buys: a default every machine carries would mean nobody ever chose.
+    let refusal = select(
+        ModelAlias::Default,
+        None,
+        &WITH_A_CLIENT,
+        |_| false,
+        |_| false,
+    )
+    .expect_err("nothing is held and nothing is configured");
+    assert_eq!(refusal.alias, ModelAlias::Default);
+
+    let said = refusal.to_string();
+    for kind in WITH_A_CLIENT {
+        assert!(
+            said.contains(kind.as_str()),
+            "the refusal does not name `{kind}`, so a reader is not told one of the providers \
+             they could reach: {said}"
+        );
+    }
+    assert!(
+        said.contains("providers keys add")
+            && said.contains(kind_key(ModelAlias::Default).as_str()),
+        "the refusal names only one of the two routes out, and a reader whose provider needs no \
+         key would go looking for a credential that does not exist: {said}"
+    );
+}
+
+#[test]
+fn only_the_keyless_kind_is_reached_without_a_credential() {
+    // `Requirement::of` is a wildcard-free match, so a sixth kind fails to
+    // compile there. This asserts the mapping itself: exactly one of D3's five
+    // is reached with no secret, and it is the one with no secret.
+    let keyless: Vec<ProviderKind> = ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| Requirement::of(*kind) == Requirement::ConfiguredEndpoint)
+        .collect();
+    assert_eq!(
+        keyless,
+        vec![ProviderKind::Ollama],
+        "the set of kinds reached without a credential is {keyless:?}; a kind wrongly in it is \
+         selectable on a machine that never configured it, and a kind wrongly out of it cannot be \
+         selected at all"
+    );
+}
+
+#[test]
+fn the_kind_key_is_a_sibling_and_collides_with_no_endpoint_key() {
+    // `provider.<alias>.kind` and `provider.<kind>.endpoint` share a table.
+    // They cannot collide while no alias is spelled like a kind, and that is
+    // asserted rather than assumed -- a sixth alias named `ollama` would make
+    // one key two things.
+    for alias in ModelAlias::ALL {
+        assert!(
+            ProviderKind::parse(alias.as_str()).is_none(),
+            "the alias `{alias}` is spelled like a provider kind, so `provider.{alias}.kind` and \
+             that kind's own subtable are the same path"
+        );
+        for kind in ProviderKind::ALL {
+            assert_ne!(
+                kind_key(alias).as_str(),
+                kind.endpoint_key().as_str(),
+                "the kind key for `{alias}` and the endpoint key for `{kind}` are one key"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_project_may_choose_a_model_and_may_not_choose_the_provider_kind() {
+    // **Both arms**, because the refusal alone is satisfied by a schema that
+    // refuses the project layer everything -- which would be wrong, and wrong
+    // in a way every refusal check passes perfectly. The accepting arm is the
+    // check above's: `model.<alias>` stays free at every layer.
+    //
+    // The refusing arm is a stronger form of the argument that refuses the
+    // endpoint key. An endpoint redirects a user's prompts to another address;
+    // a kind redirects them to another PROVIDER, which for a user running
+    // locally means off the machine entirely.
+    let schema = schema();
+    let mut permitted: Vec<ModelAlias> = Vec::new();
+    for alias in ModelAlias::ALL {
+        let key = kind_key(alias);
+        match Resolution::resolve(&schema, [at(Layer::Project, &key, "gemini")]) {
+            Err(ConfigRefused::ProjectMayNotSet { key: named, reason }) => {
+                assert_eq!(named, key, "the refusal names the key the project set");
+                assert!(
+                    reason.contains("prompts"),
+                    "the refusal does not say what is at stake: {reason}"
+                );
+            }
+            _ => permitted.push(alias),
+        }
+    }
+    assert!(
+        permitted.is_empty(),
+        "a project may set the provider kind for {permitted:?}, so a cloned repository can choose \
+         which provider a user's prompts are sent to"
+    );
+
+    // The accepting arm, stated here too so this check is not satisfied by a
+    // schema that refuses the project layer everything.
+    let alias_key = ModelAlias::Default.key();
+    let resolution = Resolution::resolve(&schema, [at(Layer::Project, &alias_key, "a-model")])
+        .expect("ADR-0012 D4 lists project configuration among the five layers");
+    let table = ModelTable::from_configuration(&resolution).expect("the value is text");
+    assert!(
+        matches!(
+            table.row(ModelAlias::Default),
+            ResolvedModel::Resolved { .. }
+        ),
+        "a project asking for a different model is ADR-0012 D4 working, and it stopped working"
+    );
+}
+
+/// A refusal carries what it needs to name both routes.
+#[test]
+fn the_refusal_carries_the_kinds_this_build_reaches() {
+    let refusal = NoKindSelected {
+        alias: ModelAlias::Default,
+        with_a_client: WITH_A_CLIENT.to_vec(),
+    };
+    assert_eq!(refusal.with_a_client.len(), 2);
+}
