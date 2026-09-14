@@ -192,8 +192,9 @@ impl fmt::Display for ConfigRefused {
         match self {
             Self::DuplicateLayer { layer } => write!(
                 f,
-                "two contributions both claim layer {} ({}); ADR-0014 D1 has one document per \
-                 layer and does not say which of two would win",
+                // ADR-0014 D1 has one document per layer.
+                "two contributions both claim layer {} ({}); there is one document per layer and \
+                 nothing says which of two would win",
                 layer.number(),
                 layer.label(),
             ),
@@ -244,13 +245,14 @@ impl fmt::Display for ConfigRefused {
                 if *declared_as_a_reference {
                     f.write_str(
                         "That key names a credential rather than holding one: put the value in \
-                         the credential store of ADR-0007 and write the alias here instead",
+                         the credential store and write the alias here instead",
                     )
                 } else {
                     f.write_str(
-                        "ADR-0014 D4 keeps credentials out of configuration files because a \
-                         config file gets committed to a repository; the value belongs in the \
-                         credential store of ADR-0007, and configuration names it by alias",
+                        // ADR-0014 D4 keeps credentials out of configuration files.
+                        "credentials are kept out of configuration files because a config file \
+                         gets committed to a repository; the value belongs in the credential \
+                         store, and configuration names it by alias",
                     )
                 }
             }
@@ -292,8 +294,9 @@ impl fmt::Display for ConfigRefused {
 
             Self::ProjectMayNotSet { key, reason } => write!(
                 f,
-                "the project's configuration sets `{key}`, which it may not: {reason}. ADR-0014 \
-                 D6 — a repository the user cloned must not be able to configure its way to more \
+                // ADR-0014 D6.
+                "the project's configuration sets `{key}`, which it may not: {reason}. A \
+                 repository the user cloned must not be able to configure its way to more \
                  privilege than the user granted",
             ),
 
@@ -303,8 +306,9 @@ impl fmt::Display for ConfigRefused {
                 asked,
             } => write!(
                 f,
-                "the project's configuration raises `{key}` from {granted} to {asked}; ADR-0014 \
-                 D6 lets a project lower its own ceiling and never raise one",
+                // ADR-0014 D6.
+                "the project's configuration raises `{key}` from {granted} to {asked}; a project \
+                 may lower its own ceiling and never raise one",
             ),
 
             Self::AmbiguousEnvironmentName {
@@ -319,7 +323,7 @@ impl fmt::Display for ConfigRefused {
             ),
             Self::ReservedEnvironmentName { variable, key } => write!(
                 f,
-                "the key `{key}` maps to the environment variable {variable}, which is reserved:                  it holds ADR-0007 D3's sealing key on a machine with no OS keyring, and it is                  deliberately not a configuration key because ADR-0014 D4 keeps credentials out                  of configuration. No key may be declared that produces it",
+                "the key `{key}` maps to the environment variable {variable}, which is reserved:                  it holds the sealing key on a machine with no OS keyring, and it is                  deliberately not a configuration key, because credentials are kept out                  of configuration. No key may be declared that produces it",
             ),
         }
     }

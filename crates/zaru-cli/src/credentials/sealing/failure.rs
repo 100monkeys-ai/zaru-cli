@@ -111,7 +111,7 @@ impl fmt::Display for SealingError {
             Self::NoKey => write!(
                 f,
                 "there is no sealing key: the OS keyring is not reachable on this machine and \
-                 {CREDENTIAL_KEY_VARIABLE} is not set. ADR-0007 D3 keeps the key in the OS \
+                 {CREDENTIAL_KEY_VARIABLE} is not set. The key is kept in the OS \
                  keyring where there is one and in that variable where there is not"
             ),
             Self::KeyringFailed { detail } => write!(

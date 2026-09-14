@@ -60,8 +60,9 @@ impl fmt::Display for KeyRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
-                "a configuration key is empty; ADR-0014 D3 explains a key by name and D5 \
-                 suggests one by name, and neither can name nothing",
+                // ADR-0014 D3 explains a key by name and D5 suggests one by name.
+                "a configuration key is empty; a key is explained and suggested by name, and \
+                 neither can name nothing",
             ),
             Self::EmptySegment { offered } => write!(
                 f,
@@ -71,7 +72,7 @@ impl fmt::Display for KeyRefused {
             ),
             Self::Control { offered } => write!(
                 f,
-                "the key {offered:?} carries a control character; ADR-0014 D3 renders keys into \
+                "the key {offered:?} carries a control character; keys are rendered into \
                  a terminal block where one can erase or overwrite a neighbouring row",
             ),
             Self::SurroundingWhitespace { offered } => write!(

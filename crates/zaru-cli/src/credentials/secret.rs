@@ -160,7 +160,7 @@ impl fmt::Display for SecretRefused {
                 f,
                 "a Nuclear Notes bearer value must begin with {PERSONAL_PREFIX:?} or \
                  {APP_PREFIX:?}; this one begins with neither, and its value is deliberately not \
-                 quoted here. ADR-0007 D2 admits only those two kinds for a Notes token. A model \
+                 quoted here. Only those two kinds are admitted for a Notes token. A model \
                  provider's key is stored too, since 2026-09-05, but it is added as a provider \
                  key under a named provider kind rather than by having its prefix guessed"
             ),

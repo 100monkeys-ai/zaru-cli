@@ -85,12 +85,13 @@ impl fmt::Display for AliasRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
-                "an alias is empty; ADR-0007 D2 makes it the handle in the CLI, the transcript \
-                 and the agent's tool namespace, and none of those can name nothing",
+                // ADR-0007 D2 makes an alias the handle in all three places.
+                "an alias is empty; it is the handle in the CLI, the transcript and the agent's \
+                 tool namespace, and none of those can name nothing",
             ),
             Self::DotOrDotDot => f.write_str(
                 "an alias of \".\" or \"..\" is refused; it reads as a directory traversal in \
-                 every listing ADR-0007 D7 renders",
+                 every listing this harness renders",
             ),
             Self::Separator { offered, found } => write!(
                 f,
@@ -100,13 +101,13 @@ impl fmt::Display for AliasRefused {
             ),
             Self::NamespaceSeparator { offered } => write!(
                 f,
-                "the alias {offered:?} carries ':', which ADR-0007 D5 uses to separate the \
-                 namespace in \"notes:<alias>\"; the projected tool name would be ambiguous and \
+                "the alias {offered:?} carries ':', which separates the namespace in \
+                 \"notes:<alias>\"; the projected tool name would be ambiguous and \
                  the transcript would stop showing which context answered",
             ),
             Self::Control { offered } => write!(
                 f,
-                "the alias {offered:?} carries a control character; ADR-0007 D7 renders aliases \
+                "the alias {offered:?} carries a control character; aliases are rendered \
                  into a terminal listing, where one can erase or overwrite a neighbouring row",
             ),
             Self::SurroundingWhitespace { offered } => write!(

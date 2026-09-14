@@ -173,8 +173,8 @@ impl fmt::Display for StoreError {
             ),
             Self::DuplicateAlias { alias } => write!(
                 f,
-                "the alias \"{alias}\" is already in the store; ADR-0007 D2 makes an alias a local \
-                 unique name, and two tokens answering to one name is a namespace whose \
+                "the alias \"{alias}\" is already in the store; an alias is a local unique name, \
+                 and two tokens answering to one name is a namespace whose \
                  destination cannot be read off the transcript"
             ),
             Self::UnknownAlias { alias } => {
@@ -183,8 +183,9 @@ impl fmt::Display for StoreError {
             Self::ApexNeedsConfirmation { alias, grants } => write!(
                 f,
                 "the token \"{alias}\" is apex and no confirmer was supplied, so it was refused \
-                 rather than stored silently. ADR-0007 D8 requires an explicit confirmation \
-                 stating what it grants -- \"never silent, never a default\" -- and it grants: \
+                 rather than stored silently. An apex credential requires an explicit \
+                 confirmation stating what it grants -- never silent, never a default -- and it \
+                 grants: \
                  {grants}"
             ),
             Self::ApexDeclined { alias } => write!(
@@ -194,25 +195,25 @@ impl fmt::Display for StoreError {
             Self::SecondComposerRole { existing, offered } => write!(
                 f,
                 "the alias \"{existing}\" already carries the composer role and \"{offered}\" was \
-                 offered it too. ADR-0007 D4: \"Exactly one token is flagged composer\" and \"A \
-                 token cannot be both. The store refuses the configuration.\" Move the role \
+                 offered it too. Exactly one token is flagged composer and a token cannot be \
+                 both, so the store refuses the configuration. Move the role \
                  rather than granting a second"
             ),
             Self::ComposerScopeExceeded { alias, tool } => write!(
                 f,
                 "the alias \"{alias}\" was offered the composer role and its cached scope carries \
-                 {tool:?}, which ADR-0006 D4 does not put in the composer's credential. D4 scopes \
-                 it to the read_only_memory set plus me.set_current_workspace \"and nothing \
-                 else\", so that the composer token \"cannot write, enforced at all three gates, \
-                 regardless of what any code in the harness attempts\". This is the local half of \
+                 {tool:?}, which the composer's credential does not carry. That credential is \
+                 scoped to the read_only_memory set plus me.set_current_workspace and nothing \
+                 else, so that the composer token cannot write, enforced at all three gates, \
+                 regardless of what any code in the harness attempts. This is the local half of \
                  that: the harness refuses to use as the composer a credential whose own scope \
-                 says it could do more. What the server actually granted is ADR-0135's three \
+                 says it could do more. What the server actually granted is the server's three \
                  gates to enforce and not the harness's to verify"
             ),
             Self::UnknownProviderKind { offered } => write!(
                 f,
                 "the credential store holds a provider key under the kind {offered:?}, and \
-                 ADR-0012 D3 names no such kind in this build: {}. A credential this harness \
+                 no such kind is named in this build: {}. A credential this harness \
                  cannot classify is one it cannot redact from a prompt, so it is reported here \
                  rather than skipped",
                 ProviderKind::ALL

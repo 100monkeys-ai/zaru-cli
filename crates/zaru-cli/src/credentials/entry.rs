@@ -172,7 +172,7 @@ pub struct TtlRefused;
 impl fmt::Display for TtlRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(
-            "a cache time-to-live of zero is refused; ADR-0007 D6 makes the TTL a backstop for a \
+            "a cache time-to-live of zero is refused; the TTL is a backstop for a \
              missed list_changed notification, and a backstop that has already expired when it \
              is written is indistinguishable from having no cache at all",
         )
@@ -285,9 +285,10 @@ impl fmt::Display for DescriptionRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the description {:?} carries a control character; ADR-0007 D2 calls it \"One line on \
-             what this token is for\", and D7 renders it into a terminal listing where a control \
-             character can overwrite a neighbouring row",
+            // ADR-0007 D2 calls it "One line on what this token is for"; D7 renders it.
+            "the description {:?} carries a control character; it is one line on what this token \
+             is for, and it is rendered into a terminal listing where a control character can \
+             overwrite a neighbouring row",
             self.offered
         )
     }
@@ -390,8 +391,8 @@ impl fmt::Display for EntryRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the entry `{}` was built as a {} credential from a {} secret. ADR-0007 D2's entry \
-             holds two families since 2026-09-05 and the halves are not interchangeable: a \
+            "the entry `{}` was built as a {} credential from a {} secret. An entry holds two \
+             families and the halves are not interchangeable: a \
              Nuclear Notes token has an instance and a tool scope, and a provider key has a \
              provider kind, and neither has the other's",
             self.alias, self.wanted, self.found,
