@@ -2003,14 +2003,17 @@ fn adr_0007_d7s_use_reaches_the_same_request_from_both_surfaces() {
     );
 }
 
-/// ADR-0007 D7's `describe` and `rm`, out of session, one request each.
+/// ADR-0007 D7's `describe` and `rm`, on both surfaces, one request each.
 ///
-/// The in-session spelling of both is the commit after this one, and this
-/// check grows the other half there — ADR-0015 D2's two entry points are one
-/// operation, and the assertion that they are belongs in the change that
-/// wires the second.
+/// The same guard `use` has, for the two surfaces that complete clause 10 —
+/// and it carries the one thing the two spellings genuinely do differently,
+/// which is how a description made of several words arrives. Out of session
+/// the shell splits it into argv; inside a session the typed line is split on
+/// whitespace. Both are joined with one space, so the same typed words reach
+/// the same request from either place, which is what ADR-0015 D2's "two entry
+/// points, one operation" means here.
 #[test]
-fn adr_0007_d7s_describe_and_rm_reach_their_requests_out_of_session() {
+fn adr_0007_d7s_describe_and_rm_reach_the_same_requests_from_both_surfaces() {
     let alias = crate::credentials::Alias::new("work").expect("a legal alias");
     let typed_words = ["the", "team's", "read-only", "cortex"];
     let joined = typed_words.join(" ");
@@ -2030,7 +2033,21 @@ fn adr_0007_d7s_describe_and_rm_reach_their_requests_out_of_session() {
          word of the description"
     );
 
-    let _ = &joined;
+    let mut words = vec!["describe".to_owned(), "work".to_owned()];
+    words.extend(typed_words.iter().map(|word| (*word).to_owned()));
+    assert_eq!(
+        crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+            slash: "/notes",
+            verb: Some("tokens"),
+            words,
+        }),
+        Some(Request::NotesTokensDescribe {
+            alias: alias.clone(),
+            text: joined,
+        }),
+        "`/notes tokens describe` inside a session did not reach the same request as the \
+         subcommand, so the two spellings ADR-0007 D7 gives are two different operations"
+    );
 
     // --- rm ---------------------------------------------------------------
     assert_eq!(
@@ -2041,7 +2058,16 @@ fn adr_0007_d7s_describe_and_rm_reach_their_requests_out_of_session() {
             alias: alias.clone()
         }
     );
-    let _ = &alias;
+    assert_eq!(
+        crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+            slash: "/notes",
+            verb: Some("tokens"),
+            words: vec!["rm".to_owned(), "work".to_owned()],
+        }),
+        Some(Request::NotesTokensRemove { alias }),
+        "`/notes tokens rm <alias>` inside a session did not reach the same request as the \
+         subcommand"
+    );
 
     // --- the provider half of `rm`, which takes a kind rather than an alias -
     assert_eq!(
@@ -2051,6 +2077,28 @@ fn adr_0007_d7s_describe_and_rm_reach_their_requests_out_of_session() {
         Request::ProviderKeysRemove {
             kind: crate::providers::ProviderKind::Gemini
         }
+    );
+
+    assert_eq!(
+        crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+            slash: "/providers",
+            verb: Some("keys"),
+            words: vec!["rm".to_owned(), "gemini".to_owned()],
+        }),
+        Some(Request::ProviderKeysRemove {
+            kind: crate::providers::ProviderKind::Gemini
+        }),
+        "`/providers keys rm <kind>` inside a session did not reach the same request as the \
+         subcommand"
+    );
+    assert_eq!(
+        crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+            slash: "/providers",
+            verb: Some("keys"),
+            words: Vec::new(),
+        }),
+        Some(Request::ProviderKeys),
+        "bare `/providers keys` no longer reaches the listing"
     );
 
     // --- what each refuses ------------------------------------------------
@@ -2073,6 +2121,39 @@ fn adr_0007_d7s_describe_and_rm_reach_their_requests_out_of_session() {
     assert!(
         parse(typed(&["notes", "tokens", "rm", "work", "extra"])).is_err(),
         "`zaru notes tokens rm` took a word after the alias"
+    );
+
+    // In session the same shapes reach no request and fall through to the
+    // fall-through, which names what was typed. **Bare `/notes tokens` is the
+    // one that must still reach the listing**, so the arms added for these two
+    // verbs cannot have swallowed it.
+    for (words, reaches) in [
+        (vec!["describe"], false),
+        (vec!["describe", "work"], false),
+        (vec!["rm"], false),
+        (vec!["rm", "work", "extra"], false),
+        (Vec::new(), true),
+    ] {
+        let request = crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+            slash: "/notes",
+            verb: Some("tokens"),
+            words: words.iter().map(|word| (*word).to_owned()).collect(),
+        });
+        assert_eq!(
+            request.is_some(),
+            reaches,
+            "`/notes tokens {}` reached {request:?}",
+            words.join(" ")
+        );
+    }
+    assert_eq!(
+        crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+            slash: "/notes",
+            verb: Some("tokens"),
+            words: Vec::new(),
+        }),
+        Some(Request::NotesTokens),
+        "bare `/notes tokens` no longer reaches the listing"
     );
 }
 

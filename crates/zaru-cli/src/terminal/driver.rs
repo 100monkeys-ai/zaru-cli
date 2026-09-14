@@ -2390,6 +2390,44 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
         // `/dev/tty`, and a network call between them -- and they are on
         // `operations/known-defects` rather than here.
         ("/notes", Some("tokens")) if command.words.is_empty() => Some(Request::NotesTokens),
+        // ADR-0007 D7's `describe` and `rm`, which are reachable in a session
+        // for the reason `use` is and `tokens add` is not: each takes words
+        // the person typed on this line and reads nothing from standard
+        // input, which a terminal in raw mode has taken.
+        //
+        // **The description is every word after the alias, joined with one
+        // space** -- `Command::words` is the typed line split on whitespace,
+        // and out of session the same words arrive already split by the
+        // shell. Joining both the same way is what makes ADR-0015 D2's two
+        // entry points one operation here; see `Request::NotesTokensDescribe`
+        // for the one input the two cannot agree on.
+        //
+        // Neither validates anything. An alias is `Alias::new`'s to refuse and
+        // a description is `Description::new`'s, at the store's door, which is
+        // the same door the subcommand goes through -- a grammar that checked
+        // either here would be a second answer to a question `zaru-cli`
+        // already answers in one place.
+        ("/notes", Some("tokens")) if command.words.first().is_some_and(|w| w == "describe") => {
+            match command.words.as_slice() {
+                [_, alias, text @ ..] if !text.is_empty() => crate::credentials::Alias::new(alias)
+                    .ok()
+                    .map(|alias| Request::NotesTokensDescribe {
+                        alias,
+                        text: text.join(" "),
+                    }),
+                // An alias with no description, or neither. It falls through
+                // to `unavailable`, which names what was typed.
+                _ => None,
+            }
+        }
+        ("/notes", Some("tokens")) if command.words.first().is_some_and(|w| w == "rm") => {
+            match command.words.as_slice() {
+                [_, alias] => crate::credentials::Alias::new(alias)
+                    .ok()
+                    .map(|alias| Request::NotesTokensRemove { alias }),
+                _ => None,
+            }
+        }
         // ADR-0007 D7's fifth surface, and it is reachable inside a session
         // where `tokens add` is not: this takes an alias that is already in
         // the store and reads nothing.
@@ -2420,6 +2458,18 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
         // missing was a way to read a secret at a terminal without echoing
         // it.
         ("/providers", Some("keys")) if command.words.is_empty() => Some(Request::ProviderKeys),
+        // The provider half of ADR-0007 D7's `rm`, in session for the reason
+        // `keys add` is not: it names a kind and reads nothing. D2's two
+        // entry points are one operation, so this reaches the same request
+        // the subcommand does.
+        ("/providers", Some("keys")) if command.words.first().is_some_and(|w| w == "rm") => {
+            match command.words.as_slice() {
+                [_, kind] => {
+                    ProviderKind::parse(kind).map(|kind| Request::ProviderKeysRemove { kind })
+                }
+                _ => None,
+            }
+        }
         ("/session", Some("list")) => Some(Request::SessionsList),
         ("/session", Some("rm")) => command
             .words
