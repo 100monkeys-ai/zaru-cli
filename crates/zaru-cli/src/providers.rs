@@ -68,6 +68,7 @@ pub mod ollama;
 pub mod port;
 pub mod resolution;
 pub mod selection;
+pub mod sse;
 pub mod usage;
 
 pub use alias::ModelAlias;
