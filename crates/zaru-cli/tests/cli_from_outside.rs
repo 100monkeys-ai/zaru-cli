@@ -1456,3 +1456,76 @@ fn corpus_a_bare_zaru_through_a_pipe_prints_the_usage_and_mints_nothing() {
         "`--help` and a bare `zaru` print the same bytes through a pipe"
     );
 }
+
+/// **Security corpus.** Nothing the binary writes to a pipe carries a colour
+/// sequence.
+///
+/// # Why this exists at all, and what it is not
+///
+/// [ADR-0028] D2's Update of 2026-09-13 puts a colour on a register's glyph.
+/// The pane is the only thing that paints one, the pane is reached only
+/// through `Crossterm`, and `Crossterm` is taken only after
+/// `terminal::open::a_person_is_watching` — `std::io::stdout().is_terminal()`
+/// — says yes. That is a structural argument, and this is the measurement
+/// beside it: the real artefact, four commands, both streams, a cleared
+/// environment.
+///
+/// **The instrument carries a control.** An absence claim is a claim about the
+/// scanner as much as about the world ([Verification lessons] §8), so the last
+/// arm hands the same scanner a planted sequence and requires it to be found.
+/// Without it a scanner that matched nothing at all would report four clean
+/// runs. A first attempt at this measurement, taken by hand at leg 1, was
+/// exactly that failure in the other direction: `od -c | grep 033` counted
+/// `od`'s own octal byte offsets and reported escapes in `--help` that were
+/// not there.
+///
+/// **`--resume` through a pipe is deliberately not one of the four.** It
+/// prints the transcript's own bytes, and [ADR-0010] D2 keeps those raw — a
+/// `cmd.run` whose child emitted an escape sequence puts one in that file by
+/// design, so a scan over that path would redden for a reason that is not this
+/// clause's and would be wrong to "fix". The four below compose every byte
+/// they print.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn corpus_the_non_tty_path_emits_no_colour_sequence() {
+    let home = Home::new("no-colour-off-a-pipe");
+    let escape = |text: &str| text.contains('\u{1b}');
+
+    for arguments in [
+        vec!["runtime"],
+        vec!["models"],
+        vec!["--help"],
+        vec!["sessions", "list"],
+        vec!["notes", "tokens"],
+    ] {
+        let ran = zaru(&home, &arguments);
+        assert!(
+            !ran.stdout.is_empty() || !ran.stderr.is_empty(),
+            "`zaru {}` printed nothing at all, so the assertions below are about an empty \
+             string",
+            arguments.join(" ")
+        );
+        assert!(
+            !escape(&ran.stdout),
+            "`zaru {}` wrote an escape sequence to standard output, and nothing but a \
+             terminal session may:\n{:?}",
+            arguments.join(" "),
+            ran.stdout
+        );
+        assert!(
+            !escape(&ran.stderr),
+            "`zaru {}` wrote an escape sequence to standard error:\n{:?}",
+            arguments.join(" "),
+            ran.stderr
+        );
+    }
+
+    assert!(
+        escape("a\u{1b}[31mred\u{1b}[0m"),
+        "the scanner cannot find a sequence that is there, so the four clean runs above are \
+         evidence about the scanner rather than about the binary"
+    );
+}

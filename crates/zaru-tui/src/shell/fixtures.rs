@@ -17,10 +17,11 @@
 //!
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
-use crate::shell::port::{CommandVocabulary, Line, Namespace, Register, TranscriptSource};
+use crate::shell::port::{CommandVocabulary, Line, Namespace, Palette, Register, TranscriptSource};
 use ratatui::Terminal;
 use ratatui::backend::{Backend, TestBackend};
 use ratatui::layout::Position;
+use ratatui::style::Color;
 
 /// A value planted in a staged transcript, so a check can look for something
 /// that could only have come from the line it planted.
@@ -163,14 +164,55 @@ impl StagedTranscript {
 /// Both arms of every frame assertion read cells out of `TestBackend` and
 /// compare them against literals the check owns, so neither side travels back
 /// through the shell's own formatter.
+///
+/// **The palette is [`Palette::Coloured`], which is what the product passes
+/// when `NO_COLOR` is unset**, and it is named here rather than left implicit
+/// because a fixture's default is a value somebody chose for a different
+/// caller. Every check in this crate that predates 2026-09-13 reads symbols,
+/// which no palette changes; the checks that read a colour say which palette
+/// they painted under by calling [`painted_in`].
 pub(crate) fn painted(
     shell: &crate::shell::Shell,
     width: u16,
     height: u16,
 ) -> (Vec<String>, Position) {
+    painted_in(shell, width, height, Palette::Coloured)
+}
+
+/// The same, under a palette the check chose.
+pub(crate) fn painted_in(
+    shell: &crate::shell::Shell,
+    width: u16,
+    height: u16,
+    palette: Palette,
+) -> (Vec<String>, Position) {
+    let (rows, cursor) = cells(shell, width, height, palette);
+    (
+        rows.into_iter()
+            .map(|row| row.into_iter().map(|(symbol, _)| symbol).collect())
+            .collect(),
+        cursor,
+    )
+}
+
+/// Paint a shell and read every cell back as its symbol **and its foreground
+/// colour**.
+///
+/// A colour is a property of a cell rather than of a row, so a check about one
+/// reads the cell rather than the row's bytes. **What a terminal would
+/// actually be sent is a different measurement and is not taken here**:
+/// `ratatui`'s crossterm backend is behind a feature this crate deliberately
+/// does not take, so the byte-level count lives in `zaru-cli`, where
+/// `a_monochrome_frame_writes_no_colour_sequence` takes it.
+pub(crate) fn cells(
+    shell: &crate::shell::Shell,
+    width: u16,
+    height: u16,
+    palette: Palette,
+) -> (Vec<Vec<(String, Color)>>, Position) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal
-        .draw(|frame| shell.render(frame, frame.area()))
+        .draw(|frame| shell.render(frame, frame.area(), palette))
         .expect("draw");
     let cursor = terminal
         .backend_mut()
@@ -180,8 +222,11 @@ pub(crate) fn painted(
     let rows = (0..buffer.area.height)
         .map(|y| {
             (0..buffer.area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
+                .map(|x| {
+                    let cell = &buffer[(x, y)];
+                    (cell.symbol().to_owned(), cell.fg)
+                })
+                .collect()
         })
         .collect();
     (rows, cursor)

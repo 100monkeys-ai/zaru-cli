@@ -35,7 +35,7 @@ use zaru_cli::terminal::source::{Pace, Source};
 use zaru_cli::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use zaru_cli::terminal::{NOTHING_CACHED, NotesTrie};
 use zaru_notes::trie::{CachedEntry, EntryKind};
-use zaru_tui::shell::{COMPOSER_ROWS, Input, Key, Queued, Shell, Status};
+use zaru_tui::shell::{COMPOSER_ROWS, Input, Key, Palette, Queued, Shell, Status};
 
 /// A value planted in the session's transcript, so what is read back could
 /// only have come from the file the check wrote.
@@ -180,7 +180,7 @@ impl Restore for Recorded {
 impl Surface for Recorded {
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()> {
         self.terminal
-            .draw(|frame| shell.render(frame, frame.area()))?;
+            .draw(|frame| shell.render(frame, frame.area(), Palette::Coloured))?;
         let buffer = self.terminal.backend().buffer();
         self.frames.push(
             (0..buffer.area.height)

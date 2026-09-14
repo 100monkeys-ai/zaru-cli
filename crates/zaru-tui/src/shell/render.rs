@@ -51,7 +51,7 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
-use crate::shell::{COMPOSER_ROWS, Row, Shell};
+use crate::shell::{COMPOSER_ROWS, Palette, Row, Shell};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line as TextLine;
@@ -168,7 +168,15 @@ impl Shell {
     }
 
     /// Paint the whole shell into `area`.
-    pub fn render(&self, frame: &mut Frame<'_>, area: Rect) {
+    ///
+    /// `palette` decides whether the registers' colours are painted, and it
+    /// is an argument rather than shell state because the terminal is what
+    /// knows — see [`Palette`]. **It reaches exactly one thing**: a
+    /// transcript row's marker column. The status line, the composer, the
+    /// hint strip and a standing question are painted the same way at either
+    /// value, which is `no_register_colour_reaches_the_status_line_the_\
+    /// composer_or_the_hint_strip`.
+    pub fn render(&self, frame: &mut Frame<'_>, area: Rect, palette: Palette) {
         let [status, pane, composer] = Self::regions(area);
         let (pane, queued) = self.pane_and_queue(pane);
 
@@ -184,11 +192,21 @@ impl Shell {
         let visible: Vec<TextLine<'_>> = self
             .visible(pane.height, pane.width)
             .into_iter()
-            // Two spans rather than one joined string, and that is what lets
-            // `a_rows_joined_form_is_what_the_pane_painted_before` compare
-            // `Row::joined` against the buffer without both arms travelling
-            // through the same function. Nothing is styled yet.
-            .map(|row| TextLine::from(vec![Span::raw(row.lead), Span::raw(row.text)]))
+            // Two spans rather than one joined string: the marker column
+            // carries the register's colour and the producer's words carry
+            // nothing. `Paragraph` sets a style per grapheme, so the style
+            // reaches the cells `lead` paints and not the blanks past the end
+            // of the row.
+            //
+            // It is also what lets `a_rows_joined_form_is_what_the_pane_\
+            // painted_before` compare `Row::joined` against the buffer
+            // without both arms travelling through the same function.
+            .map(|row| {
+                TextLine::from(vec![
+                    Span::styled(row.lead, palette.marker(row.register)),
+                    Span::raw(row.text),
+                ])
+            })
             .collect();
         if !visible.is_empty() {
             frame.render_widget(Paragraph::new(visible), pane);

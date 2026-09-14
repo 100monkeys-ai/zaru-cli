@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 use zaru_tui::shell::port::{CommandVocabulary, Register, TranscriptSource};
-use zaru_tui::shell::{COMPOSER_ROWS, Key, Shell, Status, Struck};
+use zaru_tui::shell::{COMPOSER_ROWS, Key, Palette, Shell, Status, Struck};
 
 const VERSION: &str = "0.0.0";
 
@@ -78,13 +78,40 @@ fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Rec
     pump_staged_over(keys.into_iter().map(Into::into).collect(), trie)
 }
 
+/// The same pump under a palette a check chose.
+///
+/// The product's own `Surface::draw` path, which is what makes this different
+/// from painting a shell into a `TestBackend` by hand: `Recording` holds its
+/// palette exactly as `Crossterm` holds the one `NO_COLOR` gave it, so a check
+/// here exercises the seam a session actually goes through.
+fn pump_painting(
+    keys: Vec<zaru_tui::shell::Input>,
+    trie: &NotesTrie,
+    palette: Palette,
+) -> (Shell, Recording, Exit) {
+    pump_staged_painting(keys.into_iter().map(Into::into).collect(), trie, palette)
+}
+
 /// The pump every helper above reaches, over what the terminal handed across.
 fn pump_staged_over(
     struck: Vec<zaru_tui::shell::Struck>,
     trie: &NotesTrie,
 ) -> (Shell, Recording, Exit) {
+    pump_staged_painting(struck, trie, Palette::Coloured)
+}
+
+/// The same, under a palette.
+///
+/// The palette is a second axis rather than a second pump: every helper above
+/// reaches this one function, and the two that have no opinion about colour
+/// pass what the product passes when `NO_COLOR` is unset.
+fn pump_staged_painting(
+    struck: Vec<zaru_tui::shell::Struck>,
+    trie: &NotesTrie,
+    palette: Palette,
+) -> (Shell, Recording, Exit) {
     let restores: Restores = Arc::new(AtomicUsize::new(0));
-    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut surface = Recording::painting(Arc::clone(&restores), 72, palette);
     let source = Source::staged(struck);
     let pace = Held::default();
     let mut shell = shell();
@@ -3330,7 +3357,7 @@ fn painted_row(shell: &Shell) -> String {
 
     let mut terminal = Terminal::new(TestBackend::new(200, 8)).expect("test terminal");
     terminal
-        .draw(|frame| shell.render(frame, frame.area()))
+        .draw(|frame| shell.render(frame, frame.area(), Palette::Coloured))
         .expect("draw");
     let buffer = terminal.backend().buffer();
     (0..buffer.area.width)
@@ -3365,11 +3392,17 @@ fn painted_row(shell: &Shell) -> String {
 /// # The property is text in the buffer, and deliberately not a colour
 ///
 /// Read out of `TestBackend`'s cells. **No register and no colour is claimed
-/// as the distinction**: no record gives an out-of-tree call one, inventing a
-/// seventh register would be authoring, and a colour is not something this
-/// check could read anyway. What it reads is `Placement::as_str`'s own words,
-/// taken from that constant rather than retyped, so renaming the marking moves
-/// this check with it.
+/// as the distinction**: no record gives an out-of-tree call one. What it
+/// reads is `Placement::as_str`'s own words, taken from that constant rather
+/// than retyped, so renaming the marking moves this check with it.
+///
+/// **This paragraph read "and a colour is not something this check could read
+/// anyway" until 2026-09-13**, and that clause stopped being true when the
+/// registers gained colours; it is corrected here rather than left, and the
+/// two claims it made that must stay true — no register of its own, no colour
+/// as the distinction — are now asserted rather than merely asserted to be
+/// unassertable, by
+/// [`corpus_an_out_of_tree_call_carries_its_registers_colour_and_the_marking_is_still_text`].
 ///
 /// **Both arms.** An assertion that only looked for the marking would be
 /// satisfied by a renderer that marked everything, which is the same pair
@@ -4385,6 +4418,379 @@ fn adr_0010_d2s_conversation_replays_in_order_above_the_new_turn() {
     }
 }
 
+// ------------- ADR-0028 D2 and ADR-0016 D1, read off the cells a person sees
+
+/// The palette reaches the pane through the product's own surface, and
+/// `NO_COLOR` takes it away again.
+///
+/// # Why this is not the same claim as the checks below
+///
+/// Everything else in this file that reads a colour paints a shell into a
+/// `TestBackend` directly. This one goes through `terminal::driver::run` and
+/// `Surface::draw` — the path a session takes — with `Recording` holding its
+/// palette exactly as `Crossterm` holds the one `palette_from_environment`
+/// gave it. A palette that never reached the surface would satisfy every
+/// other check here and fail this one.
+///
+/// Both arms, over the frames the pump actually recorded: coloured, at least
+/// one cell carries a register's colour; monochrome, not one does.
+#[test]
+fn the_pump_paints_a_registers_colour_and_a_monochrome_palette_takes_it_away() {
+    use ratatui::style::Color;
+
+    let of_a_register = |colour: &Color| {
+        *colour != Color::Reset && Register::ALL.iter().any(|r| r.colour() == *colour)
+    };
+    // A task the pump refuses paints `CANNOT` in `Register::Failed`, which is
+    // a real product line in a register with a colour -- rather than a line
+    // this check planted. `/exit` then leaves.
+    let painted = |palette| {
+        let mut keys = typed("do something");
+        keys.extend(typed("/exit"));
+        let (_, surface, _) = pump_painting(keys, &NotesTrie::nothing_cached(WORKSPACE), palette);
+        surface
+            .colours
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|colour| of_a_register(colour))
+            .count()
+    };
+
+    let lit = painted(Palette::Coloured);
+    let dark = painted(Palette::Monochrome);
+
+    assert!(
+        lit > 0,
+        "no frame the pump recorded carries a register's colour, so the zero below is a fact \
+         about a pane that paints none rather than about the palette"
+    );
+    assert_eq!(
+        dark, 0,
+        "the pump recorded {dark} cell(s) carrying a register's colour under a monochrome \
+         palette, against {lit} in colour"
+    );
+}
+
+/// **Security corpus.** [ADR-0016] D1's crash colour exists, and [ADR-0028]
+/// D2's own subject provably does not carry it.
+///
+/// # The sentence this holds was vacuous until a colour existed
+///
+/// D1: "**Expected failures never render as errors.** An iteration that fails
+/// is the mechanism operating, and **colouring it like a crash** teaches users
+/// to fear the thing that makes the product work." Before 2026-09-13 no colour
+/// existed anywhere in this workspace, so nothing could be coloured like a
+/// crash and the sentence forbade nothing. A crash colour exists now, and this
+/// is the check that says the setback does not wear it.
+///
+/// D1's trigger clause 2 — "An iteration failure is asserted not to render in
+/// the error register" — has stood as "half satisfied … **two halves are
+/// missing: there is no renderer**, and nothing in any product tree turns
+/// `zaru-core`'s `Event::IterationFailed` into a classified failure". **This
+/// is the renderer half**: the line is composed by the product's own
+/// `loop_line` and the assertion is read out of the painted cell. The second
+/// half does not move and is not claimed.
+///
+/// # Three arms, and one of them is the control
+///
+/// The setback's glyph carries `SETBACK`; it does not carry `FAILED`; and a
+/// real `Register::Failed` line in the **same frame** does. Without the third
+/// arm this passes on a renderer that colours nothing at all, which is the
+/// shape [Verification lessons] §8 is written against.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn corpus_an_iteration_failure_never_carries_the_error_registers_colour() {
+    use zaru_tui::shell::port::{FAILED, SETBACK};
+
+    let setback = painted_loop_line(&zaru_core::iteration::Event::IterationFailed {
+        n: 1,
+        reason: "greets: failed".to_owned(),
+        elapsed: core::time::Duration::from_millis(2_570),
+    });
+    let defect = zaru_tui::shell::port::Line::new(
+        Register::Failed,
+        "provider: no credential for alias `default`",
+    );
+
+    let mut shell = shell();
+    shell.notice(setback.clone());
+    shell.notice(defect);
+    let frame = cells_at(&shell, 100, 24, Palette::Coloured);
+
+    let marker = |needle: &str| {
+        frame
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .map(|row| (row[0].0.clone(), row[0].1))
+            .unwrap_or_else(|| panic!("no painted row carries {needle:?}"))
+    };
+
+    let (glyph, colour) = marker("iteration 1 failed");
+    assert_eq!(
+        glyph,
+        Register::Setback.glyph(),
+        "the iteration's failure does not open with the setback's glyph"
+    );
+    assert_eq!(
+        colour, SETBACK,
+        "ADR-0028 D2's own subject is painted {colour:?} rather than the setback's colour"
+    );
+    assert_ne!(
+        colour, FAILED,
+        "ADR-0016 D1 forbids colouring an expected failure like a crash, and the iteration's \
+         failure is painted the error register's own colour"
+    );
+
+    let (_, crash) = marker("no credential for alias");
+    assert_eq!(
+        crash, FAILED,
+        "the control line is painted {crash:?} rather than the error register's colour, so \
+         the assertions above pass on a renderer that colours nothing"
+    );
+}
+
+/// **Security corpus.** [ADR-0011] D4's out-of-tree marking is still text, and
+/// a colour is still not the distinction.
+///
+/// # What this pins, and against what
+///
+/// `an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo` says in its
+/// own documentation that "**no register and no colour is claimed as the
+/// distinction** … and a colour is not something this check could read
+/// anyway". The last clause stopped being true on 2026-09-13, and the first
+/// two must not: giving an out-of-tree call a colour of its own would make the
+/// marking invisible to a reader with `NO_COLOR` set, to a monochrome
+/// terminal, and to every check that reads the transcript file.
+///
+/// So: both calls' glyphs carry the **same** colour, `CALL`; the marking is in
+/// the out-of-tree frame's symbols and not in the in-tree one's. The width is
+/// 72, which is where that clause's own corpus check already measures.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn corpus_an_out_of_tree_call_carries_its_registers_colour_and_the_marking_is_still_text() {
+    use crate::tools::fixtures::ScratchTree;
+    use crate::tools::tree::{Placement, WorkingDirectory};
+    use zaru_tui::shell::port::{CALL, Line};
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let escaping = crate::session::fixtures::entry_for(&working, "../elsewhere/secret", true);
+    let ordinary = crate::session::fixtures::entry_for(&working, "notes.txt", false);
+    let marking = Placement::OutOfTree.as_str();
+
+    assert!(
+        escaping.render().contains(marking),
+        "the staged entry is not marked at all, so nothing below is about the frame"
+    );
+
+    let painted = |entry: &crate::tools::TranscriptEntry| {
+        let mut shell = shell();
+        shell.notice(Line::new(Register::Call, entry.render()));
+        let frame = cells_at(&shell, 72, 24, Palette::Coloured);
+        let text: String = frame
+            .iter()
+            .map(|row| row.iter().map(|(s, _)| s.as_str()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (frame[1][0].1, text)
+    };
+
+    let (escaped_colour, escaped_text) = painted(&escaping);
+    let (inside_colour, inside_text) = painted(&ordinary);
+
+    assert_eq!(
+        escaped_colour, CALL,
+        "an out-of-tree call's glyph is painted {escaped_colour:?} rather than the call \
+         register's colour"
+    );
+    assert_eq!(
+        inside_colour, CALL,
+        "an in-tree call's glyph is painted {inside_colour:?}, so the two differ by colour \
+         and a monochrome terminal would lose ADR-0011 D4's distinction"
+    );
+    assert!(
+        escaped_text.contains(marking),
+        "the out-of-tree marking is not on the frame:\n{escaped_text}"
+    );
+    assert!(
+        !inside_text.contains(marking),
+        "an ordinary in-tree call was marked as having left the tree:\n{inside_text}"
+    );
+}
+
+/// A monochrome frame writes no colour sequence, and a coloured one does.
+///
+/// # The measurement a pseudo-terminal takes, taken offline
+///
+/// [operations/harness-look-and-feel] row 4 counted the SGR sequences in a
+/// real capture and found no foreground colour anywhere. This is that count,
+/// deterministic and in the suite: the bytes `ratatui`'s own crossterm backend
+/// writes for one frame, scanned for the CSI foreground-colour sequences
+/// crossterm emits.
+///
+/// **Both directions.** A check that only looked at the monochrome frame would
+/// be satisfied by a renderer that never emits a colour at all, which is
+/// exactly the state this arc changed.
+///
+/// [operations/harness-look-and-feel]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
+#[test]
+fn a_monochrome_frame_writes_no_colour_sequence() {
+    use zaru_tui::shell::port::Line;
+
+    let mut shell = shell();
+    for register in Register::ALL {
+        shell.notice(Line::new(
+            register,
+            format!("{register:?} in its own register"),
+        ));
+    }
+
+    // crossterm writes a foreground colour as `ESC [ 3 8 ; 5 ; n m` for an
+    // indexed colour and `ESC [ 3 0-7 m` / `ESC [ 9 0-7 m` for the sixteen.
+    // The scan is over the *set* sequence rather than over every escape,
+    // because every frame ends with an unconditional reset that says nothing
+    // about whether a colour was painted.
+    let sets = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        (30..=37)
+            .chain(90..=97)
+            .map(|code| format!("\x1b[{code}m"))
+            .chain(core::iter::once("\x1b[38;5;".to_owned()))
+            .chain(core::iter::once("\x1b[38;2;".to_owned()))
+            .map(|needle| text.matches(&needle).count())
+            .sum::<usize>()
+    };
+
+    let lit = sets(&written_bytes(&shell, 80, 24, Palette::Coloured));
+    let dark = sets(&written_bytes(&shell, 80, 24, Palette::Monochrome));
+
+    assert!(
+        lit > 0,
+        "a coloured frame wrote no foreground-colour sequence at all, so the zero below is a \
+         fact about a renderer that paints none rather than about NO_COLOR"
+    );
+    assert_eq!(
+        dark, 0,
+        "a frame painted under NO_COLOR wrote {dark} foreground-colour sequence(s), against \
+         {lit} for the same frame in colour"
+    );
+}
+
+/// The `NO_COLOR` convention, in both of its arms.
+///
+/// Present and non-empty disables; present and empty does not; absent does
+/// not. The empty case is the one worth a check rather than a comment:
+/// `NO_COLOR=` is what a shell leaves behind when a variable is cleared rather
+/// than unset, and the convention is explicit that it does not count.
+///
+/// Read through `palette_for` rather than through the environment, because a
+/// check that wrote to the environment would be changing state every other
+/// check in this process shares.
+#[test]
+fn the_no_color_convention_holds_in_both_of_its_arms() {
+    use crate::terminal::open::palette_for;
+    use std::ffi::OsStr;
+    use zaru_tui::shell::Palette;
+
+    for (asked, expected) in [
+        (None, Palette::Coloured),
+        (Some(OsStr::new("")), Palette::Coloured),
+        (Some(OsStr::new("1")), Palette::Monochrome),
+        (Some(OsStr::new("0")), Palette::Monochrome),
+        (Some(OsStr::new("anything at all")), Palette::Monochrome),
+    ] {
+        assert_eq!(
+            palette_for(asked),
+            expected,
+            "NO_COLOR = {asked:?} resolved to the wrong palette"
+        );
+    }
+}
+
+/// Every cell a shell paints at a given size, as its symbol and its
+/// foreground colour.
+///
+/// The colour half of [`painted_at`]. A colour is a property of a cell rather
+/// than of a row, so a check about one reads the cell.
+fn cells_at(
+    shell: &Shell,
+    width: u16,
+    height: u16,
+    palette: Palette,
+) -> Vec<Vec<(String, ratatui::style::Color)>> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal
+        .draw(|frame| shell.render(frame, frame.area(), palette))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| {
+                    let cell = &buffer[(x, y)];
+                    (cell.symbol().to_owned(), cell.fg)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The bytes `ratatui`'s own crossterm backend would write for one frame.
+///
+/// **This is the measurement a pseudo-terminal capture takes, taken offline
+/// and deterministically.** `ratatui`'s backend emits a colour sequence only
+/// where a cell's colour differs from the previous cell's, starting from
+/// `Reset`, so a frame of `Reset` cells writes none at all beyond the
+/// unconditional reset it ends every frame with. `zaru-tui` cannot take this
+/// reading — the crossterm backend is behind a feature that crate deliberately
+/// does not carry — so it lives here, where `ratatui` is taken with it.
+fn written_bytes(shell: &Shell, width: u16, height: u16, palette: Palette) -> Vec<u8> {
+    use ratatui::Terminal;
+    use ratatui::backend::{Backend, CrosstermBackend};
+
+    /// A writer the check can read back, because `CrosstermBackend`'s own is
+    /// private.
+    #[derive(Clone, Default)]
+    struct Shared(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Shared {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("the buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let written = Shared::default();
+    let mut terminal =
+        Terminal::new(CrosstermBackend::new(written.clone())).expect("a backend over a buffer");
+    terminal
+        .resize(ratatui::layout::Rect::new(0, 0, width, height))
+        .expect("resize");
+    terminal
+        .draw(|frame| shell.render(frame, frame.area(), palette))
+        .expect("draw");
+    terminal.backend_mut().flush().expect("flush");
+    let bytes = written.0.lock().expect("the buffer").clone();
+    bytes
+}
+
 /// The buffer a shell paints at a given size, as rows.
 ///
 /// `painted_row` above reads row zero at 200 columns for the status line; this
@@ -4396,7 +4802,7 @@ fn painted_at(shell: &Shell, width: u16, height: u16) -> Vec<String> {
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal
-        .draw(|frame| shell.render(frame, frame.area()))
+        .draw(|frame| shell.render(frame, frame.area(), Palette::Coloured))
         .expect("draw");
     let buffer = terminal.backend().buffer();
     (0..buffer.area.height)

@@ -26,7 +26,7 @@ use zaru_core::iteration::Interruption;
 use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::Start;
 use zaru_tui::shell::port::{Confirmation, Line, Register};
-use zaru_tui::shell::{Action, Command, Queued, Shell, Struck};
+use zaru_tui::shell::{Action, Command, Palette, Queued, Shell, Struck};
 
 /// Giving the terminal back to the user.
 ///
@@ -2066,6 +2066,13 @@ pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
 /// that is stated rather than implied.
 pub struct Crossterm {
     terminal: ratatui::DefaultTerminal,
+    /// Whether this terminal paints the registers' colours.
+    ///
+    /// Held here because the terminal is the thing that knows: it is taken
+    /// once per session, and `NO_COLOR` is a fact about the process rather
+    /// than about the shell's state. See
+    /// [`crate::terminal::open::palette_from_environment`].
+    palette: Palette,
 }
 
 impl Crossterm {
@@ -2092,7 +2099,11 @@ impl Crossterm {
             ratatui::restore();
             return Err(failure);
         }
-        Ok(Self { terminal })
+        // Read here, once, after the terminal is taken and armed: `NO_COLOR`
+        // is a fact about the process and the terminal is the thing that
+        // knows whether it paints colour.
+        let palette = crate::terminal::open::palette_from_environment();
+        Ok(Self { terminal, palette })
     }
 }
 
@@ -2140,8 +2151,9 @@ impl Restore for Crossterm {
 
 impl Surface for Crossterm {
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()> {
+        let palette = self.palette;
         self.terminal
-            .draw(|frame| shell.render(frame, frame.area()))?;
+            .draw(|frame| shell.render(frame, frame.area(), palette))?;
         Ok(())
     }
 }

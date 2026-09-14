@@ -4,11 +4,12 @@
 use crate::composer::fixtures::{TrieOf, typing};
 use crate::shell::command::{LEAVE, Refused, Typed, read};
 use crate::shell::fixtures::{
-    SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, painted,
+    SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, cells, painted,
 };
-use crate::shell::port::{CommandVocabulary, Confirmation, Line, Register, Row};
+use crate::shell::port::{CommandVocabulary, Confirmation, Line, Palette, Register, Row};
 use crate::shell::{Action, COMPOSER_ROWS, Leaving, Segment, Shell, Status};
 use core::time::Duration;
+use ratatui::style::Color;
 use tui_textarea::{Input, Key};
 
 const WIDTH: u16 = 60;
@@ -1469,6 +1470,249 @@ fn a_rows_joined_form_is_what_the_pane_painted_before() {
                 from_model, from_buffer,
                 "at {width} columns the rows {register:?} hands the widget are not the rows \
                  the buffer holds"
+            );
+        }
+    }
+}
+
+// ------------------------------------------- ADR-0028 D2's remaining word
+
+/// No two registers share a colour, and only `Plain` has none.
+///
+/// The colour analogue of `no_two_registers_share_a_glyph`, and it holds the
+/// same property that check's own argument rests on: a marker that two
+/// registers share says nothing about which of them it is. `Plain` is the one
+/// exception and it is asserted rather than excused — its colour is
+/// [`Color::Reset`], which is the absence of a colour, exactly as its glyph is
+/// the absence of a marker.
+#[test]
+fn no_two_registers_share_a_colour() {
+    let mut seen: Vec<(Color, Register)> = Vec::new();
+    for register in Register::ALL {
+        let colour = register.colour();
+        if register == Register::Plain {
+            assert_eq!(
+                colour,
+                Color::Reset,
+                "Plain carries a colour, so every line of ordinary narration is now tinted \
+                 and the palette is a theme rather than a register distinction"
+            );
+            continue;
+        }
+        assert_ne!(
+            colour,
+            Color::Reset,
+            "{register:?} has no colour of its own, so ADR-0028 D2's \"coloured\" does not \
+             reach it"
+        );
+        if let Some((_, other)) = seen.iter().find(|(taken, _)| *taken == colour) {
+            panic!("{register:?} and {other:?} are both painted {colour:?}");
+        }
+        seen.push((colour, register));
+    }
+    assert_eq!(seen.len(), Register::ALL.len() - 1);
+}
+
+/// Every register's colour is one of the terminal's sixteen, which is what the
+/// ruling of 2026-09-13 recorded on ADR-0028 D2 asks for.
+///
+/// # The list is this check's own
+///
+/// Enumerated here rather than derived from `ratatui`'s enum, because a check
+/// that asked the library which colours exist would accept whatever the
+/// library grew next ([Verification lessons] §11 — one arm of a comparison
+/// must not travel through the thing being checked). `Color::Rgb` and
+/// `Color::Indexed` are the two the ruling refuses by name, and they are the
+/// two a later author reaches for first when a hue looks slightly wrong.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn every_register_colour_is_one_of_the_sixteen_ansi_colours() {
+    const SIXTEEN: [Color; 16] = [
+        Color::Black,
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::Gray,
+        Color::DarkGray,
+        Color::LightRed,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightBlue,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::White,
+    ];
+
+    for register in Register::ALL {
+        let colour = register.colour();
+        assert!(
+            !matches!(colour, Color::Rgb(..) | Color::Indexed(_)),
+            "{register:?} is painted {colour:?}, and the ruling of 2026-09-13 on ADR-0028 D2 \
+             takes the terminal's sixteen and no truecolour or 256-colour index"
+        );
+        assert!(
+            colour == Color::Reset || SIXTEEN.contains(&colour),
+            "{register:?} is painted {colour:?}, which is neither one of the sixteen this \
+             check names nor the absence of a colour"
+        );
+    }
+}
+
+/// The register's colour is on the marker column and the producer's words
+/// carry none.
+///
+/// # Two arms, and the second is the one that matters
+///
+/// `Line`'s own documentation says the shell "chooses the glyph and nothing
+/// else". So the first cell of a row — the register's glyph — carries the
+/// register's colour, and the first cell of the *text* carries
+/// [`Color::Reset`]. A check that asserted only the first would pass on a
+/// renderer that tinted the whole row, which is the reading this arc
+/// deliberately did not take.
+///
+/// Read out of `TestBackend`'s cells rather than off `Palette::marker`, so
+/// neither arm travels through the function under test.
+#[test]
+fn the_pane_paints_each_register_glyph_in_its_own_colour() {
+    for register in Register::ALL {
+        let shell = shell_showing(register, "a line this check owns");
+        let (rows, _) = cells(&shell, 40, 24, Palette::Coloured);
+        let row = &rows[1];
+
+        assert_eq!(
+            row[0].0,
+            register.glyph(),
+            "the pane's first cell is not {register:?}'s glyph, so the row below is about \
+             something else"
+        );
+        assert_eq!(
+            row[0].1,
+            register.colour(),
+            "{register:?}'s glyph is painted {:?} rather than {:?}",
+            row[0].1,
+            register.colour()
+        );
+        assert_eq!(
+            row[2].1,
+            Color::Reset,
+            "the first character of the text is painted {:?}, so the colour reached the \
+             producer's words and not only the marker",
+            row[2].1
+        );
+    }
+}
+
+/// Under `NO_COLOR` nothing carries a colour, and the frame is otherwise the
+/// same frame.
+///
+/// # An absence assertion needs an instrument that could have found something
+///
+/// The first arm is the absence: every cell of a frame carrying all seven
+/// registers is [`Color::Reset`]. On its own that arm is satisfied by a
+/// renderer that paints nothing at all, by a staging that produced no rows,
+/// and by a palette that was never consulted — so the second arm is the
+/// **control**: the same shell under [`Palette::Coloured`] has at least one
+/// cell that is not `Reset` ([Verification lessons] §8).
+///
+/// The third arm is what makes a capture taken under `NO_COLOR` comparable
+/// with every capture taken before a colour existed: the two frames' symbols
+/// are identical cell for cell, so the glyphs stay and only the colour goes.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn no_cell_carries_a_colour_under_no_color() {
+    let mut shell = shell();
+    for register in Register::ALL {
+        shell.notice(Line::new(
+            register,
+            format!("{register:?} · {TRANSCRIPT_NONCE}"),
+        ));
+    }
+
+    let (dark, _) = cells(&shell, 40, 24, Palette::Monochrome);
+    let (lit, _) = cells(&shell, 40, 24, Palette::Coloured);
+
+    assert!(
+        lit.iter()
+            .flatten()
+            .any(|(_, colour)| *colour != Color::Reset),
+        "the control frame carries no colour anywhere, so the absence asserted below is a \
+         fact about a renderer that paints none rather than about NO_COLOR"
+    );
+    for (y, row) in dark.iter().enumerate() {
+        for (x, (symbol, colour)) in row.iter().enumerate() {
+            assert_eq!(
+                *colour,
+                Color::Reset,
+                "under NO_COLOR the cell at ({x}, {y}), holding {symbol:?}, is painted \
+                 {colour:?}"
+            );
+        }
+    }
+    let symbols = |frame: &Vec<Vec<(String, Color)>>| {
+        frame
+            .iter()
+            .map(|row| row.iter().map(|(s, _)| s.clone()).collect::<String>())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        symbols(&dark),
+        symbols(&lit),
+        "NO_COLOR changed what the frame says and not only how it is coloured"
+    );
+}
+
+/// No register's colour reaches the status line, the composer or the hint
+/// strip.
+///
+/// # Why this asserts the absence of the seven and not of every colour
+///
+/// The ruling of 2026-09-13 puts the colour on the register glyphs only, and
+/// what this check holds is that **this arc added none elsewhere**. It is
+/// deliberately not phrased as "no colour at all": `tui-textarea` 0.7 carries
+/// its own defaults — a placeholder foreground and a selection background —
+/// which nothing here reaches today but which are that crate's values rather
+/// than this workspace's, and a check phrased over every colour would one day
+/// redden for a reason that has nothing to do with a register.
+///
+/// The pane arm is the control: at least one cell there does carry one, so a
+/// renderer that painted no colour anywhere cannot satisfy this.
+#[test]
+fn no_register_colour_reaches_the_status_line_the_composer_or_the_hint_strip() {
+    let mut shell = shell();
+    shell
+        .composer_mut()
+        .set_standing(3, Some("a standing tip".to_owned()));
+    shell.refresh(&StagedTranscript::three_outcomes());
+    shell.notice(Line::new(Register::Setback, "iteration 1 failed: greets"));
+
+    let height = 24_u16;
+    let (frame, _) = cells(&shell, 100, height, Palette::Coloured);
+    let pane_last = usize::from(height - COMPOSER_ROWS);
+    let of_a_register = |colour: &Color| {
+        *colour != Color::Reset && Register::ALL.iter().any(|r| r.colour() == *colour)
+    };
+
+    assert!(
+        frame[1..pane_last]
+            .iter()
+            .flatten()
+            .any(|(_, colour)| of_a_register(colour)),
+        "no cell of the pane carries a register's colour, so the rows below assert nothing"
+    );
+    for (y, row) in frame.iter().enumerate() {
+        if (1..pane_last).contains(&y) {
+            continue;
+        }
+        for (x, (symbol, colour)) in row.iter().enumerate() {
+            assert!(
+                !of_a_register(colour),
+                "the cell at ({x}, {y}), holding {symbol:?}, carries a register's colour \
+                 {colour:?}, and row {y} is the status line or the composer's area"
             );
         }
     }

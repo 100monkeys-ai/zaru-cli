@@ -35,6 +35,7 @@ use crate::terminal::source::{Beat, Source};
 use crate::terminal::trie::NotesTrie;
 use crate::terminal::vocabulary::{Transcript, Vocabulary};
 use std::io::IsTerminal;
+use zaru_tui::shell::Palette;
 use zaru_tui::shell::{Shell, Status};
 
 /// Which session a shell is being asked to open.
@@ -99,6 +100,53 @@ pub fn opening_for(request: &Request) -> Option<Opening> {
 #[must_use]
 pub fn a_person_is_watching() -> bool {
     std::io::stdout().is_terminal()
+}
+
+/// Whether this process paints the registers' colours.
+///
+/// # `NO_COLOR`, and it is read exactly once
+///
+/// [ADR-0028] D2's Update of 2026-09-13: "`NO_COLOR` present in the
+/// environment and non-empty disables every colour and leaves the glyphs;
+/// `NO_COLOR` present and empty does not", which is the published
+/// convention's own wording rather than a reading invented here. The empty
+/// case is not an edge nobody meets — `NO_COLOR=` is what a shell leaves
+/// behind when a variable is cleared rather than unset.
+///
+/// **This is the only place in any crate that reads it.** `zaru-tui` names no
+/// environment variable at all, because [`Palette`] reaches the renderer as an
+/// argument; so the value cannot drift between one frame and the next, and a
+/// check can paint either palette without touching the process's environment
+/// (which is shared state a suite running in one process would owe back).
+///
+/// No `zaru.toml` key and no flag: neither exists, and [ADR-0015] D2's flag
+/// surface is a closed set whose own count is annotated so an eighth fails to
+/// compile. Adding one is an amendment to that record rather than a rendering
+/// detail.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[must_use]
+pub fn palette_from_environment() -> Palette {
+    palette_for(std::env::var_os("NO_COLOR").as_deref())
+}
+
+/// The convention itself, as a function of the value rather than of the
+/// process.
+///
+/// Split from the reader above so the two arms can be checked without a check
+/// writing to the environment — which is state every other check in the same
+/// process shares, and which a check that changed it would owe back
+/// ([Verification lessons] §23). The reader is one line and has nothing left
+/// to get wrong; this is where the rule lives.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[must_use]
+pub fn palette_for(asked: Option<&std::ffi::OsStr>) -> Palette {
+    match asked {
+        Some(value) if !value.is_empty() => Palette::Monochrome,
+        _ => Palette::Coloured,
+    }
 }
 
 /// The Nuclear Notes workspace this session recorded, if it recorded one.

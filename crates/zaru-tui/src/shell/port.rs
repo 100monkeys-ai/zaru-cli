@@ -40,6 +40,8 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
+use ratatui::style::{Color, Style};
+
 /// One row of [ADR-0015] D2's namespace table, as the shell needs it.
 ///
 /// Carries the slash spelling rather than the subcommand, because this is the
@@ -222,6 +224,134 @@ impl Register {
             Self::Setback => "!",
             Self::Exhausted => "⊘",
             Self::Failed => "✗",
+        }
+    }
+
+    /// The colour this register's glyph is painted in.
+    ///
+    /// # Sixteen ANSI colours, and why these six of them
+    ///
+    /// [ADR-0028] D2 requires an iteration's failure to be "**coloured**,
+    /// worded, and placed as part of the work", and that record's Update of
+    /// 2026-09-13 is where the table below was written before this code. The
+    /// palette is drafted under the coordinator's ruling of that day and is
+    /// **Jeshua's to veto**; each colour is one named constant beside the
+    /// glyph it belongs to, so changing one is one edit.
+    ///
+    /// `Black`, `White`, `Gray` and `DarkGray` each vanish against one of the
+    /// two grounds a terminal can have, or sit too close to both; the bright
+    /// variants are chosen for dark backgrounds and wash out on light ones.
+    /// The six normal-intensity hues are the members of the sixteen with
+    /// usable contrast against both, which is what the ruling asks for
+    /// [`Setback`], for [`Failed`] and for the out-of-tree marking's
+    /// [`Call`]. **No truecolour and no 256-colour index**: `Color::Rgb` and
+    /// `Color::Indexed` are refused by name in
+    /// `every_register_colour_is_one_of_the_sixteen_ansi_colours`.
+    ///
+    /// [`Plain`] is [`Color::Reset`] rather than one of the sixteen, and that
+    /// is the absence of a colour rather than a choice — exactly as its glyph
+    /// is the absence of a marker. It is also what every [`ratatui`] cell
+    /// already holds, so a pane of plain narration is byte-identical with
+    /// colour on and with colour off.
+    ///
+    /// [`Call`]: Register::Call
+    /// [`Failed`]: Register::Failed
+    /// [`Plain`]: Register::Plain
+    /// [`Setback`]: Register::Setback
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    #[must_use]
+    pub const fn colour(self) -> Color {
+        match self {
+            Self::Plain => PLAIN,
+            Self::Call => CALL,
+            Self::Announced => ANNOUNCED,
+            Self::Succeeded => SUCCEEDED,
+            Self::Setback => SETBACK,
+            Self::Exhausted => EXHAUSTED,
+            Self::Failed => FAILED,
+        }
+    }
+}
+
+/// Ordinary narration carries no colour: the terminal's own foreground.
+pub const PLAIN: Color = Color::Reset;
+
+/// A tool call is the machine acting, and [ADR-0011] D4's out-of-tree marking
+/// rides one of these lines.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub const CALL: Color = Color::Blue;
+
+/// [ADR-0002] D4 and D5's announcement and [ADR-0015] D6's attribution — the
+/// one class the user did not ask for, so it takes the hue furthest from the
+/// four outcome colours.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+pub const ANNOUNCED: Color = Color::Magenta;
+
+/// The conventional success hue.
+pub const SUCCEEDED: Color = Color::Green;
+
+/// [ADR-0028] D2's own subject: calm rather than alarming on both grounds.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+pub const SETBACK: Color = Color::Cyan;
+
+/// [ADR-0008] D5: exhaustion "is not an error and is not a success", so
+/// neither the success hue nor the error one.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+pub const EXHAUSTED: Color = Color::Yellow;
+
+/// [ADR-0016] D1's error register, and the only place red appears.
+///
+/// D1: an expected failure must never be "**coloured like a crash**". This is
+/// the crash colour, and [`Register::Setback`] carrying [`SETBACK`] instead is
+/// that sentence holding by construction rather than by argument — before
+/// 2026-09-13 no colour existed at all, so nothing could be coloured like one.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub const FAILED: Color = Color::Red;
+
+/// Whether the pane paints the registers' colours at all.
+///
+/// # Why this is an argument and not a field
+///
+/// The terminal is the thing that knows whether it paints colour, so it is
+/// the thing that holds this and hands it to [`Shell::render`]. The shell
+/// keeps no display state, and `zaru-tui` names no environment variable —
+/// `NO_COLOR` is read once by `zaru-cli` at the composition, which is the only
+/// place a process's environment is a fact rather than an ambient read.
+///
+/// [`Shell::render`]: crate::shell::Shell::render
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Palette {
+    /// Each register's glyph carries its own colour.
+    Coloured,
+    /// Nothing carries a colour and the glyphs stand alone.
+    ///
+    /// This is what `NO_COLOR` asks for, and it is why a capture taken under
+    /// it is comparable with every capture taken before a colour existed:
+    /// every cell keeps [`Color::Reset`], and `ratatui`'s crossterm backend
+    /// emits a colour sequence only where a cell's colour differs from the
+    /// last one — so a frame of `Reset` cells emits none at all.
+    Monochrome,
+}
+
+impl Palette {
+    /// The style a register's marker column is painted in.
+    ///
+    /// **The text is not passed to this function**, which is a stronger
+    /// property than "colour does not alter the text": [`Line`]'s own
+    /// documentation says the shell "chooses the glyph and nothing else", and
+    /// a colour on a producer's words would be the shell choosing something
+    /// about them.
+    #[must_use]
+    pub fn marker(self, register: Register) -> Style {
+        match self {
+            Self::Monochrome => Style::default(),
+            Self::Coloured => Style::default().fg(register.colour()),
         }
     }
 }

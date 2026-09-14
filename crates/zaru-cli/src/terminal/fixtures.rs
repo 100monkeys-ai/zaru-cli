@@ -22,9 +22,10 @@ use crate::terminal::driver::{Restore, Surface};
 use crate::terminal::source::Pace;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::style::Color;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use zaru_tui::shell::{Input, Key, Shell};
+use zaru_tui::shell::{Input, Key, Palette, Shell};
 
 /// How many times a restorer was asked to give the terminal back.
 ///
@@ -42,14 +43,32 @@ pub(crate) type Restores = Arc<AtomicUsize>;
 pub(crate) struct Recording {
     terminal: Terminal<TestBackend>,
     restores: Restores,
+    /// Whether this surface paints the registers' colours, as the product's
+    /// own terminal holds it.
+    palette: Palette,
     /// Every frame painted, oldest first, as rows.
     pub(crate) frames: Vec<Vec<String>>,
+    /// The foreground colour of every cell of every frame, alongside
+    /// `frames`, so a check about a colour reads a cell rather than a row.
+    pub(crate) colours: Vec<Vec<Vec<Color>>>,
 }
 
 impl Recording {
     /// A terminal that paints into a buffer and counts its restores.
     pub(crate) fn of(restores: Restores) -> Self {
         Self::wide(restores, 72)
+    }
+
+    /// The same, under a palette the check chose.
+    ///
+    /// `of` and `wide` paint [`Palette::Coloured`], which is what the product
+    /// passes when `NO_COLOR` is unset; this is the constructor a check uses
+    /// when the palette is the thing under test.
+    pub(crate) fn painting(restores: Restores, width: u16, palette: Palette) -> Self {
+        Self {
+            palette,
+            ..Self::wide(restores, width)
+        }
     }
 
     /// The same, at a chosen width.
@@ -63,7 +82,9 @@ impl Recording {
         Self {
             terminal: Terminal::new(TestBackend::new(width, 16)).expect("test terminal"),
             restores,
+            palette: Palette::Coloured,
             frames: Vec::new(),
+            colours: Vec::new(),
         }
     }
 }
@@ -76,8 +97,9 @@ impl Restore for Recording {
 
 impl Surface for Recording {
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()> {
+        let palette = self.palette;
         self.terminal
-            .draw(|frame| shell.render(frame, frame.area()))?;
+            .draw(|frame| shell.render(frame, frame.area(), palette))?;
         let buffer = self.terminal.backend().buffer();
         self.frames.push(
             (0..buffer.area.height)
@@ -85,6 +107,15 @@ impl Surface for Recording {
                     (0..buffer.area.width)
                         .map(|x| buffer[(x, y)].symbol())
                         .collect::<String>()
+                })
+                .collect(),
+        );
+        self.colours.push(
+            (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].fg)
+                        .collect::<Vec<_>>()
                 })
                 .collect(),
         );
