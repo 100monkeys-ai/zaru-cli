@@ -20,8 +20,8 @@
 //!
 //! # There is no key, so there is nothing for a URL to leak
 //!
-//! The `gemini` client's endpoint module carries a long argument for why
-//! [`Endpoint::url_for`] takes no secret: a URL reaches every proxy log and
+//! The `gemini` client's endpoint module carries a long argument for why its
+//! own URL builder takes no secret: a URL reaches every proxy log and
 //! every quoted error, so a key must never be able to enter one. **The same
 //! signature holds here for a simpler reason — this kind has no credential at
 //! all**, so there is no secret on the path for a URL to receive. The property
