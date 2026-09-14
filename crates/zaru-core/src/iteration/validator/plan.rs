@@ -88,14 +88,14 @@ impl fmt::Display for PlanRefused {
         match self {
             Self::DuplicateName { name } => write!(
                 f,
-                "two validators are declared with the name {name:?}; ADR-0009 D2's `after` names \
+                "two validators are declared with the name {name:?}; `after` names \
                  a prerequisite by name, and there is no answer to which of the two it means",
             ),
             Self::UnknownPrerequisite { validator, missing } => write!(
                 f,
                 "the validator {validator:?} declares `after = [… {missing:?} …]` and no \
                  validator is declared with that name; a prerequisite that is silently ignored \
-                 is a validator that runs when ADR-0009 D2 says it should not",
+                 is a validator that runs when it should not",
             ),
             Self::Cycle { members } => {
                 let names: Vec<&str> = members.iter().map(Name::as_str).collect();

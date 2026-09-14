@@ -49,7 +49,7 @@ impl fmt::Display for NameRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
-                "a validator's name is empty; ADR-0009 D2's `after` names a prerequisite by name \
+                "a validator's name is empty; `after` names a prerequisite by name \
                  and the event stream renders one, and neither can name nothing",
             ),
             Self::Control { offered } => write!(
@@ -98,15 +98,17 @@ impl fmt::Display for TextRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyRun => f.write_str(
-                "a validator's `run` command is empty; ADR-0009 D3's expectations are all \
-                 statements about what running it produced",
+                // ADR-0009 D3's expectations are statements about what running it produced.
+                "a validator's `run` command is empty, and every expectation is a statement \
+                 about what running it produced",
             ),
             Self::EmptyPattern => f.write_str(
                 "a `matches` pattern is empty; an empty pattern matches every standard output, \
                  so the validator would pass whatever happened",
             ),
             Self::EmptySchemaPath => f.write_str(
-                "a `json_schema` path is empty; ADR-0009 D3 names a path to a schema file",
+                // ADR-0009 D3 names a path to a schema file.
+                "a `json_schema` path is empty, and it names a path to a schema file",
             ),
         }
     }

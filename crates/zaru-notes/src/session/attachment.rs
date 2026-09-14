@@ -68,10 +68,12 @@ impl fmt::Display for AttachmentRefused {
         };
         write!(
             f,
-            "this attachment cannot locate itself: {which}. ADR-0006 D6 requires the workspace \
-             slug and path together with the permalink and nn:// URI, never a bare path or bare \
-             identifier, because an identifier resolves only within its own workspace and one \
-             read from elsewhere comes back as a missing page rather than as a refusal"
+            // ADR-0006 D6 requires the workspace slug and path together with the
+            // permalink and nn:// URI, never a bare path or bare identifier.
+            // `which` already names which of those is missing.
+            "this attachment cannot locate itself: {which}, and an identifier resolves only \
+             within its own workspace -- one read from elsewhere comes back as a missing page \
+             rather than as a refusal"
         )
     }
 }

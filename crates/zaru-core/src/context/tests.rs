@@ -565,9 +565,15 @@ fn an_item_that_could_not_be_announced_is_refused_at_the_boundary() {
         ItemRefused::NoReattachInstruction,
     ] {
         let said = refusal.to_string();
+        // Rewritten 2026-09-13 by the `record-citations` arc, under the
+        // coordinator's ruling of that date: this asserted
+        // `said.contains("ADR-0013 D4")`. A refusal should say what the reader
+        // can act on rather than which record refused it, and `which` is that
+        // half -- it names the missing field by name for each of the three.
         assert!(
-            said.contains("ADR-0013 D4"),
-            "a refusal should say which rule refused it: {said}"
+            said.contains("could not be announced if it were dropped")
+                && said.contains("resolves nowhere"),
+            "a refusal should say what is missing and why it matters: {said}"
         );
     }
 }

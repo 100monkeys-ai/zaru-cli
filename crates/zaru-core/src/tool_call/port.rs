@@ -292,9 +292,9 @@ impl fmt::Display for ModelCannotCallTools {
         write!(
             f,
             "the model {:?} reports that it cannot call tools, and the tool-call loop has nothing \
-             to run without that. ADR-0012 D3: \"a provider that cannot do tool calling must say \
-             so, because discovering it mid-loop produces a failure the user reads as the harness \
-             being broken\". Configure a model that can, or run a surface that asks for no tools",
+             to run without that. A provider that cannot do tool calling must say so, because \
+             discovering it mid-loop produces a failure the user reads as the harness being \
+             broken. Configure a model that can, or run a surface that asks for no tools",
             self.model
         )
     }

@@ -64,9 +64,11 @@ impl fmt::Display for ItemRefused {
         };
         write!(
             f,
-            "this attached item could not be announced if it were dropped: {which}. ADR-0013 D4 \
-             requires that a dropped attachment be named and that the announcement state how to \
-             re-attach it, and an identifier without its workspace resolves nowhere"
+            // ADR-0013 D4 requires that a dropped attachment be named and that
+            // the announcement state how to re-attach it. `which` already names
+            // which of those failed, so the clause naming the record is a comment.
+            "this attached item could not be announced if it were dropped: {which}, and an \
+             identifier without its workspace resolves nowhere"
         )
     }
 }
