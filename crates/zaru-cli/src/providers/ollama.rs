@@ -231,7 +231,14 @@ impl OllamaClient {
             .await
             .map_err(|error| OllamaFailure::Unreachable {
                 endpoint: self.configured.clone(),
-                detail: error.to_string(),
+                // **The whole chain, not `reqwest`'s top-level sentence.** See
+                // `providers::transport`: `to_string()` gives "error sending
+                // request for url (...)" and drops "Connection refused" three
+                // links below it. Measured on the release binary before this
+                // call changed: a closed port and a hostname that does not
+                // resolve printed the same sentence but for the URL, so a
+                // reader whose DNS was wrong was told to start a server.
+                detail: crate::providers::transport::transport_detail(&error),
             })?;
 
         let status = response.status();
@@ -247,7 +254,7 @@ impl OllamaClient {
                 .await
                 .map_err(|error| OllamaFailure::Unavailable {
                     code: status.as_u16(),
-                    detail: error.to_string(),
+                    detail: crate::providers::transport::transport_detail(&error),
                 })?;
             return Err(OllamaFailure::from_status(
                 status.as_u16(),
@@ -276,7 +283,7 @@ impl OllamaClient {
                 .await
                 .map_err(|error| OllamaFailure::Unreachable {
                     endpoint: self.configured.clone(),
-                    detail: error.to_string(),
+                    detail: crate::providers::transport::transport_detail(&error),
                 })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();
