@@ -110,7 +110,7 @@ pub trait CommandVocabulary {
 /// # Why the loop's own setback has a variant of its own
 ///
 /// [ADR-0028] D2's heading: "Failure is shown, **in its own register**, never
-/// as an error." Until 2026-09-13 the loop's failure had no register of its
+/// as an error." Until 2026-09-14 the loop's failure had no register of its
 /// own — an iteration that failed and a validator that failed were
 /// [`Register::Plain`], the register of ordinary narration, *because* D2's
 /// second half forbids [`Register::Failed`]. So the second half was honoured
@@ -199,7 +199,7 @@ impl Register {
     /// exactly that, and the check holds the distinctness rather than the
     /// characters.
     ///
-    /// **`!` is drafted the same way, under the ruling of 2026-09-13 recorded
+    /// **`!` is drafted the same way, under the ruling of 2026-09-14 recorded
     /// as an accepted Update on [ADR-0028], and is Jeshua's to veto.** It is
     /// ASCII and one column, so it cannot skew a wrapped line's continuation
     /// indent. **One collision is recorded rather than hidden:**
@@ -233,7 +233,7 @@ impl Register {
     ///
     /// [ADR-0028] D2 requires an iteration's failure to be "**coloured**,
     /// worded, and placed as part of the work", and that record's Update of
-    /// 2026-09-13 is where the table below was written before this code. The
+    /// 2026-09-14 is where the table below was written before this code. The
     /// palette is drafted under the coordinator's ruling of that day and is
     /// **Jeshua's to veto**; each colour is one named constant beside the
     /// glyph it belongs to, so changing one is one edit.
@@ -309,7 +309,7 @@ pub const EXHAUSTED: Color = Color::Yellow;
 /// D1: an expected failure must never be "**coloured like a crash**". This is
 /// the crash colour, and [`Register::Setback`] carrying [`SETBACK`] instead is
 /// that sentence holding by construction rather than by argument — before
-/// 2026-09-13 no colour existed at all, so nothing could be coloured like one.
+/// 2026-09-14 no colour existed at all, so nothing could be coloured like one.
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 pub const FAILED: Color = Color::Red;
@@ -467,7 +467,7 @@ impl Line {
 /// two places.
 ///
 /// [`joined`] is the two put back together, byte for byte as the pane painted
-/// them before 2026-09-13. Nothing about what reaches the buffer changed when
+/// them before 2026-09-14. Nothing about what reaches the buffer changed when
 /// this type arrived, and `a_rows_joined_form_is_what_the_pane_painted_before`
 /// is the check that says so rather than the commit message.
 ///

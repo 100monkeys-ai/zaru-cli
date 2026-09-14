@@ -168,7 +168,7 @@ impl StagedTranscript {
 /// **The palette is [`Palette::Coloured`], which is what the product passes
 /// when `NO_COLOR` is unset**, and it is named here rather than left implicit
 /// because a fixture's default is a value somebody chose for a different
-/// caller. Every check in this crate that predates 2026-09-13 reads symbols,
+/// caller. Every check in this crate that predates 2026-09-14 reads symbols,
 /// which no palette changes; the checks that read a colour say which palette
 /// they painted under by calling [`painted_in`].
 pub(crate) fn painted(

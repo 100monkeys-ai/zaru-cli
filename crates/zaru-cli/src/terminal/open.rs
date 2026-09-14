@@ -106,7 +106,7 @@ pub fn a_person_is_watching() -> bool {
 ///
 /// # `NO_COLOR`, and it is read exactly once
 ///
-/// [ADR-0028] D2's Update of 2026-09-13: "`NO_COLOR` present in the
+/// [ADR-0028] D2's Update of 2026-09-14: "`NO_COLOR` present in the
 /// environment and non-empty disables every colour and leaves the glyphs;
 /// `NO_COLOR` present and empty does not", which is the published
 /// convention's own wording rather than a reading invented here. The empty
@@ -126,7 +126,7 @@ pub fn a_person_is_watching() -> bool {
 ///
 /// # The convention is honoured at two sites, and neither covers the other
 ///
-/// **Measured 2026-09-13 from the release binary over a pseudo-terminal, not
+/// **Measured 2026-09-14 from the release binary over a pseudo-terminal, not
 /// read off this function.** `crossterm` 0.28 reads `NO_COLOR` itself, in
 /// `Colored::ansi_color_disabled`, with the same empty-string arm this
 /// function takes — so under `NO_COLOR` the frame's own reset sequences come

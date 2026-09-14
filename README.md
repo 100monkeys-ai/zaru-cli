@@ -70,7 +70,7 @@ at the right edge: fields drop in a declared order as the terminal narrows, the
 tier is never one of them, and at forty columns what is left is the tier and how
 much of the context window is used.
 
-**Since 2026-09-13 the pane has colour, and only where it means something.**
+**Since 2026-09-14 the pane has colour, and only where it means something.**
 Each line of the transcript opens with its register's marker, and that marker
 now carries that register's colour — one of the terminal's sixteen, never a
 truecolour value and never a theme. Nothing else is coloured: the status line,

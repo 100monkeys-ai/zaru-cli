@@ -1424,7 +1424,7 @@ fn pane_rows(shell: &Shell, width: u16, height: u16) -> Vec<String> {
 ///
 /// # What this pins, and why it is not a tautology
 ///
-/// `Line::rows` returned `Vec<String>` until 2026-09-13 and now returns
+/// `Line::rows` returned `Vec<String>` until 2026-09-14 and now returns
 /// [`Row`], which carries the marker column and the text apart so the pane can
 /// colour the first and leave the second alone. Nothing about what reaches the
 /// buffer was meant to change, and "was meant to" is exactly the claim a
@@ -1514,7 +1514,7 @@ fn no_two_registers_share_a_colour() {
 }
 
 /// Every register's colour is one of the terminal's sixteen, which is what the
-/// ruling of 2026-09-13 recorded on ADR-0028 D2 asks for.
+/// ruling of 2026-09-14 recorded on ADR-0028 D2 asks for.
 ///
 /// # The list is this check's own
 ///
@@ -1551,7 +1551,7 @@ fn every_register_colour_is_one_of_the_sixteen_ansi_colours() {
         let colour = register.colour();
         assert!(
             !matches!(colour, Color::Rgb(..) | Color::Indexed(_)),
-            "{register:?} is painted {colour:?}, and the ruling of 2026-09-13 on ADR-0028 D2 \
+            "{register:?} is painted {colour:?}, and the ruling of 2026-09-14 on ADR-0028 D2 \
              takes the terminal's sixteen and no truecolour or 256-colour index"
         );
         assert!(
@@ -1671,7 +1671,7 @@ fn no_cell_carries_a_colour_under_no_color() {
 ///
 /// # Why this asserts the absence of the seven and not of every colour
 ///
-/// The ruling of 2026-09-13 puts the colour on the register glyphs only, and
+/// The ruling of 2026-09-14 puts the colour on the register glyphs only, and
 /// what this check holds is that **this arc added none elsewhere**. It is
 /// deliberately not phrased as "no colour at all": `tui-textarea` 0.7 carries
 /// its own defaults — a placeholder foreground and a selection background —

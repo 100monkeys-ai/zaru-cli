@@ -1238,7 +1238,7 @@ fn every_loop_event_renders_as_a_sentence_and_never_as_debug() {
 ///
 /// D2's heading is "Failure is shown, **in its own register**, never as an
 /// error", and its body is "never in the register reserved for defects". Until
-/// 2026-09-13 an iteration's failure was `Register::Plain` — the register of
+/// 2026-09-14 an iteration's failure was `Register::Plain` — the register of
 /// ordinary narration — which honoured the body and not the heading, and left
 /// D2's remaining word, "coloured", unsatisfiable: colouring `Plain` colours
 /// every line of narration and is a theme rather than a register. `Setback` is
@@ -1281,7 +1281,7 @@ fn an_iteration_failure_is_a_setback_and_never_the_error_register() {
         line.register,
         Register::Plain,
         "an iteration's failure is back in the register of ordinary narration, which is \
-         what the Update of 2026-09-13 on ADR-0028 D2 moved it out of: {:?}",
+         what the Update of 2026-09-14 on ADR-0028 D2 moved it out of: {:?}",
         line.text
     );
 }
@@ -3397,7 +3397,7 @@ fn painted_row(shell: &Shell) -> String {
 /// than retyped, so renaming the marking moves this check with it.
 ///
 /// **This paragraph read "and a colour is not something this check could read
-/// anyway" until 2026-09-13**, and that clause stopped being true when the
+/// anyway" until 2026-09-14**, and that clause stopped being true when the
 /// registers gained colours; it is corrected here rather than left, and the
 /// two claims it made that must stay true — no register of its own, no colour
 /// as the distinction — are now asserted rather than merely asserted to be
@@ -4479,7 +4479,7 @@ fn the_pump_paints_a_registers_colour_and_a_monochrome_palette_takes_it_away() {
 ///
 /// D1: "**Expected failures never render as errors.** An iteration that fails
 /// is the mechanism operating, and **colouring it like a crash** teaches users
-/// to fear the thing that makes the product work." Before 2026-09-13 no colour
+/// to fear the thing that makes the product work." Before 2026-09-14 no colour
 /// existed anywhere in this workspace, so nothing could be coloured like a
 /// crash and the sentence forbade nothing. A crash colour exists now, and this
 /// is the check that says the setback does not wear it.
@@ -4566,7 +4566,7 @@ fn corpus_an_iteration_failure_never_carries_the_error_registers_colour() {
 /// `an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo` says in its
 /// own documentation that "**no register and no colour is claimed as the
 /// distinction** … and a colour is not something this check could read
-/// anyway". The last clause stopped being true on 2026-09-13, and the first
+/// anyway". The last clause stopped being true on 2026-09-14, and the first
 /// two must not: giving an out-of-tree call a colour of its own would make the
 /// marking invisible to a reader with `NO_COLOR` set, to a monochrome
 /// terminal, and to every check that reads the transcript file.
@@ -4598,7 +4598,7 @@ fn corpus_an_out_of_tree_call_carries_its_registers_colour_and_the_marking_is_st
     // last, so the marking is on a *continuation* row -- and a renderer that
     // coloured an out-of-tree line differently would colour that row and leave
     // the first one alone. Reading only `frame[1]` let exactly that mutant
-    // through on 2026-09-13; the escape bought this reach rather than another
+    // through on 2026-09-14; the escape bought this reach rather than another
     // assertion.
     let painted = |entry: &crate::tools::TranscriptEntry| {
         let mut shell = shell();

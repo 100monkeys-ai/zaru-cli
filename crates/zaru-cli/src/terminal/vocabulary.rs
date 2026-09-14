@@ -452,7 +452,7 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
         ),
         // The outcome in ADR-0009 D2's words rather than the enum's Rust
         // spelling. The **failing** one is `Register::Setback` since
-        // 2026-09-13 and the other two stay `Plain`: ADR-0028 D2 has an
+        // 2026-09-14 and the other two stay `Plain`: ADR-0028 D2 has an
         // iteration's failure render "as a plot point ... placed as part of
         // the work — the mechanism operating — and never in the register
         // reserved for defects", which is `Register::Failed`, and that
@@ -501,7 +501,7 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
             }
         }),
         // ADR-0028 D2's own subject, in the register its heading names since
-        // 2026-09-13. Still never `Register::Failed`, which is that clause's
+        // 2026-09-14. Still never `Register::Failed`, which is that clause's
         // second half and is what `corpus_an_iteration_failure_is_painted_in_
         // the_setback_register_and_never_the_error_registers_colour` holds
         // off the painted cell rather than off this arm.

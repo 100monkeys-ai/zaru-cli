@@ -1462,7 +1462,7 @@ fn corpus_a_bare_zaru_through_a_pipe_prints_the_usage_and_mints_nothing() {
 ///
 /// # Why this exists at all, and what it is not
 ///
-/// [ADR-0028] D2's Update of 2026-09-13 puts a colour on a register's glyph.
+/// [ADR-0028] D2's Update of 2026-09-14 puts a colour on a register's glyph.
 /// The pane is the only thing that paints one, the pane is reached only
 /// through `Crossterm`, and `Crossterm` is taken only after
 /// `terminal::open::a_person_is_watching` — `std::io::stdout().is_terminal()`
