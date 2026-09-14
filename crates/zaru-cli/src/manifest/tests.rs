@@ -1021,3 +1021,83 @@ fn what_init_writes_carries_the_mode_it_was_created_at() {
          wider than it ends up"
     );
 }
+
+// ADR-0006 D5's pin, and ADR-0009 D1's key getting its first reader.
+//
+// The key has been declared into the product schema since this module was
+// written, so a `zaru.toml` naming a workspace has always validated. Nothing
+// read it, so it was validated and discarded -- a user could write the key,
+// see no complaint, and get nothing. These assert the reader, both arms.
+
+/// D5: "`zaru.toml` pins the workspace per project."
+///
+/// The mutant is the `None` this replaced: a reader that always answers
+/// nothing passes every assertion about the unpinned case perfectly, which is
+/// why the pinned case is asserted first and by value.
+#[test]
+fn adr_0006_d5s_pin_is_read_out_of_the_project_layer() {
+    use crate::config::fixtures::{at, document, nonce, schema, text};
+    use crate::config::Resolution;
+
+    let pinned = nonce("pinned-workspace");
+    let resolved = Resolution::resolve(
+        &schema(),
+        vec![at(
+            Layer::Project,
+            "./zaru.toml",
+            document([("project.workspace", text(pinned.clone()))]),
+        )],
+    )
+    .expect("the fixture resolves");
+
+    assert_eq!(
+        crate::manifest::attached_workspace(&resolved).as_deref(),
+        Some(pinned.as_str()),
+        "ADR-0009 D1's `project.workspace` did not reach the reader ADR-0006 D5 needs"
+    );
+}
+
+/// The accepting siblings: no pin at all, and a pin that is only whitespace.
+///
+/// The second is not pedantry. `Field::free(FieldKind::Text)` accepts
+/// `project.workspace = ""`, and an empty slug would reach the trie as a key
+/// nothing is grouped under -- indistinguishable from the unpinned case from
+/// the strip's side, but arrived at from a value the user wrote. Told apart
+/// once, in the reader, rather than at each place that reads it.
+#[test]
+fn an_absent_pin_and_an_empty_pin_are_both_no_workspace() {
+    use crate::config::fixtures::{at, document, schema, text};
+    use crate::config::Resolution;
+
+    let unpinned = Resolution::resolve(
+        &schema(),
+        vec![at(
+            Layer::Project,
+            "./zaru.toml",
+            document([("project.name", text("named-but-unpinned"))]),
+        )],
+    )
+    .expect("the fixture resolves");
+    assert_eq!(
+        crate::manifest::attached_workspace(&unpinned),
+        None,
+        "a manifest that pins nothing must not invent a workspace"
+    );
+
+    for blank in ["", "   ", "\t"] {
+        let empty = Resolution::resolve(
+            &schema(),
+            vec![at(
+                Layer::Project,
+                "./zaru.toml",
+                document([("project.workspace", text(blank))]),
+            )],
+        )
+        .expect("the fixture resolves");
+        assert_eq!(
+            crate::manifest::attached_workspace(&empty),
+            None,
+            "the pin {blank:?} is not a workspace slug and must not be carried as one"
+        );
+    }
+}

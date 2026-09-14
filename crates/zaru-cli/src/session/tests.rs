@@ -2182,3 +2182,69 @@ fn a_torn_said_record_is_not_a_line_this_session_said() {
         "a complete record is a line this session said",
     );
 }
+
+/// ADR-0006 D5's pin, all the way from `turn::start` into the file.
+///
+/// The check above asserts the `Meta` value carries a workspace and that the
+/// *port* round-trips it. Neither says anything about the one argument this
+/// arc added, and until 2026-09-14 `turn::start` passed a literal `None`
+/// there — so every session on every machine recorded no workspace and the
+/// composer's fast tier was scoped to an empty string.
+///
+/// This reads the workspace back **out of the file the product wrote**, not
+/// out of the `Meta` it was handed, so a `start` that built the value and
+/// then dropped it on the way to `MetaFile` reddens here.
+#[test]
+fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
+    use crate::cli::Surface;
+    use crate::session::meta::file::MetaFile;
+
+    let scratch = ScratchRoot::new();
+    let here = ScratchRoot::new();
+    let planted = super::fixtures::nonce("pinned");
+
+    let (session, _) = crate::compose::turn::start(
+        scratch.store_root(),
+        ResolvedTier::supplied(Tier::Bare, Layer::BuiltIn),
+        None,
+        Some(planted.clone()),
+        &here.store_root(),
+        &Surface::new("0.0.0", "https://example.invalid"),
+    )
+    .expect("a session starts");
+
+    let written = MetaFile::at(session.meta_path())
+        .read_if_present()
+        .expect("the meta.toml this session just wrote is readable")
+        .expect("a started session writes one");
+
+    assert_eq!(
+        written.workspace.as_deref(),
+        Some(planted.as_str()),
+        "the workspace `turn::start` was handed did not reach the meta.toml it wrote, so the \
+         composer's fast tier would be scoped to nothing on a machine whose zaru.toml pins one"
+    );
+
+    // The accepting sibling, in the same check because the two arms are one
+    // claim: a session started with no pin records the absence rather than an
+    // empty string, which is what lets a reader tell "no workspace" from a
+    // workspace whose slug happens to be "".
+    let (unpinned, _) = crate::compose::turn::start(
+        scratch.store_root(),
+        ResolvedTier::supplied(Tier::Bare, Layer::BuiltIn),
+        None,
+        None,
+        &here.store_root(),
+        &Surface::new("0.0.0", "https://example.invalid"),
+    )
+    .expect("a second session starts");
+    assert_eq!(
+        MetaFile::at(unpinned.meta_path())
+            .read_if_present()
+            .expect("readable")
+            .expect("written")
+            .workspace,
+        None,
+        "a session with no pin recorded a workspace it was never given"
+    );
+}

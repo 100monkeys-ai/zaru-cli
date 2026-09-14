@@ -407,7 +407,9 @@ pub fn mint(
     let provider = crate::compose::turn::prepare(version, report_at, &resolution)
         .ok()
         .map(|prepared| prepared.kind());
-    let (session, _) = crate::compose::turn::start(root, tier, provider, here.root(), &classify)
+    let workspace = crate::manifest::attached_workspace(&resolution);
+    let (session, _) =
+        crate::compose::turn::start(root, tier, provider, workspace, here.root(), &classify)
         .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
     Ok(session.id().clone())
 }

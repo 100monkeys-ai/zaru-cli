@@ -1076,6 +1076,7 @@ pub fn start(
     root: std::path::PathBuf,
     tier: ResolvedTier,
     provider: Option<ProviderKind>,
+    workspace: Option<String>,
     here: &std::path::Path,
     surface: &Surface<'_>,
 ) -> Result<(crate::session::Session, SessionContext), Box<crate::failure::Classified>> {
@@ -1088,8 +1089,16 @@ pub fn start(
     let evidence = session.evidence();
     let meta = Meta::new(
         tier,
-        // ADR-0001 D1 gives `bare` no cortex, and nothing here attaches one.
-        None,
+        // ADR-0006 D5's pin, resolved by the caller out of ADR-0009 D1's
+        // `project.workspace`. The comment here said "ADR-0001 D1 gives
+        // `bare` no cortex, and nothing here attaches one" and passed `None`
+        // unconditionally, which made ADR-0006 D5's whole first sentence --
+        // "`zaru.toml` pins the workspace per project" -- unreachable, and
+        // made the composer's fast tier scoped to an empty string on every
+        // machine. The tier is still not what decides it: `bare` is about the
+        // membrane a tool call runs inside, and a cortex the composer
+        // searches is not a tool call.
+        workspace,
         provider.map(|kind| kind.to_string()),
         // ADR-0010 D4's `--continue` scope, and it is ADR-0011 D4's boundary
         // rather than a second reading of the process: the caller canonicalised
@@ -1147,6 +1156,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         prepared.store_root.clone(),
         prepared.tier,
         Some(prepared.kind),
+        crate::manifest::attached_workspace(resolution),
         prepared.here.root(),
         &surface,
     ) {

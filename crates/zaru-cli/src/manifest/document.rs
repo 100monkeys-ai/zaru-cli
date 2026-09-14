@@ -136,6 +136,55 @@ pub fn fields() -> Vec<(Key, Field)> {
         .collect()
 }
 
+/// The Nuclear Notes workspace a project pins, from a resolved configuration.
+///
+/// # [ADR-0009] D1's key finally has a reader, and it had none for nine days
+///
+/// [ADR-0006] D5's first sentence is "`zaru.toml` pins the workspace per
+/// project. A repository's sessions therefore always search the cortex that
+/// belongs to that work without the user reselecting." [`WORKSPACE_KEY`] has
+/// existed since this module was written and [`declare`] has folded it into
+/// the product schema all along — so a `zaru.toml` naming a workspace has
+/// always been **validated** and then **discarded**, which is the worst of
+/// the three possible states: a user could write the key, see no complaint,
+/// and get nothing.
+///
+/// This is that key's first reader. What it feeds is
+/// [`Meta::workspace`](crate::session::Meta), which
+/// [`crate::terminal::open`] then hands the composer's fast tier as the
+/// attached workspace.
+///
+/// **It reads the resolved value rather than the file**, so [ADR-0014]'s
+/// layering applies unchanged: the key is `Field::free`, which D6 permits a
+/// project to set, and a user's own `~/.zaru/config.toml` can still set it
+/// for a directory that carries no manifest. Reading `zaru.toml` directly
+/// here would have been a second reader of one file and would have skipped
+/// the layer above it.
+///
+/// `None` where no layer set it, which is a real state rather than a
+/// failure: a session in a directory with no pin has no attached workspace,
+/// and [ADR-0006] D5's other half — falling back to the account's personal
+/// workspace — is deliberately not built here. See
+/// [`crate::terminal::open`], which records why.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[must_use]
+pub fn attached_workspace(resolution: &crate::config::Resolution) -> Option<String> {
+    let key = Key::new(WORKSPACE_KEY).expect("ADR-0009 D1's key spellings are well formed");
+    resolution
+        .get(&key)
+        .and_then(Value::as_text)
+        // An empty pin is not a pin. `Field::free(FieldKind::Text)` accepts
+        // `project.workspace = ""`, and an empty workspace slug would reach
+        // the trie as a key nothing is grouped under -- indistinguishable
+        // from the unpinned case, but arrived at by a value the user wrote.
+        // Told apart here rather than at the three places that read it.
+        .filter(|slug| !slug.trim().is_empty())
+        .map(str::to_owned)
+}
+
 /// Declare ADR-0009's keys into a caller's schema.
 ///
 /// Built on [`fields`] rather than repeating it, so there is one list.

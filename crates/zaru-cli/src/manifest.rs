@@ -65,7 +65,7 @@ pub mod port;
 pub use absent::{MissingManifest, Recommendation};
 pub use document::{
     MANIFEST_FILE, Manifest, ManifestRefused, NAME_KEY, PROJECT_TABLE, RUNTIME_TABLE,
-    VALIDATOR_TABLE, WORKSPACE_KEY, declare, fields,
+    VALIDATOR_TABLE, WORKSPACE_KEY, attached_workspace, declare, fields,
 };
 pub use file::{ManifestFile, ManifestNotRead};
 pub use init::{InitRefused, TEMPLATE};
