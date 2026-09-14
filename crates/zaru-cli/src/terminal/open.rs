@@ -440,9 +440,9 @@ pub fn restored_context(
     resumed: &Resumed,
     classify: &Classify,
     evidence: SessionEvidence,
+    limits: zaru_core::context::ContextLimits,
 ) -> Result<crate::compose::SessionContext, Box<Exit>> {
     let prefix = crate::compose::prefix_for();
-    let limits = crate::cli::layers::context_limits();
     match &resumed.checkpoint {
         Some(checkpoint) => crate::compose::SessionContext::restored(prefix, limits, 0, checkpoint)
             .map_err(|error| {
@@ -551,13 +551,26 @@ pub fn mint(
     // could not: D1 makes the field optional, and a session that records a
     // kind it never reached would be a worse record than one that records
     // none.
-    let provider = crate::compose::turn::prepare(version, report_at, &resolution)
-        .ok()
-        .map(|prepared| prepared.kind());
+    let prepared = crate::compose::turn::prepare(version, report_at, &resolution).ok();
+    let provider = prepared.as_ref().map(crate::compose::Prepared::kind);
+    // ADR-0013's window is the prepared provider's, and this session may have
+    // none -- see `cli::layers::WINDOW_WHEN_NO_PROVIDER` for what a session
+    // that cannot run a turn carries instead.
+    let limits = prepared.as_ref().map_or_else(
+        || crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+        crate::compose::Prepared::context_limits,
+    );
     let workspace = crate::manifest::attached_workspace(&resolution);
-    let (session, _) =
-        crate::compose::turn::start(root, tier, provider, workspace, here.root(), &classify)
-            .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
+    let (session, _) = crate::compose::turn::start(
+        root,
+        tier,
+        provider,
+        workspace,
+        here.root(),
+        limits,
+        &classify,
+    )
+    .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
     Ok(session.id().clone())
 }
 
@@ -648,7 +661,15 @@ fn one_session(
 
     // ADR-0010 D3's checkpoint, read back into ADR-0013 D1's layer 6, before
     // the terminal is taken so a refusal reaches a terminal that still echoes.
-    let context = restored_context(&resumed, &classify, session.evidence())?;
+    let context = restored_context(
+        &resumed,
+        &classify,
+        session.evidence(),
+        prepared.as_ref().map_or_else(
+            |_| crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+            crate::compose::Prepared::context_limits,
+        ),
+    )?;
 
     let mut turns = match &prepared {
         Ok(prepared) => Turnable::Ready(Box::new(Turns {

@@ -146,6 +146,7 @@ async fn one_real_exchange_against_a_real_openai_compatible_endpoint() {
         model_id(&model),
         ProviderKind::OpenAiCompatible.credential_alias(),
         None,
+        Some(8_192),
     )
     .expect("an HTTP client builds");
 
@@ -217,6 +218,7 @@ async fn a_real_endpoint_accepts_this_clients_tool_declaration_and_answers_with_
         model_id(&model),
         ProviderKind::OpenAiCompatible.credential_alias(),
         None,
+        Some(8_192),
     )
     .expect("an HTTP client builds");
 

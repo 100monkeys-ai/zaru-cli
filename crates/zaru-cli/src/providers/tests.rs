@@ -687,7 +687,7 @@ fn nothing_outside_the_resolution_table_can_build_a_model_identifier() {
 /// the alias, the kind and a remedy the reader can act on.
 #[test]
 fn a_provider_that_cannot_call_tools_is_refused_at_configuration_time() {
-    let able = ProviderCapabilities::declared(true, true, true);
+    let able = ProviderCapabilities::declared(true, true, true, Some(1_024));
     for alias in ModelAlias::ALL {
         for kind in ProviderKind::ALL {
             assert_eq!(
@@ -698,7 +698,7 @@ fn a_provider_that_cannot_call_tools_is_refused_at_configuration_time() {
         }
     }
 
-    let unable = ProviderCapabilities::declared(true, false, true);
+    let unable = ProviderCapabilities::declared(true, false, true, Some(1_024));
     for alias in ModelAlias::ALL {
         for kind in ProviderKind::ALL {
             assert_eq!(
@@ -1139,13 +1139,13 @@ fn a_providers_accounting_flag_and_its_usage_agree() {
     let accounting = StagedProvider {
         kind: ProviderKind::Anthropic,
         endpoint: ProviderEndpoint::new("https://api.example").expect("well formed"),
-        capabilities: ProviderCapabilities::declared(true, true, true),
+        capabilities: ProviderCapabilities::declared(true, true, true, Some(1_024)),
         usage: Some(TokenUsage::counted(10, 20)),
     };
     let silent = StagedProvider {
         kind: ProviderKind::Ollama,
         endpoint: ProviderEndpoint::new("http://localhost:11434").expect("well formed"),
-        capabilities: ProviderCapabilities::declared(false, true, false),
+        capabilities: ProviderCapabilities::declared(false, true, false, Some(1_024)),
         usage: None,
     };
 
@@ -1578,4 +1578,88 @@ fn the_refusal_carries_the_kinds_this_build_reaches() {
         with_a_client: WITH_A_CLIENT.to_vec(),
     };
     assert_eq!(refusal.with_a_client.len(), 2);
+}
+
+/// [ADR-0012] D3's fourth concern: each kind states its window from its own
+/// source, and a kind with no source says so rather than guessing.
+///
+/// # Why the three sources are asserted together
+///
+/// They are one decision read three ways, and the failure this guards against
+/// is a later kind quietly borrowing another's number — which is exactly what
+/// the composition did until 2026-09-14, when one constant cited from Google's
+/// page for `gemini-3.6-flash` was the window every provider was measured
+/// against. Asserting them apart would let two of them agree by accident.
+///
+/// Watched red twice, each mutation confirmed applied on disk and the file
+/// restored byte-identical:
+///
+/// - `DEFAULT_CONTEXT_TOKENS` set to `/api/show`'s 131,072 — *"Ollama serves
+///   `num_ctx` and its default is 4,096 whatever the model was trained on;
+///   taking `/api/show`'s 131,072 would have the harness believe thirty-two
+///   times the room it has and let the server truncate in silence"*, left
+///   131072, right 4096;
+/// - `require_context_size` answering `Ok(0)` where the descriptor states no
+///   window — *"a window nothing states is refused before a loop starts"*, so
+///   the loop would have run against a zero window with nothing said.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[test]
+fn each_kind_states_its_window_from_its_own_source_and_a_kind_without_one_refuses() {
+    use crate::providers::{ProviderCapabilities, ProviderKind};
+
+    // `gemini`: its own published number, and the citation is on the constant.
+    assert_eq!(
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
+        1_048_576,
+        "Google's model page for `gemini-3.6-flash` states an input token limit of 1,048,576"
+    );
+
+    // `ollama`: the server's own default, not the model's trained length.
+    // 131,072 is what `/api/show` reports for `llama3.2:3b` and is what this
+    // number is deliberately not.
+    assert_eq!(
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+        4_096,
+        "Ollama serves `num_ctx` and its default is 4,096 whatever the model was trained on; \
+         taking `/api/show`'s 131,072 would have the harness believe thirty-two times the room \
+         it has and let the server truncate in silence"
+    );
+    assert_ne!(
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+        131_072
+    );
+
+    // `openai-compatible`: the key and no default, so the descriptor answers
+    // `None` and the refusal names the key to set.
+    let unknown = ProviderCapabilities::declared(true, true, true, None);
+    assert_eq!(
+        unknown.context_tokens(),
+        None,
+        "a kind with no default window says so"
+    );
+    let refusal = unknown
+        .require_context_size(ModelAlias::Default, ProviderKind::OpenAiCompatible)
+        .expect_err("a window nothing states is refused before a loop starts");
+    let said = refusal.to_string();
+    assert!(
+        said.contains("openai-compatible") && said.contains("context window"),
+        "the refusal names the kind and what is missing: {said}"
+    );
+    let remedy = crate::failure::Presentation::of(&crate::failure::Classified::from(refusal));
+    let printed = format!("{remedy:?}");
+    assert!(
+        printed.contains(ProviderKind::OpenAiCompatible.context_tokens_key().as_str()),
+        "the remedy names the key to set, because a refusal a reader cannot act on is a stop \
+         rather than a remedy: {printed}"
+    );
+
+    // And a kind that does state one hands it back rather than refusing.
+    let known = ProviderCapabilities::declared(true, true, true, Some(4_096));
+    assert_eq!(
+        known
+            .require_context_size(ModelAlias::Default, ProviderKind::Ollama)
+            .expect("a stated window is not refused"),
+        4_096
+    );
 }

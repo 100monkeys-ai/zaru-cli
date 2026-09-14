@@ -873,7 +873,8 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         .join("sessions")
         .join(scratch.id.to_string());
 
-    let limits = zaru_cli::cli::layers::context_limits();
+    let limits =
+        zaru_cli::cli::layers::context_limits(zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS);
     let held = zaru_cli::redaction::HeldSecrets::none();
 
     // A session that said two things, checkpointed through the product's own
@@ -903,8 +904,13 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
     // A check that called the constructor would prove the mechanism and say
     // nothing about whether anything reaches it
     // (library verification-lessons §25).
-    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
-        .expect("a checkpoint this harness wrote reads back");
+    let restored = zaru_cli::terminal::open::restored_context(
+        &reopened,
+        &classifier(),
+        evidence(),
+        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+    )
+    .expect("a checkpoint this harness wrote reads back");
     let held_texts: Vec<&str> = restored
         .exchanges()
         .iter()
@@ -944,8 +950,13 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         .expect("the compaction is recorded");
 
     let reopened = resumed(&directory);
-    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
-        .expect("the compacted checkpoint reads back");
+    let restored = zaru_cli::terminal::open::restored_context(
+        &reopened,
+        &classifier(),
+        evidence(),
+        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+    )
+    .expect("the compacted checkpoint reads back");
     let rendered: String = restored
         .exchanges()
         .iter()
@@ -986,8 +997,13 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         reopened.turns, 0,
         "and it has had no turns, so its next turn is turn one",
     );
-    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
-        .expect("an absent checkpoint is not a failure");
+    let restored = zaru_cli::terminal::open::restored_context(
+        &reopened,
+        &classifier(),
+        evidence(),
+        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+    )
+    .expect("an absent checkpoint is not a failure");
     assert!(
         restored.exchanges().is_empty(),
         "a session that never checkpointed opens with an empty layer 6, and this one did not",
@@ -1043,7 +1059,8 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         .join(".zaru")
         .join("sessions")
         .join(scratch.id.to_string());
-    let limits = zaru_cli::cli::layers::context_limits();
+    let limits =
+        zaru_cli::cli::layers::context_limits(zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS);
 
     // A secret in the position a session's own text occupies. The combining
     // mark is what makes the ASCII-core arm necessary rather than decorative.
@@ -1070,15 +1087,22 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
     let reopened = resumed(&directory);
     let error = SessionContext::restored(
         zaru_cli::compose::prefix_for(),
-        limits, 0,
+        limits,
+        0,
         reopened
             .checkpoint
             .as_ref()
-            .expect("a checkpoint is on disk"))
+            .expect("a checkpoint is on disk"),
+    )
     .expect_err("a document this type did not write is refused, not read as an empty session");
     // And the door refuses it too, rather than only the constructor.
-    let refused = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
-        .expect_err("the shell refuses to open over a checkpoint it cannot read");
+    let refused = zaru_cli::terminal::open::restored_context(
+        &reopened,
+        &classifier(),
+        evidence(),
+        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+    )
+    .expect_err("the shell refuses to open over a checkpoint it cannot read");
 
     let classified = match *refused {
         zaru_cli::failure::Exit::Failed(classified) => classified,
@@ -1134,8 +1158,13 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         .write(&said.checkpoint())
         .expect("the document is written");
     let reopened = resumed(&directory);
-    let restored = zaru_cli::terminal::open::restored_context(&reopened, &classifier(), evidence())
-        .expect("a checkpoint this harness wrote reads back");
+    let restored = zaru_cli::terminal::open::restored_context(
+        &reopened,
+        &classifier(),
+        evidence(),
+        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+    )
+    .expect("a checkpoint this harness wrote reads back");
     assert_eq!(
         restored.exchanges().len(),
         1,

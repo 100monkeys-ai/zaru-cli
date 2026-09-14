@@ -109,8 +109,12 @@ fn frames_of(body: &str) -> Vec<wire::Response> {
 }
 
 fn client() -> super::OllamaClient {
-    super::OllamaClient::new(Endpoint::default_endpoint(), model("llama3.2:3b"))
-        .expect("an HTTP client builds without touching the network")
+    super::OllamaClient::new(
+        Endpoint::default_endpoint(),
+        model("llama3.2:3b"),
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("an HTTP client builds without touching the network")
 }
 
 // --- The framing ------------------------------------------------------------
@@ -371,8 +375,13 @@ fn a_model_request_becomes_ollamas_documented_chat_body() {
         tools: &tools,
         results: &[],
     };
-    let body =
-        map::request_from(&request, &mut answered, "llama3.2:3b").expect("the schema is JSON");
+    let body = map::request_from(
+        &request,
+        &mut answered,
+        "llama3.2:3b",
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("the schema is JSON");
     let json = serde_json::to_value(&body).expect("the body serialises");
 
     assert_eq!(json["model"], "llama3.2:3b");
@@ -434,8 +443,13 @@ fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
         tools: &tools,
         results: &results,
     };
-    let body =
-        map::request_from(&request, &mut answered, "llama3.2:3b").expect("no schema to read");
+    let body = map::request_from(
+        &request,
+        &mut answered,
+        "llama3.2:3b",
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("no schema to read");
     let json = serde_json::to_value(&body).expect("the body serialises");
 
     assert_eq!(
@@ -485,8 +499,13 @@ fn a_new_turn_forgets_what_the_last_turn_asked_for() {
         tools: &tools,
         results: &[],
     };
-    let body =
-        map::request_from(&request, &mut answered, "llama3.2:3b").expect("no schema to read");
+    let body = map::request_from(
+        &request,
+        &mut answered,
+        "llama3.2:3b",
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("no schema to read");
     assert_eq!(
         body.messages.len(),
         1,
@@ -537,7 +556,12 @@ fn results_that_do_not_match_the_calls_are_refused_rather_than_paired_wrongly() 
         tools: &tools,
         results: &results,
     };
-    match map::request_from(&request, &mut answered, "llama3.2:3b") {
+    match map::request_from(
+        &request,
+        &mut answered,
+        "llama3.2:3b",
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    ) {
         Err(OllamaFailure::ResultsDoNotMatchCalls { results, calls }) => {
             assert_eq!((results, calls), (1, 2));
         }
@@ -593,7 +617,12 @@ fn more_results_than_calls_is_refused_too_and_only_the_count_guard_sees_it() {
         tools: &tools,
         results: &results,
     };
-    match map::request_from(&request, &mut answered, "llama3.2:3b") {
+    match map::request_from(
+        &request,
+        &mut answered,
+        "llama3.2:3b",
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    ) {
         Err(OllamaFailure::ResultsDoNotMatchCalls { results, calls }) => {
             assert_eq!((results, calls), (2, 1));
         }
@@ -618,7 +647,12 @@ fn a_tool_schema_that_is_not_json_is_a_defect_and_is_named() {
         tools: &tools,
         results: &[],
     };
-    match map::request_from(&request, &mut answered, "llama3.2:3b") {
+    match map::request_from(
+        &request,
+        &mut answered,
+        "llama3.2:3b",
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    ) {
         Err(OllamaFailure::ToolSchemaUnreadable { tool, .. }) => assert_eq!(tool, "fs.read"),
         other => panic!("an unreadable tool schema was not named as a defect: {other:?}"),
     }
@@ -857,7 +891,13 @@ fn the_request_body_carries_no_field_a_credential_could_travel_in() {
         tools: &tools,
         results: &[],
     };
-    let body = map::request_from(&request, &mut answered, "llama3.2:3b").expect("no schema");
+    let body = map::request_from(
+        &request,
+        &mut answered,
+        "llama3.2:3b",
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("no schema");
     let json = serde_json::to_value(&body).expect("the body serialises");
     let object = json.as_object().expect("a request body is an object");
     for field in ["key", "api_key", "apiKey", "authorization", "token"] {
@@ -865,6 +905,66 @@ fn the_request_body_carries_no_field_a_credential_could_travel_in() {
             !object.contains_key(field),
             "the request body has a {field:?} field, so a credential has somewhere to go on a \
              path that is documented as having none"
+        );
+    }
+}
+
+/// The window this client declares is the window it asks the server for.
+///
+/// # One number, told to the server and obeyed by the harness
+///
+/// Ollama serves `num_ctx` tokens and silently truncates a longer prompt.
+/// Measured on this machine 2026-09-14 against v0.34.0 with `llama3.2:3b`: a
+/// 34,941-byte prompt sent with no `num_ctx` came back reporting 2,050 prompt
+/// tokens, and the server's own log carried
+/// `n_ctx_seq (4096) < n_ctx_train (131072)` and `truncating`. So a client
+/// that declared a window without sending it would be compacting against a
+/// number the server had never agreed to — and the reader would see a model
+/// forget what they remember saying, which is the one failure ADR-0013 exists
+/// to prevent.
+///
+/// Watched red twice. Dropping `num_ctx` from the request: *"the request
+/// carries the window this client declares"*, `None` where `4096` is
+/// required. Sending `DEFAULT_CONTEXT_TOKENS` instead of the configured
+/// value: the body carried 4096 where the descriptor said 2000, which is the
+/// two-windows-that-disagree this check exists to forbid.
+#[test]
+fn the_request_asks_for_exactly_the_window_the_descriptor_declares() {
+    use crate::providers::{Provider, ProviderEndpoint};
+
+    for declared in [
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+        2_000,
+    ] {
+        let client = crate::providers::ollama::OllamaClient::new(
+            ProviderEndpoint::new("http://127.0.0.1:11434").expect("a well-formed origin"),
+            model("llama3.2:3b"),
+            declared,
+        )
+        .expect("an HTTP client builds");
+
+        assert_eq!(
+            Provider::capabilities(&client).context_tokens(),
+            Some(declared),
+            "the descriptor declares the window it was built with"
+        );
+
+        let prompt = prompt("say ok");
+        let mut answered = map::Answered::default();
+        let request = ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &[],
+        };
+        let body = map::request_from(&request, &mut answered, "llama3.2:3b", declared)
+            .expect("there is no schema to refuse");
+        let json = serde_json::to_value(&body).expect("the body serialises");
+        assert_eq!(
+            json["options"]["num_ctx"].as_u64(),
+            Some(declared),
+            "the request carries the window this client declares, or the harness and the server \
+             hold two different windows and the server's is the one that truncates. The body was \
+             {json}"
         );
     }
 }

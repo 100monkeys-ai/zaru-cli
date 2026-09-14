@@ -170,7 +170,7 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
         PressureThreshold::new(256).expect("not zero"),
     )
     .expect("the threshold is below the window");
-    let context = Context::opened(context::prefix_for(), limits);
+    let context = Context::opened(context::prefix_for(), limits, 0);
     let held = HeldSecrets::none();
     let policy = TurnContext::over(&context, &held, false);
 
@@ -212,7 +212,11 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
 /// that refused every assembly would pass that check.
 #[test]
 fn a_turn_that_fits_carries_the_prefix_and_then_the_task() {
-    let context = Context::opened(context::prefix_for(), crate::cli::layers::context_limits());
+    let context = Context::opened(
+        context::prefix_for(),
+        crate::cli::layers::context_limits(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
+        0,
+    );
     let held = HeldSecrets::none();
     let policy = TurnContext::over(&context, &held, false);
 
@@ -824,7 +828,9 @@ fn a_turn_boundary_under_the_threshold_spends_nothing() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(),
-        tight_limits(100_000, 75_000), 0);
+        tight_limits(100_000, 75_000),
+        0,
+    );
     session.record(zaru_core::context::Exchange::verbatim("a short exchange"));
     let summariser = Counting::answering("never asked");
 
@@ -850,8 +856,11 @@ fn a_turn_boundary_under_the_threshold_spends_nothing() {
 #[test]
 fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() {
     let held = HeldSecrets::none();
-    let mut session =
-        crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 1_200), 0);
+    let mut session = crate::compose::SessionContext::opened(
+        context::prefix_for(),
+        tight_limits(8_000, 1_200),
+        0,
+    );
     for nth in 0..8 {
         session.record(zaru_core::context::Exchange::verbatim(format!(
             "exchange {nth}: {}",
@@ -936,8 +945,11 @@ fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() 
 #[test]
 fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
     let held = HeldSecrets::none();
-    let mut session =
-        crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 1_200), 0);
+    let mut session = crate::compose::SessionContext::opened(
+        context::prefix_for(),
+        tight_limits(8_000, 1_200),
+        0,
+    );
     for nth in 0..8 {
         session.record(zaru_core::context::Exchange::verbatim(format!(
             "exchange {nth}: {}",
@@ -1039,8 +1051,9 @@ fn the_checkpoint_carries_layer_six_and_a_resumed_session_reads_it_back() {
     session.record(zaru_core::context::Exchange::summary("an older stretch"));
 
     let stored = session.checkpoint();
-    let restored = crate::compose::SessionContext::restored(context::prefix_for(), limits, 0, &stored)
-        .expect("what this type wrote, it reads");
+    let restored =
+        crate::compose::SessionContext::restored(context::prefix_for(), limits, 0, &stored)
+            .expect("what this type wrote, it reads");
 
     let there: Vec<&str> = session
         .exchanges()
@@ -1070,8 +1083,10 @@ fn the_checkpoint_carries_layer_six_and_a_resumed_session_reads_it_back() {
     // exactly like a session that had none.
     crate::compose::SessionContext::restored(
         context::prefix_for(),
-        limits, 0,
-        &serde_json::json!({ "exchanges": "not a list" }))
+        limits,
+        0,
+        &serde_json::json!({ "exchanges": "not a list" }),
+    )
     .expect_err("a checkpoint this type did not write is refused");
 }
 
@@ -1131,8 +1146,11 @@ fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     // boundary is reachable again, which is what makes a many-turn session
     // possible at all rather than a context nobody can ever compact.
     let held = HeldSecrets::none();
-    let mut session =
-        crate::compose::SessionContext::opened(context::prefix_for(), tight_limits(8_000, 1_200), 0);
+    let mut session = crate::compose::SessionContext::opened(
+        context::prefix_for(),
+        tight_limits(8_000, 1_200),
+        0,
+    );
     {
         let policy = session.policy(&held, false);
         let _ = futures_lite_block_on(policy.assemble(&Turn::Initial { task: "a task" }));
@@ -1296,7 +1314,9 @@ fn adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers() {
 
     let context = crate::compose::SessionContext::opened(
         context::prefix_for(),
-        crate::cli::layers::context_limits(), 0);
+        crate::cli::layers::context_limits(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
+        0,
+    );
     let refusal = crate::compose::boundary::checkpointed(&context, &session)
         .expect_err("a session directory at 0500 cannot take a checkpoint's temporary file");
     let classified = crate::cli::classify::Surface::checkpoint(&refusal, session.evidence());

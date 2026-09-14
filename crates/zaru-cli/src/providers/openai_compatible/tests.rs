@@ -173,6 +173,7 @@ fn client_with(key: Option<Secret>) -> super::OpenAiCompatibleClient {
         model("llama3.2:3b"),
         alias(),
         key,
+        Some(8_192),
     )
     .expect("an HTTP client builds without touching the network")
 }

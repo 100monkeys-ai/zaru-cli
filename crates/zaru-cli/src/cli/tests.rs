@@ -1662,16 +1662,30 @@ fn what_a_model_is_shown_of_one_tool_result_is_smaller_than_what_the_harness_wil
 /// only once the context already did not fit"*.
 #[test]
 fn the_pressure_threshold_is_below_the_window_rather_than_at_it() {
-    let limits = crate::cli::layers::context_limits();
-    let window = limits.window().get();
-    let threshold = limits.threshold().get();
-    assert!(
-        threshold < window,
-        "a threshold of {threshold} is not below the window of {window}, so compaction would fire \
-         only once the context already did not fit"
-    );
-    assert_eq!(window, crate::cli::layers::CONTEXT_WINDOW_TOKENS);
-    assert_eq!(threshold, crate::cli::layers::PRESSURE_THRESHOLD_TOKENS);
+    // Every window this binary can state, rather than the one constant that
+    // stood here until 2026-09-14: the threshold is three quarters of
+    // whatever a kind declared, so the property has to hold for each.
+    for declared in [
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+        crate::cli::layers::WINDOW_WHEN_NO_PROVIDER,
+        4,
+    ] {
+        let limits = crate::cli::layers::context_limits(declared);
+        let window = limits.window().get();
+        let threshold = limits.threshold().get();
+        assert_eq!(window, declared, "the window is the one the kind declared");
+        assert!(
+            threshold < window,
+            "a threshold of {threshold} is not below the window of {window}, so compaction would \
+             fire only once the context already did not fit"
+        );
+        assert_eq!(
+            threshold,
+            declared / 4 * 3,
+            "the threshold is three quarters of the declared window"
+        );
+    }
 }
 
 /// The process ceiling bounds a build rather than a request, so it is longer
@@ -1766,11 +1780,9 @@ fn the_context_segment_carries_the_window_and_not_only_what_is_used() {
 fn the_pressure_threshold_is_not_on_the_status_row() {
     use zaru_core::context::Usage;
 
-    let rendered = render::context_usage(Usage::new(
-        300_000,
-        crate::cli::layers::CONTEXT_WINDOW_TOKENS,
-    ));
-    let threshold = render::thousands(crate::cli::layers::PRESSURE_THRESHOLD_TOKENS);
+    let window = crate::providers::gemini::CONTEXT_WINDOW_TOKENS;
+    let rendered = render::context_usage(Usage::new(300_000, window));
+    let threshold = render::thousands(crate::cli::layers::context_limits(window).threshold().get());
 
     assert!(
         !rendered.contains(&threshold),
@@ -2317,4 +2329,88 @@ fn the_store_refusals_notes_use_can_raise_are_user_correctable_and_not_defects()
             ),
         }
     }
+}
+
+/// [ADR-0014] D6 on `provider.<kind>.context_tokens`: a project lowers a
+/// window and may not raise one.
+///
+/// # For the security corpus, and the accepting arm is half of it
+///
+/// The refusing arm alone is satisfied by an implementation that refuses
+/// everything a project offers — [Verification lessons] §13, the invariant
+/// that holds because both sides are wrong together — so the two arms are one
+/// check. Lowering is a project choosing that the harness send the reader's
+/// own server *less*, which ADR-0014 D6 permits by its own words; raising is a
+/// repository the reader cloned asking their machine to serve more than they
+/// said it does, and for the `ollama` kind that number is also what the
+/// harness *tells* the server, so it is not merely a number on a row.
+///
+/// The granted value comes from layer 1 here rather than from a staged user
+/// file, which is the point: `cli::layers::BuiltIn` carries this row for the
+/// two kinds that have a default, and without it the ceiling has nothing to
+/// compare against and `config::resolve` would let any project value stand.
+///
+/// Watched red twice, each mutation confirmed applied on disk and the file
+/// restored byte-identical, and **both print the same sentence** — *"a
+/// project raising a window is what D6 forbids"* — because both make the
+/// fold succeed where it must refuse. Removing layer 1's row for this kind:
+/// with nothing granted there is nothing to exceed, which is
+/// `config::resolve`'s own rule reached by deleting the grant. Declaring the
+/// key `Field::free(FieldKind::Integer)` instead of `Field::ceiling()`: the
+/// ceiling is never consulted at all.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_project_may_lower_a_providers_context_window_and_may_not_raise_one() {
+    use crate::config::{
+        ConfigRefused, Contribution, Layer, LayerSource, Resolution, Source, Table, Value,
+    };
+
+    let key = crate::providers::ProviderKind::Ollama.context_tokens_key();
+    let granted = crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS;
+
+    let project = |asked: i64| {
+        let mut document = Table::new();
+        document.insert_path(&key, Value::Integer(asked));
+        Resolution::resolve(
+            &layers::schema(),
+            vec![
+                Contribution::new(
+                    Layer::BuiltIn,
+                    Layer::BuiltIn.default_source(),
+                    layers::BuiltIn::new().read().expect("layer 1 reads"),
+                ),
+                Contribution::new(Layer::Project, Source::named("./zaru.toml"), document),
+            ],
+        )
+    };
+
+    let lowered = project(2_000).expect("a project lowering a window is what D6 permits");
+    assert_eq!(
+        lowered.get(&key),
+        Some(&Value::Integer(2_000)),
+        "the project's smaller window is the effective one, which is what makes the artefact's \
+         own crossing configurable at all"
+    );
+
+    let refusal = project(131_072).expect_err("a project raising a window is what D6 forbids");
+    let ConfigRefused::ProjectMayNotRaise {
+        key: named,
+        granted: was,
+        asked,
+    } = &refusal
+    else {
+        panic!("expected D6's ceiling refusal, got {refusal:?}");
+    };
+    assert_eq!(
+        (named.as_str(), *was, *asked),
+        (
+            key.as_str(),
+            i64::try_from(granted).expect("it fits"),
+            131_072
+        ),
+        "the refusal names the key, what was granted and what was asked"
+    );
+    println!("{refusal}");
 }

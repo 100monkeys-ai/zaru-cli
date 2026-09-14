@@ -2209,6 +2209,7 @@ fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
         None,
         Some(planted.clone()),
         &here.store_root(),
+        crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
         &Surface::new("0.0.0", "https://example.invalid"),
     )
     .expect("a session starts");
@@ -2235,6 +2236,7 @@ fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
         None,
         None,
         &here.store_root(),
+        crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
         &Surface::new("0.0.0", "https://example.invalid"),
     )
     .expect("a second session starts");

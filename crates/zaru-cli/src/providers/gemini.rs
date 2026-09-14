@@ -146,6 +146,29 @@ use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
 /// it silently.
 pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How large this kind's context window is, in tokens.
+///
+/// **1,048,576, and it is a citation rather than a choice.** Google's model
+/// page for `gemini-3.6-flash`, read 2026-09-05, states "Input token limit
+/// 1,048,576": <https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash>.
+///
+/// **It lived in `crate::cli::layers` until 2026-09-14**, where it was the
+/// composition's one number for every provider — true of this kind and wrong
+/// for the two that gained clients after it. It is here now because
+/// [ADR-0012] D3's capability descriptor is where a property of a provider
+/// belongs, and this client is the only thing that knows which provider it
+/// is.
+///
+/// **One number for a kind that serves many models is a real limit and is
+/// stated rather than hidden.** This kind's other models have other windows;
+/// nothing here reads the resolved model identifier, because Google publishes
+/// no endpoint that reports one and a table of model names inside this binary
+/// would go stale silently. `provider.gemini.context_tokens` overrides it at
+/// any layer for a reader who knows better.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+pub const CONTEXT_WINDOW_TOKENS: u64 = 1_048_576;
+
 /// The header the API key is presented in.
 ///
 /// Google's own documented form, and the only place this client puts the key.
@@ -169,6 +192,10 @@ pub struct GeminiClient {
     model: ModelId,
     alias: Alias,
     key: Secret,
+    /// How large this provider's window is, for the descriptor.
+    ///
+    /// [`CONTEXT_WINDOW_TOKENS`] unless a configuration layer said otherwise.
+    context_tokens: u64,
     http: reqwest::Client,
     /// Where the answer's text goes as it arrives, when anything is watching.
     ///
@@ -241,6 +268,7 @@ impl GeminiClient {
         model: ModelId,
         alias: Alias,
         key: Secret,
+        context_tokens: u64,
     ) -> Result<Self, GeminiFailure> {
         // Built through [`crate::web::client::build`], which is the one
         // place this workspace builds an HTTP client. What this caller
@@ -262,6 +290,7 @@ impl GeminiClient {
             model,
             alias,
             key,
+            context_tokens,
             http,
             last: Mutex::new(None),
             answered: Mutex::new(map::Answered::default()),
@@ -629,7 +658,10 @@ impl Provider for GeminiClient {
         // Token accounting: true, because `usageMetadata` is on every frame
         // of every successful response -- which is the half of the pairing
         // `Provider::usage` owes, and it is answered below.
-        ProviderCapabilities::declared(true, true, true)
+        //
+        // Context window: this kind's own constant unless a layer said
+        // otherwise -- see `CONTEXT_WINDOW_TOKENS` and `Self::new`.
+        ProviderCapabilities::declared(true, true, true, Some(self.context_tokens))
     }
 
     fn usage(&self) -> Option<TokenUsage> {

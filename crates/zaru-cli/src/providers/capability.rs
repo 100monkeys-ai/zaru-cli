@@ -62,6 +62,16 @@ use core::fmt;
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityRefused {
+    /// No layer says how large the window behind an alias is.
+    ///
+    /// Carries the alias **and** the kind for the reason the arm below does:
+    /// the alias is what the reader wrote and the kind is what has no window.
+    ContextSizeUnknown {
+        /// The alias whose provider was asked.
+        alias: ModelAlias,
+        /// The kind that could not say.
+        kind: ProviderKind,
+    },
     /// The provider behind an alias declares it cannot call tools.
     ///
     /// Carries the alias **and** the kind, because both are what a user needs
@@ -78,6 +88,13 @@ pub enum CapabilityRefused {
 impl fmt::Display for CapabilityRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ContextSizeUnknown { alias, kind } => write!(
+                f,
+                "the alias `{alias}` resolves to a `{kind}` provider and nothing says how large \
+                 its context window is. A harness that guessed would compact too late and let the \
+                 provider silently drop the oldest of a conversation, which is the one failure a \
+                 reader cannot diagnose",
+            ),
             Self::ToolCallingUnavailable { alias, kind } => write!(
                 f,
                 "the alias `{alias}` resolves to a `{kind}` provider that declares it cannot call \
@@ -110,20 +127,31 @@ pub struct ProviderCapabilities {
     streaming: bool,
     tool_calling: bool,
     token_accounting: bool,
+    context_tokens: Option<u64>,
 }
 
 impl ProviderCapabilities {
     /// Declare what a provider can do.
     ///
-    /// The three are positional and all three are required, so a provider
-    /// cannot be described without saying something about each of D3's three
-    /// — which is what "must say so" means.
+    /// The four are positional and all four are required, so a provider
+    /// cannot be described without saying something about each — which is
+    /// what "must say so" means.
+    ///
+    /// `context_tokens` is `None` for a provider whose window nothing states,
+    /// which is a real answer rather than a missing one: it is what
+    /// [`Self::require_context_size`] refuses on, before a loop starts.
     #[must_use]
-    pub const fn declared(streaming: bool, tool_calling: bool, token_accounting: bool) -> Self {
+    pub const fn declared(
+        streaming: bool,
+        tool_calling: bool,
+        token_accounting: bool,
+        context_tokens: Option<u64>,
+    ) -> Self {
         Self {
             streaming,
             tool_calling,
             token_accounting,
+            context_tokens,
         }
     }
 
@@ -149,6 +177,53 @@ impl ProviderCapabilities {
     #[must_use]
     pub const fn token_accounting(self) -> bool {
         self.token_accounting
+    }
+
+    /// How large the provider's context window is, in tokens.
+    ///
+    /// **A fourth concern, added 2026-09-14, and the reason is that the third
+    /// one is not it.** `token_accounting` says whether the provider reports
+    /// what a request *cost*; this says what it will *accept*. Until this
+    /// field existed the harness carried one model's number — Google's
+    /// 1,048,576 for `gemini-3.6-flash` — as a constant in the composition,
+    /// which was wrong for the second kind the day it had a client and was
+    /// wrong for three kinds by the time this landed.
+    ///
+    /// Each kind answers from its own source, and no source is guessed:
+    /// `gemini` from its own documentation, `ollama` from
+    /// `provider.ollama.context_tokens` over a default that is the server's
+    /// own, `openai-compatible` from that key with no default at all. See
+    /// each client.
+    ///
+    /// `None` means nothing says, and
+    /// [`Self::require_context_size`] refuses it.
+    #[must_use]
+    pub const fn context_tokens(self) -> Option<u64> {
+        self.context_tokens
+    }
+
+    /// Refuse, at configuration time, a provider whose window nothing states.
+    ///
+    /// **Beside [`Self::require_tool_calling`] and for its reason**: D3's
+    /// "discovering it mid-loop produces a failure the user reads as the
+    /// harness being broken" is if anything stronger here, because a window
+    /// nobody states is not discovered mid-loop at all — the provider accepts
+    /// the request and truncates it, and what the reader sees is a model that
+    /// forgot something they remember saying.
+    ///
+    /// # Errors
+    ///
+    /// [`CapabilityRefused::ContextSizeUnknown`], naming the alias and the
+    /// kind.
+    pub const fn require_context_size(
+        self,
+        alias: ModelAlias,
+        kind: ProviderKind,
+    ) -> Result<u64, CapabilityRefused> {
+        match self.context_tokens {
+            Some(tokens) => Ok(tokens),
+            None => Err(CapabilityRefused::ContextSizeUnknown { alias, kind }),
+        }
     }
 
     /// Refuse, at configuration time, a provider that cannot call tools.

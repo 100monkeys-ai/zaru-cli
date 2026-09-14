@@ -76,6 +76,34 @@ pub const CHAT_PATH: &str = "/api/chat";
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub const NUM_THREAD: u16 = 6;
 
+/// How large a window this kind is assumed to serve, when no layer says.
+///
+/// **4,096, and it is the *server's* number rather than the model's.**
+/// Measured on this machine 2026-09-14 against Ollama v0.34.0 with
+/// `llama3.2:3b`: the server's own log reads
+///
+/// ```text
+/// n_ctx_seq (4096) < n_ctx_train (131072) -- the full capacity of the model will not be utilized
+/// ```
+///
+/// and a 34,941-byte prompt sent with no `num_ctx` came back reporting 2,050
+/// prompt tokens with `truncating` in the log. So the model's `/api/show`
+/// figure — `llama.context_length`, 131,072 — is what the weights were
+/// **trained** on and is not what the server will accept: `OLLAMA_CONTEXT_LENGTH`
+/// is unset by default and `num_ctx` defaults to this number.
+///
+/// **Taking `/api/show`'s figure would have been the worst of the three
+/// available answers**, because it is wrong by a factor of thirty-two in the
+/// direction that produces silent truncation — the harness would believe
+/// there was room, never compact, and the server would drop the oldest of the
+/// conversation with nothing said. That is the failure ADR-0013 exists to
+/// prevent, reached by the mechanism meant to prevent it.
+///
+/// A reader whose server is started with a larger `num_ctx` sets
+/// `provider.ollama.context_tokens` and this client tells the server that
+/// number too — see [`crate::providers::ollama::wire::Options`].
+pub const DEFAULT_CONTEXT_TOKENS: u64 = 4_096;
+
 /// The origin every request to this provider goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {

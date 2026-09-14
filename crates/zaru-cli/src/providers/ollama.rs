@@ -126,6 +126,9 @@ pub struct OllamaClient {
     endpoint: Endpoint,
     configured: ProviderEndpoint,
     model: ModelId,
+    /// How many tokens of context this client asks the server for, and the
+    /// same number its descriptor declares.
+    context_tokens: u64,
     http: reqwest::Client,
     /// Where the answer's text goes as it arrives, when anything is watching.
     ///
@@ -162,7 +165,11 @@ impl OllamaClient {
     ///
     /// [`OllamaFailure::Unreachable`] when the HTTP client cannot be built at
     /// all.
-    pub fn new(endpoint: ProviderEndpoint, model: ModelId) -> Result<Self, OllamaFailure> {
+    pub fn new(
+        endpoint: ProviderEndpoint,
+        model: ModelId,
+        context_tokens: u64,
+    ) -> Result<Self, OllamaFailure> {
         // Built through `crate::web::client::build`, which is the one place
         // this workspace builds an HTTP client -- so this client, the `gemini`
         // one and `web.fetch` cannot drift about cookies, TLS and redirects.
@@ -178,6 +185,7 @@ impl OllamaClient {
             endpoint: Endpoint::new(&endpoint),
             configured: endpoint,
             model,
+            context_tokens,
             http,
             deltas: Mutex::new(None),
             last: Mutex::new(None),
@@ -220,7 +228,12 @@ impl OllamaClient {
                 Ok(answered) => answered,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            map::request_from(request, &mut answered, self.model.as_str())?
+            map::request_from(
+                request,
+                &mut answered,
+                self.model.as_str(),
+                self.context_tokens,
+            )?
         };
 
         let mut response = self
@@ -434,7 +447,13 @@ impl Provider for OllamaClient {
         // **This moves no clause of ADR-0012.** Clause 2 asks for a streaming
         // tool-calling exchange against a stub for *each of five* kinds; two
         // of five now have a client and three have none.
-        ProviderCapabilities::declared(true, true, true)
+        //
+        // Context window: `provider.ollama.context_tokens` as it resolved,
+        // over `endpoint::DEFAULT_CONTEXT_TOKENS`, which is the server's own
+        // default and not the model's trained length. The same number is sent
+        // as `num_ctx`, so this is a window the server has agreed to rather
+        // than one this harness hopes for.
+        ProviderCapabilities::declared(true, true, true, Some(self.context_tokens))
     }
 
     fn usage(&self) -> Option<TokenUsage> {

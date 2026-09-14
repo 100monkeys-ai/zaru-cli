@@ -148,6 +148,7 @@ pub fn request_from(
     request: &ModelRequest<'_>,
     answered: &mut Answered,
     model: &str,
+    context_tokens: u64,
 ) -> Result<wire::Request, OllamaFailure> {
     answered.at_turn_boundary(request);
 
@@ -237,6 +238,7 @@ pub fn request_from(
         stream: true,
         options: wire::Options {
             num_thread: NUM_THREAD,
+            num_ctx: context_tokens,
         },
     })
 }

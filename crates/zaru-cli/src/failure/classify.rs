@@ -466,6 +466,12 @@ impl From<ModelIdRefused> for Remedy {
 impl From<CapabilityRefused> for Classified {
     fn from(refusal: CapabilityRefused) -> Self {
         let remedy = match &refusal {
+            CapabilityRefused::ContextSizeUnknown { alias, kind } => act(format!(
+                "set `{key}` to the number of tokens that server accepts; the alias `{alias}` is \
+                 for {intent}",
+                key = kind.context_tokens_key(),
+                intent = alias.intent(),
+            )),
             CapabilityRefused::ToolCallingUnavailable { alias, kind } => act(format!(
                 "set `{key}` to a model whose provider calls tools, or configure a provider other \
                  than `{kind}` for it; the alias `{alias}` is for {intent}",

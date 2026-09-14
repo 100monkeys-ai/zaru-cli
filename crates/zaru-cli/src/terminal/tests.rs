@@ -2846,7 +2846,8 @@ fn the_context_figure_is_the_same_bytes_on_every_frame_of_one_turn() {
 #[test]
 fn the_model_and_the_mode_are_on_the_row_from_the_sessions_first_frame() {
     let mut shell = shell();
-    let context = crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable(), 0);
+    let context =
+        crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable(), 0);
     let redactor = Nothing;
     let model = crate::providers::ModelId::for_a_check("gemini-3.6-flash");
 
@@ -3428,7 +3429,8 @@ fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction(
 #[test]
 fn the_token_segment_is_the_line_the_session_prints_on_exit_and_not_a_second_spelling() {
     let redactor = Nothing;
-    let context = crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable(), 0);
+    let context =
+        crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable(), 0);
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
     let usage = crate::providers::TokenUsage::counted(390, 79);
 
@@ -3463,7 +3465,8 @@ fn the_token_segment_is_the_line_the_session_prints_on_exit_and_not_a_second_spe
 #[test]
 fn a_session_that_has_not_asked_anything_shows_a_context_and_no_tokens() {
     let redactor = Nothing;
-    let context = crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable(), 0);
+    let context =
+        crate::compose::SessionContext::opened(crate::compose::prefix_for(), crossable(), 0);
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
 
     crate::terminal::driver::refresh_status(&mut shell, &context, None, None, &redactor);

@@ -1333,6 +1333,7 @@ fn the_descriptor_says_this_client_streams_and_the_two_readings_agree() {
         model("gemini-3.6-flash"),
         Alias::new("provider.gemini").expect("a well-formed alias"),
         secret,
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
     )
     .expect("an HTTP client builds without touching the network");
 
@@ -1365,6 +1366,7 @@ fn offline_client() -> super::GeminiClient {
         model("gemini-3.6-flash"),
         Alias::new("provider.gemini").expect("a well-formed alias"),
         secret,
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
     )
     .expect("an HTTP client builds without touching the network")
 }

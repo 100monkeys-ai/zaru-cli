@@ -173,6 +173,7 @@ async fn what_ollama_said(origin: &str) -> String {
     let client = OllamaClient::new(
         ProviderEndpoint::new(origin).expect("the origin is well-formed"),
         model_id("llama3.2:3b"),
+        zaru_cli::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
     )
     .expect("an HTTP client builds");
     let prompt = Prompt::new(Redacted::by(&NothingHeld, "say hello"));
@@ -194,6 +195,7 @@ async fn what_openai_compatible_said(origin: &str) -> String {
         model_id("llama3.2:3b"),
         ProviderKind::OpenAiCompatible.credential_alias(),
         None,
+        Some(8_192),
     )
     .expect("an HTTP client builds");
     let prompt = Prompt::new(Redacted::by(&NothingHeld, "say hello"));
@@ -253,6 +255,7 @@ async fn what_gemini_said(origin: &str) -> String {
         ProviderKind::Gemini.credential_alias(),
         Secret::provider(ProviderKind::Gemini, "not-a-key-and-never-sent")
             .expect("a non-empty value with no control character is a secret"),
+        zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS,
     )
     .expect("an HTTP client builds");
     let prompt = Prompt::new(Redacted::by(&NothingHeld, "say hello"));

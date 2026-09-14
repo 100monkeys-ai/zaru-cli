@@ -60,6 +60,19 @@ pub struct Request {
 pub struct Options {
     /// How many CPU threads one exchange may use.
     pub num_thread: u16,
+    /// How many tokens of context the server is to serve.
+    ///
+    /// **Sent because the alternative is two windows that disagree.** Ollama
+    /// serves `num_ctx` tokens and silently truncates a longer prompt; its
+    /// default is 4,096 whatever the model was trained on, so a harness that
+    /// declared a window and did not say it would be compacting against a
+    /// number the server had never agreed to. This is
+    /// `provider.ollama.context_tokens` as it resolved, which is the same
+    /// value [`ProviderCapabilities::context_tokens`] reports — one number,
+    /// told to the server and obeyed by the harness, rather than two.
+    ///
+    /// [`ProviderCapabilities::context_tokens`]: crate::providers::ProviderCapabilities::context_tokens
+    pub num_ctx: u64,
 }
 
 /// One turn of the conversation.

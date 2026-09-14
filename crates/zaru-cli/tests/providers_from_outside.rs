@@ -273,7 +273,7 @@ fn an_outside_caller_configures_every_kind_the_same_way() {
 /// reader as ADR-0016's user-correctable class with a remedy naming the key.
 #[test]
 fn an_outside_caller_is_refused_before_a_loop_could_start() {
-    let cannot = ProviderCapabilities::declared(true, false, false);
+    let cannot = ProviderCapabilities::declared(true, false, false, Some(1_024));
     let refusal = cannot
         .require_tool_calling(ModelAlias::Smart, ProviderKind::Ollama)
         .expect_err("a provider that cannot call tools must be refused");
@@ -346,7 +346,7 @@ fn an_outside_caller_sees_a_disagreement_and_an_accounting() {
     let provider = StagedProvider {
         kind: ProviderKind::Gemini,
         endpoint: ProviderEndpoint::new("https://staged.example").expect("well formed"),
-        capabilities: ProviderCapabilities::declared(true, true, true),
+        capabilities: ProviderCapabilities::declared(true, true, true, Some(1_024)),
         usage: Some(TokenUsage::counted(1_024, 256)),
     };
     let usage = provider.usage().expect("this provider accounts");

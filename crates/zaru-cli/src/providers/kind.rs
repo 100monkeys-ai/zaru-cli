@@ -91,6 +91,9 @@ impl ProviderKind {
     /// The last segment of the key that names a provider's endpoint.
     pub const ENDPOINT_LEAF: &'static str = "endpoint";
 
+    /// The last segment of the key that names a provider's context window.
+    pub const CONTEXT_TOKENS_LEAF: &'static str = "context_tokens";
+
     /// The kind's name as D3 spells it, which is what a user reads.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -182,6 +185,34 @@ impl ProviderKind {
     /// refused by [`Key::new`].
     ///
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    /// The [ADR-0014] configuration key that names this kind's context window.
+    ///
+    /// `provider.<kind>.context_tokens`. **A project may lower it and may not
+    /// raise it**, which is ADR-0014 D6's `LowerOnly`: lowering a window is a
+    /// project choosing less of the machine's model, and the direction
+    /// `inference.<alias>` is already free in; raising it is a repository the
+    /// reader cloned asking the harness to send that reader's server more
+    /// than they said it accepts. The user and global layers set it freely,
+    /// because for a local server the harness *tells* the server this number
+    /// as well as obeying it.
+    ///
+    /// # Panics
+    ///
+    /// Never. The three segments are this module's own and none of them is
+    /// refused by [`Key::new`].
+    ///
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    #[must_use]
+    pub fn context_tokens_key(self) -> Key {
+        Key::new(&format!(
+            "{}.{}.{}",
+            Self::TABLE,
+            self.key_segment(),
+            Self::CONTEXT_TOKENS_LEAF
+        ))
+        .expect("ADR-0012 D3's kind segments are well-formed configuration keys")
+    }
+
     #[must_use]
     pub fn endpoint_key(self) -> Key {
         Key::new(&format!(

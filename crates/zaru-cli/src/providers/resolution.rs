@@ -337,6 +337,24 @@ pub fn fields() -> Vec<(Key, Field)> {
         )
     }));
 
+    // `provider.<kind>.context_tokens` -- how large that kind's window is.
+    //
+    // **`LowerOnly` rather than refused to projects, which is the one place
+    // this key differs from the endpoint beside it**, and the difference is
+    // the direction each value moves the harness in. An endpoint set by a
+    // repository the reader cloned sends their prompts somewhere else; a
+    // *smaller* window set by one makes the harness compact sooner and send
+    // less, which is ADR-0014 D6 constraining escalation rather than choice --
+    // the same reading `inference.<alias>` above is free under. Raising it is
+    // refused by the ceiling, because for a local server this number is also
+    // what the harness *tells* the server, so a project raising it would be
+    // asking the reader's machine for more than the reader said it has.
+    declared.extend(
+        ProviderKind::ALL
+            .into_iter()
+            .map(|kind| (kind.context_tokens_key(), Field::ceiling())),
+    );
+
     declared.extend(ProviderKind::ALL.into_iter().map(|kind| {
         (
             kind.endpoint_key(),

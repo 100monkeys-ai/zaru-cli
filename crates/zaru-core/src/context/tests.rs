@@ -1023,7 +1023,11 @@ async fn the_reserve_is_on_the_whole_context_and_on_no_single_exchange() {
     // what they cost together, and a reserve of a hundred on top. The span
     // taken has to be the same span it would be without the reserve: the
     // overage is bigger by the reserve, but each exchange is still ten.
-    let mut context = Context::opened(staged_prefix(), limits(4_000, 24 + 4 * PREFIX_WORDS as u64), 100);
+    let mut context = Context::opened(
+        staged_prefix(),
+        limits(4_000, 24 + 4 * PREFIX_WORDS as u64),
+        100,
+    );
     for n in 1..=3 {
         context.record_exchange(Exchange::verbatim(staged_text(&format!("said-{n}"), 10)));
     }

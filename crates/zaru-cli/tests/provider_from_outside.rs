@@ -156,8 +156,14 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
     // staged configuration exactly as the binary reads it.
     let model = model_id(&model_name());
 
-    let client = GeminiClient::new(Endpoint::default_endpoint(), model, alias.clone(), secret)
-        .expect("an HTTP client builds");
+    let client = GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model,
+        alias.clone(),
+        secret,
+        zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS,
+    )
+    .expect("an HTTP client builds");
 
     // The descriptor, before anything is sent. **Streaming is true since
     // 2026-09-05** -- this client calls `streamGenerateContent?alt=sse` and
@@ -233,6 +239,7 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
         model_id(&model_name()),
         alias.clone(),
         wrong,
+        zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS,
     )
     .expect("an HTTP client builds")
     .exchange(&request)

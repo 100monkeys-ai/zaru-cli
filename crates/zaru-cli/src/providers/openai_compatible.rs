@@ -139,6 +139,10 @@ pub struct OpenAiCompatibleClient {
     /// **`None` is an ordinary, supported state**, unlike the `gemini` client
     /// where a key is the reason the client exists. A local server needs none.
     key: Option<Secret>,
+    /// How large this endpoint's window is, and **`None` is an ordinary state
+    /// here too**: this kind has no default window for the same reason it has
+    /// no default endpoint. `require_context_size` refuses on it.
+    context_tokens: Option<u64>,
     http: reqwest::Client,
     /// Where the answer's text goes as it arrives, when anything is watching.
     /// See `providers::gemini` for why a channel rather than a borrowed sink.
@@ -165,6 +169,7 @@ impl OpenAiCompatibleClient {
         model: ModelId,
         alias: Alias,
         key: Option<Secret>,
+        context_tokens: Option<u64>,
     ) -> Result<Self, OpenAiCompatibleFailure> {
         // Built through `crate::web::client::build`, which is the one place
         // this workspace builds an HTTP client -- so this client, the `gemini`
@@ -183,6 +188,7 @@ impl OpenAiCompatibleClient {
             model,
             alias,
             key,
+            context_tokens,
             http,
             deltas: Mutex::new(None),
             last: Mutex::new(None),
@@ -472,7 +478,17 @@ impl Provider for OpenAiCompatibleClient {
         // **This moves no clause of ADR-0012.** Clause 2 asks for a streaming
         // tool-calling exchange against a *stub* for *each of five* kinds;
         // three of five now have a client and two have none.
-        ProviderCapabilities::declared(true, true, true)
+        //
+        // Context window: `provider.openai-compatible.context_tokens` and
+        // **no default**, which is this kind's own reading of D5 reached a
+        // second time. The kind spans vLLM on a laptop, LM Studio,
+        // llama.cpp, Ollama's own `/v1` and every hosted gateway, whose
+        // windows differ by three orders of magnitude with no majority and
+        // no convention -- so a default would be one vendor's number painted
+        // on all of them, which is the argument this client already accepted
+        // for its endpoint. Absent the key the descriptor says `None` and
+        // `require_context_size` refuses before a loop starts.
+        ProviderCapabilities::declared(true, true, true, self.context_tokens)
     }
 
     fn usage(&self) -> Option<TokenUsage> {

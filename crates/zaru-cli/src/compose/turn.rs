@@ -248,6 +248,13 @@ pub struct Prepared {
     client: ProviderClient,
     witness: ToolCalling,
     store_root: std::path::PathBuf,
+    /// [ADR-0012] D3's window for the kind that answered, in tokens.
+    ///
+    /// Not `Option`: `prepare` refuses a kind that could not state one, so a
+    /// `Prepared` that exists has a window.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    window: u64,
 }
 
 impl Prepared {
@@ -274,6 +281,34 @@ impl Prepared {
     #[must_use]
     pub const fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// [ADR-0013]'s window and pressure threshold, for the kind that
+    /// answered.
+    ///
+    /// **This is the whole of what replaced two constants in
+    /// `crate::cli::layers`.** Those were one model's numbers — Google's
+    /// 1,048,576 and three quarters of it — applied to every provider,
+    /// which was already wrong for two of the three kinds with a client. The
+    /// window now comes from [ADR-0012] D3's capability descriptor, per kind
+    /// and from that kind's own source, and the threshold is three quarters
+    /// of *it*.
+    ///
+    /// Three quarters is unchanged and is still nobody's published number:
+    /// [ADR-0013] D2 crosses "the window pressure threshold" and names none,
+    /// and this is the one place the fraction is written.
+    ///
+    /// # Panics
+    ///
+    /// Never. `require_context_size` refuses zero's only source — a
+    /// descriptor with no window — before a `Prepared` exists, and three
+    /// quarters of a non-zero window is neither zero nor above it.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    #[must_use]
+    pub fn context_limits(&self) -> zaru_core::context::ContextLimits {
+        crate::cli::layers::context_limits(self.window)
     }
 
     /// Which of [ADR-0012] D3's kinds is answering.
@@ -716,11 +751,34 @@ pub fn prepare(
         },
     };
 
+    // --- ADR-0012 D3's window: configuration, then this kind's own source --
+    //
+    // Read exactly the way the endpoint above is read, and for its reason:
+    // `provider.<kind>.context_tokens` is this record's key and ADR-0014's
+    // Neutral section leaves each record its own. What differs is where an
+    // unset key lands. `gemini` and `ollama` have a built-in row in layer 1
+    // -- `cli::layers::BuiltIn` -- so the `unwrap_or` below is unreachable
+    // while that row exists, and is written rather than `expect`ed because
+    // the row and this read live in different modules and a panic here would
+    // be this harness reporting its own disagreement as a crash.
+    // `openai-compatible` has no row, so `None` reaches its descriptor and
+    // `require_context_size` refuses it by name.
+    let configured_window = match resolution.get(&kind.context_tokens_key()) {
+        Some(crate::config::Value::Integer(tokens)) => u64::try_from(*tokens).ok(),
+        _ => None,
+    };
+
     // A wildcard-free match, so a third client cannot be added to
     // `KINDS_WITH_A_CLIENT` without being built here.
     let client = match (kind, secret) {
         (ProviderKind::Gemini, Some(secret)) => {
-            match GeminiClient::new(endpoint, model.clone(), alias, secret) {
+            match GeminiClient::new(
+                endpoint,
+                model.clone(),
+                alias,
+                secret,
+                configured_window.unwrap_or(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
+            ) {
                 Ok(client) => ProviderClient::Gemini(client),
                 Err(failure) => {
                     return Err(Box::new(Ran::refused(Surface::provider(&failure.into()))));
@@ -728,7 +786,12 @@ pub fn prepare(
             }
         }
         (ProviderKind::Ollama, None) => {
-            match crate::providers::ollama::OllamaClient::new(endpoint, model.clone()) {
+            match crate::providers::ollama::OllamaClient::new(
+                endpoint,
+                model.clone(),
+                configured_window
+                    .unwrap_or(crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS),
+            ) {
                 Ok(client) => ProviderClient::Ollama(client),
                 Err(failure) => {
                     return Err(Box::new(Ran::refused(Surface::provider(&failure.into()))));
@@ -745,6 +808,7 @@ pub fn prepare(
                 model.clone(),
                 alias,
                 secret,
+                configured_window,
             ) {
                 Ok(client) => ProviderClient::OpenAiCompatible(client),
                 Err(failure) => {
@@ -762,6 +826,24 @@ pub fn prepare(
             return Err(Box::new(Ran::refused(
                 surface.no_client_for_the_kinds_held(&model, &held_kinds),
             )));
+        }
+    };
+
+    // --- ADR-0013's window, refused before anything is built on it --------
+    //
+    // **Beside the tool-calling witness below and ahead of it**, because a
+    // window nobody states is the worse of the two to discover late: a
+    // provider that cannot call tools says so, and a provider whose window
+    // this harness guessed says nothing at all -- it accepts the request and
+    // truncates it, and what the reader sees is a model that forgot something
+    // they remember saying. The descriptor is D3's data and this is the one
+    // place it is consulted for this concern.
+    let window = match crate::providers::Provider::capabilities(&client)
+        .require_context_size(ModelAlias::Default, kind)
+    {
+        Ok(tokens) => tokens,
+        Err(refusal) => {
+            return Err(Box::new(Ran::refused(refusal.into())));
         }
     };
 
@@ -796,6 +878,7 @@ pub fn prepare(
         client,
         witness,
         store_root,
+        window,
     })
 }
 /// Run one turn of a session that already exists.
@@ -1242,6 +1325,7 @@ pub fn start(
     provider: Option<ProviderKind>,
     workspace: Option<String>,
     here: &std::path::Path,
+    limits: zaru_core::context::ContextLimits,
     surface: &Surface<'_>,
 ) -> Result<(crate::session::Session, SessionContext), Box<crate::failure::Classified>> {
     let session_store = SessionStore::open(root).map_err(|failure| surface.session(&failure))?;
@@ -1274,7 +1358,7 @@ pub fn start(
     MetaFile::at(session.meta_path())
         .write(&meta)
         .map_err(|failure| Box::new(Surface::meta(&failure, evidence.clone())))?;
-    let context = SessionContext::opened(context::prefix_for(), layers::context_limits(), 0);
+    let context = SessionContext::opened(context::prefix_for(), limits, 0);
     Checkpoint::at(session.checkpoint_path())
         .write(&context.checkpoint())
         .map_err(|failure| Box::new(Surface::checkpoint(&failure, evidence.clone())))?;
@@ -1322,6 +1406,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         Some(prepared.kind),
         crate::manifest::attached_workspace(resolution),
         prepared.here.root(),
+        prepared.context_limits(),
         &surface,
     ) {
         Ok(started) => started,

@@ -433,8 +433,14 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
     let key = secret.expose_for_dispatch().to_owned();
 
     let model = model_id(&model_name());
-    let client = GeminiClient::new(Endpoint::default_endpoint(), model, alias, secret)
-        .expect("an HTTP client builds");
+    let client = GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model,
+        alias,
+        secret,
+        zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS,
+    )
+    .expect("an HTTP client builds");
 
     // The redactor is built from what the store holds, which is the provider
     // key itself -- so this run also asserts that the key the request is

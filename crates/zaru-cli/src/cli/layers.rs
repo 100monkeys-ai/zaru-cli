@@ -106,8 +106,53 @@ impl BuiltIn {
             &crate::runtime::key(),
             Value::Text(crate::runtime::BUILT_IN_TIER.as_str().to_owned()),
         );
+        // [ADR-0012] D3's window, for the two kinds that have a source for
+        // one. **Here rather than as a fallback where the value is read**,
+        // and the reason is [ADR-0014] D6: `ProjectPolicy::LowerOnly` refuses
+        // a project that raises what the layers below granted, and
+        // `config::resolve` says in as many words that "a ceiling the layers
+        // below never granted is not raised by being set: there is nothing to
+        // exceed". A default living only in a client is a default no project
+        // layer can be measured against, so the ceiling would not bind and a
+        // repository the reader cloned could widen the window their own
+        // server was told to serve.
+        //
+        // It also puts both numbers in front of `zaru config explain`, which
+        // is D4's whole point: a resolution the user cannot explain is one
+        // they cannot fix.
+        //
+        // **`openai-compatible` has no row**, because that kind has no
+        // default window — see its client. The consequence is stated rather
+        // than hidden: with nothing granted, the ceiling has nothing to
+        // compare a project's value against for that kind.
+        document.insert_path(
+            &crate::providers::ProviderKind::Gemini.context_tokens_key(),
+            Value::Integer(built_in_window(
+                crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
+            )),
+        );
+        document.insert_path(
+            &crate::providers::ProviderKind::Ollama.context_tokens_key(),
+            Value::Integer(built_in_window(
+                crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+            )),
+        );
         Self { document }
     }
+}
+
+/// A window as [ADR-0014]'s integer value carries it.
+///
+/// # Panics
+///
+/// Never. Both callers pass a provider's own published window, and neither is
+/// anywhere near `i64::MAX`; the saturation is here so that a third kind
+/// declaring an absurd one is a clamped number rather than a panic in the
+/// layer every invocation reads.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+fn built_in_window(tokens: u64) -> i64 {
+    i64::try_from(tokens).unwrap_or(i64::MAX)
 }
 
 impl LayerSource for BuiltIn {
@@ -717,7 +762,7 @@ pub fn process_ceiling() -> crate::process::ProcessCeiling {
 /// Those two bound how much this harness will read into memory. **This one
 /// bounds how much of what it read goes into a context window**, and a
 /// mebibyte of one tool result would leave no room for the conversation it is
-/// part of — see [`CONTEXT_WINDOW_TOKENS`], against which a byte over-counts.
+/// part of — see [`context_limits`], against whose window a byte is counted.
 ///
 /// A small budget is honest only because nothing is lost: D5 has the whole
 /// output written to the session directory with the path shown, which
@@ -737,71 +782,58 @@ pub fn output_budget() -> crate::tools::OutputBudget {
     crate::tools::OutputBudget::new(OUTPUT_BUDGET_BYTES).expect("32 KiB is not zero")
 }
 
-/// The context window one turn is assembled against, in tokens.
+/// The window a session carries when no provider could be prepared.
 ///
-/// **1,048,576, and it is a citation rather than a choice.** [ADR-0013]'s
-/// Neutral consequence says "Nothing here sets a threshold. It is
-/// provider-dependent configuration", and [ADR-0012] D3's
-/// [`ProviderCapabilities`](crate::providers::ProviderCapabilities) carries
-/// three booleans and no context size — so the descriptor cannot supply it and
-/// the provider's own documentation is the next reading. Google's model page
-/// for `gemini-3.6-flash`, read 2026-09-05, states **"Input token limit
-/// 1,048,576"**: <https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash>.
+/// **4,096, and it is the smallest window any kind in this binary states.**
+/// A session whose `prepare` refused cannot run a turn — it opens, says what
+/// is wrong, and its layer 6 never grows — so no threshold can be crossed
+/// whatever this number is, and what it decides is only the second figure on
+/// [ADR-0013] D6's row while the reader reads that refusal.
 ///
-/// **This binary carries one number for one model and that is a real limit.**
-/// The moment a second provider kind has a client, this constant is wrong for
-/// it, and the honest fix is a context size on D3's capability descriptor
-/// rather than a table here — raised on ADR-0012 and on ADR-0013 rather than
-/// pre-empted.
-///
-/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-pub const CONTEXT_WINDOW_TOKENS: u64 = 1_048_576;
-
-/// The usage at which [ADR-0013] D2's compaction would run, in tokens.
-///
-/// **Three quarters of [`CONTEXT_WINDOW_TOKENS`].** D2 crosses "the window
-/// pressure threshold" and D6 has the number visible continuously; neither
-/// says what it is, and no key declares one.
-///
-/// **This number is what a turn boundary compares against**, and since
-/// 2026-09-05 something compares: `SessionContext::at_turn_boundary` calls
-/// `Context::compact`, which does nothing at or below this threshold and
-/// summarises the oldest span above it.
-///
-/// **A session can now reach it, and nothing a person has typed has.** This
-/// paragraph read "on the binary's own path it is still never crossed …  one
-/// invocation is one turn, layer 6 is empty at the only boundary that turn
-/// has", and that stopped being true when the `shell-task-turns` arc made a
-/// typed line the next turn of the session it is typed in: layer 6 has a
-/// producer, every turn adds to it, and each turn boundary compares against
-/// this number. What is still true is the *practical* half — three quarters of
-/// 1,048,576 is 786,432 bytes of conversation, so a real session reaches it
-/// only after a great deal of one, and no run of this binary has. So the
-/// compaction path is reachable rather than dead, and it is exercised at the
-/// seam with limits a check can cross rather than by staging 786 KB.
-///
-/// **It is visible while it is approached**, which is [ADR-0013] D6, and the
-/// number on `zaru_tui::shell::Status` is the one measured against this pair.
-/// Its other effect is unchanged:
-/// [`ContextLimits::new`](zaru_core::context::ContextLimits::new) refuses a
-/// threshold above its window, and this pair is accepted.
+/// The smallest rather than the largest, because a row claiming more room
+/// than any provider here offers is the same lie in miniature that the
+/// composition's old single constant was. It is
+/// [`crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS`] read
+/// through this name rather than a second literal.
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-pub const PRESSURE_THRESHOLD_TOKENS: u64 = CONTEXT_WINDOW_TOKENS / 4 * 3;
+pub const WINDOW_WHEN_NO_PROVIDER: u64 = crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS;
 
-/// [`CONTEXT_WINDOW_TOKENS`] and [`PRESSURE_THRESHOLD_TOKENS`], as
+/// One provider's window and the pressure threshold beneath it, as
 /// [`zaru_core::context::Context`] takes them.
+///
+/// **`window` is a parameter and no longer a constant here, since
+/// 2026-09-14.** What stood here was `CONTEXT_WINDOW_TOKENS`, 1,048,576, and
+/// `PRESSURE_THRESHOLD_TOKENS` at three quarters of it — one model's number
+/// cited from Google's page for `gemini-3.6-flash` and applied to every
+/// provider this binary could reach, which its own documentation said was "a
+/// real limit" and "wrong for it" the moment a second kind had a client.
+/// Three kinds had clients when this changed. The window is now
+/// [ADR-0012] D3's capability descriptor's, per kind, and reaches here
+/// through [`crate::compose::Prepared::context_limits`]; the citation went
+/// with it, to [`crate::providers::gemini::CONTEXT_WINDOW_TOKENS`].
+///
+/// **The three quarters stayed**, and it is still the one place that
+/// fraction is written: [ADR-0013] D2 crosses "the window pressure
+/// threshold" and D6 has the number visible continuously, and neither says
+/// what the threshold is.
 ///
 /// # Panics
 ///
-/// Never. Neither is zero and the threshold is below the window.
+/// When `window` is zero. Every product caller comes through
+/// `Prepared::context_limits`, which cannot hold a zero: a descriptor with no
+/// window is refused by `ProviderCapabilities::require_context_size` before a
+/// `Prepared` exists, and a descriptor declaring zero is a client stating it
+/// accepts nothing.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 #[must_use]
-pub fn context_limits() -> zaru_core::context::ContextLimits {
-    let window = zaru_core::context::ContextWindow::new(CONTEXT_WINDOW_TOKENS)
-        .expect("the window is not zero");
-    let threshold = zaru_core::context::PressureThreshold::new(PRESSURE_THRESHOLD_TOKENS)
-        .expect("the threshold is not zero");
+pub fn context_limits(window: u64) -> zaru_core::context::ContextLimits {
+    let threshold = window / 4 * 3;
+    let window = zaru_core::context::ContextWindow::new(window).expect("the window is not zero");
+    let threshold =
+        zaru_core::context::PressureThreshold::new(threshold).expect("the threshold is not zero");
     zaru_core::context::ContextLimits::new(window, threshold)
         .expect("three quarters of a window is not above it")
 }
