@@ -4593,31 +4593,59 @@ fn corpus_an_out_of_tree_call_carries_its_registers_colour_and_the_marking_is_st
         "the staged entry is not marked at all, so nothing below is about the frame"
     );
 
+    // **Every** row's marker cell, not the first. A call carrying a resolved
+    // absolute path wraps at 72 columns and `Placement::as_str` is appended
+    // last, so the marking is on a *continuation* row -- and a renderer that
+    // coloured an out-of-tree line differently would colour that row and leave
+    // the first one alone. Reading only `frame[1]` let exactly that mutant
+    // through on 2026-09-13; the escape bought this reach rather than another
+    // assertion.
     let painted = |entry: &crate::tools::TranscriptEntry| {
         let mut shell = shell();
         shell.notice(Line::new(Register::Call, entry.render()));
         let frame = cells_at(&shell, 72, 24, Palette::Coloured);
-        let text: String = frame
+        let pane = &frame[1..usize::from(24 - COMPOSER_ROWS)];
+        let text: String = pane
             .iter()
             .map(|row| row.iter().map(|(s, _)| s.as_str()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
-        (frame[1][0].1, text)
+        let leads: Vec<ratatui::style::Color> = pane
+            .iter()
+            .filter(|row| {
+                !row.iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<String>()
+                    .trim()
+                    .is_empty()
+            })
+            .map(|row| row[0].1)
+            .collect();
+        assert!(
+            !leads.is_empty(),
+            "the staged call painted no row at all, so the assertions below are about an \
+             empty pane"
+        );
+        (leads, text)
     };
 
-    let (escaped_colour, escaped_text) = painted(&escaping);
-    let (inside_colour, inside_text) = painted(&ordinary);
+    let (escaped_leads, escaped_text) = painted(&escaping);
+    let (inside_leads, inside_text) = painted(&ordinary);
 
-    assert_eq!(
-        escaped_colour, CALL,
-        "an out-of-tree call's glyph is painted {escaped_colour:?} rather than the call \
-         register's colour"
-    );
-    assert_eq!(
-        inside_colour, CALL,
-        "an in-tree call's glyph is painted {inside_colour:?}, so the two differ by colour \
-         and a monochrome terminal would lose ADR-0011 D4's distinction"
-    );
+    for (n, colour) in escaped_leads.iter().enumerate() {
+        assert_eq!(
+            *colour, CALL,
+            "row {n} of an out-of-tree call carries {colour:?} rather than the call \
+             register's colour, so the call is marked by a colour somewhere:\n{escaped_text}"
+        );
+    }
+    for (n, colour) in inside_leads.iter().enumerate() {
+        assert_eq!(
+            *colour, CALL,
+            "row {n} of an in-tree call carries {colour:?}, so the two calls differ by \
+             colour and a monochrome terminal would lose ADR-0011 D4's distinction"
+        );
+    }
     assert!(
         escaped_text.contains(marking),
         "the out-of-tree marking is not on the frame:\n{escaped_text}"
