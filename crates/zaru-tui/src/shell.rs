@@ -111,6 +111,61 @@ impl From<Input> for Struck {
     }
 }
 
+/// What the person typed while a turn was running, waiting for it to end.
+///
+/// # It holds the task words and nothing else
+///
+/// No clock, because this crate holds none and every method that needs the
+/// time takes it. No identifier, because it is not a record — [ADR-0010] D2's
+/// seven producers are unchanged and **a queued task reaches no file at all**;
+/// it becomes a `Record::Conversation` at the moment it runs, through the same
+/// call a typed line takes, and not before. No count, because [ADR-0015]'s
+/// 2026-09-13 amendment says exactly one is queued and a second `Enter`
+/// replaces it.
+///
+/// A type rather than a bare `String` so that "the shell is holding a task"
+/// cannot be confused with any other string it holds, and so the one authored
+/// prefix word is composed in one place.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queued {
+    /// The line, exactly as it stood in the prompt.
+    pub task: String,
+}
+
+impl Queued {
+    /// A task waiting for the running turn to end.
+    #[must_use]
+    pub fn of(task: impl Into<String>) -> Self {
+        Self { task: task.into() }
+    }
+
+    /// The line the pinned row paints: the prefix word, then the task.
+    ///
+    /// **The task verbatim**, so a person sees what will run rather than a
+    /// count or a summary — the reading [ADR-0011] D3's prompt already takes
+    /// for the call it is about to make.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    #[must_use]
+    pub fn painted(&self) -> String {
+        format!("{QUEUED} {}", self.task)
+    }
+}
+
+/// The one word the pinned row says before the queued task.
+///
+/// **Drafted under a delegated coordinator ruling of 2026-09-06 and
+/// 2026-09-13, open to Jeshua's veto**, in the same shape as the six register
+/// glyphs, [`STRIP_ROWS`] and [`crate::composer::NEWLINE`]: no record supplies
+/// a word and one is needed, so it is named once here and recorded on
+/// [ADR-0015's amendments page] rather than typed at a call site.
+///
+/// [ADR-0015's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility-updates
+pub const QUEUED: &str = "queued";
+
 /// How many rows the strip may occupy inside the composer's reserved area.
 ///
 /// **Drafted under a delegated coordinator ruling of 2026-09-05, open to
@@ -627,6 +682,8 @@ pub struct Shell {
     streaming: Option<String>,
     asking: Option<Confirmation>,
     answered: Option<bool>,
+    /// The one task waiting for the running turn to end, if there is one.
+    queued: Option<Queued>,
 }
 
 impl Shell {
@@ -641,6 +698,7 @@ impl Shell {
             streaming: None,
             asking: None,
             answered: None,
+            queued: None,
         }
     }
 
@@ -773,6 +831,42 @@ impl Shell {
     #[must_use]
     pub fn streaming(&self) -> Option<&str> {
         self.streaming.as_deref()
+    }
+
+    /// Hold a task until the running turn ends.
+    ///
+    /// **Replaces**, and that is [ADR-0015]'s 2026-09-13 amendment in one
+    /// word: exactly one task is queued, and a second `Enter` while one waits
+    /// puts the prompt's text in its place rather than adding to a list.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub fn queue(&mut self, task: Queued) {
+        self.queued = Some(task);
+    }
+
+    /// The task waiting, if one is.
+    #[must_use]
+    pub const fn queued(&self) -> Option<&Queued> {
+        self.queued.as_ref()
+    }
+
+    /// Take the task waiting, leaving none.
+    ///
+    /// Taking it is what empties it, so a host that drains the queue cannot
+    /// run the same task twice however it is written — the shape
+    /// `Pending::tell_once` already uses one crate over.
+    pub fn take_queued(&mut self) -> Option<Queued> {
+        self.queued.take()
+    }
+
+    /// The task waiting, mutably, so an interruption can discard it.
+    ///
+    /// Narrower than a `&mut Shell` deliberately: `terminal::driver::after` is
+    /// the one place an interruption's meaning is decided and the one place a
+    /// check can drive it without a provider or a key, and it wants this and
+    /// nothing else.
+    pub const fn queued_mut(&mut self) -> &mut Option<Queued> {
+        &mut self.queued
     }
 
     /// Everything the pane would show, oldest first: the transcript, then this

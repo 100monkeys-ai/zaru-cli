@@ -133,9 +133,43 @@ impl Shell {
         }
     }
 
+    /// The pane's own area, and the row a queued task is pinned to.
+    ///
+    /// # Why the queued row is pinned rather than added to the pane's lines
+    ///
+    /// [`Shell::pane_lines`] is the transcript, then this session's notices,
+    /// then the answer being streamed — in that order — and [`Shell::visible`]
+    /// shows the **tail**. So a notice sits *above* an answer that is still
+    /// growing, and a long answer pushes it out of the visible tail within a
+    /// beat or two. That is measurable rather than theoretical: the
+    /// look-and-feel survey's row 12 recorded "nothing is refused, and no line
+    /// says why" of a build that had carried a refusal notice for fifty
+    /// commits. It had been painted and then scrolled away.
+    ///
+    /// A queued task that vanished behind a long answer would be useless in
+    /// exactly the case a person most needs it, so it takes a reserved row at
+    /// the foot of the pane's own region, which no amount of scrolling can
+    /// reach.
+    ///
+    /// **The composer's area is untouched.** [ADR-0005] D2's one input row and
+    /// its six reserved strip rows are unchanged, and the input row is still a
+    /// function of the terminal's size alone — the row comes out of the pane,
+    /// above the composer, not out of the composer.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    fn pane_and_queue(&self, pane: Rect) -> (Rect, Option<Rect>) {
+        if self.queued().is_none() {
+            return (pane, None);
+        }
+        let [above, pinned] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(pane);
+        (above, Some(pinned))
+    }
+
     /// Paint the whole shell into `area`.
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect) {
         let [status, pane, composer] = Self::regions(area);
+        let (pane, queued) = self.pane_and_queue(pane);
 
         frame.render_widget(
             Paragraph::new(TextLine::from(self.status().painted(status.width))),
@@ -153,6 +187,20 @@ impl Shell {
             .collect();
         if !visible.is_empty() {
             frame.render_widget(Paragraph::new(visible), pane);
+        }
+
+        // The queued task, on its own row immediately above the composer. It
+        // goes through `Line::rows` so the register, its glyph and the width
+        // measurement are the pane's own and nothing is authored here beyond
+        // the one word `QUEUED` carries.
+        if let (Some(area), Some(task)) = (queued, self.queued()) {
+            let row =
+                crate::shell::port::Line::new(crate::shell::port::Register::Plain, task.painted())
+                    .rows(area.width)
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+            frame.render_widget(Paragraph::new(TextLine::from(row)), area);
         }
 
         // A standing question takes the composer's area whole. The input is

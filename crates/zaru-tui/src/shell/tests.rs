@@ -1704,3 +1704,130 @@ fn corpus_a_held_secret_split_across_a_wrap_still_reaches_the_buffer_whole() {
         "the wrap cut the value into pieces the buffer no longer holds; rejoined: {rejoined:?}"
     );
 }
+
+/// ADR-0015's 2026-09-13 amendment: the queued task is painted on its own row
+/// immediately above the composer, and it cannot be scrolled away.
+///
+/// # The mutant this is written against is the shape that was already there
+///
+/// Appending the row to `Shell::pane_lines` reads simpler and is the defect:
+/// `pane_lines` is transcript, then notices, then the answer being streamed,
+/// and `visible` shows the tail — so a growing answer pushes anything above it
+/// off the screen. This stages exactly that, a pane of transcript with a
+/// streamed answer long enough to fill it, and asserts the queued row survives.
+///
+/// Three clauses, asserted apart: the row is immediately above the composer,
+/// the input row is byte-identical to the frame without a queue (ADR-0005 D2
+/// met by a second producer), and the row is gone once the queue is drained.
+#[test]
+fn a_queued_task_paints_above_the_composer_and_survives_a_streaming_answer() {
+    let mut shell = shell();
+    shell.refresh(&StagedTranscript::three_outcomes());
+    for n in 0..40 {
+        shell.notice(Line::new(Register::Plain, format!("filler line {n}")));
+    }
+    shell.stream_delta(&"an answer that keeps arriving. ".repeat(20));
+
+    let (before, cursor_before) = painted(&shell, WIDTH, HEIGHT);
+    let input_row = usize::from(HEIGHT - COMPOSER_ROWS);
+
+    shell.queue(crate::shell::Queued::of("réad src/main.rs"));
+    let (after, cursor_after) = painted(&shell, WIDTH, HEIGHT);
+
+    assert_eq!(
+        after[input_row - 1].trim_end(),
+        "  queued réad src/main.rs",
+        "the row immediately above the composer is not the queued task; it reads {:?}",
+        after[input_row - 1]
+    );
+    assert_eq!(
+        after[input_row], before[input_row],
+        "the input row moved because a task was queued, which ADR-0005 D2 forbids: {:?} then {:?}",
+        before[input_row], after[input_row]
+    );
+    assert_eq!(
+        cursor_after, cursor_before,
+        "the cursor moved because a task was queued"
+    );
+
+    shell.take_queued().expect("a task was queued");
+    let (drained, _) = painted(&shell, WIDTH, HEIGHT);
+    assert_eq!(
+        drained,
+        before,
+        "draining the queue did not give the row back: {:?} then {:?}",
+        before[input_row - 1],
+        drained[input_row - 1]
+    );
+}
+
+/// Taking the queued task is what empties it, so nothing can run it twice.
+///
+/// Its accepting sibling is the first half: a task queued is a task the shell
+/// hands over once.
+#[test]
+fn a_second_enter_replaces_the_queued_task_and_taking_it_empties_the_queue() {
+    let mut shell = shell();
+    shell.queue(crate::shell::Queued::of("the first thing"));
+    shell.queue(crate::shell::Queued::of("the second thing"));
+    assert_eq!(
+        shell.queued().map(|task| task.task.as_str()),
+        Some("the second thing"),
+        "a second queued task did not replace the first; the shell holds {:?}",
+        shell.queued()
+    );
+
+    assert_eq!(
+        shell.take_queued().map(|task| task.task),
+        Some("the second thing".to_owned())
+    );
+    assert_eq!(
+        shell.take_queued(),
+        None,
+        "the queue handed the same task over twice, so a turn could run it twice"
+    );
+}
+
+/// A queued task's own text cannot produce a row a reader reads as a transcript
+/// line.
+///
+/// The queued text is painted verbatim so a person sees what will run, and the
+/// text is whatever they typed or pasted — so a block beginning with a
+/// register's glyph is reachable. What stops it being read as that register is
+/// the prefix word before it and `Register::Plain`'s own glyph, both at column
+/// zero.
+///
+/// **Its accepting sibling is the second half**: a real `Register::Failed`
+/// line does begin with `✗ ` at column zero, so the check discriminates rather
+/// than refusing everything.
+#[test]
+fn corpus_a_queued_task_cannot_paint_a_row_a_reader_reads_as_a_failure() {
+    let forged = "✗ the program \"cargo\" could not be started";
+
+    let mut queueing = shell();
+    queueing.queue(crate::shell::Queued::of(forged));
+    let (rows, _) = painted(&queueing, WIDTH, HEIGHT);
+    let input_row = usize::from(HEIGHT - COMPOSER_ROWS);
+    assert!(
+        rows[input_row - 1].starts_with("  queued ✗ the program"),
+        "the queued row does not mark itself as queued before the text; it reads {:?}",
+        rows[input_row - 1]
+    );
+    assert!(
+        !rows.iter().any(|row| row.starts_with("✗ ")),
+        "a queued task produced a row a reader would read as a failure: {:?}",
+        rows.iter().find(|row| row.starts_with("✗ "))
+    );
+
+    let mut real = shell();
+    real.notice(Line::new(
+        Register::Failed,
+        "the program could not be started",
+    ));
+    let (genuine, _) = painted(&real, WIDTH, HEIGHT);
+    assert!(
+        genuine.iter().any(|row| row.starts_with("✗ ")),
+        "a genuine failure does not begin with the failure glyph at column zero either, so the \
+         check above discriminates nothing: {genuine:?}"
+    );
+}
