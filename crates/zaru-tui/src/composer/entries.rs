@@ -31,7 +31,7 @@
 /// Two kinds and not three. ADR-0005 D4 has `[[` pick "pages and atoms" and
 /// `@` pick "atoms and media", but ADR-0006 D4 scopes the composer's token to
 /// `pages.{list,read}`, `atoms.{list,read}`, `search.global`,
-/// `kg.{related,list_cross_links}` and `discovery.entities` — no `media.*`
+/// `kg.{get_related,list_cross_links}` and `discovery.list_entities` — no `media.*`
 /// tool at all. The media half of `@` is unreachable with the credential as
 /// scoped, so it is not modelled here. The two records disagree and that
 /// disagreement is recorded on ADR-0005 rather than settled in this enum.

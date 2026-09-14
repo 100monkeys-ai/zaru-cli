@@ -1042,6 +1042,42 @@ fn every_tool_adr_0006_d4_names_may_hold_the_composer_role() {
     assert_eq!(store.composer().expect("granted").0, &alias);
 }
 
+/// The two names the record had spelled differently from the substrate.
+///
+/// **The check above cannot hold this and it is worth saying why**: it builds
+/// its scope *from* `COMPOSER_SCOPE`, so it passes whatever the nine strings
+/// are. This one names the two corrected spellings as literals, so reverting
+/// the constant to the record's original `kg.related` and
+/// `discovery.entities` reddens here rather than passing silently.
+///
+/// Both arms matter. Asserting only the presence of the new spellings would
+/// pass a constant carrying **both**, which would widen the permitted set by
+/// two names nobody decided on.
+#[test]
+fn the_two_names_adr_0006_d4_had_wrong_are_the_substrates_spellings() {
+    use crate::credentials::entry::COMPOSER_SCOPE;
+
+    for corrected in ["kg.get_related", "discovery.list_entities"] {
+        assert!(
+            COMPOSER_SCOPE.contains(&corrected),
+            "the composer scope does not carry {corrected:?}, which is how the live tool surface \
+             spells it -- read from tools/list on 2026-09-06 and again on 2026-09-14"
+        );
+    }
+    for superseded in ["kg.related", "discovery.entities"] {
+        assert!(
+            !COMPOSER_SCOPE.contains(&superseded),
+            "the composer scope still carries {superseded:?}, which no tool on the surface is \
+             called; carrying both spellings would widen the permitted set by a name nobody decided"
+        );
+    }
+    assert_eq!(
+        COMPOSER_SCOPE.len(),
+        9,
+        "the correction changed two spellings and must not have changed the count"
+    );
+}
+
 // ADR-0007 D8: an apex token is "marked wherever the token appears", and one
 // of the three places is "the description the agent reads".
 #[test]

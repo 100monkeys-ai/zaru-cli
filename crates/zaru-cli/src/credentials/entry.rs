@@ -35,20 +35,34 @@ use core::time::Duration;
 /// Transcribed from that record verbatim rather than assembled from a notion
 /// of which tools are reads: D4 names "the `read_only_memory` set —
 /// `pages.{list,read}`, `atoms.{list,read}`, `search.global`,
-/// `kg.{related,list_cross_links}`, `discovery.entities` — plus
-/// `me.set_current_workspace`, and nothing else."
+/// `kg.{get_related,list_cross_links}`, `discovery.list_entities` — plus
+/// `me.set_current_workspace`, and nothing else", as amended 2026-09-14.
 ///
 /// **Deciding for oneself which tool names are writes would be authoring a
 /// security vocabulary**, which [Autonomous Development] puts on the human
 /// side of the boundary. Copying a record's list is not.
 ///
-/// One thing this list is not: the live MCP surface spells two of these
-/// differently — `kg.get_related` and `discovery.list_entities` as read from
-/// the tool schemas on 2026-09-04. The record's spellings are kept here
-/// because the record is what this check holds, and the divergence is
-/// recorded as a finding for whoever wires `rmcp` rather than reconciled by
-/// guessing which spelling the author meant.
+/// **Two of the nine are spelled as the substrate spells them rather than as
+/// D4 spelled them, corrected 2026-09-14, and the reason is that D4 is not
+/// the authority on these two names.** D4 does not invent a set; it names the
+/// members of the `read_only_memory` **preset**, and that preset is
+/// [ADR-0135]'s — the server's. So "which spelling is right" is not a
+/// judgement about which tools are safe, which would be authoring a security
+/// vocabulary; it is a question about what the preset's members are called,
+/// and the server answers it. The bytes were read twice, on two dates, by two
+/// arcs: a live `tools/list` on 2026-09-06 and the attached tool surface
+/// again on 2026-09-14, both spelling `kg.get_related` and
+/// `discovery.list_entities`. Four of the six always agreed. **The record was
+/// what had drifted and it is corrected there too**, as an amendment to D4
+/// open to Jeshua's veto — a list that cannot match any token the substrate
+/// can mint is a check holding a spelling instead of a rule.
 ///
+/// **It unblocks nothing today.** No nine-tool token exists — every token
+/// measured grants 94 — so the role is refused for a reason this correction
+/// does not touch. It is here so that the day such a token is minted the
+/// grant accepts it rather than failing on a name.
+///
+/// [ADR-0135]: https://cortex.page/adrs/p/0135-mcp-token-tool-scope-presets
 /// [Autonomous Development]: https://100monkeys-ai.cortex.page/zaru/p/operations/autonomous-development
 pub const COMPOSER_SCOPE: [&str; 9] = [
     "pages.list",
@@ -56,9 +70,9 @@ pub const COMPOSER_SCOPE: [&str; 9] = [
     "atoms.list",
     "atoms.read",
     "search.global",
-    "kg.related",
+    "kg.get_related",
     "kg.list_cross_links",
-    "discovery.entities",
+    "discovery.list_entities",
     "me.set_current_workspace",
 ];
 
