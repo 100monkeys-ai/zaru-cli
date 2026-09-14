@@ -70,6 +70,7 @@ pub mod port;
 pub mod resolution;
 pub mod selection;
 pub mod sse;
+pub mod transport;
 pub mod usage;
 
 pub use alias::ModelAlias;

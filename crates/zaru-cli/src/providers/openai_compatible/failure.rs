@@ -207,66 +207,15 @@ impl fmt::Display for OpenAiCompatibleFailure {
 
 impl std::error::Error for OpenAiCompatibleFailure {}
 
-/// What a transport error said, including the part that says what went wrong.
+/// What a transport error said, and how many `source` links it may carry.
 ///
-/// # `reqwest::Error`'s own `Display` is not the sentence a reader needs
-///
-/// Measured 2026-09-14 against this endpoint. `to_string()` on a failed send
-/// gives exactly `error sending request for url
-/// (http://127.0.0.1:18080/v1/chat/completions)` — a grammatical sentence
-/// carrying no information at all. The cause is **three levels down the
-/// `source` chain** and it is the only part a reader can act on:
-///
-/// ```text
-/// top:      error sending request for url (http://127.0.0.1:11999/…)
-///   source 1: client error (Connect)
-///   source 2: tcp connect error
-///   source 3: Connection refused (os error 111)
-/// ```
-///
-/// and for a name that does not resolve, `dns error` then `failed to lookup
-/// address information: Name or service not known`. "Connection refused" and
-/// "the name does not resolve" are different problems with different remedies,
-/// and the top-level message distinguishes them not at all.
-///
-/// [ADR-0016] D2 says an error whose reader cannot act "is a stack trace with
-/// better grammar"; a message with better grammar and no stack trace is the
-/// same failure with less to go on. So the chain is walked and joined.
-///
-/// **Bounded, because a chain is arbitrary-length data from a dependency.**
-/// At most [`CHAIN_DEPTH`] links are read, so a cyclic or pathological chain
-/// cannot make a refusal unbounded.
-///
-/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-#[must_use]
-pub fn transport_detail(error: &dyn std::error::Error) -> String {
-    let mut said = error.to_string();
-    let mut source = error.source();
-    let mut depth = 0;
-    while let Some(link) = source {
-        if depth == CHAIN_DEPTH {
-            break;
-        }
-        let text = link.to_string();
-        // A link that only repeats its parent adds nothing and costs a reader
-        // a clause. `reqwest` does this at least once, where the wrapper's
-        // Display is its source's.
-        if !said.contains(&text) {
-            said.push_str(": ");
-            said.push_str(&text);
-        }
-        source = link.source();
-        depth += 1;
-    }
-    said
-}
-
-/// How many `source` links a transport failure's sentence may carry.
-///
-/// Four is one more than the deepest chain measured (`Connect` → `tcp connect
-/// error` → `Connection refused`), so the measured cases are whole and an
-/// unmeasured one cannot run away.
-pub const CHAIN_DEPTH: usize = 4;
+/// **Both moved to [`crate::providers::transport`] on 2026-09-14** and
+/// re-exported here, so this client's three call sites and its two checks are
+/// unchanged. The `gemini` and `ollama` clients raise the same useless
+/// sentence from the same three points and now call the same function; a walk
+/// of a dependency's error chain is not this kind's, and it was here only
+/// because this kind was the first measured against a closed port.
+pub use crate::providers::transport::{CHAIN_DEPTH, transport_detail};
 
 impl OpenAiCompatibleFailure {
     /// `detail`, unless it quotes `key`.
