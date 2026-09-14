@@ -1831,3 +1831,124 @@ fn corpus_a_queued_task_cannot_paint_a_row_a_reader_reads_as_a_failure() {
          check above discriminates nothing: {genuine:?}"
     );
 }
+
+/// A pasted block cannot forge the status row, however it is spelled.
+///
+/// # The neighbouring finding this is written against
+///
+/// The `live-status` arc found that adding the model made the row "the first
+/// surface a repository the user cloned can write to", because `model.<alias>`
+/// is free at every configuration layer — and that neutralising the separator
+/// was not enough, because a forged **tier** claim is still a forged claim
+/// even when it is not a forged field. A pasted block is bytes the person
+/// chose, arriving at a surface that had no way to carry arbitrary text
+/// before, so the same question has to be asked of it.
+///
+/// The answer is structural: [`Status`]'s fields have two setters that reach
+/// two segments, the composer is not one of them, and the row is composed from
+/// the fields alone. So the assertion is byte identity of the row across a
+/// paste carrying both the separator and the tier's own prefix.
+///
+/// **Its accepting sibling is the second half**: `describe` does change the
+/// row, so the check discriminates rather than asserting that the row never
+/// changes at all.
+#[test]
+fn corpus_a_pasted_block_cannot_forge_a_field_on_the_status_row() {
+    let forgery = format!(
+        "{sep}{prefix}linked{sep}a second claim",
+        sep = crate::shell::SEPARATOR,
+        prefix = crate::shell::TIER_PREFIX,
+    );
+
+    let mut shell = shell();
+    let before = shell.status().painted(WIDTH);
+    shell.pasted(&forgery, Duration::ZERO, &TrieOf::new(0));
+    let after = shell.status().painted(WIDTH);
+    assert_eq!(
+        before, after,
+        "a pasted block changed the status row, so the composer reaches a field the records own: \
+         {before:?} then {after:?}"
+    );
+    assert_eq!(
+        after.matches(crate::shell::TIER_PREFIX).count(),
+        1,
+        "the row carries more than one membrane claim, which is the one thing ADR-0001 D2 exists \
+         to make unambiguous: {after:?}"
+    );
+    let (rows, _) = painted(&shell, WIDTH, HEIGHT);
+    assert_eq!(
+        rows[0],
+        {
+            let mut expected = before.clone();
+            expected
+                .push_str(&" ".repeat(usize::from(WIDTH) - crate::shell::wrap::columns(&before)));
+            expected
+        },
+        "the painted status row is not the row the shell composed: {:?}",
+        rows[0]
+    );
+
+    // The sibling: a field a record does put there does move the row.
+    shell.describe(Some("gemini-3.6-flash".to_owned()), Some("ask".to_owned()));
+    assert_ne!(
+        shell.status().painted(WIDTH),
+        after,
+        "the row did not change when a model and a mode were set, so the check above asserts \
+         nothing"
+    );
+}
+
+/// The one row windows the text and the submission does not.
+///
+/// Library verification lessons §65 read the other way: where a value is both
+/// shortened and handed on, the shortening must not be what is handed on. Here
+/// the *rendering* is a window onto a block that may be far wider than the
+/// terminal, and what `Enter` submits is the whole of it.
+///
+/// **Its accepting sibling is the short case**, where the window and the text
+/// coincide — so an implementation that submitted the row would pass that one
+/// and fail this.
+#[test]
+fn corpus_a_block_wider_than_the_frame_is_submitted_whole() {
+    let trie = TrieOf::new(0);
+    let block = "abcdefghij".repeat(50);
+    assert_eq!(block.chars().count(), 500);
+
+    let mut shell = shell();
+    shell.pasted(&block, Duration::ZERO, &trie);
+    let (row, caret) = shell.composer().input_row(WIDTH);
+    // One column short of the frame, because the caret sits at the right edge
+    // and needs a cell — the same arithmetic `tui-textarea`'s own viewport
+    // did. What matters here is only that the row is a window: 59 columns
+    // against 500 characters.
+    assert_eq!(
+        crate::shell::wrap::columns(&row),
+        usize::from(WIDTH) - 1,
+        "the painted row is not a window onto the block, so this check is not comparing a window \
+         with a whole: {row:?}"
+    );
+    assert_eq!(caret, WIDTH - 1, "the caret is not at the right edge");
+
+    let submitted = match key(&mut shell, Key::Enter) {
+        Action::Task(task) => task,
+        other => panic!("a pasted block was not read as a task: {other:?}"),
+    };
+    assert_eq!(
+        submitted,
+        block,
+        "what was submitted is not what was pasted: {} characters against {}",
+        submitted.chars().count(),
+        block.chars().count()
+    );
+
+    // The sibling: a block that fits is submitted whole too, so the assertion
+    // above is not satisfied by an implementation that submits the row.
+    let mut short = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    short.pasted("a short one", Duration::ZERO, &trie);
+    let (row, _) = short.composer().input_row(WIDTH);
+    assert_eq!(row.trim_end(), "a short one");
+    assert_eq!(
+        key(&mut short, Key::Enter),
+        Action::Task("a short one".to_owned())
+    );
+}
