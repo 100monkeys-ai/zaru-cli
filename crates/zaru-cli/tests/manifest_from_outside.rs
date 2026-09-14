@@ -45,15 +45,31 @@ struct ScratchRoot {
     base: PathBuf,
 }
 
+/// Distinguishes two scratch roots taken inside one clock tick.
+static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl ScratchRoot {
     fn new() -> Self {
+        // **The counter is what makes this unique, and its absence was a
+        // flake.** A process id and a nanosecond reading are not enough: the
+        // test harness runs these on several threads at once, two of them can
+        // read the same coarse clock tick, and `create_dir_all` succeeds for
+        // both. The first to finish then drops and removes the directory the
+        // second is still writing into, and the second fails with `NotFound`
+        // on a path it created itself -- observed 2026-09-14 as
+        // `could not write the manifest: Os { code: 2, kind: NotFound }`.
+        //
+        // The counter is the shape `credentials::fixtures::nonce` already
+        // uses, for the reason its own comment gives: "Distinguishes two
+        // nonces taken inside one clock tick."
         let unique = format!(
-            "mv-outside-{}-{}",
+            "mv-outside-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("the system clock is before the unix epoch")
                 .as_nanos(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         let base = std::fs::canonicalize(std::env::temp_dir())
             .expect("the temporary directory resolves")
