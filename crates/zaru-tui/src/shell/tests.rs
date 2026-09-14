@@ -1420,6 +1420,68 @@ fn clearing_a_stream_that_never_started_changes_nothing() {
     assert_eq!(shell.streaming(), None);
 }
 
+/// The pane's lines are exactly what it was given, then what is arriving.
+///
+/// # What this pins, and why the equality is not a tautology
+///
+/// `pane_lines` assembled the transcript, the notices and the streamed line
+/// itself until 2026-09-14; it is now composed from `given_lines` and
+/// `streamed_line`, which the renderer paints into two regions. Nothing about
+/// what the pane holds was meant to change, and "was meant to" is the claim a
+/// commit message cannot make good.
+///
+/// **One arm is the composition and the other is the fields**, read through
+/// `refresh`, `notice` and `stream_delta` — the three doors the three pieces
+/// arrive by — so the expected value is not built by the function under test.
+/// Both arms of the split are also asserted to be non-empty, because an
+/// equality between two empty lists holds for any defect at all.
+///
+/// **The mutant**: `pane_lines` dropping the streamed line, or `given_lines`
+/// returning the streamed one as well, which would paint the answer twice the
+/// moment the split fires.
+#[test]
+fn the_pane_lines_are_exactly_what_the_pane_was_given_and_what_is_arriving() {
+    let mut shell = shell();
+    shell.refresh(&StagedTranscript(vec![Line::new(
+        Register::Plain,
+        format!("{TRANSCRIPT_NONCE}-from-the-file"),
+    )]));
+    shell.notice(Line::new(Register::Failed, "a refusal this session produced"));
+    shell.stream_delta("an answer arriving");
+
+    let given = shell.given_lines();
+    let streamed = shell.streamed_line().expect("something is being streamed");
+
+    assert_eq!(
+        given.len(),
+        2,
+        "the pane was given the transcript line and the notice and holds {given:#?}"
+    );
+    assert_eq!(
+        streamed.text, "an answer arriving",
+        "the streamed line is not what was streamed"
+    );
+
+    let mut expected = given.clone();
+    expected.push(streamed);
+    assert_eq!(
+        shell.pane_lines(),
+        expected,
+        "the pane's lines are not what it was given followed by what is arriving"
+    );
+
+    // And the streamed line leaves with the turn, while what the pane was
+    // given stays: the two halves have different lifetimes, which is the whole
+    // reason they are reachable apart.
+    shell.clear_streaming();
+    assert_eq!(shell.streamed_line(), None);
+    assert_eq!(
+        shell.pane_lines(),
+        given,
+        "clearing the stream took away something the pane was given"
+    );
+}
+
 // ------------------------------------- the pane's own text handling, 2026-09-06
 
 /// The rows of the transcript pane, as the buffer holds them.

@@ -871,19 +871,63 @@ impl Shell {
         &mut self.queued
     }
 
+    /// Everything the pane was **given**, oldest first: the transcript, then
+    /// this session's own notices.
+    ///
+    /// # Why the streamed line is not one of them
+    ///
+    /// Every line here is a line somebody handed the shell and expects to stay
+    /// handed over — a transcript record, a refusal, a command's output, one
+    /// of [`Shell::notice`]'s three callers in the driver. The streamed answer
+    /// is the opposite: it is provisional, it is replaced rather than kept,
+    /// and [`Shell::clear_streaming`] takes it away at the end of the turn.
+    ///
+    /// The two are separable because the renderer paints them in **two
+    /// regions** when the pane cannot hold both. That split is
+    /// `render`'s `pane_and_stream`, named in prose rather than linked because
+    /// it is private and rustdoc is right to refuse a public page pointing at
+    /// something a reader of that page cannot open — the same reason
+    /// `PaneNarrator` names `vocabulary::loop_line` in prose one crate over.
+    /// A tail taken over the two together shows
+    /// the newest rows of whichever one is growing, which is the answer, every
+    /// time; so a line the pane was given would be visible for exactly as long
+    /// as the answer was short.
+    #[must_use]
+    pub fn given_lines(&self) -> Vec<Line> {
+        let mut lines = self.transcript.clone();
+        lines.extend(self.notices.iter().cloned());
+        lines
+    }
+
+    /// The answer still arriving, as the line the pane would paint it as.
+    ///
+    /// `None` when nothing is streaming, which is every moment outside a turn
+    /// and every turn whose model asked for a tool and said nothing.
+    #[must_use]
+    pub fn streamed_line(&self) -> Option<Line> {
+        self.streaming
+            .as_ref()
+            .map(|streaming| Line::new(Register::Plain, streaming.clone()))
+    }
+
     /// Everything the pane would show, oldest first: the transcript, then this
     /// session's own notices, then the answer still arriving.
     ///
     /// The streamed line is **last** because it is the newest thing on the
     /// pane and because it is the only line that will be replaced rather than
     /// kept — anywhere else, the lines below it would shift as it grew.
+    ///
+    /// **Composed from [`Self::given_lines`] and [`Self::streamed_line`]
+    /// rather than assembled a second time**, so the two halves and the whole
+    /// cannot come to disagree about what the pane holds. That is the same
+    /// discipline the crate applies everywhere a vocabulary is handed across
+    /// rather than retyped, and it is what
+    /// `the_pane_lines_are_exactly_what_the_pane_was_given_and_what_is_arriving`
+    /// asserts.
     #[must_use]
     pub fn pane_lines(&self) -> Vec<Line> {
-        let mut lines = self.transcript.clone();
-        lines.extend(self.notices.iter().cloned());
-        if let Some(streaming) = self.streaming.as_ref() {
-            lines.push(Line::new(Register::Plain, streaming.clone()));
-        }
+        let mut lines = self.given_lines();
+        lines.extend(self.streamed_line());
         lines
     }
 
