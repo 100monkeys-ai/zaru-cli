@@ -124,6 +124,24 @@ pub fn a_person_is_watching() -> bool {
 /// compile. Adding one is an amendment to that record rather than a rendering
 /// detail.
 ///
+/// # The convention is honoured at two sites, and neither covers the other
+///
+/// **Measured 2026-09-13 from the release binary over a pseudo-terminal, not
+/// read off this function.** `crossterm` 0.28 reads `NO_COLOR` itself, in
+/// `Colored::ansi_color_disabled`, with the same empty-string arm this
+/// function takes — so under `NO_COLOR` the frame's own reset sequences come
+/// out as `ESC[m` where they are `ESC[39m` and `ESC[49m` in colour, which is
+/// how the second site announces itself in a capture.
+///
+/// It is recorded rather than removed because the two cover different things.
+/// `crossterm`'s covers `crossterm`'s writer and nothing else: it says nothing
+/// about the cell a `TestBackend` holds, which is where every check here reads,
+/// and nothing about any other backend. This one decides what is *in* the
+/// frame rather than how one backend spells it. A mutation that made
+/// `Palette::Monochrome` paint the colours anyway therefore still reddens the
+/// cell-level checks while leaving a `NO_COLOR` pty capture clean — which is
+/// the reason those checks read cells rather than bytes.
+///
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 #[must_use]
