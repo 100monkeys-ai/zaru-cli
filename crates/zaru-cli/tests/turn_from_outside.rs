@@ -1470,3 +1470,138 @@ fn the_not_a_sandbox_line_is_recorded_in_the_transcript_that_said_it() {
          event-anchored line was neither shown nor recorded: {transcript}",
     );
 }
+
+/// The out-of-session contract of `zaru providers keys add <kind>` is exactly
+/// what it was when one function did the reading and the storing.
+///
+/// # Why this exists, and what the mutant is
+///
+/// On 2026-09-14 that function was split so [ADR-0015] D2's in-session
+/// spelling could reach the storing half with bytes read at a masked question
+/// instead of from standard input. **A refactor that changes what a user's
+/// `printf … | zaru …` does is not a refactor**, and the property it could
+/// have broken is the trim rule: `printf '%s\n'`, `printf '%s\r\n'` and
+/// `printf '%s'` all reach this surface and all three must store the same
+/// bytes, because the line ending is the shell's rather than the user's.
+///
+/// **The three arms are compared against each other rather than against a
+/// constant**, so the check states "these are one contract" rather than
+/// restating today's answer. What is asserted absolutely is the pair of lines
+/// a user reads, because those *are* the contract's visible half.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn the_out_of_session_key_add_contract_is_unchanged_by_the_split() {
+    use std::io::Write as _;
+
+    let mut printed = Vec::new();
+    for (label, ending) in [("bare", ""), ("newline", "\n"), ("crlf", "\r\n")] {
+        let home = Home::new(&format!("key-add-{label}"));
+        let (value, _core) = nonce(&format!("key-add-{label}"));
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+            .args(["providers", "keys", "add", "gemini"])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("ZARU_CREDENTIAL_KEY", SEALING_KEY)
+            .current_dir(home.project())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to execute the built binary");
+        child
+            .stdin
+            .as_mut()
+            .expect("the child's standard input is a pipe")
+            .write_all(format!("{value}{ending}").as_bytes())
+            .expect("the key reaches the child");
+        let output = child.wait_with_output().expect("the child exits");
+        let stdout = String::from_utf8(output.stdout).expect("zaru printed invalid UTF-8");
+        assert!(
+            output.status.success(),
+            "storing a key offered with a {label} ending failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            stdout.lines().collect::<Vec<_>>(),
+            vec![
+                "stored a `gemini` key under the alias `provider.gemini`.",
+                "  the value is sealed and is not printed by any command.",
+            ],
+            "the two lines a user reads changed, for the {label} ending"
+        );
+
+        // What was stored, read back through the listing, which prints the
+        // alias and the kind and never the value.
+        let listed = zaru(&home, &[], &["providers", "keys"]);
+        assert_eq!(listed.code, 0, "the listing failed after a {label} ending");
+        assert!(
+            !listed.stdout.contains(&value),
+            "the listing printed the key itself:\n{}",
+            listed.stdout
+        );
+        printed.push((label, listed.stdout));
+    }
+
+    let (first_label, first) = &printed[0];
+    for (label, listing) in &printed[1..] {
+        assert_eq!(
+            first, listing,
+            "a {first_label} ending and a {label} ending did not store the same shape"
+        );
+    }
+}
+
+/// A *second* line ending is the user's, and is refused naming nothing of it.
+///
+/// The sibling of the check above, and the arm that pins "**exactly one**":
+/// the helper removes the one ending a `printf` or a `return` adds, and what
+/// is left is the user's. A trimming helper written one character wider —
+/// `trim_end()` rather than one `strip_suffix` — would pass the check above
+/// and fail this one.
+///
+/// **Measured rather than assumed.** A first attempt asserted that a key with
+/// a space in the *middle* of it is refused, on the strength of a sentence
+/// that stood in `cli::run`'s own documentation. It is not:
+/// `Secret::provider` refuses an empty value, a control character and
+/// *surrounding* whitespace, and an interior space is stored. The sentence was
+/// false and is corrected at the helper rather than the rule widened to match
+/// it — what a credential may contain is ADR-0007's to say.
+#[test]
+fn a_second_line_ending_is_the_users_and_is_refused_without_being_quoted() {
+    use std::io::Write as _;
+
+    let home = Home::new("key-add-whitespace");
+    let (value, _core) = nonce("key-add-whitespace");
+    let offered = format!("{value}\n");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        .args(["providers", "keys", "add", "gemini"])
+        .env_clear()
+        .env("HOME", home.path())
+        .env("ZARU_CREDENTIAL_KEY", SEALING_KEY)
+        .current_dir(home.project())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to execute the built binary");
+    child
+        .stdin
+        .as_mut()
+        .expect("the child's standard input is a pipe")
+        .write_all(format!("{offered}\n").as_bytes())
+        .expect("the key reaches the child");
+    let output = child.wait_with_output().expect("the child exits");
+    let stderr = String::from_utf8(output.stderr).expect("zaru printed invalid UTF-8 on stderr");
+
+    assert!(
+        !output.status.success(),
+        "a key offered with two line endings was stored, so the helper trimmed more than one"
+    );
+    assert!(
+        !stderr.contains(&value),
+        "the refusal quoted part of the offered key:\n{stderr}"
+    );
+}

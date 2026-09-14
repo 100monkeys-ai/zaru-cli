@@ -344,18 +344,38 @@ impl Run<'_> {
     ///
     /// [operations/repositories]: https://100monkeys-ai.cortex.page/zaru/p/operations/repositories
     fn provider_keys_add(&self, kind: ProviderKind) -> Outcome {
-        let surface = Surface::new(self.version, self.report_at);
-
         let mut offered = String::new();
         if let Err(failure) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut offered) {
             return Outcome::failed(Surface::key_not_readable(kind, &failure));
         }
-        // Exactly one trailing line ending, and only if it is there.
-        let offered = offered
-            .strip_suffix('\n')
-            .unwrap_or(&offered)
-            .strip_suffix('\r')
-            .unwrap_or_else(|| offered.strip_suffix('\n').unwrap_or(&offered));
+        self.store_a_provider_key(kind, trim_one_line_ending(&offered))
+    }
+
+    /// Seal an offered provider key into the store, however it was read.
+    ///
+    /// # Both spellings reach this, and that is what makes them one operation
+    ///
+    /// [ADR-0015] D2's "**a namespace has two entry points, and they are one
+    /// operation**" is a claim about a credential write as much as about a
+    /// listing. Out of a session the bytes come from standard input, for the
+    /// reason [`Run::provider_keys_add`] above states; inside one they come
+    /// from [ADR-0011] D3's masked question, because a terminal in raw mode
+    /// has no standard input to hand them. **Everything after the bytes is
+    /// this function and is shared**: the refusal, the alias, the description,
+    /// the sealing, the store and the two lines a user reads.
+    ///
+    /// Splitting here rather than lower is deliberate. A shared function that
+    /// began after `Secret::provider` would leave each caller free to refuse a
+    /// key differently, and what a user is told about a key with a space in it
+    /// is not a property of which surface they typed it at.
+    ///
+    /// **Nothing this function does echoes the key.** It is handed over,
+    /// sealed, and what is printed afterwards is the alias and the kind.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub(crate) fn store_a_provider_key(&self, kind: ProviderKind, offered: &str) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
 
         let secret = match Secret::provider(kind, offered) {
             Ok(secret) => secret,
@@ -535,12 +555,11 @@ impl Run<'_> {
         }
         // Exactly one trailing line ending, and only if it is there -- the same
         // rule `providers keys add` applies, because the same `printf` and the
-        // same `echo` reach both.
-        let offered = offered
-            .strip_suffix('\n')
-            .unwrap_or(&offered)
-            .strip_suffix('\r')
-            .unwrap_or_else(|| offered.strip_suffix('\n').unwrap_or(&offered));
+        // same `echo` reach both. It is the same *function* as of 2026-09-14,
+        // rather than the same rule typed twice: inside one crate a rule lives
+        // in one place, and two copies of a trimming rule are two places a
+        // credential can be mangled differently.
+        let offered = trim_one_line_ending(&offered);
 
         let secret = match Secret::notes(offered) {
             Ok(secret) => secret,
@@ -821,6 +840,44 @@ pub(crate) fn notes_entry(
 /// asking there is nothing left on it: a pipe is at end of file and a here-doc
 /// is spent. Reading the answer from the same descriptor would either block
 /// forever or read end-of-file and take it for a refusal the user never gave.
+/// Exactly one trailing line ending, and only if it is there.
+///
+/// **Named once because two surfaces read a credential from a stream and a
+/// third now reads one from a terminal**, and a rule that decides how many
+/// bytes of a secret survive is not a rule to have two copies of. It was
+/// written twice, identically, until 2026-09-14.
+///
+/// The trailing newline is trimmed rather than refused because it is not the
+/// user's: `printf '%s\n' "$KEY" | zaru …` and pressing return in a terminal
+/// both add one, and refusing it would make every ordinary way of supplying a
+/// credential fail. **Exactly one**, so a *second* line ending is the user's
+/// and is refused by `Secret::provider`'s `value.trim() != value`, which is
+/// the distinction that matters.
+///
+/// # A dated correction, because the sentence this replaced was false
+///
+/// It read: "Whitespace the user actually typed is still refused by
+/// `Secret::provider` … a key with a space in the middle of it is a paste
+/// artefact worth telling them about." **Measured 2026-09-14 by driving the
+/// binary: it is not.** `Secret::provider` refuses an empty value, a control
+/// character, and *surrounding* whitespace — `value.trim() != value` — and a
+/// key with a space in the **middle** of it is stored without comment. The
+/// rule is correct as written and only the prose about it was wrong, so
+/// nothing is widened here: what a credential may contain is
+/// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)'s
+/// to say, and inventing an interior-whitespace rule would be this crate
+/// deciding somebody else's key format — the same reason that record gives for
+/// declaring a provider kind rather than deriving it from a prefix.
+///
+/// `\r\n` and `\n` both go; a lone `\r` stays, because nothing this harness
+/// reads from produces one and stripping it would be inventing a rule.
+fn trim_one_line_ending(offered: &str) -> &str {
+    let without_newline = offered.strip_suffix('\n').unwrap_or(offered);
+    without_newline
+        .strip_suffix('\r')
+        .unwrap_or(without_newline)
+}
+
 /// `/dev/tty` is the descriptor that is still the person, whatever standard
 /// input was redirected to.
 ///
