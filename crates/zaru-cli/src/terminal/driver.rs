@@ -1714,10 +1714,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                                 .map(|text| Line::new(Register::Plain, text))
                                 .collect();
                             if let Exit::Failed(classified) = &outcome.exit {
-                                said.push(Line::new(
-                                    Register::Failed,
-                                    crate::failure::Presentation::of(classified).headline,
-                                ));
+                                said.extend(crate::terminal::vocabulary::refusal_lines(classified));
                             }
                             if stored {
                                 said.push(Line::new(Register::Plain, KEY_IS_STORED));
@@ -1800,10 +1797,9 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                         }
                         Err(exit) => {
                             if let Exit::Failed(classified) = &*exit {
-                                shell.notice(Line::new(
-                                    Register::Failed,
-                                    crate::failure::Presentation::of(classified).headline,
-                                ));
+                                for line in crate::terminal::vocabulary::refusal_lines(classified) {
+                                    shell.notice(line);
+                                }
                             }
                         }
                     }
@@ -2063,8 +2059,7 @@ pub(crate) fn dispatch(runner: &crate::cli::Run<'_>, command: &Command) -> Vec<L
         .map(|text| Line::new(Register::Plain, text))
         .collect();
     if let Exit::Failed(classified) = &outcome.exit {
-        let presentation = crate::failure::Presentation::of(classified);
-        lines.push(Line::new(Register::Failed, presentation.headline));
+        lines.extend(crate::terminal::vocabulary::refusal_lines(classified));
     }
     lines
 }

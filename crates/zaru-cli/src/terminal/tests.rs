@@ -5395,3 +5395,224 @@ fn the_pump_asks_the_fast_tier_again_rather_than_keeping_the_line_it_opened_with
          the line it opened with, which means the pump never asked it again: {frames:?}"
     );
 }
+
+// ------------- ADR-0016 D2 in a session: the remedy reaches the pane, per site
+
+/// Everything painted, as one whitespace-normalised string.
+///
+/// # Why the whole frame and not a row
+///
+/// Because the pane **wraps**, and an assertion that reads rows cannot tell a
+/// wrapped headline from a headline with a remedy under it. An earlier version
+/// of these checks asserted that the row under the headline was non-blank; two
+/// of the four then passed against their own mutants, because the headline at
+/// that site was long enough to wrap and its own continuation row supplied the
+/// evidence. Normalising the whole frame and asking whether the remedy's text
+/// is in it is immune to where the wrap lands.
+fn painted_text(frame: &[Vec<(String, ratatui::style::Color)>]) -> String {
+    let joined = frame
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|(symbol, _)| symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    joined.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A refusal reached the pane **whole**: its headline, and every line
+/// [ADR-0016] D2 puts under it.
+///
+/// `classified` is obtained by the check from the **site's own callee**, never
+/// from the site: what is asserted is that nothing was dropped between what
+/// the callee classified and what the pane shows, which is exactly the defect.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+fn a_whole_refusal_is_on_the_frame(
+    what: &str,
+    frame: &[Vec<(String, ratatui::style::Color)>],
+    classified: &crate::failure::Classified,
+) {
+    let presentation = crate::failure::Presentation::of(classified);
+    let painted = painted_text(frame);
+    let normalised = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        painted.contains(&normalised(&presentation.headline)),
+        "{what}: the refusal's own headline is not on the pane, so nothing below it can be \
+         read either. The frame:\n{painted}",
+    );
+    assert!(
+        !presentation.lines.is_empty(),
+        "{what}: this refusal carries no line under its headline, so the assertion below \
+         asserts nothing -- pick a refusal that has a remedy",
+    );
+    for line in &presentation.lines {
+        let text = normalised(&crate::failure::Line::flattened(line));
+        assert!(
+            painted.contains(&text),
+            "{what}: ADR-0016 D2's line {text:?} is not on the pane. The remedy reached \
+             standard error and reached no reader inside a session. The frame:\n{painted}",
+        );
+    }
+}
+
+/// The accepting control, painted into a **frame of its own**.
+///
+/// # Why it is not in the frame it controls for
+///
+/// It was, once, and the pane is a shared surface: the control's lines were
+/// pushed after the site's, so they sat under a mutant's lone headline and
+/// satisfied the assertion themselves. A control has to show the assertion can
+/// pass without supplying the evidence the assertion looks for.
+///
+/// What it controls for is a pane that paints nothing at all, which would make
+/// every check below vacuous -- the shape [Verification lessons] §8 is written
+/// against. It renders through `vocabulary::refusal_lines`, which is what
+/// `driver::lines_of` -- the one of the five sites that always rendered whole
+/// -- calls.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+fn the_control_passes_the_same_assertion() {
+    let classified = crate::failure::fixtures::of_class(crate::failure::Class::UserCorrectable);
+    let mut shell = shell();
+    for line in crate::terminal::vocabulary::refusal_lines(&classified) {
+        shell.notice(line);
+    }
+    let frame = cells_at(&shell, 100, 30, Palette::Coloured);
+    a_whole_refusal_is_on_the_frame("the control", &frame, &classified);
+}
+
+/// **Site 3 -- `dispatch`.** A slash command the harness refuses puts its
+/// remedy on the pane.
+///
+/// # The refusal, and why this one
+///
+/// `/config explain <a key no record declares>` is syntactically valid, so
+/// `config::Key::new` accepts it and `request_for` produces a request; the
+/// **compiled-in schema** is what refuses it, inside `Run::execute`. The
+/// verdict is therefore the same on every machine whatever any configuration
+/// layer holds. `execute` reads `~/.zaru/config.toml` where one exists -- a
+/// read that tolerates absence and creates nothing. Nothing here writes or
+/// mints.
+///
+/// **The mutant:** `dispatch`'s failed arm pushing the headline alone.
+#[test]
+fn a_dispatched_command_puts_its_whole_refusal_on_the_pane() {
+    the_control_passes_the_same_assertion();
+
+    // `dispatch`'s own callee, so the expectation is what the layer under the
+    // site classified rather than what the site chose to render.
+    let runner = crate::cli::Run {
+        version: VERSION,
+        report_at: REPORT_AT,
+    };
+    let key = crate::config::Key::new("zaru.no.such.key").expect("syntactically a key");
+    let outcome = runner.execute(&crate::cli::invocation::CommandLine {
+        request: Request::ConfigExplain { key },
+        overrides: Overrides::default(),
+    });
+    let Exit::Failed(classified) = &outcome.exit else {
+        panic!("the schema declares `zaru.no.such.key`, so this check refuses nothing")
+    };
+
+    let (shell, _, _) = pump(typed("/config explain zaru.no.such.key"));
+    let frame = cells_at(&shell, 100, 30, Palette::Coloured);
+    a_whole_refusal_is_on_the_frame("a dispatched command", &frame, classified);
+}
+
+/// **Site 1 -- a provider key the store would not take.**
+///
+/// ADR-0015 D2's in-session `/providers keys add <kind>` asks for the key with
+/// [ADR-0011] D3's masked question and hands what it gets to the same storing
+/// function the out-of-session spelling reaches. A key with a **leading** space
+/// is refused by `Secret::provider` before any store is opened, so this site is
+/// exercised with no filesystem access at all -- and the trailing-space trim
+/// the pump applies does not reach a leading one.
+///
+/// **The mutant:** the `Exit::Failed` arm inside the `Asked::Given` branch
+/// pushing the headline alone.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn a_refused_provider_key_puts_its_whole_refusal_on_the_pane() {
+    the_control_passes_the_same_assertion();
+
+    const OFFERED: &str = " a-key-with-a-leading-space";
+    let runner = crate::cli::Run {
+        version: VERSION,
+        report_at: REPORT_AT,
+    };
+    let outcome = runner.store_a_provider_key(crate::providers::ProviderKind::Gemini, OFFERED);
+    let Exit::Failed(classified) = &outcome.exit else {
+        panic!("a key with a leading space is refused, so this check refuses nothing")
+    };
+
+    let mut keys = typed("/providers keys add gemini");
+    keys.extend(typed(OFFERED));
+    let (shell, _, _) = pump(keys);
+    let frame = cells_at(&shell, 100, 30, Palette::Coloured);
+    a_whole_refusal_is_on_the_frame("a refused provider key", &frame, classified);
+}
+
+/// **Site 2 -- a switch that will not resolve.**
+///
+/// ADR-0010 D4's in-session half. `Opening::Existing` **reads** the session
+/// store and never mints -- minting is `Opening::New`, which no slash verb
+/// reaches -- and the id comes from `session::fixtures`, so no machine holds a
+/// directory for it and the verdict is machine-independent.
+///
+/// **The mutant:** the `Err(exit)` arm of `terminal::open::resolve` pushing the
+/// headline alone.
+#[test]
+fn a_switch_that_will_not_resolve_puts_its_whole_refusal_on_the_pane() {
+    the_control_passes_the_same_assertion();
+
+    let id = crate::session::fixtures::id_at(1_700_000_000_000, 199);
+    let refused = crate::terminal::open::resolve(
+        &Opening::Existing(id.clone()),
+        VERSION,
+        REPORT_AT,
+        &Overrides::default(),
+    )
+    .expect_err("no store holds a fixture's id");
+    let Exit::Failed(classified) = &*refused else {
+        panic!("resolving an absent session is a failure, so this check refuses nothing")
+    };
+
+    let (shell, _, _) = pump(typed(&format!("/session resume {id}")));
+    let frame = cells_at(&shell, 100, 30, Palette::Coloured);
+    a_whole_refusal_is_on_the_frame("a switch that will not resolve", &frame, classified);
+}
+
+/// **Site 4 -- the refusal a transcript replays on `--resume`.**
+///
+/// [ADR-0010] D2's eighth producer writes a refused turn's classified failure,
+/// and `FailureLine` has carried its lines since it was written. The pane's
+/// adapter read the headline and dropped them, so a refusal lost its remedy a
+/// second time -- on the file that clause calls replayable, where the reader is
+/// a person who came back to find out what went wrong.
+///
+/// **The mutant:** `lines_for`'s `Record::Failure` arm returning the headline
+/// alone.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[test]
+fn a_replayed_failure_puts_its_whole_refusal_on_the_pane() {
+    the_control_passes_the_same_assertion();
+
+    let classified = crate::failure::fixtures::of_class(crate::failure::Class::UserCorrectable);
+    let stored = crate::session::FailureLine::of(&classified);
+    assert!(
+        !stored.lines.is_empty(),
+        "the staged record carries no line under its headline, so nothing below is asserted",
+    );
+
+    let replayed = Pane::of(&[Record::Failure(stored)]);
+    let mut shell = shell();
+    shell.refresh(&replayed);
+    let frame = cells_at(&shell, 100, 30, Palette::Coloured);
+    a_whole_refusal_is_on_the_frame("a replayed failure", &frame, &classified);
+}

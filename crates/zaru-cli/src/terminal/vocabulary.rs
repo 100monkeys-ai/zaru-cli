@@ -143,10 +143,7 @@ impl TranscriptSource for Transcript {
 /// tree but here.
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-pub(crate) fn failed_lines(
-    headline: String,
-    under: impl IntoIterator<Item = String>,
-) -> Vec<Line> {
+pub(crate) fn failed_lines(headline: String, under: impl IntoIterator<Item = String>) -> Vec<Line> {
     let mut lines = vec![Line::new(Register::Failed, headline)];
     lines.extend(
         under
@@ -229,9 +226,13 @@ fn lines_for(record: &Record) -> Vec<Line> {
             // that the call they declined did not act.
             Phase::Refused => vec![Line::new(Register::Announced, call.line.clone())],
         },
-        Record::Failure(failure) => {
-            vec![Line::new(Register::Failed, failure.headline.clone())]
-        }
+        // **Every line, not only the headline.** `FailureLine` has carried
+        // `lines` since the transcript did -- ADR-0016 D2's remedy, D4's
+        // retry, D1's tier, D3's report, already flattened by
+        // `FailureLine::of` -- and this arm read only the headline, so a
+        // refusal replayed on `--resume` lost its remedy a second time, on a
+        // file ADR-0010 D2 calls replayable.
+        Record::Failure(failure) => failed_lines(failure.headline.clone(), failure.lines.clone()),
         // ADR-0002 D3's interrupt channel: a compaction "writes into the live
         // session", because it reports on a turn the user's own message
         // caused. The text is `crate::cli::render`'s and the glyph is the
