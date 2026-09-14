@@ -695,7 +695,7 @@ pub fn prepare(
     argument is a port or a value some record owns, and bundling them into a \
     struct would be a second name for the same list"
 )]
-pub async fn run_one(
+async fn ran(
     version: &str,
     report_at: &str,
     resolution: &Resolution,
@@ -1219,6 +1219,115 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     }
 
     ran
+}
+
+/// Run one turn, and record what refused it if it was refused.
+///
+/// This is the composition's entry point. What it adds to the turn itself —
+/// a private `ran`, named in prose rather than linked because rustdoc is
+/// right to refuse a public page pointing at something its reader cannot
+/// open — is [ADR-0010] D2's **eighth producer**: a turn whose outcome is
+/// [`Exit::Failed`] writes `Record::Failure` before returning.
+///
+/// # One seam, and not fourteen
+///
+/// The turn carries **fourteen** `Ran::refused` and `Ran::refused_having_said`
+/// returns. Recording at each is what the defect row that opened this
+/// proposed, and it cannot be held: a fifteenth site added later would record
+/// nothing and no check would notice. Wrapping is what makes "every refusal is
+/// recorded" a property of the **shape** rather than of somebody having
+/// remembered — the same reason `Record` is a closed enum rather than a `kind`
+/// string. Twelve of the fourteen are recorded here; the other two are the
+/// transcript-open pair below.
+///
+/// It also fixes the order. The failure is the turn's **last** record, so a
+/// person reading with `cat` gets the question, `turn_started`, the work, and
+/// then what stopped it.
+///
+/// # What is deliberately outside it, both halves
+///
+/// **The two refusals that could not open the transcript.** They are the first
+/// thing the turn does, and a transcript that will not open cannot record
+/// that it would not open. A producer that pretended otherwise would be the
+/// "variant whose condition nothing can satisfy" `session::record`'s own
+/// documentation warns against, inverted into a promise that cannot be kept.
+/// They stay printed lines and an [ADR-0016] D5 code, with the session
+/// evidence they already carry.
+///
+/// **Every refusal in [`prepare`].** That function resolves everything
+/// **before a session exists** — its own documentation states the consequence,
+/// "a turn that never began is not a session" — so there is no file to write
+/// to, and minting a session in order to record that none was warranted would
+/// reverse [ADR-0010] D1's reading. The check named in this module's own
+/// out-of-tree file holds that arm, so moving this up reddens.
+///
+/// # One refusal a turn produces is outside this seam, measured and not fixed
+///
+/// [ADR-0010] D3's checkpoint is written **after** the turn, by the turn's
+/// callers rather than by the turn: [`task`] writes it and, on failure,
+/// returns `Ran::refused_having_said(ran.lines, Surface::checkpoint(..))`
+/// after this function has already returned, and
+/// `terminal::driver::run_a_turn` does the same two acts in the same order
+/// and paints the failure into the pane. Neither reaches a record, so a run
+/// whose turn answered and whose checkpoint would not write still leaves a
+/// transcript that does not say so. **This wrapper cannot see it by
+/// construction** — the write happens outside the function being wrapped —
+/// and closing it means either a second producer, which is what the one-seam
+/// argument above rejects, or one recording function with three callers.
+/// That is a decision rather than an implementation detail, so it is named
+/// here and left: this seam covers every refusal *the turn* produces, which
+/// is what was ruled, and the checkpoint's is one *the caller* produces.
+///
+/// # A transcript that will not take the record does not replace the reason
+///
+/// If the write fails, the turn's own classified failure is still what the
+/// reader is given. Reporting the bookkeeping failure instead would replace
+/// the reason the turn stopped with the reason it could not be written down,
+/// which is strictly less useful to the person reading it — [ADR-0016] D6's
+/// "partial success is reported as partial", applied to a record rather than
+/// to a task.
+///
+/// # Errors
+///
+/// None: a refused turn is a [`Ran`] carrying [ADR-0016] D5's code, which is
+/// what every caller of this function already handles.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "    it takes exactly what the turn it wraps takes, and a struct here would be     a second name for that list"
+)]
+pub async fn run_one(
+    version: &str,
+    report_at: &str,
+    resolution: &Resolution,
+    prepared: &Prepared,
+    session: &crate::session::Session,
+    n: u32,
+    start: Start<'_>,
+    confirmer: Option<&(dyn crate::tools::Confirm + Sync)>,
+    extra: &mut [&mut dyn zaru_core::tool_call::EventSink],
+    narrator: Option<&dyn crate::compose::Narrator>,
+    owed: &mut Owed,
+    context: &mut SessionContext,
+) -> Ran {
+    let outcome = ran(
+        version, report_at, resolution, prepared, session, n, start, confirmer, extra, narrator,
+        owed, context,
+    )
+    .await;
+
+    let Exit::Failed(classified) = &outcome.exit else {
+        return outcome;
+    };
+    if let Ok(mut transcript) = Transcript::append_to(session.transcript_path()) {
+        let _ = transcript.record(&crate::session::Record::Failure(
+            crate::session::FailureLine::of(classified),
+        ));
+    }
+    outcome
 }
 
 /// What the reader is shown, and what the process exits with.

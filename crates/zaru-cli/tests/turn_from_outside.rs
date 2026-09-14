@@ -936,6 +936,148 @@ fn a_project_that_declares_validators_takes_adr_0009_d4s_other_branch() {
     );
 }
 
+/// [ADR-0010] D2's **eighth** producer: a turn that was refused writes what
+/// refused it.
+///
+/// # The clause this closes, and what was actually wrong
+///
+/// D5: "The user can read every byte the harness stores about them with
+/// `cat`." `Record::Failure` existed as a variant from the day the transcript
+/// did and had **no product producer at all**, so every refusal became printed
+/// lines and an [ADR-0016] D5 exit code and reached no file — for exactly the
+/// turns a person most wants to read back.
+///
+/// **And it was worse than a gap.** The seventh producer's own amendment makes
+/// "a `user` half with no `zaru` half after it" *the interruption*. A refused
+/// turn left exactly that shape: a `conversation` user record, a
+/// `turn_started`, and nothing after — measured on the release binary at
+/// `1e09dfd` as three lines. So the file said a turn the harness had declined
+/// was a process that had died. This is not coverage; it is a record that was
+/// saying something false.
+///
+/// # Four properties
+///
+/// **The headline on the file is the headline the reader was shown**, compared
+/// against the binary's own first line of standard error rather than against a
+/// literal — so a producer that recorded some other classification's headline,
+/// or a constant, fails here.
+///
+/// **It is the last record of the turn**, so `cat` reads in the order the turn
+/// happened: the question, `turn_started`, the work, then what stopped it.
+///
+/// **A refusal is now distinguishable from an interruption.** The staging is a
+/// turn that ran and was refused at the socket, and what discriminates is that
+/// something follows `turn_started`.
+///
+/// **A refusal before the session writes nothing**, because there is nothing
+/// to write to: `compose::turn::prepare` resolves everything ahead of the
+/// session and its own documentation says "a turn that never began is not a
+/// session". That arm is what reddens if the producer is pushed up into
+/// `prepare`.
+///
+/// # What this check does not hold, said rather than implied
+///
+/// **The accepting sibling is a turn that succeeded and carries no `failure`
+/// record, and it cannot be staged here.** `run_one` takes a `&Prepared`
+/// holding a `GeminiClient`, and no stub substitutes for it — which
+/// `terminal::driver`'s own comment records of the same function: "a mutation
+/// deleting it reddens nothing, because that function needs a real provider
+/// and no offline check can drive it". So that half is the arc's artefact,
+/// run against the real provider under the key discipline and recorded on
+/// [ADR-0010]'s Status tracking. Nothing here rounds it up.
+///
+/// The mutants: deleting the record call; recording on every path rather than
+/// on `Exit::Failed`; and recording a constant headline.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn adr_0010_d2s_failure_record_puts_what_refused_the_turn_on_the_transcript() {
+    let home = Home::new("conversation-failure");
+    let (value, core) = nonce("conversation-failure");
+    store_a_key(&home, "gemini", &value);
+
+    let ran = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "tell me a joke"],
+    );
+    assert_eq!(
+        ran.code, 3,
+        "the staging is a turn that ran and could not reach a model"
+    );
+    let headline = ran
+        .stderr
+        .lines()
+        .next()
+        .expect("a refused turn says something on standard error")
+        .to_owned();
+
+    let transcript = transcript_of(&home);
+    let last = transcript
+        .lines()
+        .next_back()
+        .expect("a turn that ran wrote records");
+    assert!(
+        last.starts_with(r#"{"failure":"#),
+        "the turn was refused and the last thing on the transcript is not what refused it, so a \
+         reader with `cat` sees a question and a turn that simply stops — which is what an \
+         interrupted turn looks like:\n{transcript}"
+    );
+    assert!(
+        last.contains(&serde_json_escaped(&headline)),
+        "the record does not carry the headline the reader was shown. Shown: {headline:?}. \
+         Recorded: {last}"
+    );
+
+    // The turn started and something follows it, which is the whole of the
+    // distinction between a refusal and an interruption on this file.
+    let started = transcript
+        .find(r#"{"turn_loop":{"turn_started""#)
+        .unwrap_or_else(|| panic!("the turn never started, so this staged nothing:\n{transcript}"));
+    assert!(
+        transcript[started..].contains(r#"{"failure":"#),
+        "nothing follows `turn_started`, so a refused turn is indistinguishable from an \
+         interrupted one:\n{transcript}"
+    );
+
+    absent_everywhere(&home, &ran, &value, &core, "the stored provider key");
+
+    // The arm that reddens if the producer moves up into `prepare`: a refusal
+    // resolved before the session leaves no session to write to.
+    let early = Home::new("conversation-failure-early");
+    let refused = zaru(&early, &[], &["tell me a joke"]);
+    assert_eq!(
+        refused.code, 2,
+        "a machine with no model configured refuses before the session"
+    );
+    assert!(
+        !early.path().join(".zaru/sessions").exists(),
+        "a refusal reached before the session wrote a session directory, so the failure producer \
+         has been moved above the one thing that makes a session"
+    );
+}
+
+/// The JSON spelling of a string, as `serde_json` writes it into a record.
+///
+/// The headline is compared as it lands on the file rather than as it was
+/// printed, because a headline carrying a quote or a backslash would otherwise
+/// never match and the check would silently be about nothing.
+fn serde_json_escaped(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
 /// [ADR-0010] D2's seventh producer, on the file, ahead of the turn it opens.
 ///
 /// D5 says "The user can read every byte the harness stores about them with
@@ -955,11 +1097,19 @@ fn a_project_that_declares_validators_takes_adr_0009_d4s_other_branch() {
 /// either order is a file a reader cannot follow.
 ///
 /// **And this turn writes no `zaru` half**, because it never reached an
-/// answer — the provider endpoint is a closed port. That absence is not a
-/// gap: it is exactly the shape an *interrupted* turn leaves, which is how
-/// ADR-0010 D4's interruption is read from a `Phase::Started` with nothing
-/// closing it, and the turn stays distinguishable from an interrupted one
-/// because it has a `turn_ended` record.
+/// answer — the provider endpoint is a closed port. That absence is exactly
+/// the shape an *interrupted* turn leaves, which is how ADR-0010 D4's
+/// interruption is read from a `Phase::Started` with nothing closing it.
+///
+/// **Corrected 2026-09-14 by the `first-run` arc.** This paragraph went on to
+/// say "and the turn stays distinguishable from an interrupted one because it
+/// has a `turn_ended` record". It had none: the transcript this very check
+/// stages was three lines — the notice, the `conversation` user half, and
+/// `turn_started` — and nothing followed. So a refused turn and an interrupted
+/// one were byte-identical in shape, which is what D2's eighth producer exists
+/// to fix; `adr_0010_d2s_failure_record_puts_what_refused_the_turn_on_the_\
+/// transcript` is where that is now asserted, and the sentence is true again
+/// because a `failure` record follows `turn_started`.
 ///
 /// **What this check does not hold** is that an answering turn writes the
 /// other half. `run_one` needs a real provider — `Prepared` holds a
