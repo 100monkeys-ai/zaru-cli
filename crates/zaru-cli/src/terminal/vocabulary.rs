@@ -110,6 +110,71 @@ impl TranscriptSource for Transcript {
     }
 }
 
+/// [ADR-0016] D1's failure, as the lines a pane paints.
+///
+/// **The one function that turns a failure into pane lines, and every site
+/// that shows one calls it.** The headline goes in [`Register::Failed`], which
+/// is D1's error register, and everything under it goes in
+/// [`Register::Plain`], which is the absence of a marker rather than a glyph
+/// chosen for it — a second `✗` under the first would say a second failure
+/// happened, and the two columns a reader sees under the headline are
+/// [`zaru_tui::shell::port::Line::painted`]'s glyph column rather than an
+/// indent authored here.
+///
+/// # Why it exists rather than being written at each site
+///
+/// Until 2026-09-14 it was written at each site, and **four of the five wrote
+/// half of it**. `driver::lines_of`, the turn-failure path, pushed the
+/// headline and then every line; the three refusals the pump shows and the
+/// [`Record::Failure`] this module replays on `--resume` pushed the headline
+/// and dropped the rest. So [ADR-0016] D2's remedy, D4's retry, D1's tier and
+/// D3's report reached a reader through a pipe and reached nobody inside a
+/// session — D2's own "a stack trace with better grammar", on the one surface
+/// where a person cannot scroll up to `--help`. Measured on the release binary
+/// at `8fda37f` over a pseudo-terminal: `/notes tokens rm nope` painted
+/// `✗ nothing in the store answers to the alias "nope"` and nothing else,
+/// while the same refusal out of session carried
+/// `run `zaru notes tokens` or `zaru providers keys` to see what this machine
+/// holds`.
+///
+/// A fifth site cannot render half of it now, and that is held rather than
+/// asserted: `no_terminal_site_renders_a_headline_without_its_lines` refuses a
+/// `Presentation::of`, a `.headline` or a `line.lead` anywhere in this module
+/// tree but here.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub(crate) fn failed_lines(
+    headline: String,
+    under: impl IntoIterator<Item = String>,
+) -> Vec<Line> {
+    let mut lines = vec![Line::new(Register::Failed, headline)];
+    lines.extend(
+        under
+            .into_iter()
+            .map(|line| Line::new(Register::Plain, line)),
+    );
+    lines
+}
+
+/// The same, for a failure that has not been projected yet.
+///
+/// **The one place [`crate::failure::Presentation::of`] is called anywhere in
+/// `terminal`**, so the projection reaches the pane by one route. Four of
+/// [`failed_lines`]' five callers arrive here holding a `Classified`; the
+/// fifth is the transcript's own [`Record::Failure`], which is already
+/// projected and already flattened and so calls [`failed_lines`] directly.
+pub(crate) fn refusal_lines(classified: &crate::failure::Classified) -> Vec<Line> {
+    let presentation = crate::failure::Presentation::of(classified);
+    failed_lines(
+        presentation.headline,
+        presentation
+            .lines
+            .iter()
+            .map(crate::failure::Line::flattened)
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// Which register one record belongs in, and what it says.
 ///
 /// **No wildcard arm anywhere**, so an eighth `Record` variant has to be given

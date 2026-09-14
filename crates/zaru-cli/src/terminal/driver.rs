@@ -2529,14 +2529,7 @@ pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
         .map(|text| Line::new(Register::Plain, text.clone()))
         .collect();
     if let Exit::Failed(classified) = &ran.exit {
-        let presentation = crate::failure::Presentation::of(classified);
-        lines.push(Line::new(Register::Failed, presentation.headline));
-        lines.extend(
-            presentation
-                .lines
-                .iter()
-                .map(|line| Line::new(Register::Plain, line.flattened())),
-        );
+        lines.extend(crate::terminal::vocabulary::refusal_lines(classified));
     }
     lines
 }
