@@ -305,14 +305,62 @@ impl Line {
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     #[must_use]
-    pub fn rows(&self, width: u16) -> Vec<String> {
+    pub fn rows(&self, width: u16) -> Vec<Row> {
         let indent = self.indent();
         let budget = usize::from(width).saturating_sub(indent);
-        let mut rows = crate::shell::wrap::rows(&self.text, budget).into_iter();
-        let first = rows.next().unwrap_or_default();
-        let mut painted = vec![format!("{} {first}", self.register.glyph())];
-        painted.extend(rows.map(|row| format!("{}{row}", " ".repeat(indent))));
+        let mut wrapped = crate::shell::wrap::rows(&self.text, budget).into_iter();
+        let first = wrapped.next().unwrap_or_default();
+        let mut painted = vec![Row {
+            register: self.register,
+            lead: format!("{} ", self.register.glyph()),
+            text: first,
+        }];
+        painted.extend(wrapped.map(|text| Row {
+            register: self.register,
+            lead: " ".repeat(indent),
+            text,
+        }));
         painted
+    }
+}
+
+/// One painted row of a [`Line`]: the marker column, then the text.
+///
+/// # Why the two halves are carried apart rather than joined
+///
+/// The pane paints the register's colour on `lead` and nothing on `text`,
+/// which is [ADR-0028] D2's "coloured" read against this module's own seam —
+/// [`Line`]'s documentation above says the shell "chooses the glyph and
+/// nothing else", and a colour on the producer's words would be the shell
+/// choosing something about them. Carried as one string, the renderer would
+/// have to re-derive where the marker ends, which is the same rule living in
+/// two places.
+///
+/// [`joined`] is the two put back together, byte for byte as the pane painted
+/// them before 2026-09-13. Nothing about what reaches the buffer changed when
+/// this type arrived, and `a_rows_joined_form_is_what_the_pane_painted_before`
+/// is the check that says so rather than the commit message.
+///
+/// [`joined`]: Row::joined
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// Which register the line this row belongs to was written in.
+    pub register: Register,
+    /// The marker column: the register's glyph and its trailing space on the
+    /// first row of a line, and the same number of spaces on every
+    /// continuation row, so a wrapped record still reads as one record.
+    pub lead: String,
+    /// What this row carries, already wrapped to fit beside `lead`.
+    pub text: String,
+}
+
+impl Row {
+    /// The row as one string, which is what the pane painted before the two
+    /// halves were carried apart.
+    #[must_use]
+    pub fn joined(&self) -> String {
+        format!("{}{}", self.lead, self.text)
     }
 }
 

@@ -51,10 +51,11 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
-use crate::shell::{COMPOSER_ROWS, Shell};
+use crate::shell::{COMPOSER_ROWS, Row, Shell};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line as TextLine;
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 /// What a prominent prompt is prefixed with, per [ADR-0011] D6.
@@ -102,8 +103,8 @@ impl Shell {
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     #[must_use]
-    pub fn visible(&self, height: u16, width: u16) -> Vec<String> {
-        let rows: Vec<String> = self
+    pub fn visible(&self, height: u16, width: u16) -> Vec<Row> {
+        let rows: Vec<Row> = self
             .pane_lines()
             .iter()
             .flat_map(|line| line.rows(width))
@@ -183,7 +184,11 @@ impl Shell {
         let visible: Vec<TextLine<'_>> = self
             .visible(pane.height, pane.width)
             .into_iter()
-            .map(TextLine::from)
+            // Two spans rather than one joined string, and that is what lets
+            // `a_rows_joined_form_is_what_the_pane_painted_before` compare
+            // `Row::joined` against the buffer without both arms travelling
+            // through the same function. Nothing is styled yet.
+            .map(|row| TextLine::from(vec![Span::raw(row.lead), Span::raw(row.text)]))
             .collect();
         if !visible.is_empty() {
             frame.render_widget(Paragraph::new(visible), pane);
@@ -198,7 +203,7 @@ impl Shell {
                 crate::shell::port::Line::new(crate::shell::port::Register::Plain, task.painted())
                     .rows(area.width)
                     .first()
-                    .cloned()
+                    .map(crate::shell::port::Row::joined)
                     .unwrap_or_default();
             frame.render_widget(Paragraph::new(TextLine::from(row)), area);
         }

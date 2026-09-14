@@ -65,7 +65,7 @@ pub mod render;
 pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
-pub use port::{CommandVocabulary, Confirmation, Line, Namespace, Register, TranscriptSource};
+pub use port::{CommandVocabulary, Confirmation, Line, Namespace, Register, Row, TranscriptSource};
 
 use crate::composer::{Composer, Entries};
 use core::time::Duration;

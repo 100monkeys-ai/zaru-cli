@@ -6,7 +6,7 @@ use crate::shell::command::{LEAVE, Refused, Typed, read};
 use crate::shell::fixtures::{
     SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, painted,
 };
-use crate::shell::port::{CommandVocabulary, Confirmation, Line, Register};
+use crate::shell::port::{CommandVocabulary, Confirmation, Line, Register, Row};
 use crate::shell::{Action, COMPOSER_ROWS, Leaving, Segment, Shell, Status};
 use core::time::Duration;
 use tui_textarea::{Input, Key};
@@ -1416,6 +1416,62 @@ fn pane_rows(shell: &Shell, width: u16, height: u16) -> Vec<String> {
         .iter()
         .map(|row| row.trim_end().to_owned())
         .collect()
+}
+
+/// Every row `visible` hands the widget is byte-identical to the row the
+/// buffer ends up holding.
+///
+/// # What this pins, and why it is not a tautology
+///
+/// `Line::rows` returned `Vec<String>` until 2026-09-13 and now returns
+/// [`Row`], which carries the marker column and the text apart so the pane can
+/// colour the first and leave the second alone. Nothing about what reaches the
+/// buffer was meant to change, and "was meant to" is exactly the claim a
+/// commit message cannot make good.
+///
+/// **One arm is the buffer**, read out of `TestBackend` cell by cell, and the
+/// other is [`Row::joined`]. A comparison whose two sides both travelled
+/// through `Row` would agree with itself for the life of any defect
+/// ([Verification lessons] §11); the buffer is a reader that shares no code
+/// with the split.
+///
+/// Three widths and three registers, because the split's two halves differ
+/// between the first row of a line and its continuations, and a width that
+/// never wraps would exercise only the first.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_rows_joined_form_is_what_the_pane_painted_before() {
+    let long = "bare tier has no membrane and a prompt is a question rather than a barrier, \
+                which is a sentence long enough to wrap at every width below";
+
+    for width in [30_u16, 40, 100] {
+        for register in [Register::Plain, Register::Call, Register::Setback] {
+            let shell = shell_showing(register, long);
+            let from_model: Vec<String> = shell
+                .visible(24 - 1 - COMPOSER_ROWS, width)
+                .iter()
+                .map(Row::joined)
+                .map(|row| row.trim_end().to_owned())
+                .filter(|row| !row.is_empty())
+                .collect();
+            let from_buffer: Vec<String> = pane_rows(&shell, width, 24)
+                .into_iter()
+                .filter(|row| !row.trim().is_empty())
+                .collect();
+
+            assert!(
+                !from_buffer.is_empty(),
+                "nothing was painted at {width} columns for {register:?}, so this check \
+                 asserted nothing"
+            );
+            assert_eq!(
+                from_model, from_buffer,
+                "at {width} columns the rows {register:?} hands the widget are not the rows \
+                 the buffer holds"
+            );
+        }
+    }
 }
 
 /// A shell whose pane holds exactly one line.
