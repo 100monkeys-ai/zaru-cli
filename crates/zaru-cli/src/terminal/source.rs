@@ -63,7 +63,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use zaru_tui::shell::Input;
+use zaru_tui::shell::{Input, Struck};
 
 /// How long the reader thread waits for an event before looking at the stop
 /// flag again.
@@ -157,10 +157,16 @@ impl Pace for Beat {
 /// different answers and a caller has to tell them apart: the first is a beat
 /// to paint through and the second is a terminal that stopped answering, which
 /// [`crate::tools::prompt`]'s rule says is a failure and never a `no`.
+///
+/// **The first case carries a [`Struck`] rather than an [`Input`] since
+/// 2026-09-13**, so there is one vocabulary for what a terminal hands over
+/// rather than two enumerations with parallel variants. The compiler naming
+/// every site that reads a keystroke is the point: a paste is a thing each of
+/// them has to decide about, and a wildcard arm would decide it by default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Taken {
-    /// A keystroke.
-    Key(Input),
+    /// A keystroke, or a pasted block.
+    Struck(Struck),
     /// Nothing has arrived. The caller waits a beat and asks again.
     Nothing,
     /// The source will produce no more keys, ever.
@@ -172,7 +178,7 @@ pub enum Taken {
 /// See the module documentation. Every method takes `&self`, because the two
 /// readers borrow it at once and neither can hold `&mut`.
 pub struct Source {
-    receiver: Mutex<UnboundedReceiver<Input>>,
+    receiver: Mutex<UnboundedReceiver<Struck>>,
     /// `None` for a scripted source, which has no thread.
     reader: Option<Reader>,
     contended: AtomicUsize,
@@ -196,10 +202,20 @@ impl Source {
     /// product terminal never does.
     #[must_use]
     pub fn scripted(keys: Vec<Input>) -> Self {
+        Self::staged(keys.into_iter().map(Struck::Key).collect())
+    }
+
+    /// A source that will answer these keystrokes and pastes, and then end.
+    ///
+    /// [`scripted`](Self::scripted) is this over keys alone, kept because that
+    /// is what nearly every check stages and because a check that says nothing
+    /// about pastes should not have to mention them.
+    #[must_use]
+    pub fn staged(struck: Vec<Struck>) -> Self {
         let (sender, receiver) = unbounded_channel();
-        for key in keys {
+        for one in struck {
             // The receiver is alive on this stack, so a send cannot fail.
-            let _ = sender.send(key);
+            let _ = sender.send(one);
         }
         drop(sender);
         Self {
@@ -233,7 +249,7 @@ impl Source {
     /// what `a_reader_body_that_ignores_the_flag_is_what_drop_waits_for`
     /// exists to state rather than to hide.
     pub(crate) fn over(
-        body: impl FnOnce(&UnboundedSender<Input>, &AtomicBool) + Send + 'static,
+        body: impl FnOnce(&UnboundedSender<Struck>, &AtomicBool) + Send + 'static,
     ) -> Self {
         let (sender, receiver) = unbounded_channel();
         Self {
@@ -283,7 +299,7 @@ impl Source {
             return Taken::Nothing;
         };
         match receiver.try_recv() {
-            Ok(input) => Taken::Key(input),
+            Ok(struck) => Taken::Struck(struck),
             Err(TryRecvError::Empty) => Taken::Nothing,
             Err(TryRecvError::Disconnected) => Taken::Ended,
         }
@@ -313,7 +329,7 @@ impl Source {
     /// across an await ever again, and `clippy::await_holding_lock` under the
     /// documentation and lint gates' `-D warnings` says so at the moment
     /// somebody writes one, which an asynchronous mutex would not.
-    pub fn next(&self) -> impl Future<Output = Option<Input>> {
+    pub fn next(&self) -> impl Future<Output = Option<Struck>> {
         core::future::poll_fn(move |context| {
             let Ok(mut receiver) = self.receiver.try_lock() else {
                 self.contended.fetch_add(1, Ordering::SeqCst);
@@ -334,8 +350,8 @@ struct Reader {
 impl Reader {
     /// Start reading. The thread ends when [`Reader`] is dropped.
     fn spawn(
-        sender: UnboundedSender<Input>,
-        body: impl FnOnce(&UnboundedSender<Input>, &AtomicBool) + Send + 'static,
+        sender: UnboundedSender<Struck>,
+        body: impl FnOnce(&UnboundedSender<Struck>, &AtomicBool) + Send + 'static,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
@@ -370,7 +386,7 @@ impl Drop for Reader {
 /// the module documentation gives — it is `poll` and `read` against a terminal
 /// a check does not have. Everything around it is checked: the channel, the
 /// locking, the flag and the join.
-fn read_until_stopped(sender: &UnboundedSender<Input>, stop: &AtomicBool) {
+fn read_until_stopped(sender: &UnboundedSender<Struck>, stop: &AtomicBool) {
     use ratatui::crossterm::event::{Event, poll, read};
 
     while !stop.load(Ordering::Acquire) {
@@ -383,15 +399,21 @@ fn read_until_stopped(sender: &UnboundedSender<Input>, stop: &AtomicBool) {
             Err(_) => return,
             Ok(true) => {}
         }
-        let input = match read() {
-            Ok(Event::Key(key)) => translate(key),
+        let struck = match read() {
+            Ok(Event::Key(key)) => Struck::Key(translate(key)),
+            // A block the terminal framed as a paste, which it does only
+            // because `arm` pushed bracketed paste when the alternate screen
+            // was entered. Its newlines are text of one prompt -- ADR-0005
+            // D1 and D2's 2026-09-13 amendment -- so it crosses whole rather
+            // than as the keystrokes it would otherwise have arrived as.
+            Ok(Event::Paste(text)) => Struck::Pasted(text),
             // Everything else is redrawn around rather than acted on. A resize
             // changes the regions, which the next draw reads from the frame's
             // own area, so an empty input is the whole response.
-            Ok(_) => Input::default(),
+            Ok(_) => Struck::Key(Input::default()),
             Err(_) => return,
         };
-        if sender.send(input).is_err() {
+        if sender.send(struck).is_err() {
             // The shell dropped the source. Nothing is listening.
             return;
         }

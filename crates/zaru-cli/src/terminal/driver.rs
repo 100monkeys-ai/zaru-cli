@@ -26,7 +26,7 @@ use zaru_core::iteration::Interruption;
 use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::Start;
 use zaru_tui::shell::port::{Confirmation, Line, Register};
-use zaru_tui::shell::{Action, Command, Shell};
+use zaru_tui::shell::{Action, Command, Shell, Struck};
 
 /// Giving the terminal back to the user.
 ///
@@ -742,7 +742,19 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                 return Ok(answer);
             }
             let input = match self.source.try_next() {
-                Taken::Key(input) => input,
+                Taken::Struck(Struck::Key(input)) => input,
+                // A paste is absorbed for the reason a key is: ADR-0011 D3's
+                // `ask` "prompts before any write or command", and a prompt a
+                // user can paste past is no more a prompt than one they can
+                // type past. `Shell::pasted` refuses one too, so this arm is
+                // the same rule reached by the other door -- and it is an arm
+                // rather than a wildcard so that a third kind of event cannot
+                // arrive here already decided.
+                Taken::Struck(Struck::Pasted(_)) => {
+                    pane.paint();
+                    self.pace.wait();
+                    continue;
+                }
                 // **The pane keeps painting while the question stands.**
                 // Nothing on it changes on a bare beat -- see `TICK` -- but
                 // the paint is what makes this loop a repaint rather than a
@@ -1429,17 +1441,21 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
 
             ran = &mut running => break Raced::Ran(ran),
 
-            input = source.next() => {
-                let Some(input) = input else { break Raced::SourceEnded };
+            struck = source.next() => {
+                let Some(struck) = struck else { break Raced::SourceEnded };
                 // The one rule, called from its second caller. Mid-turn it
                 // stops the turn; at the prompt `Shell::key` turns the same
                 // answer into `Action::Leave`. One key, one meaning -- stop --
-                // and what stop does is where it was pressed.
-                if zaru_tui::shell::leaves(&input).is_some() {
+                // and what stop does is where it was pressed. **A paste is
+                // never asked**: `leaves` is about a key, and a block whose
+                // bytes happened to contain one is text.
+                if let Struck::Key(input) = &struck
+                    && zaru_tui::shell::leaves(input).is_some()
+                {
                     break Raced::Interrupted;
                 }
                 *now += Duration::from_millis(1);
-                read_while_busy(pane, input, *now, entries);
+                read_while_busy(pane, struck, *now, entries);
             }
 
             // The answer's text, as the provider hands it over.
@@ -1513,18 +1529,27 @@ async fn next_delta(
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 fn read_while_busy<S: Surface + Send>(
     pane: &std::sync::Mutex<Pane<'_, S>>,
-    input: zaru_tui::shell::Input,
+    struck: Struck,
     now: Duration,
     entries: &dyn zaru_tui::composer::Entries,
 ) {
     let Ok(mut pane) = pane.try_lock() else {
         return;
     };
-    if input.key == zaru_tui::shell::Key::Enter {
-        pane.note(Line::new(Register::Announced, BUSY));
-    } else {
-        pane.shell.composer_mut().key(input, now, entries);
-        pane.paint();
+    match struck {
+        // A block pasted during a turn lands in the prompt exactly as one
+        // pasted at it does, and waits for the `Enter` that submits it.
+        Struck::Pasted(text) => {
+            pane.shell.composer_mut().paste(&text, now, entries);
+            pane.paint();
+        }
+        Struck::Key(input) if input.key == zaru_tui::shell::Key::Enter => {
+            pane.note(Line::new(Register::Announced, BUSY));
+        }
+        Struck::Key(input) => {
+            pane.shell.composer_mut().key(input, now, entries);
+            pane.paint();
+        }
     }
 }
 
@@ -1563,14 +1588,14 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
     let mut now = Duration::ZERO;
     surface.draw(shell)?;
 
-    while let Some(input) = source.next().await {
+    while let Some(struck) = source.next().await {
         // The shell holds no clock, so the pump supplies one. A keystroke is
         // one tick, which is enough for the composer's debounce to be ordered
         // and is not a wall clock -- ADR-0005's whole reason for taking `now`
         // as an argument.
         now += Duration::from_millis(1);
 
-        match shell.key(input, now, entries, vocabulary) {
+        match shell.struck(struck, now, entries, vocabulary) {
             Action::Idle => {}
             Action::Leave(leaving) => {
                 surface.draw(shell)?;
@@ -2026,14 +2051,58 @@ impl Crossterm {
     /// When the terminal cannot be put into raw mode or the alternate screen
     /// cannot be entered.
     pub fn take() -> std::io::Result<Self> {
-        Ok(Self {
-            terminal: ratatui::try_init()?,
-        })
+        let terminal = ratatui::try_init()?;
+        // Armed **after** the alternate screen and disarmed before it is left,
+        // in this one place, so no exit path can hand a terminal back still
+        // telling every later program that a paste is bracketed. If the arm
+        // itself fails the terminal is given back before the error leaves, so
+        // a half-taken terminal is never returned.
+        if let Err(failure) = arm(&mut std::io::stdout()) {
+            ratatui::restore();
+            return Err(failure);
+        }
+        Ok(Self { terminal })
     }
+}
+
+/// Ask the terminal to frame a paste, so its newlines arrive as text.
+///
+/// # It is a function over a writer so that the bytes are checkable
+///
+/// [`Crossterm`] cannot be constructed in a check — it is three system calls
+/// against a terminal a check does not have — so an `execute!` written inline
+/// there would be a rule nothing could falsify. Over a [`std::io::Write`] it
+/// is a check with a `Vec<u8>` in it, and what the check asserts is the
+/// sequence itself: `ESC[?2004h` here and `ESC[?2004l` in [`disarm`]. The
+/// look-and-feel survey's row 13 measured the gap by exactly that string —
+/// "`ESC[?2004h` appears nowhere in any capture".
+///
+/// # Errors
+///
+/// When the sequence cannot be written to the terminal.
+pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
+    ratatui::crossterm::execute!(out, ratatui::crossterm::event::EnableBracketedPaste)
+}
+
+/// Stop asking, on the way out. See [`arm`].
+///
+/// **A failure here is deliberately not reported.** This runs from
+/// [`Restore::restore`], which is reached from [`Guard`]'s `Drop` and
+/// therefore from an unwind; a `Drop` that returned a result would have
+/// nowhere to return it, and a terminal that will not take this sequence is
+/// one that will not take the alternate screen's either, which
+/// `ratatui::restore` is about to try anyway.
+pub(crate) fn disarm(out: &mut impl std::io::Write) {
+    let _ = ratatui::crossterm::execute!(out, ratatui::crossterm::event::DisableBracketedPaste);
 }
 
 impl Restore for Crossterm {
     fn restore(&mut self) {
+        // Before the alternate screen is left, and on every path `Guard` runs
+        // on: an ordinary exit, an early return, and an unwind. `ratatui`'s
+        // own panic hook calls `ratatui::restore` and knows nothing about
+        // bracketed paste, so this is the only thing that disarms it.
+        disarm(&mut std::io::stdout());
         ratatui::restore();
     }
 }

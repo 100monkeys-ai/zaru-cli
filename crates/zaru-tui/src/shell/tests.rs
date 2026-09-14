@@ -1106,6 +1106,58 @@ fn a_standing_question_takes_every_key_and_the_composer_receives_none() {
     assert!(shell.asking().is_some());
 }
 
+/// The same clause for a paste, which is the other door into the composer.
+///
+/// # Why this is its own check and not an arm of the one above
+///
+/// `zaru-cli`'s `PaneConfirm` absorbs a paste at its own read, **and** this
+/// guard absorbs one here, so the property has two enforcing sites and no
+/// single-site mutation can redden a check driven through that adapter —
+/// library verification lessons §68, which is a measurement of redundancy
+/// rather than of a check. **Both are kept**: that one guards the synchronous
+/// read a tool is awaiting, and this one is the shell's own rule, which has to
+/// hold for every caller and not only for the adapter that exists today. This
+/// check is the one that can falsify *this* site, and it is why the redundancy
+/// is recorded rather than argued for.
+///
+/// Its accepting sibling is immediately below: with no question standing the
+/// same paste does reach the composer, so the guard refuses rather than the
+/// method doing nothing at all.
+#[test]
+fn a_standing_question_absorbs_a_paste_and_the_composer_receives_none() {
+    let mut shell = shell();
+    shell.ask(Confirmation::new(
+        "run `rm -rf build`",
+        STAGED_ANSWERS,
+        false,
+    ));
+    shell.pasted("y\ny\ny", Duration::ZERO, &TrieOf::new(0));
+    assert_eq!(
+        shell.composer().text(),
+        "",
+        "a paste reached the composer while a question was standing; it holds {:?}",
+        shell.composer().text()
+    );
+    assert!(
+        shell.asking().is_some(),
+        "the paste answered the question, which only y, n, Esc and Enter may do"
+    );
+}
+
+/// The sibling: with nothing standing, the same paste reaches the composer
+/// whole, newlines and all.
+#[test]
+fn a_paste_reaches_the_composer_whole_when_no_question_stands() {
+    let mut shell = shell();
+    shell.pasted("y\ny\ny", Duration::ZERO, &TrieOf::new(0));
+    assert_eq!(
+        shell.composer().text(),
+        "y\ny\ny",
+        "the paste did not reach the composer as its own bytes; it holds {:?}",
+        shell.composer().text()
+    );
+}
+
 /// ADR-0011 D6's marking, which raises the prompt without changing what it can
 /// do.
 #[test]

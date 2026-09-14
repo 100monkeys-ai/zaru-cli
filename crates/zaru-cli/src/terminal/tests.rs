@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 use zaru_tui::shell::port::{CommandVocabulary, TranscriptSource};
-use zaru_tui::shell::{COMPOSER_ROWS, Key, Shell, Status};
+use zaru_tui::shell::{COMPOSER_ROWS, Key, Shell, Status, Struck};
 
 const VERSION: &str = "0.0.0";
 
@@ -68,11 +68,24 @@ fn pump(keys: Vec<zaru_tui::shell::Input>) -> (Shell, Recording, Exit) {
     pump_over(keys, &NotesTrie::nothing_cached(WORKSPACE))
 }
 
+/// The same pump over a script that may contain a paste.
+fn pump_staged(struck: Vec<zaru_tui::shell::Struck>) -> (Shell, Recording, Exit) {
+    pump_staged_over(struck, &NotesTrie::nothing_cached(WORKSPACE))
+}
+
 /// The same pump over a fast tier a check chose.
 fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Recording, Exit) {
+    pump_staged_over(keys.into_iter().map(Into::into).collect(), trie)
+}
+
+/// The pump every helper above reaches, over what the terminal handed across.
+fn pump_staged_over(
+    struck: Vec<zaru_tui::shell::Struck>,
+    trie: &NotesTrie,
+) -> (Shell, Recording, Exit) {
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
-    let source = Source::scripted(keys);
+    let source = Source::staged(struck);
     let pace = Held::default();
     let mut shell = shell();
     let runner = crate::cli::Run {
@@ -2010,7 +2023,7 @@ fn the_reader_thread_is_stopped_and_joined_when_the_source_is_dropped() {
     let source = Source::over(move |sender, stop| {
         // One key first, so the check knows the thread really ran rather than
         // returning before it started.
-        let _ = sender.send(press(Key::Char('z')));
+        let _ = sender.send(press(Key::Char('z')).into());
         while !stop.load(Ordering::Acquire) {
             std::hint::spin_loop();
         }
@@ -2024,7 +2037,7 @@ fn the_reader_thread_is_stopped_and_joined_when_the_source_is_dropped() {
     let runtime = crate::compose::turn::runtime().expect("a runtime");
     assert_eq!(
         runtime.block_on(source.next()),
-        Some(press(Key::Char('z'))),
+        Some(press(Key::Char('z')).into()),
         "the reader thread produced nothing, so this check would assert its exit without ever \
          having asserted its entry"
     );
@@ -2053,7 +2066,10 @@ fn the_reader_thread_is_stopped_and_joined_when_the_source_is_dropped() {
 #[test]
 fn a_source_says_nothing_yet_and_never_again_in_different_words() {
     let source = Source::scripted(vec![press(Key::Char('y'))]);
-    assert_eq!(source.try_next(), Taken::Key(press(Key::Char('y'))));
+    assert_eq!(
+        source.try_next(),
+        Taken::Struck(press(Key::Char('y')).into())
+    );
     assert_eq!(
         source.try_next(),
         Taken::Ended,
@@ -2095,7 +2111,7 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
         while counted.load(Ordering::SeqCst) < 3 {
             std::hint::spin_loop();
         }
-        let _ = sender.send(press(Key::Char('y')));
+        let _ = sender.send(press(Key::Char('y')).into());
     });
 
     /// A beat that reports into the counter the reader above is watching.
@@ -2680,7 +2696,7 @@ fn live_source(keys: Vec<zaru_tui::shell::Input>) -> (Source, Arc<std::sync::ato
     let opened = Arc::clone(&sent);
     let source = Source::over(move |sender, stop| {
         for key in keys {
-            let _ = sender.send(key);
+            let _ = sender.send(key.into());
         }
         opened.store(true, Ordering::SeqCst);
         while !stop.load(Ordering::Acquire) {
@@ -3730,7 +3746,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
             }
             std::thread::yield_now();
         }
-        let _ = sender.send(press(Key::Char('y')));
+        let _ = sender.send(press(Key::Char('y')).into());
         while !stop.load(Ordering::Acquire) {
             std::thread::yield_now();
         }
@@ -4204,4 +4220,113 @@ fn painted_at(shell: &Shell, width: u16, height: u16) -> Vec<String> {
                 .to_owned()
         })
         .collect()
+}
+
+/// The escape sequences bracketed paste is armed and disarmed with.
+///
+/// `Crossterm` cannot be constructed here — it is three system calls against a
+/// terminal a check does not have, which that type's own documentation says —
+/// so the sequence is asserted over a writer instead of argued for in a
+/// comment. The literals are the ones the look-and-feel survey measured the
+/// gap by: its row 13 reads "`ESC[?2004h` appears nowhere in any capture".
+#[test]
+fn arming_and_disarming_write_the_bracketed_paste_sequences() {
+    let mut armed = Vec::new();
+    crate::terminal::driver::arm(&mut armed).expect("a vector never fails to be written to");
+    assert_eq!(
+        String::from_utf8(armed.clone()).expect("the sequence is ASCII"),
+        "\u{1b}[?2004h",
+        "arming wrote {:?}, and a terminal that was not asked frames no paste",
+        String::from_utf8_lossy(&armed)
+    );
+
+    let mut disarmed = Vec::new();
+    crate::terminal::driver::disarm(&mut disarmed);
+    assert_eq!(
+        String::from_utf8(disarmed.clone()).expect("the sequence is ASCII"),
+        "\u{1b}[?2004l",
+        "disarming wrote {:?}, and a terminal left armed tells every later program that a paste \
+         is bracketed",
+        String::from_utf8_lossy(&disarmed)
+    );
+}
+
+/// A three-line paste through the pump is one task, not three.
+///
+/// The survey's row 13, measured at the pump rather than at the composer:
+/// "Pasting three lines ran two turns and left the third in the composer."
+/// This stages the paste as the terminal now hands it over — one event — and
+/// asserts that the `Enter` after it submits the block whole.
+///
+/// The mutants: route a paste to nothing; submit a paste without waiting for
+/// `Enter`; keep only its first line.
+#[test]
+fn a_three_line_paste_is_submitted_as_one_task() {
+    let (_, surface, exit) = pump_staged(vec![
+        Struck::Pasted("réad src/main.rs\nthen tell me\nwhat it does".to_owned()),
+        press(Key::Enter).into(),
+        Struck::Key(press(Key::Char('e'))),
+        Struck::Key(press(Key::Char('x'))),
+        Struck::Key(press(Key::Char('i'))),
+        Struck::Key(press(Key::Char('t'))),
+        press(Key::Enter).into(),
+    ]);
+
+    assert_eq!(exit.code(), 0, "the pump should have left through the word");
+    let spoken: Vec<&String> = surface
+        .frames
+        .last()
+        .expect("no frame was painted")
+        .iter()
+        .filter(|row| row.contains("réad src/main.rs"))
+        .collect();
+    assert_eq!(
+        spoken.len(),
+        1,
+        "the pasted block should be echoed as one task; the last frame holds {spoken:?}"
+    );
+    let last = surface.frames.last().expect("no frame was painted");
+    assert!(
+        last.iter().any(|row| row.contains("what it does")),
+        "the block's third line never reached the pane, so it was not part of the task: {last:?}"
+    );
+}
+
+/// A paste while a permission question stands is absorbed, exactly as a key is.
+///
+/// ADR-0011 D3's `ask` "prompts before any write or command", and a prompt a
+/// user can paste past is no more a prompt than one they can type past. Two
+/// arms, because absorbing everything would be a prompt nobody can answer: the
+/// paste changes nothing, and the `y` after it still answers.
+#[test]
+fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read() {
+    use crate::tools::port::Confirm as _;
+
+    let source = Source::staged(vec![
+        Struck::Pasted("y\ny\ny".to_owned()),
+        Struck::Key(press(Key::Char('y'))),
+    ]);
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut shell = shell();
+    let pace = Held::default();
+    let answered = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        PaneConfirm::over(&pane, &source, &pace)
+            .confirm(&Question {
+                statement: "Allow fs.write /tmp/note.txt?".to_owned(),
+                prominent: false,
+            })
+            .expect("the terminal answered")
+    };
+    assert!(
+        answered,
+        "the `y` after the paste was not read, so the paste consumed the answer"
+    );
+    assert_eq!(
+        shell.composer().text(),
+        "",
+        "the paste reached the composer while a question stood; it holds {:?}",
+        shell.composer().text()
+    );
 }
