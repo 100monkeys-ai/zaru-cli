@@ -2324,14 +2324,22 @@ impl Future for HeldOpen {
 /// Deterministic in both directions: the turn cannot finish before the gate is
 /// open and the beats counted, and it cannot fail to finish after.
 #[derive(Debug)]
-struct Releasing {
+struct Releasing<'a> {
     beats: Arc<AtomicUsize>,
     after: usize,
-    gate: Arc<std::sync::atomic::AtomicBool>,
+    /// The source the keys are being read out of, and how many it owes.
+    ///
+    /// **The gate was the reader thread's own "I have finished sending" flag
+    /// until 2026-09-14, and that flag is not the moment this staging needs.**
+    /// See [`Source::delivered`](crate::terminal::source::Source::delivered)
+    /// for the interleaving it let through and the two runner failures that
+    /// found it.
+    source: &'a Source,
+    owed: usize,
     release: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl crate::terminal::source::Pace for Releasing {
+impl crate::terminal::source::Pace for Releasing<'_> {
     fn wait(&self) {
         self.count();
     }
@@ -2346,12 +2354,16 @@ impl crate::terminal::source::Pace for Releasing {
     /// empty composer because of it. A beat is a beat that was *waited*.
     fn elapse(&self) -> impl Future<Output = ()> + Send {
         let beats = Arc::clone(&self.beats);
-        let gate = Arc::clone(&self.gate);
         let release = Arc::clone(&self.release);
         let after = self.after;
+        let source = self.source;
+        let owed = self.owed;
         core::future::poll_fn(move |_| {
             let waited = beats.fetch_add(1, Ordering::SeqCst) + 1;
-            if waited >= after && gate.load(Ordering::SeqCst) {
+            // **Both, and the second is the one that is a moment rather than
+            // a claim.** A source that still owes a key has not handed it
+            // over, whatever any thread believes about its own progress.
+            if waited >= after && source.delivered() >= owed {
                 release.store(true, Ordering::SeqCst);
             }
             core::task::Poll::Ready(())
@@ -2374,14 +2386,14 @@ impl crate::terminal::source::Pace for Releasing {
 /// pass while the two readings drifted.
 ///
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
-impl zaru_core::iteration::Clock for Releasing {
+impl zaru_core::iteration::Clock for Releasing<'_> {
     fn now(&self) -> core::time::Duration {
         let beats = self.beats.load(Ordering::SeqCst);
         crate::terminal::source::TICK * u32::try_from(beats).unwrap_or(u32::MAX)
     }
 }
 
-impl Releasing {
+impl Releasing<'_> {
     /// How many beats have been waited, for a staging that keys on them.
     fn beats_so_far(&self) -> usize {
         self.beats.load(Ordering::SeqCst)
@@ -2389,7 +2401,7 @@ impl Releasing {
 
     fn count(&self) {
         let beats = self.beats.fetch_add(1, Ordering::SeqCst) + 1;
-        if beats >= self.after && self.gate.load(Ordering::SeqCst) {
+        if beats >= self.after && self.source.delivered() >= self.owed {
             self.release.store(true, Ordering::SeqCst);
         }
     }
@@ -2403,21 +2415,47 @@ struct Raceable {
 }
 
 impl Raceable {
-    /// A turn released once `gate` is open and `after` beats have been waited.
+    /// A turn released once `source` has delivered everything it owes and
+    /// `after` beats have been waited.
     ///
-    /// **This is what makes a check over a live reader deterministic rather
-    /// than a coin.** `race` is `biased` and polls the terminal before the
-    /// beat, so a buffered key is always taken before a beat fires; therefore
-    /// the first beat after the reader has finished sending is a beat at which
-    /// the channel is provably drained. The gate is that "has finished
-    /// sending", set by the reader thread itself.
-    fn gated(after: usize, gate: Arc<std::sync::atomic::AtomicBool>) -> (Self, Releasing) {
+    /// # The gate is a moment, and it was a claim until 2026-09-14
+    ///
+    /// It read: "`race` is `biased` and polls the terminal before the beat, so
+    /// a buffered key is always taken before a beat fires; therefore the first
+    /// beat after the reader has finished sending is a beat at which the
+    /// channel is provably drained." The premise is true and the conclusion
+    /// does not follow. The reader thread's flag says values were **sent**;
+    /// the terminal branch can observe an empty channel and the beat branch
+    /// can read that flag **in the same evaluation**, with the thread running
+    /// between the two — and the turn is then released over keys nobody read.
+    ///
+    /// That is library [verification lessons] §74 exactly: an assertion about
+    /// the order of events produced by two parties is an assertion about the
+    /// scheduler. It cost two failures on a hosted runner — runs 34798764292
+    /// and 34801344643, `"the line typed during the turn is not in the
+    /// composer; it reads \"\""` and `"no frame painted `saffron` on the input
+    /// row, so the keystrokes never reached the composer or were never
+    /// painted"` — against 0 in 120 isolated runs and 0 in 12 whole-suite runs
+    /// on the machine it was written on, idle and under load.
+    ///
+    /// So the gate is [`Source::delivered`](crate::terminal::source::Source::delivered),
+    /// which counts what **left** the channel. A source still owing a key
+    /// cannot release the turn, whatever any thread believes about itself, and
+    /// there is no window for the scheduler to fit between.
+    ///
+    /// `owed` is zero for every check that stages no keys, which is what keeps
+    /// those checks' meaning exactly what it was: a gate over nothing is open
+    /// at once, so they are still purely "after `after` beats".
+    ///
+    /// [verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons-4
+    fn gated(after: usize, source: &Source, owed: usize) -> (Self, Releasing<'_>) {
         let beats = Arc::new(AtomicUsize::new(0));
         let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let pace = Releasing {
             beats: Arc::clone(&beats),
             after,
-            gate,
+            source,
+            owed,
             release: Arc::clone(&release),
         };
         (
@@ -2476,9 +2514,9 @@ impl Metered {
 /// staging rather than against the product. Keying on the beat makes the
 /// three stages happen in a fixed order every run, which is library
 /// verification-lessons §57 — a check over a random instrument is not a check.
-fn reports_by_beat(
-    pace: &Releasing,
-) -> impl Fn() -> Option<crate::providers::TokenUsage> + use<'_> {
+fn reports_by_beat<'a>(
+    pace: &'a Releasing<'_>,
+) -> impl Fn() -> Option<crate::providers::TokenUsage> + use<'a> {
     move || match pace.beats_so_far() {
         0 | 1 => None,
         2 | 3 => Some(crate::providers::TokenUsage::counted(390, 79)),
@@ -2510,8 +2548,8 @@ fn status_rows(surface: &Recording) -> Vec<String> {
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 #[test]
 fn the_elapsed_figure_advances_across_the_beats_of_one_turn() {
-    let (source, sent) = live_source(Vec::new());
-    let (staged, pace) = Raceable::gated(5, sent);
+    let (source, owed) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, &source, owed);
     let metered = Metered::new();
     let reader = metered.reader();
     let meter = crate::terminal::driver::Meter::started(&pace, &reader);
@@ -2579,8 +2617,8 @@ fn the_elapsed_figure_advances_across_the_beats_of_one_turn() {
 /// `refresh` writing the narrow spelling into both fields.
 #[test]
 fn the_token_count_changes_when_an_exchange_reports_one_and_not_before() {
-    let (source, sent) = live_source(Vec::new());
-    let (staged, pace) = Raceable::gated(6, sent);
+    let (source, owed) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(6, &source, owed);
     // Nothing at first, then one exchange's usage, then a second exchange's
     // larger one -- each at a named beat, so the three stages happen in the
     // same order every run.
@@ -2642,8 +2680,8 @@ fn the_token_count_changes_when_an_exchange_reports_one_and_not_before() {
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 #[test]
 fn the_context_figure_is_the_same_bytes_on_every_frame_of_one_turn() {
-    let (source, sent) = live_source(Vec::new());
-    let (staged, pace) = Raceable::gated(5, sent);
+    let (source, owed) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, &source, owed);
     let metered = Metered::new();
     metered.reports(Some(crate::providers::TokenUsage::counted(1, 2)));
     let reader = metered.reader();
@@ -2812,19 +2850,17 @@ fn corpus_a_model_identifier_cannot_forge_a_second_segment_on_the_row() {
 /// check staged over one would be asserting `SourceEnded` rather than anything
 /// about a suspended turn. Returns the gate the reader opens when it has sent
 /// everything.
-fn live_source(keys: Vec<zaru_tui::shell::Input>) -> (Source, Arc<std::sync::atomic::AtomicBool>) {
-    let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let opened = Arc::clone(&sent);
+fn live_source(keys: Vec<zaru_tui::shell::Input>) -> (Source, usize) {
+    let owed = keys.len();
     let source = Source::over(move |sender, stop| {
         for key in keys {
             let _ = sender.send(key.into());
         }
-        opened.store(true, Ordering::SeqCst);
         while !stop.load(Ordering::Acquire) {
             std::thread::yield_now();
         }
     });
-    (source, sent)
+    (source, owed)
 }
 
 /// The row the composer's input sits on, out of a painted frame.
@@ -2846,8 +2882,8 @@ fn input_row(frame: &[String]) -> String {
 /// The mutant: remove the beat's branch from the `select!`.
 #[test]
 fn the_pane_repaints_while_a_turn_is_suspended() {
-    let (source, sent) = live_source(Vec::new());
-    let (staged, pace) = Raceable::gated(5, sent);
+    let (source, owed) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, &source, owed);
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
@@ -2925,10 +2961,10 @@ fn a_keystroke_during_a_turn_is_painted_and_enter_queues_it_as_the_next_task() {
     // suspended rather than after it finished.
     let mut typing = keys("saffron");
     typing.push(press(Key::Enter));
-    let (source, sent) = live_source(typing);
+    let (source, owed) = live_source(typing);
     // One beat after the reader has finished sending, which `race`'s `biased`
     // ordering makes a beat at which every key has already been read.
-    let (staged, pace) = Raceable::gated(1, sent);
+    let (staged, pace) = Raceable::gated(1, &source, owed);
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
@@ -3000,8 +3036,8 @@ fn a_second_enter_during_one_turn_replaces_the_queued_task() {
     typing.push(press(Key::Enter));
     typing.extend(keys("second"));
     typing.push(press(Key::Enter));
-    let (source, sent) = live_source(typing);
-    let (staged, pace) = Raceable::gated(1, sent);
+    let (source, owed) = live_source(typing);
+    let (staged, pace) = Raceable::gated(1, &source, owed);
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
@@ -3040,8 +3076,8 @@ fn a_second_enter_during_one_turn_replaces_the_queued_task() {
 /// something in it does queue.
 #[test]
 fn an_enter_on_an_empty_prompt_during_a_turn_queues_nothing() {
-    let (source, sent) = live_source(vec![press(Key::Enter)]);
-    let (staged, pace) = Raceable::gated(1, sent);
+    let (source, owed) = live_source(vec![press(Key::Enter)]);
+    let (staged, pace) = Raceable::gated(1, &source, owed);
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
@@ -3093,7 +3129,7 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
     // on a beat that cannot fire until every key has been read (`race` is
     // `biased`), and an ignored interrupt therefore reports `Ran` and fails
     // the assertion below in milliseconds.
-    let (source, sent) = live_source(vec![
+    let (source, owed) = live_source(vec![
         press(Key::Char('h')),
         press(Key::Char('i')),
         zaru_tui::shell::Input {
@@ -3105,7 +3141,7 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
         press(Key::Char('x')),
         press(Key::Enter),
     ]);
-    let (staged, pace) = Raceable::gated(20, sent);
+    let (staged, pace) = Raceable::gated(20, &source, owed);
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
@@ -3808,8 +3844,8 @@ fn adr_0010_d4s_resumed_turn_is_started_by_product_source_and_not_only_by_a_chec
 /// without adding it to the shell.
 #[test]
 fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
-    let (source, sent) = live_source(Vec::new());
-    let (staged, pace) = Raceable::gated(5, sent);
+    let (source, owed) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(5, &source, owed);
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));

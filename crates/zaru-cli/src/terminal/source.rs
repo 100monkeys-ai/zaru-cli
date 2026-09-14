@@ -182,6 +182,7 @@ pub struct Source {
     /// `None` for a scripted source, which has no thread.
     reader: Option<Reader>,
     contended: AtomicUsize,
+    delivered: AtomicUsize,
 }
 
 impl core::fmt::Debug for Source {
@@ -190,6 +191,7 @@ impl core::fmt::Debug for Source {
         f.debug_struct("Source")
             .field("reading_a_terminal", &self.reader.is_some())
             .field("contended", &self.contended.load(Ordering::SeqCst))
+            .field("delivered", &self.delivered.load(Ordering::SeqCst))
             .finish_non_exhaustive()
     }
 }
@@ -222,6 +224,7 @@ impl Source {
             receiver: Mutex::new(receiver),
             reader: None,
             contended: AtomicUsize::new(0),
+            delivered: AtomicUsize::new(0),
         }
     }
 
@@ -256,6 +259,7 @@ impl Source {
             receiver: Mutex::new(receiver),
             reader: Some(Reader::spawn(sender, body)),
             contended: AtomicUsize::new(0),
+            delivered: AtomicUsize::new(0),
         }
     }
 
@@ -290,6 +294,38 @@ impl Source {
         self.contended.load(Ordering::SeqCst)
     }
 
+    /// How many keystrokes and pastes this source has handed over.
+    ///
+    /// # It counts what LEFT the channel, and that distinction is the point
+    ///
+    /// A reader thread that has finished `send`ing has put values in a
+    /// channel; it has said nothing about whether anything has taken them.
+    /// The two are one instant apart on a fast machine and are not the same
+    /// fact, and a check that treats the first as the second is asserting
+    /// about the scheduler — library [verification lessons] §74, whose own
+    /// sentence is that a runner failing what your machine passes is the
+    /// finding rather than an outage.
+    ///
+    /// That is not hypothetical here. `a_keystroke_during_a_turn_is_painted_
+    /// and_enter_queues_it_as_the_next_task` and the check it was rewritten
+    /// from both staged a turn released one beat after the reader said it had
+    /// finished, on the stated reasoning that
+    /// [`race`](crate::terminal::driver::race) is `biased` and "therefore the
+    /// first beat after the reader has finished sending is a beat at which the
+    /// channel is provably drained". **It is not**: the terminal branch can
+    /// observe an empty channel and the beat branch can read the flag in the
+    /// same evaluation, with the reader thread running between them, and the
+    /// turn is then released over eight keys nobody read. It failed twice on a
+    /// hosted runner and never on the machine it was written on.
+    ///
+    /// So this counts the moment, and a check gates on it.
+    ///
+    /// [verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons-4
+    #[must_use]
+    pub fn delivered(&self) -> usize {
+        self.delivered.load(Ordering::SeqCst)
+    }
+
     /// The next keystroke if one is already here, without waiting.
     ///
     /// For a caller with no runtime to await on — see [`Pace`].
@@ -299,7 +335,10 @@ impl Source {
             return Taken::Nothing;
         };
         match receiver.try_recv() {
-            Ok(struck) => Taken::Struck(struck),
+            Ok(struck) => {
+                self.delivered.fetch_add(1, Ordering::SeqCst);
+                Taken::Struck(struck)
+            }
             Err(TryRecvError::Empty) => Taken::Nothing,
             Err(TryRecvError::Disconnected) => Taken::Ended,
         }
@@ -336,7 +375,11 @@ impl Source {
                 context.waker().wake_by_ref();
                 return core::task::Poll::Pending;
             };
-            receiver.poll_recv(context)
+            let polled = receiver.poll_recv(context);
+            if matches!(polled, core::task::Poll::Ready(Some(_))) {
+                self.delivered.fetch_add(1, Ordering::SeqCst);
+            }
+            polled
         })
     }
 }
