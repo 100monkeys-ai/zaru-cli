@@ -550,3 +550,63 @@ impl Confirmation {
         }
     }
 }
+
+/// What the user is asked for when the answer is a secret.
+///
+/// The second kind of question this shell stands, beside [`Confirmation`], and
+/// **not a second confirmer**: nothing here answers yes or no, and no port in
+/// `zaru-cli` abstracts over the two. [ADR-0015] D2's `/providers keys add
+/// <kind>` had no in-session half because [ADR-0007] D7 reads the key from
+/// standard input — an argument being in the shell's history file and in `ps`
+/// output for every user on the machine — and a terminal in raw mode has no
+/// standard input to hand it. What was missing is a way to read a secret at a
+/// terminal without echoing it, and this is that question's half of it.
+///
+/// Both fields are **composed by the caller and handed here**, for
+/// [`Confirmation`]'s own reason: what the user was told and what the harness
+/// believes it asked cannot be allowed to drift apart. This crate authors one
+/// thing about this question and it is the mask glyph — see
+/// [`MASK`](crate::shell::render::MASK).
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretRequest {
+    /// The whole sentence the question states, naming what is being asked for.
+    pub statement: String,
+    /// What follows the masked row: how to finish, and how to decline.
+    ///
+    /// Handed across exactly as [`Confirmation::answers`] is, and for the same
+    /// reason stated there — the words a user reads are part of what they were
+    /// told, so they cross the port as a value and this crate holds no
+    /// constant for them.
+    pub guidance: String,
+}
+
+impl SecretRequest {
+    /// A question for a secret, and the line telling the reader how to answer.
+    #[must_use]
+    pub fn new(statement: impl Into<String>, guidance: impl Into<String>) -> Self {
+        Self {
+            statement: statement.into(),
+            guidance: guidance.into(),
+        }
+    }
+}
+
+/// How a [`SecretRequest`] ended.
+///
+/// **Two variants and no `Option<String>`**, for the reason [`Taken`] and
+/// [`Turned`] in `zaru-cli` already carry: a user who declined and a user who
+/// typed nothing are different facts, and a caller does different things with
+/// them. The bytes are never in here — they leave the shell only through
+/// [`Shell::take_secret`](crate::shell::Shell::take_secret), which is named so
+/// that one search finds every call site, exactly as `zaru-cli`'s
+/// `Secret::expose_for_dispatch` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretAnswer {
+    /// The user finished typing and pressed `Enter`.
+    Given,
+    /// The user pressed `Esc` or `Ctrl-C`. Nothing is stored.
+    Declined,
+}

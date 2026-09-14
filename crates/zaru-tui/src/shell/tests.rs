@@ -2871,3 +2871,366 @@ fn corpus_the_call_a_permission_prompt_is_about_is_on_the_pane_while_an_answer_s
         }
     }
 }
+
+// ---------------------------------------------------- ADR-0011 D3, 2026-09-14
+
+/// The statement and the guidance a check hands the shell.
+///
+/// **Literals this check owns, and deliberately not the product's.** The one
+/// source is `zaru-cli`, which composes both and hands them across; what the
+/// shell owes is to paint whatever it was handed, and a check that read the
+/// product's constants would be comparing them with themselves — the same
+/// argument `STAGED_ANSWERS` above already makes.
+const STAGED_SECRET_STATEMENT: &str = "the gemini API key";
+const STAGED_SECRET_GUIDANCE: &str = "enter to store · esc to cancel";
+
+/// The value a check types at the question. Nothing in the product carries it.
+const TYPED_SECRET: &str = "AIzaSyKEYS-IN-SESSION-9f3c1e";
+
+fn asking_for_a_secret() -> Shell {
+    let mut shell = shell();
+    shell.ask_secret(crate::shell::SecretRequest::new(
+        STAGED_SECRET_STATEMENT,
+        STAGED_SECRET_GUIDANCE,
+    ));
+    shell
+}
+
+fn type_the_secret(shell: &mut Shell) {
+    for character in TYPED_SECRET.chars() {
+        key(shell, Key::Char(character));
+    }
+}
+
+/// **Security corpus.** No byte of a secret typed at the question reaches any
+/// cell of any frame, at any width, after any keystroke.
+///
+/// # What discriminates
+///
+/// The **sibling below** asserts the statement and the guidance *are* painted,
+/// so a shell that painted an empty frame could not satisfy this by showing
+/// nothing. The value is typed one character at a time and the frame is read
+/// after **every** one, so a renderer that painted the buffer only once it was
+/// complete — or only at a width where it fit — would not escape.
+///
+/// **The mutants**: `prompt_lines`' secret arm painting the typed buffer
+/// instead of `MASK.repeat(len)`; `Shell` growing an accessor that yields the
+/// bytes, which is what the absence of one in `asking_secret` prevents.
+///
+/// The ASCII core is asserted beside the value for the reason ADR-0007
+/// clause 3's own check records: `{:?}` escapes a combining mark, so an
+/// absence assertion on the value alone can pass over a rendering that
+/// published every byte of it.
+#[test]
+fn corpus_a_secret_typed_at_the_question_reaches_no_cell_of_any_frame() {
+    for width in [40u16, 60, 100] {
+        let mut shell = asking_for_a_secret();
+        for (typed, (offset, character)) in TYPED_SECRET.char_indices().enumerate() {
+            key(&mut shell, Key::Char(character));
+            let (rows, _) = painted(&shell, width, HEIGHT);
+            let frame = rows.join("\n");
+            // **From three characters on**, because a one- or two-character
+            // prefix of any value is ordinary text that the question's own
+            // authored sentence may legitimately contain — `A` is in `API
+            // key`. Three is where the prefix stops being a letter and starts
+            // being the value, and every prefix from there to the whole of it
+            // is asserted.
+            let so_far = &TYPED_SECRET[..offset + character.len_utf8()];
+            if so_far.len() >= 3 {
+                assert!(
+                    !frame.contains(so_far),
+                    "what had been typed reached the frame at width {width} after {} \
+                     character(s):\n{frame}",
+                    typed + 1
+                );
+            }
+        }
+        assert!(
+            !painted(&shell, width, HEIGHT)
+                .0
+                .join("\n")
+                .contains("AIzaSy"),
+            "the value's leading bytes reached the frame at width {width}"
+        );
+    }
+}
+
+/// The sibling: the question itself **is** painted, so the absence above is
+/// about a mask rather than about an empty frame.
+#[test]
+fn a_secret_questions_statement_and_guidance_are_painted() {
+    let mut shell = asking_for_a_secret();
+    type_the_secret(&mut shell);
+    let (rows, _) = painted(&shell, WIDTH, HEIGHT);
+    let frame = rows.join("\n");
+    assert!(
+        frame.contains(STAGED_SECRET_STATEMENT),
+        "the statement the shell was handed is not on the frame:\n{frame}"
+    );
+    assert!(
+        frame.contains(STAGED_SECRET_GUIDANCE),
+        "the guidance the shell was handed is not on the frame:\n{frame}"
+    );
+}
+
+/// The masked row is one [`MASK`] glyph per typed character and nothing else.
+///
+/// **The mutant**: a fixed-width marker, which is the alternative the constant
+/// names and rejects. It reddens here rather than passing quietly, which is
+/// what makes replacing the mask one constant and one check.
+///
+/// [`MASK`]: crate::shell::render::MASK
+#[test]
+fn the_masked_row_is_one_glyph_per_typed_character() {
+    let mut shell = asking_for_a_secret();
+    for typed in 0..8usize {
+        let lines = shell.prompt_lines();
+        assert_eq!(
+            lines[1],
+            crate::shell::render::MASK.repeat(typed),
+            "the masked row is not {typed} glyph(s) after {typed} character(s)"
+        );
+        key(&mut shell, Key::Char('x'));
+    }
+}
+
+/// **Security corpus.** A typed secret reaches neither the pane, the queued
+/// row, nor the composer — after a question that was answered **and** after
+/// one that was declined.
+///
+/// # What discriminates
+///
+/// The **sibling** is that the composer still takes a typed line once the
+/// question is gone, so a shell that had simply stopped accepting keystrokes
+/// could not satisfy this.
+///
+/// **The mutants**: `Shell::pasted` appending to the composer as well as to
+/// the buffer; `resolve_secret` leaving the typed value behind in a notice or
+/// on the pane.
+#[test]
+fn corpus_a_secret_reaches_neither_the_pane_the_queue_nor_the_composer() {
+    for (label, ending) in [("given", Key::Enter), ("declined", Key::Esc)] {
+        let mut shell = asking_for_a_secret();
+        type_the_secret(&mut shell);
+        key(&mut shell, ending);
+
+        let painted_lines = shell
+            .pane_lines()
+            .iter()
+            .map(|line| line.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !painted_lines.contains(TYPED_SECRET),
+            "the {label} secret reached the pane's lines:\n{painted_lines}"
+        );
+        assert!(
+            !shell.composer().text().contains(TYPED_SECRET),
+            "the {label} secret reached the composer: {:?}",
+            shell.composer().text()
+        );
+        assert!(
+            shell.queued().is_none(),
+            "the {label} secret reached the queued row"
+        );
+        let (rows, _) = painted(&shell, WIDTH, HEIGHT);
+        assert!(
+            !rows.join("\n").contains(TYPED_SECRET),
+            "the {label} secret is on the frame after the question ended:\n{}",
+            rows.join("\n")
+        );
+    }
+}
+
+/// The sibling: an ordinary line still reaches the composer once the question
+/// has gone.
+#[test]
+fn a_typed_line_still_reaches_the_composer_once_the_question_is_gone() {
+    let mut shell = asking_for_a_secret();
+    type_the_secret(&mut shell);
+    key(&mut shell, Key::Enter);
+    typing(shell.composer_mut(), "mémo", NOW, &TrieOf::new(0));
+    assert_eq!(shell.composer().text(), "mémo");
+}
+
+/// **Security corpus.** A **pasted** secret reaches no cell and no composer,
+/// and it is what `take_secret` yields.
+///
+/// A paste is the path that matters: it is how an API key actually arrives.
+/// The confirmation absorbs a paste and this question takes it, which is
+/// ADR-0011 D3's 2026-09-14 amendment, and both arms are asserted here so the
+/// divergence is deliberate rather than incidental.
+#[test]
+fn corpus_a_pasted_secret_reaches_no_cell_and_is_what_take_secret_yields() {
+    let mut shell = asking_for_a_secret();
+    shell.pasted(TYPED_SECRET, NOW, &TrieOf::new(0));
+
+    let (rows, _) = painted(&shell, WIDTH, HEIGHT);
+    assert!(
+        !rows.join("\n").contains(TYPED_SECRET),
+        "the pasted secret reached the frame:\n{}",
+        rows.join("\n")
+    );
+    assert_eq!(
+        shell.prompt_lines()[1],
+        crate::shell::render::MASK.repeat(TYPED_SECRET.chars().count()),
+        "a paste did not reach the masked row's count"
+    );
+
+    key(&mut shell, Key::Enter);
+    assert_eq!(
+        shell.secret_answer(),
+        Some(crate::shell::SecretAnswer::Given)
+    );
+    assert_eq!(
+        shell.take_secret().as_deref(),
+        Some(TYPED_SECRET),
+        "the paste is not what the question yielded"
+    );
+    assert!(
+        shell.composer().text().is_empty(),
+        "the paste also reached the composer: {:?}",
+        shell.composer().text()
+    );
+}
+
+/// A confirmation still absorbs a paste, which is the arm the amendment above
+/// deliberately did not change.
+#[test]
+fn a_confirmation_still_absorbs_a_paste() {
+    let mut shell = shell();
+    shell.ask(Confirmation::new("about to write", STAGED_ANSWERS, false));
+    shell.pasted("y\n", NOW, &TrieOf::new(0));
+    assert!(
+        shell.asking().is_some(),
+        "the confirmation was answered by a paste"
+    );
+    assert!(shell.composer().text().is_empty());
+}
+
+/// Taking a secret clears it, so a second take is `None`.
+///
+/// **The mutant**: `take_secret` cloning rather than taking, which leaves a
+/// copy in the shell for a later frame — or a later caller — to reach.
+#[test]
+fn taking_a_secret_clears_it_so_a_second_take_is_none() {
+    let mut shell = asking_for_a_secret();
+    type_the_secret(&mut shell);
+    key(&mut shell, Key::Enter);
+    assert_eq!(shell.take_secret().as_deref(), Some(TYPED_SECRET));
+    assert_eq!(shell.take_secret(), None, "the value survived being taken");
+}
+
+/// `Esc` and `Ctrl-C` decline, and a declined question yields nothing.
+///
+/// **The divergence from the confirmation's key table is asserted here**, not
+/// only recorded: at a confirmation `Ctrl-C` is ignored, and at this question
+/// it declines. Both arms are checked so that changing either is visible.
+#[test]
+fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
+    for (label, input) in [
+        (
+            "esc",
+            Input {
+                key: Key::Esc,
+                ctrl: false,
+                alt: false,
+                shift: false,
+            },
+        ),
+        (
+            "ctrl-c",
+            Input {
+                key: Key::Char('c'),
+                ctrl: true,
+                alt: false,
+                shift: false,
+            },
+        ),
+    ] {
+        let mut shell = asking_for_a_secret();
+        type_the_secret(&mut shell);
+        let acted = shell.key(input, NOW, &TrieOf::new(0), &StagedVocabulary);
+        assert_eq!(
+            acted,
+            Action::Idle,
+            "{label} at a secret question left the session"
+        );
+        assert_eq!(
+            shell.secret_answer(),
+            Some(crate::shell::SecretAnswer::Declined),
+            "{label} did not decline"
+        );
+        assert_eq!(
+            shell.take_secret(),
+            None,
+            "{label} declined and the value was still there to take"
+        );
+        assert!(shell.asking_secret().is_none(), "{label} left the question");
+    }
+}
+
+/// A confirmation still ignores `Ctrl-C`, which is the arm above's other half.
+#[test]
+fn a_confirmation_still_ignores_ctrl_c() {
+    let mut shell = shell();
+    shell.ask(Confirmation::new("about to write", STAGED_ANSWERS, false));
+    let acted = shell.key(
+        Input {
+            key: Key::Char('c'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        },
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary,
+    );
+    assert_eq!(acted, Action::Idle);
+    assert!(
+        shell.asking().is_some(),
+        "ctrl-c answered a confirmation, which is not this table's rule"
+    );
+    assert_eq!(shell.answer(), None);
+}
+
+/// ADR-0005 D2 one layer out, at a secret question: the input row does not
+/// move because a question stands.
+///
+/// The composer's area is taken **whole** by a standing question, exactly as a
+/// confirmation already takes it, so the record needs no amendment — and that
+/// is asserted rather than argued.
+#[test]
+fn the_input_row_is_byte_identical_either_side_of_a_secret_question() {
+    let input_row = usize::from(HEIGHT - COMPOSER_ROWS);
+
+    let shell = shell();
+    let (before, cursor_before) = painted(&shell, WIDTH, HEIGHT);
+
+    let mut asking = asking_for_a_secret();
+    type_the_secret(&mut asking);
+    key(&mut asking, Key::Enter);
+    let (after, cursor_after) = painted(&asking, WIDTH, HEIGHT);
+
+    assert_eq!(
+        before[input_row], after[input_row],
+        "the input row moved across a secret question"
+    );
+    assert_eq!(cursor_before, cursor_after, "the cursor moved");
+}
+
+/// Only one question stands at a time, whichever is asked second.
+#[test]
+fn a_second_question_replaces_the_first_and_two_never_stand() {
+    let mut shell = asking_for_a_secret();
+    shell.ask(Confirmation::new("about to write", STAGED_ANSWERS, false));
+    assert!(shell.asking_secret().is_none());
+    assert!(shell.asking().is_some());
+
+    shell.ask_secret(crate::shell::SecretRequest::new(
+        STAGED_SECRET_STATEMENT,
+        STAGED_SECRET_GUIDANCE,
+    ));
+    assert!(shell.asking().is_none());
+    assert!(shell.asking_secret().is_some());
+}

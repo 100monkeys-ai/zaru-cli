@@ -83,6 +83,35 @@ fn tail(lines: &[Line], height: u16, width: u16) -> Vec<Row> {
     rows[start..].to_vec()
 }
 
+/// What one character typed at a [`SecretRequest`] paints as.
+///
+/// U+2022, BULLET. **Drafted under a delegated coordinator ruling of
+/// 2026-09-14, open to Jeshua's veto**, in the same shape as the register
+/// glyphs, `STRIP_ROWS` and the composer's `RETURN`: no record names a glyph
+/// for a masked character and one is needed, so it is named once here with its
+/// reasoning rather than typed at a call site. It is recorded on
+/// [ADR-0011's amendments volume 2].
+///
+/// # One glyph per character, and the length is the disclosure
+///
+/// **The cost is stated rather than glossed**: a row of one glyph per
+/// character publishes the value's *length* to a shoulder, to a screen capture
+/// and to terminal scrollback. A glyph is not a byte of the value — the
+/// security corpus asserts bytes — but a count is metadata, and this is where
+/// it is admitted.
+///
+/// **The reason it is paid** is that a row painting nothing is what `sudo`
+/// does, and a paste into a row that paints nothing is indistinguishable from
+/// a dead terminal. That is row 12 of [the look-and-feel survey] in its
+/// general form: a thing that happened, which nothing on the screen said. This
+/// workspace's own trade is that the legible option wins, and the alternative
+/// is named here so that replacing it is one constant and one check.
+///
+/// [ADR-0011's amendments volume 2]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface-updates-2
+/// [the look-and-feel survey]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
+/// [`SecretRequest`]: crate::shell::SecretRequest
+pub const MASK: &str = "\u{2022}";
+
 impl Shell {
     /// The three regions, top to bottom.
     ///
@@ -131,6 +160,18 @@ impl Shell {
     /// [`Confirmation::answers`]: crate::shell::Confirmation::answers
     #[must_use]
     pub fn prompt_lines(&self) -> Vec<String> {
+        // **The secret arm reads a count and never the bytes**, because
+        // `Shell` exposes no accessor that yields them. What cannot be reached
+        // cannot be painted by accident, which is the structural half of
+        // ADR-0007 D3 arriving on a surface that did not exist when that
+        // clause was written.
+        if let Some(request) = self.asking_secret() {
+            return vec![
+                request.statement.clone(),
+                MASK.repeat(self.secret_len()),
+                request.guidance.clone(),
+            ];
+        }
         match self.asking() {
             None => Vec::new(),
             Some(question) => {

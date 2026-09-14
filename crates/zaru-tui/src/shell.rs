@@ -66,7 +66,8 @@ pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{
-    CommandVocabulary, Confirmation, Line, Namespace, Palette, Register, Row, TranscriptSource,
+    CommandVocabulary, Confirmation, Line, Namespace, Palette, Register, Row, SecretAnswer,
+    SecretRequest, TranscriptSource,
 };
 
 use crate::composer::{Composer, Entries};
@@ -717,8 +718,22 @@ pub struct Shell {
     /// The answer being streamed, painted below everything else until the
     /// turn ends. See [`Shell::stream_delta`].
     streaming: Option<String>,
-    asking: Option<Confirmation>,
+    /// The one question standing, of either kind.
+    ///
+    /// **One field rather than two**, so two questions cannot stand at once.
+    /// A `Shell` holding both a confirmation and a secret request would have
+    /// to decide which keystrokes belong to which, and there is no answer to
+    /// that question that is not a rule somebody has to remember.
+    standing: Option<Standing>,
     answered: Option<bool>,
+    secret_answered: Option<SecretAnswer>,
+    /// What was typed at a [`SecretRequest`], from `Enter` until it is taken.
+    ///
+    /// `Some` only after [`SecretAnswer::Given`] and only until
+    /// [`Shell::take_secret`] takes it. A declined question leaves it `None`,
+    /// which is what makes "a declined question stores nothing" a property of
+    /// the type rather than of a caller.
+    secret_given: Option<String>,
     /// The one task waiting for the running turn to end, if there is one.
     queued: Option<Queued>,
 }
@@ -733,8 +748,10 @@ impl Shell {
             transcript: Vec::new(),
             notices: Vec::new(),
             streaming: None,
-            asking: None,
+            standing: None,
             answered: None,
+            secret_answered: None,
+            secret_given: None,
             queued: None,
         }
     }
@@ -970,14 +987,83 @@ impl Shell {
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     pub fn ask(&mut self, question: Confirmation) {
-        self.asking = Some(question);
+        self.standing = Some(Standing::Confirm(question));
         self.answered = None;
     }
 
-    /// The question standing, if one is.
+    /// The confirmation standing, if one is.
     #[must_use]
     pub const fn asking(&self) -> Option<&Confirmation> {
-        self.asking.as_ref()
+        match &self.standing {
+            Some(Standing::Confirm(question)) => Some(question),
+            _ => None,
+        }
+    }
+
+    /// Ask the user for a secret, per [ADR-0011] D3's 2026-09-14 amendment.
+    ///
+    /// The second question kind, and **not a second confirmer** — see
+    /// [`SecretRequest`]. [ADR-0015] D2's `/providers keys add <kind>` is what
+    /// needs it: [ADR-0007] D7 reads the key from standard input, and a
+    /// terminal in raw mode has none to hand it.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub fn ask_secret(&mut self, request: SecretRequest) {
+        self.standing = Some(Standing::Secret(request, String::new()));
+        self.secret_answered = None;
+        self.secret_given = None;
+    }
+
+    /// The secret question standing, if one is.
+    ///
+    /// **The request and never the bytes.** There is no accessor on this type
+    /// that yields what has been typed so far, which is what makes "no byte of
+    /// a secret reaches a frame" a property of the shell's surface rather than
+    /// of every renderer's discipline: a renderer cannot paint what it cannot
+    /// reach. The count is reachable, because the mask is one glyph per
+    /// character — see [`render::MASK`](crate::shell::render::MASK), where the
+    /// length disclosure that buys is recorded.
+    #[must_use]
+    pub const fn asking_secret(&self) -> Option<&SecretRequest> {
+        match &self.standing {
+            Some(Standing::Secret(request, _)) => Some(request),
+            _ => None,
+        }
+    }
+
+    /// How many characters have been typed at the standing secret question.
+    ///
+    /// For the renderer, which paints that many mask glyphs and nothing else.
+    #[must_use]
+    pub fn secret_len(&self) -> usize {
+        match &self.standing {
+            Some(Standing::Secret(_, typed)) => typed.chars().count(),
+            _ => 0,
+        }
+    }
+
+    /// How the secret question ended, once it has.
+    #[must_use]
+    pub const fn secret_answer(&self) -> Option<SecretAnswer> {
+        self.secret_answered
+    }
+
+    /// Take what was typed at the secret question.
+    ///
+    /// **The one accessor that yields a typed secret**, named so that one
+    /// search finds every call site — the discipline `zaru-cli`'s
+    /// `Secret::expose_for_dispatch` already uses, stated here for the same
+    /// reason. It **takes**: a second call answers `None`, so nothing can read
+    /// the value twice and no copy is left behind in the shell for a later
+    /// frame to reach.
+    ///
+    /// `None` when the question was declined, when it has not been answered,
+    /// and when it has already been taken. A caller distinguishes the first
+    /// from the rest with [`Self::secret_answer`].
+    pub fn take_secret(&mut self) -> Option<String> {
+        self.secret_given.take()
     }
 
     /// What the user answered, once they have.
@@ -990,6 +1076,11 @@ impl Shell {
         self.answered
     }
 
+    /// Whether a question of either kind is standing.
+    const fn questioned(&self) -> bool {
+        self.standing.is_some()
+    }
+
     /// Apply one keystroke at `now`.
     ///
     /// # A standing question takes every key
@@ -997,6 +1088,18 @@ impl Shell {
     /// [ADR-0011] D3's `ask` mode "prompts before any write or command", and a
     /// prompt the user can type past is not a prompt. So while a question
     /// stands the composer receives nothing.
+    ///
+    /// # A secret question takes every key too, and its table is not this one
+    ///
+    /// [ADR-0011] D3's 2026-09-14 amendment gives the shell a second question
+    /// kind, and its keys are: `Enter` completes, `Esc` **and `Ctrl-C`**
+    /// decline, `Backspace` removes one character, a printable character is
+    /// taken, and everything else leaves the question standing. **`Ctrl-C`
+    /// declining is the one deliberate divergence from the table below**,
+    /// where it is ignored: everywhere else in this shell `ctrl` plus `c`
+    /// means *stop*, and a person who changes their mind halfway through
+    /// typing an API key should not lose the session for it. Declining a
+    /// question is what stopping one is, so no third meaning is invented.
     ///
     /// # The default is decline, and only `y` is not
     ///
@@ -1016,7 +1119,26 @@ impl Shell {
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
     ) -> Action {
-        if self.asking.is_some() {
+        if let Some(Standing::Secret(_, typed)) = &mut self.standing {
+            match input.key {
+                Key::Enter => {
+                    let given = core::mem::take(typed);
+                    self.resolve_secret(SecretAnswer::Given, Some(given));
+                }
+                Key::Esc => self.resolve_secret(SecretAnswer::Declined, None),
+                Key::Char('c' | 'C') if input.ctrl => {
+                    self.resolve_secret(SecretAnswer::Declined, None);
+                }
+                Key::Backspace => {
+                    typed.pop();
+                }
+                Key::Char(character) if !input.ctrl && !input.alt => typed.push(character),
+                _ => {}
+            }
+            return Action::Idle;
+        }
+
+        if self.asking().is_some() {
             match input.key {
                 Key::Char('y' | 'Y') => self.resolve(true),
                 Key::Char('n' | 'N') | Key::Esc | Key::Enter => self.resolve(false),
@@ -1076,7 +1198,16 @@ impl Shell {
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     pub fn pasted(&mut self, text: &str, now: Duration, entries: &dyn Entries) {
-        if self.asking.is_some() {
+        // **A secret question takes it**, where a confirmation absorbs it, and
+        // the two rules are consistent rather than in tension. The failure a
+        // confirmation guards against is a `[y/N]` answered by a block of text
+        // nobody read; this question has no such failure and a paste is how an
+        // API key actually arrives. ADR-0011 D3's 2026-09-14 amendment.
+        if let Some(Standing::Secret(_, typed)) = &mut self.standing {
+            typed.push_str(text);
+            return;
+        }
+        if self.questioned() {
             return;
         }
         self.composer.paste(text, now, entries);
@@ -1113,9 +1244,33 @@ impl Shell {
     }
 
     fn resolve(&mut self, answer: bool) {
-        self.asking = None;
+        self.standing = None;
         self.answered = Some(answer);
     }
+
+    fn resolve_secret(&mut self, answer: SecretAnswer, given: Option<String>) {
+        self.standing = None;
+        self.secret_answered = Some(answer);
+        self.secret_given = given;
+    }
+}
+
+/// The one question standing, of either kind.
+///
+/// Private, and an enum rather than two `Option` fields, so the invariant
+/// "at most one question stands" is the type's rather than a caller's.
+#[derive(Debug)]
+enum Standing {
+    /// [ADR-0011] D3's confirmation.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    Confirm(Confirmation),
+    /// A secret being typed: the question, and what has been typed so far.
+    ///
+    /// **The second field is the only place in this crate a typed secret
+    /// lives**, it is reachable through no public accessor, and
+    /// [`Shell::take_secret`] moves it out rather than copying it.
+    Secret(SecretRequest, String),
 }
 
 #[cfg(test)]
