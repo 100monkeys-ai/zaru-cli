@@ -70,6 +70,21 @@ at the right edge: fields drop in a declared order as the terminal narrows, the
 tier is never one of them, and at forty columns what is left is the tier and how
 much of the context window is used.
 
+**Since 2026-09-13 the pane has colour, and only where it means something.**
+Each line of the transcript opens with its register's marker, and that marker
+now carries that register's colour — one of the terminal's sixteen, never a
+truecolour value and never a theme. Nothing else is coloured: the status line,
+the composer and the hint strip are exactly as they were, and no word a
+producer wrote is tinted, because the harness chooses the marker and nothing
+else. A failing iteration gets a register of its own for the first time, which
+is what the record governing the execution narrative asked for and what
+nothing had implemented; it is deliberately not the colour a crash gets, since
+teaching you to fear the loop's own failure would undo the thing the loop is
+for. **Set `NO_COLOR` in your environment and every colour goes away**, leaving
+the markers, so a capture stays comparable with one taken before any of this
+existed; an empty `NO_COLOR=` does not count, which is the convention's own
+rule rather than ours. There is no theme and no setting for one.
+
 `Ctrl-C` during a turn leaves, exactly as it does at the prompt, and leaving
 is what interrupts the turn: whatever the turn had already written is in the
 transcript and nothing after it is, so resuming that session tells the model
