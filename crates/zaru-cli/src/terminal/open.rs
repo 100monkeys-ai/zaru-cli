@@ -187,6 +187,14 @@ fn attached_workspace(directory: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
+/// Everything [`shell_for`] builds for one session, before a terminal exists.
+///
+/// A named tuple rather than five positional values in a signature, because
+/// `clippy::type_complexity` refuses the second at four and this became five
+/// on 2026-09-14. The order is the order a caller uses them in: paint, read
+/// the transcript, serve the strip, fetch into it, resume the conversation.
+type Opened = (Shell, Transcript, NotesTrie, Option<Populating>, Resumed);
+
 /// Which stored token this session's composer reads with, if any.
 ///
 /// Opens the credential store for **reading** and asks
@@ -228,7 +236,7 @@ fn composer_reader(workspace: &str) -> Option<Populating> {
 /// restating it, and there is no field here a value could be copied into.
 ///
 /// **Public only because it appears in [`shell_for`]'s return, and opaque
-/// otherwise**: every field is private, [`Populating::fetch`] is private, and
+/// otherwise**: every field is private, its `fetch` is private, and
 /// there is no constructor outside this module. So a caller can hold one and
 /// hand it back, which is all `one_session` does, and can read nothing out of
 /// it — which is the property that matters, since what it holds is a bearer.
@@ -279,7 +287,7 @@ pub fn shell_for(
     version: &str,
     report_at: &str,
     overrides: &Overrides,
-) -> Result<(Shell, Transcript, NotesTrie, Option<Populating>, Resumed), Box<Exit>> {
+) -> Result<Opened, Box<Exit>> {
     let classify = Classify::new(version, report_at);
 
     let resolution = crate::cli::layers::resolve_from_process(overrides)
@@ -503,7 +511,7 @@ pub fn mint(
     let workspace = crate::manifest::attached_workspace(&resolution);
     let (session, _) =
         crate::compose::turn::start(root, tier, provider, workspace, here.root(), &classify)
-        .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
+            .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
     Ok(session.id().clone())
 }
 
@@ -529,8 +537,7 @@ fn one_session(
     runtime: &tokio::runtime::Runtime,
     source: &Source,
 ) -> Result<crate::terminal::driver::Pumped, Box<Exit>> {
-    let (mut shell, _, trie, populating, resumed) =
-        shell_for(id, version, report_at, overrides)?;
+    let (mut shell, _, trie, populating, resumed) = shell_for(id, version, report_at, overrides)?;
 
     // ADR-0005 D3's corpus, fetched **into** a shell that is already open.
     //

@@ -1036,8 +1036,8 @@ fn what_init_writes_carries_the_mode_it_was_created_at() {
 /// why the pinned case is asserted first and by value.
 #[test]
 fn adr_0006_d5s_pin_is_read_out_of_the_project_layer() {
-    use crate::config::fixtures::{at, document, nonce, schema, text};
     use crate::config::Resolution;
+    use crate::config::fixtures::{at, document, nonce, schema, text};
 
     let pinned = nonce("pinned-workspace");
     let resolved = Resolution::resolve(
@@ -1066,8 +1066,8 @@ fn adr_0006_d5s_pin_is_read_out_of_the_project_layer() {
 /// once, in the reader, rather than at each place that reads it.
 #[test]
 fn an_absent_pin_and_an_empty_pin_are_both_no_workspace() {
-    use crate::config::fixtures::{at, document, schema, text};
     use crate::config::Resolution;
+    use crate::config::fixtures::{at, document, schema, text};
 
     let unpinned = Resolution::resolve(
         &schema(),

@@ -34,7 +34,7 @@
 //! to the composer's fast tier rather than to credentials, and it sits in this
 //! module because it opens a session from a stored secret — the same shape and
 //! the same precedent. What it hands the listings to is
-//! [`Corpus`](zaru_notes::session::Corpus), a port of two methods, so the
+//! [`Corpus`], a port of two methods, so the
 //! widest value in this file is reachable from one function and the rest of
 //! the wiring cannot name a `Session` at all.
 //!
@@ -427,7 +427,11 @@ pub async fn corpus_from(
     Ok(pages
         .into_iter()
         .map(|listed| entry(listed, CachedKind::Page))
-        .chain(atoms.into_iter().map(|listed| entry(listed, CachedKind::Atom)))
+        .chain(
+            atoms
+                .into_iter()
+                .map(|listed| entry(listed, CachedKind::Atom)),
+        )
         .collect())
 }
 
@@ -491,13 +495,13 @@ pub async fn corpus_at(
 ///    to grant the role, which `zaru notes use <alias>` offers.
 ///
 /// What makes case 2 safe is not this function. It is
-/// [`Corpus`](zaru_notes::session::Corpus): the builder is handed a port of
+/// [`Corpus`]: the builder is handed a port of
 /// two listings, so there is no write to make whatever the token's scope is.
 ///
 /// # An apex token names no host, so it cannot be the one
 ///
 /// [ADR-0007] D8's apex entry has "no instance boundary" and
-/// `notes tokens add <alias> <host> apex` stores [`Reach::Apex`] **without the
+/// `notes tokens add <alias> <host> apex` stores an apex reach **without the
 /// host** — correctly, because an apex token is not bound to one. But
 /// `HttpEndpoint` reaches an instance by host, so there is no address to open.
 /// An apex entry is therefore skipped here rather than opened against a host

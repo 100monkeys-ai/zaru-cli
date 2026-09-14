@@ -1531,10 +1531,7 @@ async fn next_delta(
 /// idle.
 ///
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
-fn refresh_absence(
-    shell: &mut zaru_tui::shell::Shell,
-    entries: &dyn zaru_tui::composer::Entries,
-) {
+fn refresh_absence(shell: &mut zaru_tui::shell::Shell, entries: &dyn zaru_tui::composer::Entries) {
     shell.composer_mut().set_absence(entries.absence());
 }
 
@@ -1559,7 +1556,7 @@ fn read_while_busy<S: Surface + Send>(
     // than waiting for the turn to end. Above the match rather than inside one
     // arm, because all three repaint the composer and the queued-task arm is
     // the one where a person is most likely to be waiting on something.
-    refresh_absence(&mut pane.shell, entries);
+    refresh_absence(pane.shell, entries);
     match struck {
         // A block pasted during a turn lands in the prompt exactly as one
         // pasted at it does, and waits for the `Enter` that submits it.

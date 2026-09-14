@@ -1644,10 +1644,7 @@ struct StagedCorpus {
 }
 
 impl StagedCorpus {
-    fn answering(
-        pages: Vec<(&str, &str)>,
-        atoms: Vec<(&str, &str)>,
-    ) -> Self {
+    fn answering(pages: Vec<(&str, &str)>, atoms: Vec<(&str, &str)>) -> Self {
         let listed = |rows: Vec<(&str, &str)>| {
             rows.into_iter()
                 .map(|(path, title)| zaru_notes::session::Listed {

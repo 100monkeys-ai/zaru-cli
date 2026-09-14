@@ -173,7 +173,7 @@ struct Corpus {
 /// into it.
 ///
 /// **That needed no port change and no dependency.**
-/// [`Entries::matches`](zaru_tui::composer::Entries::matches) already takes
+/// [`Entries::matches`] already takes
 /// `&self`, so the corpus sits behind a [`std::sync::RwLock`] and the task
 /// that fills it holds an [`Arc`](std::sync::Arc) of the same value the pump
 /// is reading. Reads are the common case by a wide margin — every keystroke —
@@ -215,7 +215,11 @@ impl NotesTrie {
             .collect()
     }
 
-    fn with(per_workspace: BTreeMap<String, Trie>, population: Population, attached: String) -> Self {
+    fn with(
+        per_workspace: BTreeMap<String, Trie>,
+        population: Population,
+        attached: String,
+    ) -> Self {
         Self {
             corpus: std::sync::RwLock::new(Corpus {
                 per_workspace,
@@ -257,7 +261,7 @@ impl NotesTrie {
     ///
     /// Called once, from the task the shell spawned. An empty corpus is a
     /// real answer — a cortex may hold nothing — so this moves to
-    /// [`Population::Reached`] whatever came back, and the strip then says
+    /// the reached state whatever came back, and the strip then says
     /// nothing rather than saying it is still looking for ever.
     pub fn reached(&self, entries: Vec<CachedEntry>) {
         let mut corpus = self.write();
@@ -313,12 +317,16 @@ impl NotesTrie {
 
     /// The corpus for reading. A poisoned lock is recovered — see the type.
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Corpus> {
-        self.corpus.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.corpus
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The corpus for writing. A poisoned lock is recovered — see the type.
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, Corpus> {
-        self.corpus.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.corpus
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 

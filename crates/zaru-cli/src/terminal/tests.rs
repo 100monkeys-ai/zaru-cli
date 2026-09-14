@@ -5181,7 +5181,11 @@ fn a_corpus_that_lands_mid_session_replaces_the_line_with_its_own_matches() {
         vec!["Mémoire ✦".to_owned()],
         "the corpus landed and the strip still is not serving it; the composer rows were {strip:?}"
     );
-    assert_eq!(trie.cached(), 2, "both entities reached the attached workspace");
+    assert_eq!(
+        trie.cached(),
+        2,
+        "both entities reached the attached workspace"
+    );
 }
 
 /// A cortex that was reached and holds nothing says **nothing**.
@@ -5201,7 +5205,11 @@ fn a_workspace_that_was_reached_and_holds_nothing_says_nothing_at_all() {
         strip.is_empty(),
         "a cortex that answered and holds nothing had its emptiness reported as a fault: {strip:?}"
     );
-    assert_eq!(trie.absence(), None, "and there is no line to hand the composer");
+    assert_eq!(
+        trie.absence(),
+        None,
+        "and there is no line to hand the composer"
+    );
 }
 
 /// An instance that refuses says so, in the server's own words.
@@ -5288,9 +5296,15 @@ fn the_pump_asks_the_fast_tier_again_rather_than_keeping_the_line_it_opened_with
     };
     let (_, surface, _) = pump_entries(keys("mé"), &staged);
 
-    let frames: Vec<Vec<String>> = surface.frames.iter().map(|frame| strip_rows(frame)).collect();
+    let frames: Vec<Vec<String>> = surface
+        .frames
+        .iter()
+        .map(|frame| strip_rows(frame))
+        .collect();
     assert!(
-        frames.iter().any(|strip| strip == &vec![LOOKING.to_owned()]),
+        frames
+            .iter()
+            .any(|strip| strip == &vec![LOOKING.to_owned()]),
         "no frame in this run showed the in-flight line, so the run says nothing about it: \
          {frames:?}"
     );
