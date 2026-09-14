@@ -107,9 +107,10 @@ impl fmt::Display for NotACommandLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
-                "the command is empty, so there is no program to run. ADR-0009 D3's expectations \
-                 are all statements about what running a command produced, and ADR-0011 D1's \
-                 `cmd.run` needs something to execute",
+                // ADR-0009 D3's expectations and ADR-0011 D1's `cmd.run`.
+                "the command is empty, so there is no program to run. A validator's expectations \
+                 are all statements about what running a command produced, and `cmd.run` needs \
+                 something to execute",
             ),
             Self::ShellConstruct { construct, offered } => write!(
                 f,

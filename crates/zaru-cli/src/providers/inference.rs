@@ -78,7 +78,7 @@ impl fmt::Display for InferenceRefused {
             Self::NoSuchAxis { key, offered } => write!(
                 f,
                 "`{key}` was set to {offered:?}, which names no inference axis; there are exactly \
-                 two, \"local\" and \"frontier\", and they are ADR-0001 D3's own two columns",
+                 two, \"local\" and \"frontier\", and they are the tier table's own two columns",
             ),
         }
     }

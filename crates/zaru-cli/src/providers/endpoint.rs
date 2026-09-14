@@ -90,8 +90,9 @@ impl fmt::Display for EndpointRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
-                "a provider endpoint is empty; ADR-0012 D5 has every provider configured the same \
-                 way and an endpoint naming nowhere configures nothing",
+                // ADR-0012 D5 has every provider configured the same way.
+                "a provider endpoint is empty; every provider is configured the same way and an \
+                 endpoint naming nowhere configures nothing",
             ),
             Self::Control { offered } => write!(
                 f,

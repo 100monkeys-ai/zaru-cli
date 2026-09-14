@@ -91,9 +91,9 @@ impl fmt::Display for ModelIdRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str(
-                "a model identifier is empty; ADR-0012 D4 has `zaru models` print what each alias \
-                 resolved to, and an empty identifier resolves to nothing a provider could be \
-                 asked for",
+                // ADR-0012 D4 has `zaru models` print what each alias resolved to.
+                "a model identifier is empty; `zaru models` prints what each alias resolved to, \
+                 and an empty identifier resolves to nothing a provider could be asked for",
             ),
             Self::Control { offered } => write!(
                 f,
@@ -254,7 +254,7 @@ impl fmt::Display for TableRefused {
         match self {
             Self::NotText { alias, found } => write!(
                 f,
-                "the alias `{alias}` resolved to {found}; ADR-0012's own schema declares \
+                "the alias `{alias}` resolved to {found}; this harness's own schema declares \
                  `{key}` as text, so a schema declaring it as something else is this harness's \
                  defect rather than a user's",
                 key = alias.key(),
@@ -273,8 +273,9 @@ impl fmt::Display for TableRefused {
             }
             Self::NoSupplyingLayer { key } => write!(
                 f,
-                "`{key}` has a value and no layer that set it; ADR-0012 D4 requires that every \
-                 resolution name the layer that supplied it, and this one cannot",
+                // ADR-0012 D4 requires that every resolution name its layer.
+                "`{key}` has a value and no layer that set it; every resolution names the layer \
+                 that supplied it, and this one cannot",
             ),
         }
     }
@@ -316,8 +317,7 @@ pub fn fields() -> Vec<(Key, Field)> {
             Field::refused_to_projects(
                 FieldKind::Text,
                 "where a user's prompts are sent is the user's choice, and a repository they \
-                 cloned must not be able to redirect them. ADR-0014 D6 names four escalations and \
-                 this is proposed as a fifth",
+                 cloned must not be able to redirect them",
             ),
         )
     }));

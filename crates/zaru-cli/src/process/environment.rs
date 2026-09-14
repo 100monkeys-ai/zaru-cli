@@ -106,8 +106,9 @@ impl fmt::Display for NotForAChild {
         match self {
             Self::HarnessOwned { offered } => write!(
                 f,
-                "the environment variable {offered} belongs to the harness: ADR-0014 D1's layer 4 \
-                 is {HARNESS_PREFIX}-prefixed configuration read by Zaru itself, and handing it to \
+                // ADR-0014 D1's layer 4 is the prefixed environment.
+                "the environment variable {offered} belongs to the harness: \
+                 {HARNESS_PREFIX}-prefixed configuration is read by Zaru itself, and handing it to \
                  a child would let a command the model chose read the harness's own settings back \
                  out with `env`",
             ),

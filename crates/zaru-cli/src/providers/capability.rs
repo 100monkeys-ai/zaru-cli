@@ -81,7 +81,7 @@ impl fmt::Display for CapabilityRefused {
             Self::ToolCallingUnavailable { alias, kind } => write!(
                 f,
                 "the alias `{alias}` resolves to a `{kind}` provider that declares it cannot call \
-                 tools, and the work asked for needs them. ADR-0012 D3 has a provider say so \
+                 tools, and the work asked for needs them. A provider says so \
                  rather than have it be discovered mid-loop, where it reads as the harness being \
                  broken",
             ),

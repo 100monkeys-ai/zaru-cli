@@ -232,9 +232,10 @@ impl fmt::Display for SpawnFailure {
         match self {
             Self::CouldNotStart { program, source } => write!(
                 f,
-                "the program {program:?} could not be started: {source}. ADR-0011 D1 names no \
-                 allowlist of programs, so a bare name is whatever PATH finds — check that \
-                 {program:?} is installed and that PATH reaches it",
+                // ADR-0011 D1 names no allowlist of programs.
+                "the program {program:?} could not be started: {source}. There is no allowlist \
+                 of programs, so a bare name is whatever PATH finds — check that {program:?} is \
+                 installed and that PATH reaches it",
             ),
             Self::Lost { program, detail } => write!(
                 f,

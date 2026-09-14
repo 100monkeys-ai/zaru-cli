@@ -161,7 +161,7 @@ impl fmt::Display for GeminiFailure {
             Self::ToolSchemaUnreadable { tool, parser } => write!(
                 f,
                 "the tool `{tool}` was offered to a model with a parameter schema that is not \
-                 JSON: {parser}. ADR-0011 D1 declares no argument shapes, so the schema is \
+                 JSON: {parser}. No argument shapes are declared, so the schema is \
                  whichever surface owns the tool -- and this harness supplied it",
             ),
             Self::ResultsDoNotMatchCalls { results, calls } => write!(

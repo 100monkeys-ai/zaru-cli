@@ -77,8 +77,9 @@ impl fmt::Display for CostRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnitMissing => f.write_str(
-                "a reported cost has no unit; ADR-0012 D7 puts cost in front of a user on every \
-                 turn, and a bare number is one they have to guess the currency of",
+                // ADR-0012 D7 puts cost in front of a user on every turn.
+                "a reported cost has no unit; cost is put in front of a user on every turn, and \
+                 a bare number is one they have to guess the currency of",
             ),
             Self::UnitControl { offered } => write!(
                 f,

@@ -59,6 +59,7 @@
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use crate::config::{Field, FieldKind, Key, Layer, Resolution};
+use crate::failure::{THERE_ARE_EXACTLY, THIS_HARNESS};
 use crate::providers::{Inference, Placement};
 use crate::runtime::tier::Tier;
 use core::fmt;
@@ -78,8 +79,8 @@ pub const KEY: &str = "runtime.tier";
 /// are kept, because [ADR-0016] D2 wants an error whose reader can act.
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-pub const PROJECT_REFUSAL: &str = "the runtime tier is the membrane the user chose, and ADR-0001 \
-                                   D2 fixes it at session start; set it in the user \
+pub const PROJECT_REFUSAL: &str = "the runtime tier is the membrane the user chose, and it is \
+                                   fixed at session start; set it in the user \
                                    configuration, the environment or a flag instead";
 
 /// [`KEY`] as a [`Key`].
@@ -227,7 +228,8 @@ impl fmt::Display for TierRefused {
             Self::NotSet { key } => write!(
                 f,
                 "no configuration layer set {key}, so there is no runtime tier for this session. \
-                 ADR-0001 names no default tier and nothing here invents one: set it in the \
+                 {THIS_HARNESS} names no default tier and nothing here invents one: set it in \
+                 the \
                  built-in layer, the user configuration, the environment or a flag"
             ),
             Self::WrongShape { key, found } => write!(
@@ -242,7 +244,7 @@ impl fmt::Display for TierRefused {
             } => write!(
                 f,
                 "the key {key} was set to {offered:?} in {}, which names no runtime tier. \
-                 ADR-0001 D1 defines exactly three: {}",
+                 {THERE_ARE_EXACTLY} three: {}",
                 layer.label(),
                 spellings()
             ),
@@ -408,7 +410,7 @@ impl fmt::Display for CeilingRefused {
                 placement,
             } => write!(
                 f,
-                "ADR-0001 D3's table has no iteration ceiling for {tier} with {inference} \
+                "there is no iteration ceiling for {tier} with {inference} \
                  inference placed {placement}: nothing offloads below `linked`. Set \
                  `{MAX_ITERATIONS_KEY}` to choose one, or run a tier whose row covers it"
             ),

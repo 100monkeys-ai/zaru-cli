@@ -442,8 +442,14 @@ fn the_key_is_runtime_tier_and_the_field_refuses_the_project_layer() {
     let crate::config::ProjectPolicy::Refused { reason } = &field.project else {
         unreachable!("just asserted")
     };
+    // Rewritten 2026-09-13 by the `record-citations` arc, under the coordinator's
+    // ruling of that date: this asserted `reason.contains("ADR-0001 D2")` and named
+    // ADR-0016 D2 as the authority for keeping a decision number in a sentence a
+    // user reads. D2's own worked example names no record, and a reader who cannot
+    // open the record cannot act on it, so what is asserted now is the part the
+    // reader can act on -- and a citation reaching it reddens the sweep's own check.
     assert!(
-        reason.contains("ADR-0001 D2"),
+        reason.contains("the membrane the user chose") && reason.contains("set it in the user"),
         "D6 requires the error name the key and the reason, and ADR-0016 D2 requires the reader \
          be able to act on it: {reason}",
     );
