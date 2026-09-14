@@ -164,7 +164,7 @@ fn pump_staged_painting(
     );
     let exit = match pumped.outcome {
         crate::terminal::driver::Pumped::Left(exit) => exit,
-        crate::terminal::driver::Pumped::Switch(id) => {
+        crate::terminal::driver::Pumped::Switch { to: id, .. } => {
             panic!("the pump asked to switch to {id} rather than leaving")
         }
     };

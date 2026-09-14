@@ -285,7 +285,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
     }
     let exit = match pumped.outcome {
         zaru_cli::terminal::Pumped::Left(exit) => exit,
-        zaru_cli::terminal::Pumped::Switch(id) => {
+        zaru_cli::terminal::Pumped::Switch { to: id, .. } => {
             panic!("the pump asked to switch to {id} rather than leaving")
         }
     };
@@ -1688,7 +1688,7 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
-    zaru_cli::compose::turn::runtime()
+    let pumped = zaru_cli::compose::turn::runtime()
         .expect("a runtime")
         .block_on(run(
             &mut shell,
@@ -1701,6 +1701,18 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
             &mut Turnable::Cannot(Vec::new()),
         ))
         .expect("the pump");
+
+    // **A declined question does not re-open the session.** A stored key does
+    // -- `Pumped::Switch` to this session's own id, so the next turn runs with
+    // the key -- and a build that switched whatever the answer was would throw
+    // away a pane the person still needs to read and mint a re-open nobody
+    // asked for. The two arms are checked apart; the storing arm is the
+    // artefact's, for the `HOME` reason in this check's own documentation.
+    assert!(
+        matches!(pumped.outcome, zaru_cli::terminal::Pumped::Left(_)),
+        "declining the masked question re-opened the session: {:?}",
+        pumped.outcome
+    );
 
     let every_frame = surface
         .frames
@@ -1751,7 +1763,7 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
     // that only a stored key earns. Measured as a pair, because a build that
     // said it unconditionally would read as reassuring and be false.
     assert!(
-        !said.contains("`/session continue` re-opens this session with the key"),
+        !said.contains("this session reopened with it"),
         "a declined question claimed a key was stored:\n{said}"
     );
     assert!(

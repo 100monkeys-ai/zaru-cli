@@ -205,7 +205,28 @@ pub enum Pumped {
     ///
     /// Resolved rather than named, because the lookup can fail and its
     /// refusal has to reach the pane: see the `Action::Run` arm of [`run`].
-    Switch(crate::session::SessionId),
+    ///
+    /// # `saying` exists because a switch drops this session's notices
+    ///
+    /// A shell's notices are this session's own lines — a refusal, a command's
+    /// output — and they are deliberately not the transcript, so the shell the
+    /// switch opens is built without them. That is right for
+    /// `/session resume` and `/session continue`, where the person asked to be
+    /// somewhere else and the lines they are leaving belong where they left.
+    ///
+    /// It is wrong for the one switch nobody asked for. A key stored inside a
+    /// session re-opens it so the next turn can use the key — see
+    /// [`KEY_IS_STORED`] — and a re-open that dropped the two lines saying the
+    /// key was stored would leave a person who had just typed a credential
+    /// looking at a pane that said nothing at all about it. So the lines cross
+    /// the switch, and `/session resume` and `/session continue` carry none.
+    Switch {
+        /// The session to open.
+        to: crate::session::SessionId,
+        /// Lines to put on the new shell as it opens. Empty for a switch the
+        /// person asked for.
+        saying: Vec<Line>,
+    },
 }
 
 /// [ADR-0010] D4's interruption, held by a resumed session and told once.
@@ -1687,17 +1708,53 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                         Asked::Given(offered) => {
                             let outcome = runner.store_a_provider_key(kind, offered.trim_end());
                             let stored = !matches!(outcome.exit, Exit::Failed(_));
-                            for text in outcome.lines {
-                                shell.notice(Line::new(Register::Plain, text));
-                            }
+                            let mut said: Vec<Line> = outcome
+                                .lines
+                                .into_iter()
+                                .map(|text| Line::new(Register::Plain, text))
+                                .collect();
                             if let Exit::Failed(classified) = &outcome.exit {
-                                shell.notice(Line::new(
+                                said.push(Line::new(
                                     Register::Failed,
                                     crate::failure::Presentation::of(classified).headline,
                                 ));
                             }
                             if stored {
-                                shell.notice(Line::new(Register::Plain, KEY_IS_FOR_NEXT_TURN));
+                                said.push(Line::new(Register::Plain, KEY_IS_STORED));
+                                // **A stored key re-opens this session, and
+                                // that is not a restart anybody invented.** It
+                                // is the switch `/session continue` already
+                                // takes, under the 2026-09-06 00:20Z ruling
+                                // that re-opening the current session "says
+                                // nothing"; the terminal and the runtime are
+                                // held across it by `terminal::open::open`, so
+                                // there is no flash and no second reader. What
+                                // it buys is the whole of why the question
+                                // exists: `compose::turn::prepare` runs once,
+                                // at the door, so without it the session that
+                                // stored the key is the one session on the
+                                // machine that cannot use it.
+                                //
+                                // The id comes off the status line because
+                                // this arm is reachable on `Turnable::Cannot`,
+                                // which is exactly the keyless case and holds
+                                // no session. A session id that will not parse
+                                // is not a reason to lose the lines: the arm
+                                // below keeps them on this shell instead.
+                                if let Ok(id) =
+                                    crate::session::SessionId::parse(&shell.status().session)
+                                {
+                                    surface.draw(shell)?;
+                                    return Ok(Pump {
+                                        outcome: Pumped::Switch {
+                                            to: id,
+                                            saying: said,
+                                        },
+                                    });
+                                }
+                            }
+                            for line in said {
+                                shell.notice(line);
                             }
                         }
                         // A declined question is not a failure -- the harness
@@ -1735,7 +1792,10 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                         Ok(id) => {
                             surface.draw(shell)?;
                             return Ok(Pump {
-                                outcome: Pumped::Switch(id),
+                                outcome: Pumped::Switch {
+                                    to: id,
+                                    saying: Vec::new(),
+                                },
                             });
                         }
                         Err(exit) => {
@@ -2207,17 +2267,17 @@ pub const SECRET_GUIDANCE: &str = "enter to store it · esc or ctrl-c to cancel"
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 pub const SECRET_DECLINED: &str = "nothing was stored.";
 
-/// What the pane says after a key is stored, because the session that stored
-/// it will not use it.
+/// What the pane says after a key is stored.
 ///
 /// **Authored under a delegated coordinator ruling of 2026-09-14, open to
-/// Jeshua's veto, and it exists because of a measurement rather than a
-/// preference.** [`crate::compose::turn::prepare`] runs **once**, when the
-/// shell opens — a session's tier, model, boundary, manifest, key, client and
-/// [ADR-0012] clause 3 witness do not change between two of its turns, which
-/// is [`Turnable`]'s whole reason for having two variants and no third. So a
-/// key stored inside a session is on disk and sealed, and the *running*
-/// session still holds the refusal it resolved at the door.
+/// Jeshua's veto, and it exists because of a measurement.**
+/// [`crate::compose::turn::prepare`] runs **once**, when the shell opens — a
+/// session's tier, model, boundary, manifest, key, client and [ADR-0012]
+/// clause 3 witness do not change between two of its turns, which is
+/// [`Turnable`]'s whole reason for having two variants and no third. So a key
+/// stored inside a session is on disk and sealed, and the session that stored
+/// it was, until this line existed, the one session on the machine that could
+/// not use it.
 ///
 /// Measured on the release binary over a pseudo-terminal: the pane said
 /// *"stored a `gemini` key under the alias `provider.gemini`."* and the very
@@ -2225,29 +2285,22 @@ pub const SECRET_DECLINED: &str = "nothing was stored.";
 /// this machine holds no provider key"*. Two true sentences, one after the
 /// other, that a person reads as the harness contradicting itself.
 ///
-/// # Why a sentence and not a restart
+/// # The person is not told about `prepare`, which is the ruling
 ///
-/// Re-preparing inside the pump is not available: `Turns` borrows the
-/// resolution, the session and the `Prepared` from `terminal::open::shell_for`,
-/// so there is nothing inside [`run`] that could rebuild one. Returning
-/// [`Pumped::Switch`] to this session's own id **would** work — it is the path
-/// `/session continue` already takes, and the 2026-09-06 ruling has that
-/// re-open "saying nothing" — but it throws away this session's notices,
-/// including the two lines saying the key was stored, so a person would watch
-/// the confirmation vanish. Restarting a person's session as a side effect of
-/// a credential write is also a lifecycle decision [ADR-0010] D4 owns and no
-/// clause makes.
+/// An earlier shape named `/session continue` and asked them to type it. That
+/// is honest and it is a harness explaining its own internals to somebody who
+/// came to store a key. The session now re-opens itself through
+/// [`Pumped::Switch`] — the switch `/session continue` already takes — and
+/// this line says what happened rather than what to do next.
 ///
-/// So the harness says what is true and names the command that already exists.
-/// **One more line, no new mechanism, and nothing about a session's lifetime
-/// changes.** If this record's author would rather the session re-opened
-/// itself, the mechanism is one `Pumped::Switch` away and this constant is
-/// what goes.
+/// **It is said on the shell the switch opens**, carried across on
+/// [`Pumped::Switch::saying`], because a switch builds a fresh shell and a
+/// re-open that dropped it would leave a person who had just typed a
+/// credential looking at a pane that said nothing about it.
 ///
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-pub const KEY_IS_FOR_NEXT_TURN: &str = "  this session resolved its provider before the key existed, so it is still using what it \
-     found then. `/session continue` re-opens this session with the key.";
+pub const KEY_IS_STORED: &str =
+    "  this session reopened with it, so the next thing you ask will use it.";
 
 /// How a masked question ended.
 ///

@@ -528,6 +528,15 @@ pub fn mint(
 /// reported as a defect by [ADR-0016] D3's boundary in `main`.
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[allow(
+    clippy::too_many_arguments,
+    reason = "\
+    the same list `driver::run` already carries, plus the lines a switch asked \
+    to be said on the shell it opens. Each is a port or a value some record \
+    owns, and bundling them would be a second name for the same list -- the \
+    argument `driver::run` and `compose::turn::run_one` both already make for \
+    their own"
+)]
 fn one_session(
     id: &SessionId,
     version: &str,
@@ -536,8 +545,16 @@ fn one_session(
     guard: &mut Guard<Crossterm>,
     runtime: &tokio::runtime::Runtime,
     source: &Source,
+    saying: Vec<zaru_tui::shell::Line>,
 ) -> Result<crate::terminal::driver::Pumped, Box<Exit>> {
     let (mut shell, _, trie, populating, resumed) = shell_for(id, version, report_at, overrides)?;
+
+    // What the switch that opened this session had to say, put on the pane
+    // before anything else. Empty for a switch the person asked for; see
+    // `Pumped::Switch::saying` for the one that carries lines and why.
+    for line in saying {
+        shell.notice(line);
+    }
 
     // ADR-0005 D3's corpus, fetched **into** a shell that is already open.
     //
@@ -737,15 +754,27 @@ pub fn open(
     // guard gives the terminal back.
     let source = Source::over_the_terminal();
 
+    // What the last switch asked this loop to say on the shell it opens.
+    let mut saying: Vec<zaru_tui::shell::Line> = Vec::new();
     let exit = loop {
         match one_session(
-            &id, version, report_at, overrides, &mut guard, &runtime, &source,
+            &id,
+            version,
+            report_at,
+            overrides,
+            &mut guard,
+            &runtime,
+            &source,
+            core::mem::take(&mut saying),
         ) {
             Ok(crate::terminal::driver::Pumped::Left(exit)) => break exit,
             // Already resolved, and resolved **inside** the pump so a refusal
             // reached the pane rather than a terminal in raw mode. See
             // `driver::run`'s `Action::Run` arm.
-            Ok(crate::terminal::driver::Pumped::Switch(next)) => id = next,
+            Ok(crate::terminal::driver::Pumped::Switch { to, saying: said }) => {
+                id = to;
+                saying = said;
+            }
             Err(exit) => {
                 drop(source);
                 guard.restore_now();

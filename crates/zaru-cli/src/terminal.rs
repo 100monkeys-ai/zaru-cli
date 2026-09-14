@@ -50,7 +50,7 @@ pub mod trie;
 pub mod vocabulary;
 
 pub use driver::{
-    AfterTurn, Asked, Guard, KEY_IS_FOR_NEXT_TURN, Pump, Pumped, Restore, SECRET_DECLINED,
+    AfterTurn, Asked, Guard, KEY_IS_STORED, Pump, Pumped, Restore, SECRET_DECLINED,
     SECRET_GUIDANCE, Surface, after, ask_for_a_secret, question_for_the_shell, run, secret_for,
     secret_statement, switch_for,
 };
