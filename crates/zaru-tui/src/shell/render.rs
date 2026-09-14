@@ -217,6 +217,13 @@ impl Shell {
         // measurement are the pane's own and nothing is authored here beyond
         // the one word `QUEUED` carries.
         if let (Some(area), Some(task)) = (queued, self.queued()) {
+            // `Row::joined` rather than the two spans the pane uses, and the
+            // register stays `Plain`: this row sits **below** the pane, in the
+            // composer's own area, and the ruling of 2026-09-13 23:58Z puts a
+            // colour on a transcript line's marker and nowhere else. `Plain`'s
+            // colour is `Color::Reset` either way, so the two spellings paint
+            // the same cells -- what `joined` says is that the choice is
+            // deliberate rather than incidental.
             let row =
                 crate::shell::port::Line::new(crate::shell::port::Register::Plain, task.painted())
                     .rows(area.width)
