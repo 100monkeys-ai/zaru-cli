@@ -63,6 +63,7 @@ pub mod gemini;
 pub mod inference;
 pub mod kind;
 pub mod negotiation;
+pub mod ollama;
 pub mod port;
 pub mod resolution;
 pub mod usage;
@@ -73,6 +74,7 @@ pub use endpoint::{EndpointRefused, ProviderEndpoint};
 pub use gemini::{GeminiClient, GeminiFailure};
 pub use inference::{Inference, InferenceRefused, Placement};
 pub use kind::ProviderKind;
+pub use ollama::{OllamaClient, OllamaFailure};
 pub use negotiation::{
     AliasNegotiation, Disagreement, NegotiationFailure, RemoteModelId, disagreements,
 };

@@ -1,0 +1,463 @@
+// Copyright 2026 100monkeys AI, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! The second provider client in this workspace: [ADR-0012] D3's `ollama`
+//! kind.
+//!
+//! # Why this kind, and why now
+//!
+//! `provider-client` recorded on 2026-09-05 why `gemini` was first and this
+//! was not: "it is the only kind for which a key exists that an agent may use
+//! … **no `ollama` is installed on the development machine**". That was a fact
+//! about the machine rather than about the record, and ADR-0012 trigger clause
+//! 4 — "A local Ollama endpoint completes an iteration loop end to end" — was
+//! the record's only clause with nothing at all against it.
+//!
+//! The `ollama-client` arc installed Ollama v0.34.0 in user space on
+//! 2026-09-14, ran it as its own process, and built this client against it. So
+//! the blocker was a missing dependency rather than a missing credential, and
+//! it was removable by the arc that needed it removed.
+//!
+//! # This kind needs no credential, and that is the difference that matters
+//!
+//! Every other provider in this workspace is reached with a secret. This one
+//! is not: measured on 2026-09-14, a request to `/api/chat` carrying **no**
+//! authorization header of any kind answers HTTP 200. Three things follow, and
+//! each is built rather than left implicit.
+//!
+//! - [`OllamaClient::new`] takes no [`Secret`](crate::credentials::Secret) and
+//!   this module imports none. There is no key to attach to a header, no key
+//!   to keep out of a URL, and no key for a failure's detail to leak — so
+//!   [`failure`] carries the server's own sentence verbatim where the `gemini`
+//!   client's must check it first.
+//! - [ADR-0007]'s store is untouched by this kind. It is the first provider
+//!   here that asks nothing of it.
+//! - **The composition cannot select this kind by credential presence**, which
+//!   is how it selected the only kind that existed before. That is
+//!   [`crate::compose::turn`]'s problem rather than this module's, and the
+//!   reading that resolves it is a **proposed** amendment on ADR-0012 rather
+//!   than a decision taken here.
+//!
+//! # One type implements both ports, and `Generator` came free
+//!
+//! [`Provider`] is the **configured** half — which kind, which endpoint, what
+//! it says it can do, what the last request cost. [`Model`] is the **exchange**
+//! half. [`OllamaClient`] implements both, and
+//! [`ProviderCapabilities`] converts to [`Capabilities`] through the same
+//! `From` the `gemini` client uses, so the two `capabilities` methods are one
+//! statement read twice.
+//!
+//! **`iteration::Generator` needed nothing at all.** `zaru-cli`'s
+//! [`compose::iterate::Generating`](crate::compose::iterate::Generating) is
+//! generic over any [`Model`], so the ruling recorded on ADR-0012 in 2026-09-05
+//! — "one implementation satisfies both, and neither trait is widened" — held
+//! for the second client without a line being written to make it hold. That is
+//! worth saying because it is the cheapest possible outcome of a design
+//! decision made a week earlier, and it is evidence the decision was right.
+//!
+//! # No stream contract entered `zaru-core`, for the third time
+//!
+//! `Model::respond` is unchanged, `Capabilities` is unchanged, the event enum
+//! is unchanged. The NDJSON framing and the fold live entirely in this module,
+//! exactly as the SSE framing lives entirely in the other one — so a second
+//! streaming client did **not** turn into the shared abstraction that
+//! `gemini-streaming` deliberately declined to write. Two clients now stream
+//! and `zaru-core` still knows nothing about streaming, which is the strongest
+//! evidence available that withholding the contract was correct.
+//!
+//! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+//! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+//! [`Model`]: zaru_core::tool_call::Model
+
+pub mod endpoint;
+pub mod failure;
+pub mod map;
+pub mod stream;
+pub mod wire;
+
+#[cfg(test)]
+mod tests;
+
+pub use endpoint::{DEFAULT_ENDPOINT, Endpoint};
+pub use failure::OllamaFailure;
+
+use crate::providers::capability::ProviderCapabilities;
+use crate::providers::endpoint::ProviderEndpoint;
+use crate::providers::kind::ProviderKind;
+use crate::providers::port::Provider;
+use crate::providers::resolution::ModelId;
+use crate::providers::usage::TokenUsage;
+use std::sync::Mutex;
+use std::time::Duration;
+use zaru_core::iteration::PortFailure;
+use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
+
+/// How long one exchange may take before the client gives up.
+///
+/// **Six hundred seconds, ten times the `gemini` client's, and the difference
+/// is measured rather than cautious.** A local model on a machine with no GPU
+/// generates at a fraction of a hosted model's rate, and it also has to be
+/// loaded: the first exchange against `llama3.2:3b` on this machine spent
+/// **35.6 seconds** loading the model into memory before generating a token,
+/// which the server reports as `load_duration` and which recurs whenever the
+/// model has been evicted. A sixty-second ceiling would turn an ordinary cold
+/// start into a reported failure.
+///
+/// A ceiling rather than a policy, and raised on ADR-0012 rather than settled
+/// here. There is deliberately **no retry and no backoff**, for the reason the
+/// other client gives: a retry policy decides whether a request that may have
+/// had an effect is repeated, and no record makes that decision.
+pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// [ADR-0012] D3's `ollama` provider, and `zaru-core`'s model behind it.
+///
+/// # `Debug` is derived, and here that is unremarkable
+///
+/// The `gemini` client's equivalent carries a paragraph explaining why
+/// deriving `Debug` is safe when one field is a key. **This type has no key
+/// and therefore no such argument to make**: an endpoint and a model
+/// identifier are types that refuse a credential-shaped value at construction,
+/// and there is nothing else. The absence is noted so a reader comparing the
+/// two does not conclude the check was forgotten.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[derive(Debug)]
+pub struct OllamaClient {
+    endpoint: Endpoint,
+    configured: ProviderEndpoint,
+    model: ModelId,
+    http: reqwest::Client,
+    /// Where the answer's text goes as it arrives, when anything is watching.
+    ///
+    /// Unbounded for the reason the other client's is: the alternative drops
+    /// deltas when full, and a dropped delta is text the user never sees in a
+    /// pane whose whole purpose is showing the answer arrive.
+    deltas: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    /// What the last exchange cost, for [`Provider::usage`].
+    ///
+    /// A `Mutex` rather than a `Cell` because [`Model::respond`] returns
+    /// `impl Future + Send`, so the future borrowing `&self` requires
+    /// `Self: Sync` and a `Cell` is not.
+    last: Mutex<Option<(u64, u64)>>,
+    /// What the model has already said in the turn now in flight.
+    ///
+    /// [`map::Answered`] says why a client of a stateless API keeps this, and
+    /// records the measurement showing this model does not need it the way the
+    /// other one did.
+    answered: Mutex<map::Answered>,
+}
+
+impl OllamaClient {
+    /// Build a client for one model, over one HTTP client.
+    ///
+    /// The `reqwest::Client` is built **once, here**, and reused for every
+    /// exchange, so a connection pool survives between turns rather than being
+    /// rebuilt per request.
+    ///
+    /// **Takes no credential**, which is the signature difference from the
+    /// `gemini` client and is the whole of why this kind cannot be selected
+    /// the way that one is. See the module documentation.
+    ///
+    /// # Errors
+    ///
+    /// [`OllamaFailure::Unreachable`] when the HTTP client cannot be built at
+    /// all.
+    pub fn new(endpoint: ProviderEndpoint, model: ModelId) -> Result<Self, OllamaFailure> {
+        // Built through `crate::web::client::build`, which is the one place
+        // this workspace builds an HTTP client -- so this client, the `gemini`
+        // one and `web.fetch` cannot drift about cookies, TLS and redirects.
+        // What this caller differs on is passed as an argument: its own
+        // timeout, and `reqwest`'s default redirect policy.
+        let http = crate::web::client::build(EXCHANGE_TIMEOUT, reqwest::redirect::Policy::default())
+            .map_err(|error| OllamaFailure::Unreachable {
+                endpoint: endpoint.clone(),
+                detail: error.detail().to_owned(),
+            })?;
+        Ok(Self {
+            endpoint: Endpoint::new(&endpoint),
+            configured: endpoint,
+            model,
+            http,
+            deltas: Mutex::new(None),
+            last: Mutex::new(None),
+            answered: Mutex::new(map::Answered::default()),
+        })
+    }
+
+    /// Send this client's answer text to `sender` as each frame arrives.
+    pub fn stream_deltas_to(&self, sender: tokio::sync::mpsc::UnboundedSender<String>) {
+        match self.deltas.lock() {
+            Ok(mut slot) => *slot = Some(sender),
+            Err(poisoned) => *poisoned.into_inner() = Some(sender),
+        }
+    }
+
+    /// The model this client asks for, as the resolution table resolved it.
+    #[must_use]
+    pub const fn model(&self) -> &ModelId {
+        &self.model
+    }
+
+    /// One exchange, as the failure taxonomy sees it.
+    ///
+    /// Separate from [`Model::respond`] so that the mapping from
+    /// [`OllamaFailure`] to [`PortFailure`] happens in one place and this
+    /// function can be read as the request it makes.
+    ///
+    /// # Errors
+    ///
+    /// [`OllamaFailure`], classified by provenance. See [`failure`].
+    pub async fn exchange(
+        &self,
+        request: &ModelRequest<'_>,
+    ) -> Result<ModelResponse, OllamaFailure> {
+        // Scoped so the guard is dropped before the first `.await`: a
+        // `std::sync::MutexGuard` is `!Send` and `Model::respond` returns a
+        // `Send` future, so holding one across an await would not compile.
+        let body = {
+            let mut answered = match self.answered.lock() {
+                Ok(answered) => answered,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            map::request_from(request, &mut answered, self.model.as_str())?
+        };
+
+        let mut response = self
+            .http
+            .post(self.endpoint.chat_url())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| OllamaFailure::Unreachable {
+                endpoint: self.configured.clone(),
+                detail: error.to_string(),
+            })?;
+
+        let status = response.status();
+
+        // **A failure arrives as an ordinary response, not as frames.**
+        // Measured 2026-09-14 on this endpoint: an unknown model answered 404
+        // with `content-type: application/json` *despite* the request having
+        // asked for a stream, and a malformed body answered 400 the same way.
+        // So the body is taken whole here and the frame reader never sees it.
+        if !status.is_success() {
+            let bytes =
+                response
+                    .bytes()
+                    .await
+                    .map_err(|error| OllamaFailure::Unavailable {
+                        code: status.as_u16(),
+                        detail: error.to_string(),
+                    })?;
+            return Err(OllamaFailure::from_status(
+                status.as_u16(),
+                &bytes,
+                self.model.as_str(),
+            ));
+        }
+
+        // --- The stream, read as it arrives ------------------------------
+        //
+        // `chunk()` rather than `bytes_stream()`: the first carries no feature
+        // gate and the second is behind `stream`, so reading the body
+        // incrementally costs this workspace no feature, no manifest row and
+        // no lock delta.
+        let mut frames = stream::Frames::new();
+        let mut received: Vec<wire::Response> = Vec::new();
+        let mut bytes = 0usize;
+
+        loop {
+            // A stream that stops mid-way is a socket that stopped. For a
+            // local server that is the server having died, which the user can
+            // act on -- so it reaches `Unreachable` rather than the
+            // environmental class a hosted provider's break reaches.
+            let chunk = response
+                .chunk()
+                .await
+                .map_err(|error| OllamaFailure::Unreachable {
+                    endpoint: self.configured.clone(),
+                    detail: error.to_string(),
+                })?;
+            let Some(chunk) = chunk else { break };
+            bytes += chunk.len();
+            self.absorb(&mut frames, &chunk, bytes, &mut received)?;
+        }
+        self.absorb_last(&mut frames, bytes, &mut received)?;
+
+        if received.is_empty() {
+            return Err(OllamaFailure::Unreadable {
+                bytes,
+                parser: "the stream carried no frames, which the API does not document as a \
+                         successful shape"
+                    .to_owned(),
+            });
+        }
+
+        // One exchange is one response. See `map::fold` for the measurement
+        // that makes folding load-bearing rather than tidy.
+        let answer = map::fold(&received);
+        let mapped = map::response_from(&answer, bytes)?;
+        let usage = (mapped.tokens().prompt, mapped.tokens().completion);
+        match self.last.lock() {
+            Ok(mut slot) => *slot = Some(usage),
+            Err(poisoned) => *poisoned.into_inner() = Some(usage),
+        }
+
+        // Remember this assistant turn **only when it asked for tools**,
+        // because that is the only case a later round exists to give it back
+        // in: a `Text` or a `Stopped` ends the turn and the next exchange
+        // arrives with no results and forgets everything anyway.
+        if matches!(mapped, ModelResponse::Calls { .. })
+            && let Some(message) = answer.message.clone()
+        {
+            let calls = message.tool_calls.clone();
+            match self.answered.lock() {
+                Ok(mut answered) => answered.remember(message, calls),
+                Err(poisoned) => poisoned.into_inner().remember(message, calls),
+            }
+        }
+        Ok(mapped)
+    }
+
+    /// Take every frame `chunk` completed.
+    fn absorb(
+        &self,
+        frames: &mut stream::Frames,
+        chunk: &[u8],
+        bytes: usize,
+        received: &mut Vec<wire::Response>,
+    ) -> Result<(), OllamaFailure> {
+        for payload in frames.feed(chunk) {
+            let frame = parse_frame(&payload, bytes)?;
+            // Handed on **here**, as the frame is read, which is the whole
+            // difference a stream makes to a person waiting.
+            self.hand_on(&frame);
+            received.push(frame);
+        }
+        Ok(())
+    }
+
+    /// Take the frame the body ended without terminating, if there was one.
+    ///
+    /// Separate from [`Self::absorb`] because it is reached once, after the
+    /// last read; folding it into the loop would mean calling
+    /// [`stream::Frames::finish`] on every chunk, which would end the stream
+    /// at the first read that did not fill a frame.
+    fn absorb_last(
+        &self,
+        frames: &mut stream::Frames,
+        bytes: usize,
+        received: &mut Vec<wire::Response>,
+    ) -> Result<(), OllamaFailure> {
+        if let Some(payload) = frames.finish() {
+            let frame = parse_frame(&payload, bytes)?;
+            self.hand_on(&frame);
+            received.push(frame);
+        }
+        Ok(())
+    }
+
+    /// Hand one frame's text on, if anything is watching.
+    ///
+    /// **A frame with no text sends nothing rather than an empty string.** The
+    /// terminal frame of a streamed answer carries `"content": ""` beside the
+    /// reason — measured on every recorded stream — and a consumer that
+    /// received an empty delta would repaint for no reason at the one moment
+    /// the turn is about to end and repaint anyway.
+    ///
+    /// A send that fails means the receiver is gone, which is an ordinary end
+    /// of a surface rather than a failure of an exchange: the answer is still
+    /// returned whole. So the result is deliberately discarded.
+    fn hand_on(&self, frame: &wire::Response) {
+        let Some(text) = frame
+            .message
+            .as_ref()
+            .map(|message| message.content.as_str())
+            .filter(|text| !text.is_empty())
+        else {
+            return;
+        };
+        let slot = match self.deltas.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(sender) = slot.as_ref() {
+            drop(sender.send(text.to_owned()));
+        }
+    }
+}
+
+/// One frame's payload as a response, or the failure that says why not.
+///
+/// `bytes` is what the stream has delivered so far, because [ADR-0016] D2's
+/// rule for an unreadable body is that it is reported by its length and never
+/// by its content.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+fn parse_frame(payload: &str, bytes: usize) -> Result<wire::Response, OllamaFailure> {
+    serde_json::from_str(payload).map_err(|error| OllamaFailure::Unreadable {
+        bytes,
+        parser: error.to_string(),
+    })
+}
+
+impl Provider for OllamaClient {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Ollama
+    }
+
+    fn endpoint(&self) -> &ProviderEndpoint {
+        &self.configured
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        // Streaming: true. This client asks for `"stream": true` and reads
+        // NDJSON frames; it has no non-streamed path at all.
+        //
+        // Tool calling: true, and **the model this was measured against says
+        // so itself** -- Ollama's own `/api/tags` reports
+        // `"capabilities": ["completion", "tools"]` for `llama3.2:3b`. That is
+        // the descriptor agreeing with the provider rather than asserting
+        // over it.
+        //
+        // Token accounting: true, because the terminal frame carries
+        // `prompt_eval_count` and `eval_count` -- which is the half of the
+        // pairing `Provider::usage` owes, and it is answered below.
+        //
+        // **This moves no clause of ADR-0012.** Clause 2 asks for a streaming
+        // tool-calling exchange against a stub for *each of five* kinds; two
+        // of five now have a client and three have none.
+        ProviderCapabilities::declared(true, true, true)
+    }
+
+    fn usage(&self) -> Option<TokenUsage> {
+        // `None` before the first exchange, `Some` after one. A client that
+        // had made no request and reported a zero would be inventing a datum.
+        let slot = match self.last.lock() {
+            Ok(slot) => *slot,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+        slot.map(|(prompt, completion)| TokenUsage::counted(prompt, completion))
+    }
+}
+
+impl Model for OllamaClient {
+    fn capabilities(&self) -> Capabilities {
+        // One statement, read twice. `From` rather than a second literal, so a
+        // client that stops calling tools cannot say so in one place and not
+        // the other.
+        Provider::capabilities(self).into()
+    }
+
+    async fn respond(&self, request: &ModelRequest<'_>) -> Result<ModelResponse, PortFailure> {
+        // The one place `OllamaFailure` becomes `PortFailure`. The port
+        // carries a sentence and nothing else, so the class ADR-0016 puts this
+        // failure in is lost here -- which is right for `zaru-core`, whose
+        // loop has no taxonomy, and is why `exchange` is public: the command
+        // surface classifies the typed failure, and only the loop sees the
+        // flattened one.
+        self.exchange(request)
+            .await
+            .map_err(|failure| PortFailure::new(failure.to_string()))
+    }
+}

@@ -1,0 +1,6 @@
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:13.690366333Z","message":{"role":"assistant","content":"Hello"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:13.701202464Z","message":{"role":"assistant","content":" there"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:13.710829667Z","message":{"role":"assistant","content":","},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:13.720359372Z","message":{"role":"assistant","content":" friend"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:13.729248845Z","message":{"role":"assistant","content":"."},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:13.738592608Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":67912895,"load_duration":728413,"prompt_eval_count":31,"prompt_eval_cached_count":20,"prompt_eval_duration":16448000,"eval_count":6,"eval_duration":48287000}

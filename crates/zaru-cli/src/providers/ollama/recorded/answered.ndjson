@@ -1,0 +1,13 @@
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.748571838Z","message":{"role":"assistant","content":"The"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.760027334Z","message":{"role":"assistant","content":" current"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.771163316Z","message":{"role":"assistant","content":" weather"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.78004471Z","message":{"role":"assistant","content":" in"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.789377316Z","message":{"role":"assistant","content":" Paris"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.798960904Z","message":{"role":"assistant","content":" is"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.808111319Z","message":{"role":"assistant","content":" "},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.817060024Z","message":{"role":"assistant","content":"18"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.826556563Z","message":{"role":"assistant","content":"C"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.835675029Z","message":{"role":"assistant","content":" and"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.845007156Z","message":{"role":"assistant","content":" raining"},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.853845631Z","message":{"role":"assistant","content":"."},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:04:30.863341751Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":2360820861,"load_duration":1148559,"prompt_eval_count":109,"prompt_eval_cached_count":15,"prompt_eval_duration":303971000,"eval_count":13,"eval_duration":114783000}

@@ -1,0 +1,2 @@
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:06:17.445216282Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_n6mw936z","function":{"index":0,"name":"fs.read","arguments":{"path":"notes.txt"}}}]},"done":false}
+{"model":"llama3.2:3b","created_at":"2026-09-14T05:06:17.490629888Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":4631775057,"load_duration":2649881,"prompt_eval_count":419,"prompt_eval_cached_count":52,"prompt_eval_duration":4461781000,"eval_count":14,"eval_duration":125817000}
