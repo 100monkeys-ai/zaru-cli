@@ -45,6 +45,8 @@
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 
 use zaru_cli::config::{Contribution, Layer, Resolution, Schema, Source, Table, Value};
+use zaru_cli::credentials::Secret;
+use zaru_cli::providers::gemini::GeminiClient;
 use zaru_cli::providers::ollama::OllamaClient;
 use zaru_cli::providers::openai_compatible::OpenAiCompatibleClient;
 use zaru_cli::providers::{ProviderEndpoint, ProviderKind};
@@ -236,4 +238,92 @@ async fn the_openai_compatible_client_says_which_transport_failure_a_reader_has(
         unresolvable: what_openai_compatible_said(&format!("{UNRESOLVABLE}/v1")).await,
     };
     assert_the_two_failures_are_told_apart(ProviderKind::OpenAiCompatible, &said);
+}
+
+/// Drive one `gemini` client at `origin` and render what it said.
+///
+/// The key is an invented string and never a real one: a refused connection and
+/// a name that does not resolve both fail before a byte is sent, so nothing
+/// this function builds ever leaves the machine and no credential is needed to
+/// reach the arm under test.
+async fn what_gemini_said(origin: &str) -> String {
+    let client = GeminiClient::new(
+        ProviderEndpoint::new(origin).expect("the origin is well-formed"),
+        model_id("gemini-3.6-flash"),
+        ProviderKind::Gemini.credential_alias(),
+        Secret::provider(ProviderKind::Gemini, "not-a-key-and-never-sent")
+            .expect("a non-empty value with no control character is a secret"),
+    )
+    .expect("an HTTP client builds");
+    let prompt = Prompt::new(Redacted::by(&NothingHeld, "say hello"));
+    let request = ModelRequest {
+        prompt: &prompt,
+        tools: &[],
+        results: &[],
+    };
+    match Model::respond(&client, &request).await {
+        Ok(response) => panic!("something answered at {origin}: {response:?}"),
+        Err(failure) => failure.to_string(),
+    }
+}
+
+/// The `gemini` client tells a refused connection from a name that will not
+/// resolve.
+///
+/// Measured from the release binary on 2026-09-14, before this arc: both read
+/// `the provider could not be reached: error sending request for url (<url>)`,
+/// identical outside the URL — and this kind's class is environmental, so the
+/// remedy beside it said *"waiting will not help … Running the same command
+/// again is the retry"*. A person whose endpoint was mistyped was told to run
+/// it again. The class is unchanged here and is raised as a question of its
+/// own; what changes is that the sentence now says which problem they have.
+#[tokio::test]
+async fn the_gemini_client_says_which_transport_failure_a_reader_has() {
+    let said = BothWays {
+        refused: what_gemini_said(&a_port_nothing_is_listening_on()).await,
+        unresolvable: what_gemini_said(UNRESOLVABLE).await,
+    };
+    assert_the_two_failures_are_told_apart(ProviderKind::Gemini, &said);
+}
+
+/// Every client's transport arms go through the one walk, read from the source.
+///
+/// **This is the six arms no check in this file can reach.** Each client maps a
+/// `reqwest::Error` at three points and only the send is reachable without a
+/// server that answers and then breaks, which this suite may not have. So the
+/// remaining six are held by reading the source rather than by running it, and
+/// this check is that reading made mechanical: a fourth arm added to any client
+/// with `to_string()` reddens here even though nothing can drive it.
+///
+/// The count is asserted in both directions on purpose. Zero occurrences of the
+/// forbidden spelling is the property; three occurrences of the required one is
+/// the control that says the file was found and the needle is findable at all,
+/// so a path typo cannot make this pass by reading nothing.
+#[test]
+fn every_client_composes_its_transport_failures_the_same_way() {
+    const CLIENTS: [(&str, &str); 3] = [
+        ("gemini", include_str!("../src/providers/gemini.rs")),
+        ("ollama", include_str!("../src/providers/ollama.rs")),
+        (
+            "openai_compatible",
+            include_str!("../src/providers/openai_compatible.rs"),
+        ),
+    ];
+
+    for (kind, source) in CLIENTS {
+        let walked = source.matches("transport_detail(&error)").count();
+        assert_eq!(
+            walked, 3,
+            "the {kind} client has {walked} transport arms walking the source chain rather than \
+             3. Either an arm stopped walking it, or one was added and did not start -- and the \
+             arms this file can drive are only the sends, so a body-read or chunk arm that \
+             regressed would otherwise reach nobody until a user met it",
+        );
+        let dropped = source.matches("detail: error.to_string()").count();
+        assert_eq!(
+            dropped, 0,
+            "the {kind} client composes {dropped} transport failure(s) from `reqwest`'s \
+             top-level message alone, which names no cause a reader can act on",
+        );
+    }
 }

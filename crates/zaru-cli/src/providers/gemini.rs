@@ -442,7 +442,15 @@ impl GeminiClient {
             .await
             .map_err(|error| GeminiFailure::Unavailable {
                 code: error.status().map(|status| status.as_u16()),
-                detail: error.to_string(),
+                // **The whole chain, not `reqwest`'s top-level sentence.** See
+                // `providers::transport`: `to_string()` gives "error sending
+                // request for url (...)" and drops "Connection refused" three
+                // links below it. Measured on the release binary before this
+                // call changed: a closed port and a hostname that does not
+                // resolve printed the same sentence but for the URL, and this
+                // kind's class is environmental, so the remedy beside it told
+                // both readers to run the command again.
+                detail: crate::providers::transport::transport_detail(&error),
             })?;
 
         let status = response.status();
@@ -461,7 +469,7 @@ impl GeminiClient {
                 .await
                 .map_err(|error| GeminiFailure::Unavailable {
                     code: Some(status.as_u16()),
-                    detail: error.to_string(),
+                    detail: crate::providers::transport::transport_detail(&error),
                 })?;
             return Err(self.classify(status.as_u16(), &bytes));
         }
@@ -487,7 +495,7 @@ impl GeminiClient {
                 .await
                 .map_err(|error| GeminiFailure::Unavailable {
                     code: Some(status.as_u16()),
-                    detail: error.to_string(),
+                    detail: crate::providers::transport::transport_detail(&error),
                 })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();
