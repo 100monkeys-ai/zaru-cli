@@ -1625,3 +1625,322 @@ fn corpus_session_resume_in_session_names_what_the_flag_names() {
         );
     }
 }
+
+// ------------------------------------------------ ADR-0011 D3's masked question
+
+/// The value a check types at the masked question. Nothing in the product
+/// carries it, and no real credential is held anywhere here.
+const KEY_NONCE: &str = "AIzaSyKEYS-IN-SESSION-c41f9b7e";
+
+/// A word typed in the same session that **must** reach the frame, so every
+/// absence below is about masking rather than about an empty frame.
+const KEY_CONTROL: &str = "control-8ab27";
+
+/// **Security corpus.** A secret typed at `/providers keys add gemini` inside
+/// a session reaches no frame, no pane line, no composer and no file the
+/// session owns — with a live control found in the same frames.
+///
+/// # What discriminates
+///
+/// The control is typed into the same session as an ordinary task, so a shell
+/// that painted nothing at all could not satisfy the absences by being empty;
+/// and the question's own authored sentence is asserted present, so a build
+/// that never raised the question could not satisfy them by never asking.
+///
+/// **The question is declined rather than answered**, and that is a limit of
+/// the check rather than a choice: `CredentialStore::default_root` reads the
+/// process's own `HOME`, this workspace denies `unsafe_code`, and `set_var` is
+/// unsafe in this edition — so a check that stored a key would write into the
+/// developer's real `~/.zaru`. The storing half is the arc's artefact, run
+/// over a pseudo-terminal with `HOME` set, and it must not be quoted from
+/// here.
+///
+/// **The mutants**: `render::prompt_lines`' secret arm painting the buffer;
+/// `Shell::key`'s secret arm not short-circuiting, which sends the bytes to
+/// the composer and from there to a task; `secret_for` answering `None`, which
+/// sends the whole line to the fall-through and the key into `Command::words`
+/// — the last being the one this check exists for, because it is the shape
+/// where a key ends up in a refusal a person can read.
+#[test]
+fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
+    let scratch = Scratch::new("masked");
+
+    let store = SessionStore::reading(scratch.path().join(".zaru"));
+    let directory = store.sessions_directory().join(scratch.id.as_str());
+    let resumed = zaru_cli::session::resume(&directory, usize::MAX).expect("the session resumes");
+
+    let mut shell = Shell::open(Status::new("bare", scratch.id.to_string()));
+    shell.refresh(&Pane::of(&resumed.tail));
+
+    let mut keys = typed("/providers keys add gemini");
+    // Typed at the question, not at the composer: the pump is standing a
+    // masked question by now and `Shell::key`'s secret arm has every key.
+    keys.extend(KEY_NONCE.chars().map(|ch| press(Key::Char(ch))));
+    keys.push(press(Key::Esc));
+    keys.extend(typed(KEY_CONTROL));
+    keys.extend(typed("/exit"));
+
+    let mut surface = Recorded::of();
+    let source = Source::scripted(keys);
+    let runner = zaru_cli::cli::Run {
+        version: env!("CARGO_PKG_VERSION"),
+        report_at: env!("CARGO_PKG_REPOSITORY"),
+    };
+    let trie = NotesTrie::nothing_cached("zaru");
+    shell.composer_mut().set_absence(trie.absence());
+    zaru_cli::compose::turn::runtime()
+        .expect("a runtime")
+        .block_on(run(
+            &mut shell,
+            &mut surface,
+            &source,
+            &Instant,
+            &runner,
+            &trie,
+            &Vocabulary,
+            &mut Turnable::Cannot(Vec::new()),
+        ))
+        .expect("the pump");
+
+    let every_frame = surface
+        .frames
+        .iter()
+        .map(|frame| frame.join("\n"))
+        .collect::<Vec<_>>()
+        .join("\n--\n");
+
+    // The two accepting arms first: the question was asked, and the session
+    // was alive enough to paint something else.
+    assert!(
+        every_frame.contains("the gemini API key"),
+        "the masked question was never raised, so every absence below is about a build that \
+         never asked:\n{every_frame}"
+    );
+    assert!(
+        every_frame.contains(KEY_CONTROL),
+        "the control never reached a frame, so the absences below could be satisfied by an \
+         empty pane:\n{every_frame}"
+    );
+
+    for (what, needle) in [
+        ("by value", KEY_NONCE),
+        ("by its leading bytes", "AIzaSy"),
+        ("by its tail", "c41f9b7e"),
+    ] {
+        assert!(
+            !every_frame.contains(needle),
+            "the key typed at the question reached a painted frame {what}:\n{every_frame}"
+        );
+    }
+
+    let said: String = shell
+        .pane_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !said.contains(KEY_NONCE) && !said.contains("AIzaSy"),
+        "the key reached the pane's own lines:\n{said}"
+    );
+    assert!(
+        said.contains("nothing was stored."),
+        "declining the question said nothing:\n{said}"
+    );
+    assert!(
+        shell.composer().text().is_empty(),
+        "the key was left in the composer: {:?}",
+        shell.composer().text()
+    );
+
+    // Every file under the scratch home: the transcript, the checkpoint, the
+    // session metadata. Read as bytes so an escaped form cannot hide.
+    let mut files = 0usize;
+    for entry in walk(scratch.path()) {
+        let bytes = std::fs::read(&entry).expect("a file the session wrote");
+        let text = String::from_utf8_lossy(&bytes);
+        files += 1;
+        for needle in [KEY_NONCE, "AIzaSy", "c41f9b7e"] {
+            assert!(
+                !text.contains(needle),
+                "the key reached {}:\n{text}",
+                entry.display()
+            );
+        }
+    }
+    assert!(
+        files > 0,
+        "no file was read, so the absence above is about an empty tree"
+    );
+}
+
+/// Every file under `root`, so an absence assertion is about a tree rather
+/// than about a path somebody remembered to name.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// `secret_for` names the kind and nothing else, and every neighbouring
+/// spelling answers `None`.
+///
+/// The pure mapping beside `request_for` and `switch_for`, asked without being
+/// answered — which is the whole reason it is a separate function.
+#[test]
+fn secret_for_names_the_kind_and_no_neighbouring_spelling() {
+    use zaru_cli::providers::ProviderKind;
+    use zaru_cli::terminal::secret_for;
+    use zaru_tui::shell::Command;
+
+    for kind in ProviderKind::ALL {
+        assert_eq!(
+            secret_for(&Command {
+                slash: "/providers",
+                verb: Some("keys"),
+                words: vec!["add".to_owned(), kind.as_str().to_owned()],
+            }),
+            Some(kind),
+            "`/providers keys add {kind}` did not name its own kind"
+        );
+    }
+
+    for (why, command) in [
+        (
+            "the listing must stay a listing",
+            Command {
+                slash: "/providers",
+                verb: Some("keys"),
+                words: Vec::new(),
+            },
+        ),
+        (
+            "a kind this build does not know is not a secret to ask for",
+            Command {
+                slash: "/providers",
+                verb: Some("keys"),
+                words: vec!["add".to_owned(), "not-a-kind".to_owned()],
+            },
+        ),
+        (
+            "`add` with no kind names nothing",
+            Command {
+                slash: "/providers",
+                verb: Some("keys"),
+                words: vec!["add".to_owned()],
+            },
+        ),
+        (
+            "a third word is not this grammar",
+            Command {
+                slash: "/providers",
+                verb: Some("keys"),
+                words: vec!["add".to_owned(), "gemini".to_owned(), "extra".to_owned()],
+            },
+        ),
+        (
+            "another namespace's token is not a provider key",
+            Command {
+                slash: "/notes",
+                verb: Some("tokens"),
+                words: vec!["add".to_owned(), "work".to_owned()],
+            },
+        ),
+    ] {
+        assert_eq!(secret_for(&command), None, "{why}");
+    }
+}
+
+/// A refusal never silently absorbs a word, and where an out-of-session
+/// spelling exists it is named.
+///
+/// # The two defects this pins, both measured from the release binary
+///
+/// `/providers keys add gemini` was answered ``\`/providers keys\` needs
+/// something this harness does not have yet`` — a refusal naming a command the
+/// reader had not typed, and one that *works*. And `/notes tokens add work
+/// play.cortex.page` **ran the listing**, saying nothing about the four words
+/// it dropped, because `request_for`'s `/notes tokens` arm carried no
+/// `words.is_empty()` guard where `/providers keys`' arm did.
+///
+/// **The mutants**: dropping `command.words` from `typed_spelling`; removing
+/// the guard, which puts the listing's own output on the pane instead of a
+/// refusal; `out_of_session_spelling` answering for an unbuilt namespace,
+/// which would offer a remedy that fails.
+#[test]
+fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session() {
+    let scratch = Scratch::new("refusal");
+
+    let store = SessionStore::reading(scratch.path().join(".zaru"));
+    let directory = store.sessions_directory().join(scratch.id.as_str());
+    let resumed = zaru_cli::session::resume(&directory, usize::MAX).expect("the session resumes");
+
+    let mut shell = Shell::open(Status::new("bare", scratch.id.to_string()));
+    shell.refresh(&Pane::of(&resumed.tail));
+
+    let mut keys = typed("/notes tokens add work play.cortex.page");
+    keys.extend(typed("/exit"));
+
+    let mut surface = Recorded::of();
+    let source = Source::scripted(keys);
+    let runner = zaru_cli::cli::Run {
+        version: env!("CARGO_PKG_VERSION"),
+        report_at: env!("CARGO_PKG_REPOSITORY"),
+    };
+    let trie = NotesTrie::nothing_cached("zaru");
+    shell.composer_mut().set_absence(trie.absence());
+    zaru_cli::compose::turn::runtime()
+        .expect("a runtime")
+        .block_on(run(
+            &mut shell,
+            &mut surface,
+            &source,
+            &Instant,
+            &runner,
+            &trie,
+            &Vocabulary,
+            &mut Turnable::Cannot(Vec::new()),
+        ))
+        .expect("the pump");
+
+    let said: Vec<String> = shell
+        .pane_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect();
+    println!("-- what the pane said --");
+    for line in &said {
+        println!("   |{line}|");
+    }
+
+    assert!(
+        said.iter().any(|line| line
+            .contains("`/notes tokens add work play.cortex.page` needs something this harness")),
+        "the refusal did not name every word that was typed: {said:#?}"
+    );
+    assert!(
+        said.iter().any(|line| line
+            .contains("outside a session it is `zaru notes tokens add work play.cortex.page`")),
+        "the refusal did not name the out-of-session spelling: {said:#?}"
+    );
+    // The guard's own half: the listing did **not** run. Its first line on an
+    // empty store names the remedy, and finding it here would mean the words
+    // were absorbed.
+    assert!(
+        !said.iter().any(|line| line.starts_with("no tokens.")),
+        "`/notes tokens add …` ran the listing instead of refusing: {said:#?}"
+    );
+}

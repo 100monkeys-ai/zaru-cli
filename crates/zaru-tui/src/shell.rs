@@ -1023,7 +1023,7 @@ impl Shell {
     /// a secret reaches a frame" a property of the shell's surface rather than
     /// of every renderer's discipline: a renderer cannot paint what it cannot
     /// reach. The count is reachable, because the mask is one glyph per
-    /// character — see [`render::MASK`](crate::shell::render::MASK), where the
+    /// character — see [`crate::shell::render::MASK`], where the
     /// length disclosure that buys is recorded.
     #[must_use]
     pub const fn asking_secret(&self) -> Option<&SecretRequest> {

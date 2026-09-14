@@ -50,8 +50,8 @@ pub mod trie;
 pub mod vocabulary;
 
 pub use driver::{
-    AfterTurn, Guard, Pump, Pumped, Restore, Surface, after, question_for_the_shell, run,
-    switch_for,
+    AfterTurn, Asked, Guard, Pump, Pumped, Restore, SECRET_DECLINED, SECRET_GUIDANCE, Surface,
+    after, ask_for_a_secret, question_for_the_shell, run, secret_for, secret_statement, switch_for,
 };
 pub use open::{Opening, resolve_in, restored_context, shell_for, take_over};
 pub use source::{Beat, POLL, Pace, Source, TICK, Taken};

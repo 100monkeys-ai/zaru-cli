@@ -596,8 +596,9 @@ impl SecretRequest {
 
 /// How a [`SecretRequest`] ended.
 ///
-/// **Two variants and no `Option<String>`**, for the reason [`Taken`] and
-/// [`Turned`] in `zaru-cli` already carry: a user who declined and a user who
+/// **Two variants and no `Option<String>`**, for the reason `zaru-cli`'s
+/// `Taken` and `Turned` already carry — named in prose rather than linked,
+/// because this crate cannot name that one: a user who declined and a user who
 /// typed nothing are different facts, and a caller does different things with
 /// them. The bytes are never in here — they leave the shell only through
 /// [`Shell::take_secret`](crate::shell::Shell::take_secret), which is named so

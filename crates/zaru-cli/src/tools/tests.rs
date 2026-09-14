@@ -2796,3 +2796,146 @@ fn the_session_notice_is_owed_once_per_session_and_the_tier_is_read_again() {
          the line for the first time, however many turns it has had",
     );
 }
+
+/// This harness has exactly two confirmers, and the masked question did not
+/// make a third.
+///
+/// # What this answers, and what it deliberately does not
+///
+/// [ADR Status — open questions] carries "**How many confirmers this harness
+/// has** — ADR-0007 D8, ADR-0011 D3 and ADR-0012 D6 each need to ask the user
+/// a question, and each names its own. Two ports exist; D6's 'the user
+/// chooses' would be a third", and its own checkable is "**counting traits in
+/// `zaru-cli` with a method that returns a user's answer**". Until 2026-09-14
+/// that counting was something a person did by reading. This is it done
+/// mechanically, so that answering the question a third way reddens rather
+/// than passing unnoticed.
+///
+/// **It does not close the question.** D6's prompt is still unbuilt, and what
+/// this asserts is only that nothing has quietly answered it. A person
+/// decides.
+///
+/// # The rule is matched against source text, so the matching is part of it
+///
+/// Agent lessons §44: a walk that found too little must fail rather than pass,
+/// which is why the file and line counts are asserted before anything else.
+/// Comment lines are stripped, so a doc comment naming a trait does not count
+/// as one.
+///
+/// **It is a name test rather than a signature test, and that is deliberate.**
+/// A confirmer is recognisable by what it is *called* — `Confirm`,
+/// `Confirmation`, `Ask`, `Prompt`, `Question` — long before its signature
+/// settles, and a signature test over `-> bool` would match every predicate in
+/// the crate. So the two known confirmers are asserted present by name and
+/// every other trait is asserted not to wear a confirmer's vocabulary. A third
+/// confirmer called something else entirely would escape this, and that is
+/// stated rather than hidden: what it catches is the failure that has actually
+/// been happening, which is one act spreading across three records under three
+/// names.
+///
+/// [ADR Status — open questions]: https://100monkeys-ai.cortex.page/zaru/p/operations/adr-status-questions
+#[test]
+fn this_harness_has_exactly_two_confirmers_and_the_masked_question_is_not_a_third() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    let mut sources: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(here) = frontier.pop() {
+        let entries = std::fs::read_dir(&here)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", here.display()));
+        for entry in entries {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                frontier.push(path);
+                continue;
+            }
+            if path.extension().is_some_and(|extension| extension == "rs")
+                && !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("fixtures.rs" | "tests.rs")
+                )
+            {
+                let body = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
+                sources.push((path, body));
+            }
+        }
+    }
+    let lines: usize = sources.iter().map(|(_, body)| body.lines().count()).sum();
+    println!(
+        "the confirmer count scanned {} product source file(s) and {lines} line(s) of zaru-cli",
+        sources.len()
+    );
+    assert!(
+        sources.len() >= 60 && lines >= 20_000,
+        "scanned {} file(s) and {lines} line(s), which is less than this crate holds; the walk \
+         is broken rather than the tree clean",
+        sources.len()
+    );
+
+    let mut traits: Vec<(String, String)> = Vec::new();
+    for (path, body) in &sources {
+        for line in body.lines() {
+            let code = line.split("//").next().unwrap_or(line).trim();
+            let Some(rest) = code.strip_prefix("pub trait ") else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|character| character.is_alphanumeric() || *character == '_')
+                .collect();
+            if !name.is_empty() {
+                // The module path rather than the file name: both confirmers
+                // live in a file called `port.rs`, and a check that compared
+                // bare file names would read them as one place.
+                let module = path
+                    .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or(path)
+                    .display()
+                    .to_string();
+                traits.push((name, module));
+            }
+        }
+    }
+
+    let confirmers: Vec<&(String, String)> = traits
+        .iter()
+        .filter(|(name, _)| {
+            ["confirm", "ask", "prompt", "question"]
+                .iter()
+                .any(|word| name.to_lowercase().contains(word))
+        })
+        .collect();
+
+    assert_eq!(
+        confirmers.len(),
+        2,
+        "this harness should have exactly two confirmers and it has {}: {confirmers:#?}. A third \
+         would make \"ask the user something\" a vocabulary spread across three records with no \
+         page owning it, which is the open question on operations/adr-status-questions. The \
+         masked question of ADR-0011 D3's 2026-09-14 amendment is deliberately not one: the pump \
+         raises it directly, because it already owns the terminal and the pane, so there is \
+         nothing for a third trait to abstract over",
+        confirmers.len()
+    );
+    let names: Vec<&str> = confirmers.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Confirm", "Confirm"],
+        "the two confirmers are not the two this workspace has recorded: {confirmers:#?}"
+    );
+    let files: std::collections::BTreeSet<&str> = confirmers
+        .iter()
+        .map(|(_, file)| file.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        files.len(),
+        2,
+        "the two confirmers are in one module, so one of them is not the one this check believes: \
+         {confirmers:#?}"
+    );
+    assert!(
+        files.contains("src/tools/port.rs") && files.contains("src/credentials/port.rs"),
+        "the two confirmers are not ADR-0011 D3's and ADR-0007 D8's: {confirmers:#?}"
+    );
+}

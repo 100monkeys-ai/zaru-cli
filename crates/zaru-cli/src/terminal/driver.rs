@@ -18,6 +18,7 @@
 
 use crate::cli::invocation::Request;
 use crate::failure::Exit;
+use crate::providers::ProviderKind;
 use crate::session::Resumed;
 use crate::terminal::source::{Pace, Source, Taken};
 use crate::tools::port::Question;
@@ -1670,7 +1671,51 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // cannot arrive through `request_for`, and `switch_for` is its
                 // own pure mapping for the reason that one is: a check has to
                 // be able to ask what a spelling means without doing it.
-                if let Some(opening) = switch_for(&command) {
+                // ADR-0015 D2's `/providers keys add <kind>`, asked before
+                // the command is dispatched for `switch_for`'s own reason: the
+                // bytes cannot travel on a `Request`, because ADR-0007 D7
+                // reads them from standard input and a terminal in raw mode
+                // has none. So the pump stands the question, and what it gets
+                // goes to the same storing function the out-of-session
+                // spelling reaches.
+                if let Some(kind) = secret_for(&command) {
+                    let request = zaru_tui::shell::SecretRequest::new(
+                        secret_statement(kind),
+                        SECRET_GUIDANCE,
+                    );
+                    match ask_for_a_secret(shell, surface, source, request).await? {
+                        Asked::Given(offered) => {
+                            let outcome = runner.store_a_provider_key(kind, offered.trim_end());
+                            for text in outcome.lines {
+                                shell.notice(Line::new(Register::Plain, text));
+                            }
+                            if let Exit::Failed(classified) = &outcome.exit {
+                                shell.notice(Line::new(
+                                    Register::Failed,
+                                    crate::failure::Presentation::of(classified).headline,
+                                ));
+                            }
+                        }
+                        // A declined question is not a failure -- the harness
+                        // asked and the user answered -- so it is announced
+                        // rather than refused, which is the register ADR-0016
+                        // D1 leaves for a decision.
+                        Asked::Declined => {
+                            shell.notice(Line::new(Register::Announced, SECRET_DECLINED.to_owned()))
+                        }
+                        // A terminal that stopped answering is how a
+                        // scripted source ends, and it is the same exit the
+                        // pump's own `source.next()` returning `None` takes.
+                        // **Not a stored key and not a declined one**: nothing
+                        // was read, so nothing is claimed either way.
+                        Asked::Ended => {
+                            surface.draw(shell)?;
+                            return Ok(Pump {
+                                outcome: Pumped::Left(Exit::Succeeded),
+                            });
+                        }
+                    }
+                } else if let Some(opening) = switch_for(&command) {
                     // Resolved **here**, where the pane is: a terminal in raw
                     // mode has no echo, so a refusal written to standard error
                     // goes into the alternate screen and the person sees
@@ -1917,9 +1962,19 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
 /// build does not implement, saying so, before anything reaches here — so a
 /// namespace with no arm below would be a built one, and the only way to
 /// arrive at the fall-through is a verb-and-argument shape that names no
-/// request. `zaru providers keys add <kind>` is the one that does today, and
-/// deliberately: it reads the key from standard input, which a terminal in raw
-/// mode has taken.
+/// request.
+///
+/// **Corrected 2026-09-14.** This read: "`zaru providers keys add <kind>` is
+/// the one that does today, and deliberately: it reads the key from standard
+/// input, which a terminal in raw mode has taken." The first half is no longer
+/// true — that spelling is answered by [`secret_for`] and [ADR-0011] D3's
+/// masked question, before anything reaches `dispatch` — and the second half
+/// was never the whole reason: the bytes still cannot travel on a [`Request`],
+/// which is why the question is asked by the pump rather than mapped here.
+/// `zaru notes tokens add <alias> <host>` is what arrives at the fall-through
+/// today, for the three reasons on `operations/known-defects`.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 ///
 /// The rest is a match over the namespaces this build implements, in the same
 /// discipline `cli::help` uses for its summaries. **It is not compiler-checked
@@ -1930,17 +1985,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
 /// asserts every built namespace's first verb reaches a request.
 pub(crate) fn dispatch(runner: &crate::cli::Run<'_>, command: &Command) -> Vec<Line> {
     let Some(request) = request_for(command) else {
-        return vec![Line::new(
-            Register::Failed,
-            format!(
-                "`{}{}` {UNAVAILABLE}",
-                command.slash,
-                command
-                    .verb
-                    .map(|verb| format!(" {verb}"))
-                    .unwrap_or_default()
-            ),
-        )];
+        return unavailable(command);
     };
 
     let line = crate::cli::invocation::CommandLine {
@@ -2007,6 +2052,223 @@ pub fn switch_for(command: &Command) -> Option<crate::terminal::open::Opening> {
     }
 }
 
+/// What the fall-through answers: the whole spelling that was typed, and the
+/// out-of-session spelling where one exists.
+///
+/// # It named a command the reader had not typed, and that was a defect
+///
+/// Until 2026-09-14 this formatted `command.slash` and `command.verb` and
+/// **dropped `command.words`**, so a person who typed `/providers keys add
+/// gemini` was answered about `` `/providers keys` `` — which is a spelling
+/// that works. Measured from the release binary at `515d854` over a
+/// pseudo-terminal and filed on [Known Defects]; a refusal that silently
+/// absorbs part of what was typed cannot be acted on, which is
+/// [ADR-0016] D2's own test: "an error message whose reader cannot act is a
+/// stack trace with better grammar".
+///
+/// # The remedy is the harness's own knowledge, not a new one
+///
+/// [ADR-0015] D2's "a namespace has two entry points" means every namespace
+/// here has an out-of-session spelling, and
+/// [`Namespace::subcommand`](crate::cli::Namespace::subcommand) is where it is
+/// already written down. So the second line is a lookup rather than an
+/// authored remedy per command, and it appears only where the lookup answers
+/// — a namespace this build does not implement at all gets the first line and
+/// nothing else, because "run it outside a session" would be false for it.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+/// [Known Defects]: https://100monkeys-ai.cortex.page/zaru/p/operations/known-defects
+fn unavailable(command: &Command) -> Vec<Line> {
+    let mut lines = vec![Line::new(
+        Register::Failed,
+        format!("`{}` {UNAVAILABLE}", typed_spelling(command)),
+    )];
+    if let Some(outside) = out_of_session_spelling(command) {
+        lines.push(Line::new(
+            Register::Plain,
+            format!("  outside a session it is `{outside}`."),
+        ));
+    }
+    lines
+}
+
+/// The whole of what the person typed, rebuilt from what the grammar read.
+///
+/// **Every word, which is the point.** `Command` is what
+/// [`zaru_tui::shell::command::read`] produced, so this is the typed line as
+/// the harness understood it rather than as the terminal received it — which
+/// is the more useful thing to be shown, because a word the grammar dropped is
+/// a word the refusal must still name.
+fn typed_spelling(command: &Command) -> String {
+    let mut spelling = command.slash.to_owned();
+    if let Some(verb) = command.verb {
+        spelling.push(' ');
+        spelling.push_str(verb);
+    }
+    for word in &command.words {
+        spelling.push(' ');
+        spelling.push_str(word);
+    }
+    spelling
+}
+
+/// The same command as `zaru …` would spell it, if this build has that
+/// namespace at all.
+///
+/// `None` for a slash this build does not implement, because naming an
+/// out-of-session spelling for a namespace that exists nowhere would be a
+/// remedy that fails.
+fn out_of_session_spelling(command: &Command) -> Option<String> {
+    let namespace = crate::cli::Namespace::ALL
+        .into_iter()
+        .find(|namespace| namespace.slash() == command.slash)?;
+    if !namespace.is_built() {
+        return None;
+    }
+    let mut spelling = format!("zaru {}", namespace.subcommand());
+    if let Some(verb) = command.verb {
+        spelling.push(' ');
+        spelling.push_str(verb);
+    }
+    for word in &command.words {
+        spelling.push(' ');
+        spelling.push_str(word);
+    }
+    Some(spelling)
+}
+
+/// Which secret a slash command asks for, deciding nothing and doing nothing.
+///
+/// **Separate from the asking for the reason `request_for` is separate from
+/// `dispatch` and [`switch_for`] from [`run`]** — the first two named in prose
+/// rather than linked, because they are `pub(crate)` and rustdoc's
+/// `private_intra_doc_links` is right to refuse a public page pointing at
+/// something its reader cannot open, which is the reading [`PaneNarrator`]
+/// already records. What a spelling *means* and what running it *does* are two
+/// things, and a check has to be able to ask the first without the second —
+/// which here would mean standing a question at a terminal and waiting for
+/// somebody to type a key into it.
+///
+/// It is not a [`Request`], and that is the shape rather than an omission.
+/// [ADR-0007] D7 reads a key from **standard input**, precisely because an
+/// argument is in the shell's history file and in `ps` output for every user
+/// on the machine, and a terminal in raw mode has no standard input to hand
+/// it. So the bytes cannot travel on the [`Request`]; what travels is the
+/// *kind*, and the bytes are read at [ADR-0011] D3's masked question and
+/// handed to `cli::Run::store_a_provider_key` — the same function the
+/// out-of-session spelling reaches, named in prose for the reason above.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[must_use]
+pub fn secret_for(command: &Command) -> Option<ProviderKind> {
+    match (command.slash, command.verb) {
+        ("/providers", Some("keys")) => match command.words.as_slice() {
+            [add, kind] if add == "add" => ProviderKind::parse(kind),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The sentence the masked question states, naming what is being asked for.
+///
+/// **Authored under a delegated coordinator ruling of 2026-09-14, open to
+/// Jeshua's veto**, and composed here rather than in `zaru-tui` for
+/// [ADR-0011] D3's own reason: what the user was told and what the harness
+/// believes it asked cannot be allowed to drift apart, so the statement
+/// crosses the port as a value.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[must_use]
+pub fn secret_statement(kind: ProviderKind) -> String {
+    format!("the {kind} API key, which is not shown as you type")
+}
+
+/// What follows the masked row: how to finish, and how to decline.
+///
+/// Authored with [`secret_statement`], under the same ruling. It names both
+/// ways out, because a question whose only stated answer is the accepting one
+/// is a question a person cannot leave.
+pub const SECRET_GUIDANCE: &str = "enter to store it · esc or ctrl-c to cancel";
+
+/// What the pane says when a masked question is declined.
+///
+/// Authored under the same ruling. **Not [`Register::Failed`]**: the harness
+/// asked and the user answered, which is a permission-shaped outcome rather
+/// than one of [ADR-0016] D1's five classes -- the reading that record already
+/// takes for a declined tool prompt and for ADR-0007 D8's `ApexDeclined`.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub const SECRET_DECLINED: &str = "nothing was stored.";
+
+/// How a masked question ended.
+///
+/// **Three cases and no `Option`**, for [`Taken`]'s own reason: a value given,
+/// a person who declined, and a terminal that stopped answering are three
+/// different things and a caller does three different things with them.
+#[derive(Debug)]
+pub enum Asked {
+    /// The user typed something and pressed `Enter`.
+    Given(String),
+    /// The user pressed `Esc` or `Ctrl-C`. Nothing was read.
+    Declined,
+    /// The terminal stopped answering before the question was.
+    Ended,
+}
+
+/// Stand [ADR-0011] D3's masked question and pump the terminal until it is
+/// answered.
+///
+/// # It awaits, where [`PaneConfirm`] cannot
+///
+/// `PaneConfirm::confirm` is synchronous and spins on
+/// [`Source::try_next`](crate::terminal::source::Source::try_next) because it
+/// runs **inside** a turn's own poll, where there is nothing to await on. This
+/// question is raised by the pump itself, between turns, so it awaits
+/// [`Source::next`](crate::terminal::source::Source::next) — the `poll_fn` that
+/// takes the receiver's lock for one poll and never across a suspension. No
+/// beat is consumed and no lock is held.
+///
+/// # Nothing here reads the value
+///
+/// The bytes go into the shell and come back out through
+/// [`Shell::take_secret`](zaru_tui::shell::Shell::take_secret), which is the
+/// one accessor that yields them. This function paints between keystrokes and
+/// never inspects what it is painting.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub async fn ask_for_a_secret<S: Surface + Send>(
+    shell: &mut Shell,
+    surface: &mut S,
+    source: &Source,
+    request: zaru_tui::shell::SecretRequest,
+) -> std::io::Result<Asked> {
+    shell.ask_secret(request);
+    surface.draw(shell)?;
+
+    let mut now = Duration::ZERO;
+    loop {
+        // A standing question takes every key and every paste, so the composer
+        // is handed nothing and needs neither of these.
+        let Some(struck) = source.next().await else {
+            return Ok(Asked::Ended);
+        };
+        now += Duration::from_millis(1);
+        shell.struck(struck, now, &NoEntries, &NoVocabulary);
+        surface.draw(shell)?;
+
+        match shell.secret_answer() {
+            None => {}
+            Some(zaru_tui::shell::SecretAnswer::Declined) => return Ok(Asked::Declined),
+            Some(zaru_tui::shell::SecretAnswer::Given) => {
+                return Ok(shell.take_secret().map_or(Asked::Declined, Asked::Given));
+            }
+        }
+    }
+}
+
 pub(crate) fn request_for(command: &Command) -> Option<Request> {
     match (command.slash, command.verb) {
         ("/runtime", None) => Some(Request::Runtime),
@@ -2015,23 +2277,49 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
         ("/help", None) => Some(Request::Help),
         ("/models", None) => Some(Request::Models),
         ("/init", None) => Some(Request::Init),
-        ("/notes", Some("tokens")) => Some(Request::NotesTokens),
+        // **`if command.words.is_empty()`, exactly as `/providers keys`
+        // below.** Without the guard `/notes tokens add work host` reached
+        // `Request::NotesTokens` and **ran the listing**, saying nothing about
+        // the words it had dropped -- measured 2026-09-14 over a
+        // pseudo-terminal. A command that silently runs a different command is
+        // worse than one that refuses, because the person who typed it has no
+        // way to find out. With the guard it reaches `unavailable`, which
+        // names the words and the out-of-session spelling.
+        //
+        // `tokens add` is not reachable in a session for three measured
+        // reasons -- a nested `block_on`, ADR-0007 D8's apex confirmation on
+        // `/dev/tty`, and a network call between them -- and they are on
+        // `operations/known-defects` rather than here.
+        ("/notes", Some("tokens")) if command.words.is_empty() => Some(Request::NotesTokens),
         // ADR-0007 D7's fifth surface, and it is reachable inside a session
-        // where `tokens add` is not: `add` reads the token from standard
-        // input and a terminal in raw mode has none to hand it, while this
-        // takes an alias that is already in the store and reads nothing.
+        // where `tokens add` is not: this takes an alias that is already in
+        // the store and reads nothing.
+        //
+        // **Corrected 2026-09-14.** This used to give "`add` reads the token
+        // from standard input and a terminal in raw mode has none to hand it"
+        // as the whole reason, which stopped being sufficient the day
+        // `/providers keys add <kind>` got a masked question for exactly that
+        // problem. `tokens add` stays out for three further reasons measured
+        // that day -- a `block_on` inside the shell's own `block_on`, ADR-0007
+        // D8's apex confirmation on `/dev/tty`, and a network call between
+        // them -- and they are on `operations/known-defects`.
         ("/notes", Some("use")) => command
             .words
             .first()
             .and_then(|word| crate::credentials::Alias::new(word).ok())
             .map(|alias| Request::NotesUse { alias }),
-        // `providers keys` lists; `providers keys add <kind>` reads the key
-        // from standard input, which a shell has taken. So the listing is
-        // reachable inside a session and the write is not, and that is a
-        // property of the surface rather than an omission: ADR-0007's own
-        // reason for reading a key from stdin is that an argument is in the
-        // shell history and in `ps`, and a terminal in raw mode has no stdin
-        // to hand it.
+        // `providers keys` lists. **`providers keys add <kind>` is not a
+        // `Request` and never reaches here**: ADR-0007's reason for reading a
+        // key from standard input is that an argument is in the shell history
+        // and in `ps`, so the bytes cannot travel on a `Request` either, and
+        // `secret_for` maps that spelling onto ADR-0011 D3's masked question
+        // instead. The guard stays, so `keys add …` falls past this arm.
+        //
+        // **Corrected 2026-09-14.** This read "the listing is reachable inside
+        // a session and the write is not, and that is a property of the
+        // surface rather than an omission". The write is reachable; what was
+        // missing was a way to read a secret at a terminal without echoing
+        // it.
         ("/providers", Some("keys")) if command.words.is_empty() => Some(Request::ProviderKeys),
         ("/session", Some("list")) => Some(Request::SessionsList),
         ("/session", Some("rm")) => command
