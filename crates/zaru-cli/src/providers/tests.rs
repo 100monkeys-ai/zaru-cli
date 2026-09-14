@@ -1280,7 +1280,9 @@ fn a_disagreement_names_both_sides_and_nothing_reconciles_it() {
 // reddens rather than passing unnoticed, which is the shape this workspace
 // already uses for the thinking-token question.
 
-use crate::providers::selection::{NoKindSelected, Requirement, kind_key, select};
+use crate::providers::selection::{
+    KEYLESS_ENDING, KeyUse, NoKindSelected, Requirement, kind_key, select,
+};
 
 /// The two kinds this build carries a client for, in declaration order.
 const WITH_A_CLIENT: [ProviderKind; 2] = [ProviderKind::Gemini, ProviderKind::Ollama];
@@ -1413,20 +1415,89 @@ fn a_machine_with_nothing_configured_is_still_refused() {
 }
 
 #[test]
-fn only_the_keyless_kind_is_reached_without_a_credential() {
-    // `Requirement::of` is a wildcard-free match, so a sixth kind fails to
-    // compile there. This asserts the mapping itself: exactly one of D3's five
-    // is reached with no secret, and it is the one with no secret.
-    let keyless: Vec<ProviderKind> = ProviderKind::ALL
+fn the_kinds_selected_by_an_endpoint_rather_than_a_key_are_the_two_that_can_work_without_one() {
+    // `KeyUse::of` is a wildcard-free match, so a sixth kind fails to compile
+    // there. This asserts the mapping itself.
+    //
+    // **It said `vec![Ollama]` and named one kind until 2026-09-14**, and the
+    // sentence under it was "exactly one of D3's five is reached with no
+    // secret, and it is the one with no secret". That stopped being true when
+    // `openai-compatible` gained a client: a local server of that kind is
+    // reached with no secret too. The check is widened rather than deleted,
+    // because what it guards is unchanged -- a kind wrongly in this set is
+    // selectable on a machine that never configured it.
+    let by_endpoint: Vec<ProviderKind> = ProviderKind::ALL
         .into_iter()
         .filter(|kind| Requirement::of(*kind) == Requirement::ConfiguredEndpoint)
         .collect();
     assert_eq!(
-        keyless,
-        vec![ProviderKind::Ollama],
-        "the set of kinds reached without a credential is {keyless:?}; a kind wrongly in it is \
-         selectable on a machine that never configured it, and a kind wrongly out of it cannot be \
-         selected at all"
+        by_endpoint,
+        vec![ProviderKind::OpenAiCompatible, ProviderKind::Ollama],
+        "the set of kinds selected by a configured endpoint is {by_endpoint:?}; a kind wrongly in \
+         it is selectable on a machine that never configured it, and a kind wrongly out of it \
+         cannot be selected at all"
+    );
+}
+
+#[test]
+fn what_selects_a_kind_and_whether_it_sends_a_key_are_two_questions_with_one_answer_each() {
+    // The distinction that arrived on 2026-09-14. `Requirement` is derived from
+    // `KeyUse`, so the interesting content is that the derivation is not the
+    // identity: there is exactly one kind where the two answers differ, and a
+    // future edit that collapsed them again would redden here.
+    let differ: Vec<ProviderKind> = ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| {
+            let selected_by_key = Requirement::of(*kind) == Requirement::HeldKey;
+            let sends_a_key = KeyUse::of(*kind) != KeyUse::Never;
+            selected_by_key != sends_a_key
+        })
+        .collect();
+    assert_eq!(
+        differ,
+        vec![ProviderKind::OpenAiCompatible],
+        "exactly one kind is selected by its endpoint and still sends a key when one is held; \
+         collapsing the two questions back into one would either stop sending a gateway's key or \
+         make a local server unreachable without one",
+    );
+
+    // And the three spellings, so a kind moved between them reddens.
+    assert_eq!(KeyUse::of(ProviderKind::Gemini), KeyUse::Required);
+    assert_eq!(KeyUse::of(ProviderKind::Anthropic), KeyUse::Required);
+    assert_eq!(KeyUse::of(ProviderKind::Aegis), KeyUse::Required);
+    assert_eq!(KeyUse::of(ProviderKind::OpenAiCompatible), KeyUse::Optional);
+    assert_eq!(KeyUse::of(ProviderKind::Ollama), KeyUse::Never);
+}
+
+#[test]
+fn the_keyless_half_of_the_refusal_does_not_tell_a_gateway_user_to_start_a_server() {
+    // `openai-compatible` joins the keyless list, and that list's sentence used
+    // to end "and start its server" -- true while `ollama` was alone in it and
+    // false for a reader whose endpoint is a hosted gateway they do not run.
+    let refusal = NoKindSelected {
+        alias: ModelAlias::Default,
+        with_a_client: crate::compose::KINDS_WITH_A_CLIENT.to_vec(),
+    };
+    let said = refusal.to_string();
+
+    assert!(
+        said.contains(KEYLESS_ENDING),
+        "the keyless half names what the reader must supply: {said}",
+    );
+    assert!(
+        !said.contains("start its server"),
+        "and not an act half of them cannot perform: {said}",
+    );
+    // The accepting sibling: the keyed half is unchanged and still names the
+    // command, so this is a widening rather than a sentence that lost a route.
+    assert!(
+        said.contains("providers keys add"),
+        "the keyed half still names its command: {said}",
+    );
+    assert!(
+        said.contains(ProviderKind::OpenAiCompatible.as_str())
+            && said.contains(ProviderKind::Ollama.as_str()),
+        "and both keyless kinds are named: {said}",
     );
 }
 

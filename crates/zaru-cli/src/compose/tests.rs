@@ -1350,3 +1350,97 @@ fn adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers() {
          that would not write. A run can fail in both places and both owe the reader a record"
     );
 }
+
+/// The client-bearing kinds are in landing order, and a third one appended.
+///
+/// **What this guards is a tie-break, not a list.** Part 2 of
+/// [`crate::providers::select`] takes the first kind whose requirement holds,
+/// so this array's order decides which provider answers on a machine where two
+/// requirements hold at once. Appending can only give an answer to a machine
+/// that had none; inserting silently moves a working machine to a different
+/// provider, which is a behaviour change arriving with no release note.
+///
+/// So the order is asserted literally rather than as a set, and the name says
+/// why, because the failure this prevents is invisible in a diff that merely
+/// looks like a reordering.
+#[test]
+fn the_client_bearing_kinds_are_in_landing_order_so_a_later_one_cannot_displace_an_earlier() {
+    use crate::providers::ProviderKind;
+
+    assert_eq!(
+        crate::compose::KINDS_WITH_A_CLIENT.to_vec(),
+        vec![
+            ProviderKind::Gemini,
+            ProviderKind::Ollama,
+            ProviderKind::OpenAiCompatible,
+        ],
+        "landing order: `gemini` 2026-09-05, `ollama` and `openai-compatible` 2026-09-14. A kind \
+         inserted rather than appended re-tie-breaks every machine that already resolved one of \
+         the kinds it was placed before",
+    );
+
+    // And it is deliberately NOT `ProviderKind::ALL`'s order, which would put
+    // `openai-compatible` first and `ollama` before `gemini`. Asserting the
+    // difference is what stops somebody "tidying" the array into the other one.
+    let in_all_order: Vec<ProviderKind> = ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| crate::compose::KINDS_WITH_A_CLIENT.contains(kind))
+        .collect();
+    assert_ne!(
+        crate::compose::KINDS_WITH_A_CLIENT.to_vec(),
+        in_all_order,
+        "this array is landing order and `ProviderKind::ALL` is declaration order; sorting one \
+         into the other would change which provider answers on a machine configured for two",
+    );
+}
+
+/// A machine that resolved a kind before the third client landed still does.
+///
+/// The property the append was chosen for, asserted directly rather than
+/// argued: for every machine state expressible as "holds these keys, has these
+/// endpoints", adding `openai-compatible` to the array changes the answer only
+/// where there was no answer before.
+#[test]
+fn appending_the_third_client_changes_no_machine_that_already_had_an_answer() {
+    use crate::providers::{ModelAlias, ProviderKind, select};
+
+    const BEFORE: [ProviderKind; 2] = [ProviderKind::Gemini, ProviderKind::Ollama];
+
+    // Every combination of "holds a gemini key" x "has an ollama endpoint" x
+    // "has an openai-compatible endpoint".
+    for gemini_key in [false, true] {
+        for ollama_endpoint in [false, true] {
+            for compatible_endpoint in [false, true] {
+                let holds = |kind: ProviderKind| gemini_key && kind == ProviderKind::Gemini;
+                let has = |kind: ProviderKind| match kind {
+                    ProviderKind::Ollama => ollama_endpoint,
+                    ProviderKind::OpenAiCompatible => compatible_endpoint,
+                    _ => false,
+                };
+                let before = select(ModelAlias::Default, None, &BEFORE, holds, has);
+                let after = select(
+                    ModelAlias::Default,
+                    None,
+                    &crate::compose::KINDS_WITH_A_CLIENT,
+                    holds,
+                    has,
+                );
+                match before {
+                    Ok(kind) => assert_eq!(
+                        after.as_ref().ok(),
+                        Some(&kind),
+                        "a machine that resolved `{kind}` before must still resolve it \
+                         (gemini_key={gemini_key}, ollama_endpoint={ollama_endpoint}, \
+                         compatible_endpoint={compatible_endpoint})",
+                    ),
+                    Err(_) => assert_eq!(
+                        after.is_ok(),
+                        compatible_endpoint,
+                        "a machine with no answer before gains one exactly when it configured \
+                         the new kind's endpoint (compatible_endpoint={compatible_endpoint})",
+                    ),
+                }
+            }
+        }
+    }
+}

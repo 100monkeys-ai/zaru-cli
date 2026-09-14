@@ -89,7 +89,7 @@ pub use resolution::{
     ModelId, ModelIdRefused, ModelTable, ResolvedModel, TableRefused, declare, endpoint_of, fields,
     inference_of,
 };
-pub use selection::{NoKindSelected, Requirement, kind_key, select};
+pub use selection::{KEYLESS_ENDING, KeyUse, NoKindSelected, Requirement, kind_key, select};
 pub use usage::{Cost, CostRefused, TokenUsage};
 
 #[cfg(test)]

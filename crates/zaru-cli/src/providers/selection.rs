@@ -125,19 +125,86 @@ pub enum Requirement {
 }
 
 impl Requirement {
-    /// What this kind needs.
+    /// What this kind needs to be *selected*.
+    ///
+    /// **Derived from [`KeyUse`] rather than stated again**, which is the
+    /// change of 2026-09-14. Until then the two questions — what selects a
+    /// kind, and whether a kind sends a key — had the same answer for every
+    /// kind, so one enum could carry both. `openai-compatible` is where they
+    /// part: it is selected by a configured endpoint and it sends a key when
+    /// one is held. Deriving is what keeps them one statement; writing this
+    /// match a second time is how the two would come to disagree about a kind
+    /// somebody added to only one of them.
+    #[must_use]
+    pub const fn of(kind: ProviderKind) -> Self {
+        match KeyUse::of(kind) {
+            // A kind that cannot work without a key is found by its key.
+            KeyUse::Required => Self::HeldKey,
+            // A kind that can work without one has nothing in the store to be
+            // found by, so what says "the user meant this one" is the endpoint.
+            KeyUse::Optional | KeyUse::Never => Self::ConfiguredEndpoint,
+        }
+    }
+}
+
+/// Whether a kind's client sends a key, which is **not** the same question as
+/// [`Requirement`].
+///
+/// # The two questions had one answer until 2026-09-14
+///
+/// `gemini`, `anthropic` and `aegis` cannot be reached without a key, so a
+/// held key both selects them and is sent. `ollama` takes none, so a
+/// configured endpoint selects it and nothing is sent. For those four the two
+/// questions coincide and one enum answered both.
+///
+/// **`openai-compatible` is the first kind where they differ**, and it is not
+/// an awkward case — it is what [ADR-0012] D3 asks for. That kind is
+/// "everything OpenAI-shaped — vLLM, LM Studio, most gateways", which spans a
+/// server on the reader's laptop that wants no key and a hosted gateway that
+/// demands one. Measured 2026-09-14 with live controls: Ollama's own
+/// `/v1/chat/completions` answers 200 to a request carrying a bogus bearer,
+/// and `llama-server --api-key` answers 401 to a request carrying none.
+/// **Both are this kind**, so neither "needs a key" nor "takes none" is true
+/// of it and the honest answer is a third value.
+///
+/// # Why this is the primary fact and `Requirement` the derived one
+///
+/// Because this one is a property of the *protocol* and that one is a policy
+/// about selection. A client either has somewhere to put a key or it does not;
+/// what makes a kind the one a machine reaches for is a rule this workspace
+/// chose and could choose differently. Deriving the policy from the fact means
+/// a kind added here cannot be forgotten there.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyUse {
+    /// The client cannot reach this kind at all without a key.
+    Required,
+    /// The client sends a key when this machine holds one, and works without.
+    ///
+    /// The absence of a key is **not** a refusal. A reader pointing the harness
+    /// at a local server has nothing to store and must not be asked for one.
+    Optional,
+    /// The client sends no key and there is nowhere to put one.
+    Never,
+}
+
+impl KeyUse {
+    /// What this kind does with a key.
     ///
     /// **Exhaustive, with no wildcard arm**, so a sixth kind fails to compile
-    /// here rather than silently inheriting a requirement nobody chose for it.
+    /// here rather than silently inheriting an answer nobody chose for it.
     #[must_use]
     pub const fn of(kind: ProviderKind) -> Self {
         match kind {
-            // The only kind in this workspace reached without a secret.
-            ProviderKind::Ollama => Self::ConfiguredEndpoint,
-            ProviderKind::Anthropic
-            | ProviderKind::OpenAiCompatible
-            | ProviderKind::Gemini
-            | ProviderKind::Aegis => Self::HeldKey,
+            // Reached only with a secret.
+            ProviderKind::Anthropic | ProviderKind::Gemini | ProviderKind::Aegis => Self::Required,
+            // A gateway wants one and a local server does not, and the kind
+            // alone does not say which -- see this type's documentation.
+            ProviderKind::OpenAiCompatible => Self::Optional,
+            // `/api/chat` needs none, and a request carrying no authorization
+            // header of any kind answers 200 -- measured with a live control.
+            ProviderKind::Ollama => Self::Never,
         }
     }
 }
@@ -153,6 +220,29 @@ pub struct NoKindSelected {
     /// The kinds this build carries a client for, in declaration order.
     pub with_a_client: Vec<ProviderKind>,
 }
+
+/// How the keyless half of [`NoKindSelected`]'s sentence ends.
+///
+/// # Why this is a constant, and why it stopped saying "and start its server"
+///
+/// The sentence read "…or set `provider.<alias>.kind` to one that does not —
+/// `ollama` — and start its server" while `ollama` was the only kind in that
+/// list, and every word of it was true. **`openai-compatible` joins that list
+/// on 2026-09-14 and makes the ending false for half the readers it reaches**:
+/// that kind covers a hosted gateway as readily as a local server, a gateway
+/// is not something the reader starts, and telling them to start it is a
+/// remedy that cannot be followed — which is [ADR-0016] D2's "a stack trace
+/// with better grammar" with a wrong suggestion attached.
+///
+/// So the ending names what the reader must supply rather than an act they may
+/// not be able to perform: an endpoint, and behind it either a server they run
+/// or a gateway they have. It is a constant because it is **Jeshua's to veto
+/// as words** — recorded on ADR-0012's amendments page as a delegated ruling —
+/// and a sentence somebody may want to rewrite should be in one place with a
+/// name, not spliced into a `write!`.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub const KEYLESS_ENDING: &str = "to where a running server or a gateway is listening for it";
 
 impl fmt::Display for NoKindSelected {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -172,11 +262,13 @@ impl fmt::Display for NoKindSelected {
             f,
             "nothing on this machine says which provider should answer for `{alias}`. Either \
              store a key for one that needs one — {keyed} — with `zaru providers keys add \
-             <kind>`, or set `{key}` to one that does not — {keyless} — and start its server",
+             <kind>`, or set `{key}` to one that does not — {keyless} — and set that kind's \
+             `endpoint` {ending}",
             alias = self.alias,
             keyed = keyed.join(", "),
             keyless = keyless.join(", "),
             key = kind_key(self.alias),
+            ending = KEYLESS_ENDING,
         )
     }
 }

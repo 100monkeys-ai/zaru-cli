@@ -169,8 +169,33 @@ impl Ran {
 /// here. Recorded on that record as a delegated coordinator ruling of
 /// 2026-09-05, open to Jeshua's veto.
 ///
+/// # The order is landing order, and appending is what keeps it harmless
+///
+/// **Not [`ProviderKind::ALL`]'s order**, which puts `ollama` before `gemini`.
+/// This array is the order clients landed in, and a third one **appends**
+/// rather than inserting — which is a decision about who it can affect rather
+/// than about tidiness.
+///
+/// Part 2 of [`crate::providers::select`] takes the first kind whose
+/// requirement holds, so the order *is* the tie-break on a machine where two
+/// hold. Appending cannot change any machine's present answer: one that
+/// resolves `gemini` today resolves `gemini` tomorrow, one that resolves
+/// `ollama` still does, and the only machine whose behaviour moves is one that
+/// had **no** answer at all — no Gemini key and no `ollama` endpoint — and now
+/// has one. Inserting would silently move a working machine to a different
+/// provider, which is a change nobody asked for arriving in a release note
+/// nobody wrote.
+///
+/// `the_client_bearing_kinds_are_in_landing_order_so_a_later_one_cannot_displace_an_earlier`
+/// asserts it, and its name says why, so an insertion reddens rather than
+/// quietly re-tie-breaking.
+///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-pub const KINDS_WITH_A_CLIENT: [ProviderKind; 2] = [ProviderKind::Gemini, ProviderKind::Ollama];
+pub const KINDS_WITH_A_CLIENT: [ProviderKind; 3] = [
+    ProviderKind::Gemini,
+    ProviderKind::Ollama,
+    ProviderKind::OpenAiCompatible,
+];
 
 /// Which of D3's five kinds this machine holds a key for.
 ///
@@ -609,8 +634,12 @@ pub fn prepare(
     let keyring = OsKeyring::for_store(&store_root);
     let keys = HarnessKeys::from_process(&keyring);
     let alias = kind.credential_alias();
-    let secret = match crate::providers::Requirement::of(kind) {
-        crate::providers::Requirement::HeldKey => match store.secret(&alias, &keys) {
+    // **Read off `KeyUse` rather than `Requirement` since 2026-09-14.** The two
+    // answered one question while every kind either needed a key or took none;
+    // `openai-compatible` is selected by an endpoint AND sends a key when one
+    // is held, so the requirement can no longer say whether to read the store.
+    let secret = match crate::providers::KeyUse::of(kind) {
+        crate::providers::KeyUse::Required => match store.secret(&alias, &keys) {
             Ok(secret) => Some(secret),
             Err(failure) => {
                 return Err(Box::new(Ran::refused(
@@ -618,7 +647,21 @@ pub fn prepare(
                 )));
             }
         },
-        crate::providers::Requirement::ConfiguredEndpoint => None,
+        // **A key only if this machine has one, and its absence is not a
+        // failure.** The store is asked only when `kinds_held` already said the
+        // alias is there, so a reader with a local server never meets a
+        // credential refusal for a credential they were never asked for.
+        crate::providers::KeyUse::Optional if held_kinds.contains(&kind) => {
+            match store.secret(&alias, &keys) {
+                Ok(secret) => Some(secret),
+                Err(failure) => {
+                    return Err(Box::new(Ran::refused(
+                        surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                    )));
+                }
+            }
+        }
+        crate::providers::KeyUse::Optional | crate::providers::KeyUse::Never => None,
     };
     // ADR-0008 clause 6's port, over every value the store holds -- built from
     // the store rather than from the secret above, which is why it is
@@ -651,7 +694,21 @@ pub fn prepare(
         _ => match kind {
             ProviderKind::Gemini => Endpoint::default_endpoint(),
             ProviderKind::Ollama => crate::providers::ollama::Endpoint::default_endpoint(),
-            ProviderKind::Anthropic | ProviderKind::OpenAiCompatible | ProviderKind::Aegis => {
+            // **This kind has a client and deliberately no default**, which is
+            // why it is the one arm here that is reachable in a working build.
+            // `providers::openai_compatible::endpoint` carries the argument:
+            // the kind covers vLLM, LM Studio, llama.cpp, Ollama's own `/v1`
+            // and every hosted gateway, whose origins differ with no majority,
+            // so a default would be one vendor's port painted on all of them.
+            //
+            // It is reached only through an explicit `provider.<alias>.kind`,
+            // since part 2 of the selection would not have chosen a kind whose
+            // endpoint is unset -- so the reader said "use this one" and the
+            // one thing left to tell them is where.
+            ProviderKind::OpenAiCompatible => {
+                return Err(Box::new(Ran::refused(Surface::endpoint_not_set(kind))));
+            }
+            ProviderKind::Anthropic | ProviderKind::Aegis => {
                 return Err(Box::new(Ran::refused(
                     surface.no_client_for_the_kinds_held(&model, &held_kinds),
                 )));
@@ -673,6 +730,23 @@ pub fn prepare(
         (ProviderKind::Ollama, None) => {
             match crate::providers::ollama::OllamaClient::new(endpoint, model.clone()) {
                 Ok(client) => ProviderClient::Ollama(client),
+                Err(failure) => {
+                    return Err(Box::new(Ran::refused(Surface::provider(&failure.into()))));
+                }
+            }
+        }
+        // **The one arm that takes either**, because this kind's key is
+        // optional: `Some` for a gateway whose key this machine holds, `None`
+        // for a local server that wants none, and the client is the same
+        // client. See `providers::selection::KeyUse`.
+        (ProviderKind::OpenAiCompatible, secret) => {
+            match crate::providers::openai_compatible::OpenAiCompatibleClient::new(
+                endpoint,
+                model.clone(),
+                alias,
+                secret,
+            ) {
+                Ok(client) => ProviderClient::OpenAiCompatible(client),
                 Err(failure) => {
                     return Err(Box::new(Ran::refused(Surface::provider(&failure.into()))));
                 }

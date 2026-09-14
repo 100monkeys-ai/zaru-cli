@@ -36,6 +36,7 @@ use super::endpoint::ProviderEndpoint;
 use super::gemini::{GeminiClient, GeminiFailure};
 use super::kind::ProviderKind;
 use super::ollama::{OllamaClient, OllamaFailure};
+use super::openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleFailure};
 use super::port::Provider;
 use super::usage::TokenUsage;
 use core::fmt;
@@ -56,6 +57,9 @@ pub enum ProviderClient {
     Gemini(GeminiClient),
     /// D3's `ollama`, which needs none.
     Ollama(OllamaClient),
+    /// D3's `openai-compatible`, whose key is optional -- see
+    /// [`crate::providers::selection::KeyUse`].
+    OpenAiCompatible(OpenAiCompatibleClient),
 }
 
 /// What a provider client could not do.
@@ -68,6 +72,8 @@ pub enum ProviderFailure {
     Gemini(GeminiFailure),
     /// The `ollama` client's taxonomy.
     Ollama(OllamaFailure),
+    /// The `openai-compatible` client's taxonomy.
+    OpenAiCompatible(OpenAiCompatibleFailure),
 }
 
 impl fmt::Display for ProviderFailure {
@@ -80,6 +86,7 @@ impl fmt::Display for ProviderFailure {
         match self {
             Self::Gemini(failure) => failure.fmt(f),
             Self::Ollama(failure) => failure.fmt(f),
+            Self::OpenAiCompatible(failure) => failure.fmt(f),
         }
     }
 }
@@ -95,6 +102,12 @@ impl From<GeminiFailure> for ProviderFailure {
 impl From<OllamaFailure> for ProviderFailure {
     fn from(failure: OllamaFailure) -> Self {
         Self::Ollama(failure)
+    }
+}
+
+impl From<OpenAiCompatibleFailure> for ProviderFailure {
+    fn from(failure: OpenAiCompatibleFailure) -> Self {
+        Self::OpenAiCompatible(failure)
     }
 }
 
@@ -117,6 +130,10 @@ impl ProviderClient {
                 .exchange(request)
                 .await
                 .map_err(ProviderFailure::from),
+            Self::OpenAiCompatible(client) => client
+                .exchange(request)
+                .await
+                .map_err(ProviderFailure::from),
         }
     }
 
@@ -125,6 +142,7 @@ impl ProviderClient {
         match self {
             Self::Gemini(client) => client.stream_deltas_to(sender),
             Self::Ollama(client) => client.stream_deltas_to(sender),
+            Self::OpenAiCompatible(client) => client.stream_deltas_to(sender),
         }
     }
 
@@ -134,6 +152,7 @@ impl ProviderClient {
         match self {
             Self::Gemini(client) => client.model(),
             Self::Ollama(client) => client.model(),
+            Self::OpenAiCompatible(client) => client.model(),
         }
     }
 }
@@ -143,6 +162,7 @@ impl Provider for ProviderClient {
         match self {
             Self::Gemini(client) => client.kind(),
             Self::Ollama(client) => client.kind(),
+            Self::OpenAiCompatible(client) => client.kind(),
         }
     }
 
@@ -150,6 +170,7 @@ impl Provider for ProviderClient {
         match self {
             Self::Gemini(client) => client.endpoint(),
             Self::Ollama(client) => client.endpoint(),
+            Self::OpenAiCompatible(client) => client.endpoint(),
         }
     }
 
@@ -157,6 +178,7 @@ impl Provider for ProviderClient {
         match self {
             Self::Gemini(client) => Provider::capabilities(client),
             Self::Ollama(client) => Provider::capabilities(client),
+            Self::OpenAiCompatible(client) => Provider::capabilities(client),
         }
     }
 
@@ -164,6 +186,7 @@ impl Provider for ProviderClient {
         match self {
             Self::Gemini(client) => client.usage(),
             Self::Ollama(client) => client.usage(),
+            Self::OpenAiCompatible(client) => client.usage(),
         }
     }
 }
@@ -176,6 +199,7 @@ impl Model for ProviderClient {
         match self {
             Self::Gemini(client) => Model::capabilities(client),
             Self::Ollama(client) => Model::capabilities(client),
+            Self::OpenAiCompatible(client) => Model::capabilities(client),
         }
     }
 

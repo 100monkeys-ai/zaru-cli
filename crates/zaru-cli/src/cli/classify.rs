@@ -1154,6 +1154,40 @@ impl Surface<'_> {
         )
     }
 
+    /// A kind was chosen whose endpoint nothing set, and which has no default.
+    ///
+    /// # Only `openai-compatible` can reach this, and only deliberately
+    ///
+    /// The other four kinds with a client publish a default endpoint, so an
+    /// unset one is never a refusal for them. `openai-compatible` publishes
+    /// none on purpose — it covers vLLM, LM Studio, llama.cpp, Ollama's own
+    /// `/v1` and every hosted gateway, whose origins differ with no majority,
+    /// so a default would be one vendor's port painted on all of them. See
+    /// `providers::openai_compatible::endpoint`.
+    ///
+    /// It is reached only through an explicit `provider.<alias>.kind`: the
+    /// selection rule's second part would not have chosen a kind whose
+    /// endpoint is unset, because an endpoint set at some layer is exactly
+    /// that kind's requirement. So the reader has said "use this one" and the
+    /// single thing left to tell them is where — which is why this is
+    /// user-correctable with one remedy rather than the "no client for the
+    /// kinds held" refusal it stood behind before 2026-09-14.
+    #[must_use]
+    pub fn endpoint_not_set(kind: ProviderKind) -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(format!(
+                "`{kind}` was chosen to answer, and nothing says where it is listening. That \
+                 kind covers a local model server and a hosted gateway alike, so this harness \
+                 publishes no default for it rather than guessing at one vendor's port",
+            )),
+            remedy: act(format!(
+                "set `{key}` {ending}",
+                key = kind.endpoint_key(),
+                ending = crate::providers::KEYLESS_ENDING,
+            )),
+        }
+    }
+
     /// A configured provider kind that names none of the five.
     ///
     /// User-correctable, and the remedy names every kind [ADR-0012] D3
@@ -1464,6 +1498,87 @@ impl Surface<'_> {
             }
             crate::providers::ProviderFailure::Ollama(ollama) => {
                 self.ollama_failure(ollama, session)
+            }
+            crate::providers::ProviderFailure::OpenAiCompatible(compatible) => {
+                self.openai_compatible_failure(compatible, session)
+            }
+        }
+    }
+
+    /// The `openai-compatible` client's taxonomy, in [ADR-0016] D1's classes.
+    ///
+    /// # This kind is where the local-versus-hosted argument is hardest
+    ///
+    /// The `ollama` client reads an unreachable endpoint as **row 2, the
+    /// user's**, because a local server that is not running is started by the
+    /// person reading the message; a hosted provider's outage is row 3 because
+    /// it is not. That split works because the kind says which it is.
+    ///
+    /// **This kind does not say.** `openai-compatible` covers a vLLM on the
+    /// reader's laptop and a gateway they do not own, and [ADR-0012] D5's own
+    /// argument — the local path must not be "a second-class code path that
+    /// breaks quietly" — cuts towards row 2. The asymmetry decides it, exactly
+    /// as it decided the `gemini` client's 400 tie-break: a reader whose
+    /// gateway is down gets a remedy they cannot use and loses a little time;
+    /// a reader whose local server is merely not started gets "wait and try
+    /// later" and loses the afternoon. So the remedy names **both** routes and
+    /// the class is the user's.
+    ///
+    /// **`StreamFailed` is the new shape and it takes an existing class.** A
+    /// server that answered 200 and then failed part-way through its own
+    /// answer failed on its own side, which is row 3 for the same reason a 5xx
+    /// is — and it is deliberately **not** a defect, because nothing this
+    /// harness sent caused it and nothing the reader types fixes it. **No
+    /// class was added**; D1's five are untouched.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    fn openai_compatible_failure(
+        &self,
+        failure: &crate::providers::OpenAiCompatibleFailure,
+        session: SessionEvidence,
+    ) -> Classified {
+        use crate::providers::OpenAiCompatibleFailure as F;
+        match failure {
+            // Nothing is listening, or the stream stopped mid-body.
+            F::Unreachable { .. } => correctable(
+                failure,
+                act(format!(
+                    "start the server, or set `{key}` {ending}",
+                    key = ProviderKind::OpenAiCompatible.endpoint_key(),
+                    ending = crate::providers::KEYLESS_ENDING,
+                )),
+            ),
+            // A key this endpoint will not take, or one it wanted and was not
+            // given. Either way the reader can act, and the remedy is the same.
+            F::CredentialRejected { kind, .. } => correctable(
+                failure,
+                run("store a key for it", &format!("providers keys add {kind}")),
+            ),
+            // The endpoint has no such model. D1 row 2's "bad config".
+            F::ModelNotFound { .. } => correctable(
+                failure,
+                act("set `model.default` to a model this endpoint serves".to_owned()),
+            ),
+            // The server failed on its own side -- a 5xx before the stream, or
+            // an error frame inside it. The one class this kind shares with a
+            // hosted provider, for the same reason it does.
+            F::Unavailable { .. } | F::StreamFailed { .. } => Classified::Environmental {
+                statement: Statement::sanitised(failure.to_string()),
+                wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                    "this harness has no retry policy and nothing states one, so it stops here \
+                     and says so rather than retrying on a policy nobody chose. Running the same \
+                     command again is the retry"
+                        .to_owned(),
+                )),
+            },
+            // The harness built the request, mapped the response, or supplied
+            // the descriptor, so none of these is the reader's to fix.
+            F::RequestRefused { .. }
+            | F::Unreadable { .. }
+            | F::ToolSchemaUnreadable { .. }
+            | F::ResultsDoNotMatchCalls { .. } => {
+                undecided(self.version, self.report_at, session, line!())
             }
         }
     }
