@@ -1799,3 +1799,63 @@ fn adr_0007_d7s_use_reaches_the_same_request_from_both_surfaces() {
         "`/notes use` with no alias reached a request"
     );
 }
+
+/// The three store refusals `notes use` can raise are not defects.
+///
+/// # Found by running the binary, not by reading it
+///
+/// `zaru notes use play2` against a real stored token exited **70, "a defect
+/// in Zaru"**, with a report URL. The classifier folded `UnknownAlias`,
+/// `SecondComposerRole` and `ComposerScopeExceeded` into `undecided` under a
+/// comment saying "nothing this harness runs grants a composer role or
+/// re-roles a stored token, so a store failure of one of these three shapes
+/// reaching a user is this harness in a state it has no path to".
+///
+/// That sentence was true when it was written and D7's `use` made it false in
+/// the same range of work. This is ADR-0016 D3's "never present a defect as a
+/// user error" inverted, and it is the second time this exact shape has been
+/// found here by running the binary — the `endpoint` arc hit it on the apex
+/// path on 2026-09-06, recorded on ADR-0007's Status tracking.
+///
+/// All three are things a **person** did and can undo: they named an alias
+/// that is not stored, or offered the role to a second token, or offered it to
+/// a token whose scope is too wide. Every one has a remedy.
+#[test]
+fn the_store_refusals_notes_use_can_raise_are_user_correctable_and_not_defects() {
+    use crate::credentials::{Alias, StoreError};
+    use crate::failure::{Classified, SessionEvidence};
+
+    let classify = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let alias = |name: &str| Alias::new(name).expect("a legal alias");
+
+    let refusals = [
+        StoreError::UnknownAlias {
+            alias: alias("absent"),
+        },
+        StoreError::SecondComposerRole {
+            existing: alias("incumbent"),
+            offered: alias("offered"),
+        },
+        StoreError::ComposerScopeExceeded {
+            alias: alias("wide"),
+            tool: "pages.apply_patch".to_owned(),
+        },
+    ];
+
+    for failure in refusals {
+        let classified = classify.credential_store(&failure, SessionEvidence::NoSessionExists);
+        match &classified {
+            Classified::UserCorrectable { remedy, .. } => assert!(
+                remedy
+                    .actions()
+                    .any(|action| !action.lead().as_str().trim().is_empty()),
+                "{failure:?} is user-correctable with an empty remedy, which ADR-0016 D2 calls a \
+                 stack trace with better grammar"
+            ),
+            other => panic!(
+                "`zaru notes use` can raise {failure:?} and the harness calls it {other:?} -- a \
+                 person who named the wrong alias is told they found a bug in Zaru"
+            ),
+        }
+    }
+}

@@ -856,14 +856,55 @@ impl<'a> Surface<'a> {
                      was declined"
                 ))),
             ),
-            StoreError::UnknownAlias { .. }
-            | StoreError::SecondComposerRole { .. }
-            | StoreError::ComposerScopeExceeded { .. }
-            // Still no path: nothing this harness runs grants a composer role
-            // or re-roles a stored token, so a store failure of one of these
-            // three shapes reaching a user is this harness in a state it has
-            // no path to.
-            => undecided(self.version, self.report_at, session, line!()),
+            // **All three have a path as of 2026-09-14, and the comment that
+            // stood here said they had none.** It read: "nothing this harness
+            // runs grants a composer role or re-roles a stored token, so a
+            // store failure of one of these three shapes reaching a user is
+            // this harness in a state it has no path to". `zaru notes use
+            // <alias>` runs `grant_composer_role`, so all three are now things
+            // a **person** did at a command line.
+            //
+            // **Found by running the binary rather than by reading it**, and
+            // it is the second time this exact shape has been found that way:
+            // `zaru notes use play2` against a real stored token exited 70,
+            // "a defect in Zaru", with a report URL, for a person who had
+            // simply offered the role to a token whose scope is too wide.
+            // That is D3's "never present a defect as a user error" inverted.
+            //
+            // Each remedy names something this binary runs, because a remedy
+            // that does not is a stack trace with better grammar.
+            StoreError::UnknownAlias { .. } => correctable(
+                failure,
+                act("run `zaru notes tokens` to see the aliases this machine holds".to_owned()),
+            ),
+            // **The statement is the honest half and it is worth reading.**
+            // `notes use` grants the role where none is held; it does not take
+            // it from a token that holds one, so this refusal is what a second
+            // grant looks like rather than a failed move. Whether that verb
+            // should move the role is a question for its own record and is
+            // deliberately not answered by a classification.
+            StoreError::SecondComposerRole { .. } => correctable(
+                failure,
+                act(
+                    "run `zaru notes tokens` to see which token carries the role; this command \
+                     grants it where none is held rather than taking it from one that has it"
+                        .to_owned(),
+                ),
+            ),
+            // The composer's credential may carry the read-only set and
+            // nothing else, and the refusal above already names the offending
+            // tool. What the remedy adds is that this is not the strip going
+            // dark: a single stored token still serves the hint strip without
+            // carrying the role at all.
+            StoreError::ComposerScopeExceeded { .. } => correctable(
+                failure,
+                act(
+                    "offer the role to a token scoped to the read-only set; `zaru notes tokens` \
+                     prints each token's tool count, and a single stored token already serves the \
+                     hint strip without carrying the role"
+                        .to_owned(),
+                ),
+            ),
         }
     }
 
