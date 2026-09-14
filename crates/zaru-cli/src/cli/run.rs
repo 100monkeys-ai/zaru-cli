@@ -29,8 +29,8 @@ use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::cli::{help, layers, render};
 use crate::config::{Key, Resolution};
 use crate::credentials::{
-    Alias, Confirm, CredentialStore, Description, Entry, HarnessKeys, Instance, OsKeyring, Reach,
-    Secret, tool_scope_at,
+    Alias, Confirm, CredentialStore, Description, Entry, Family, HarnessKeys, Instance, Listing,
+    OsKeyring, Reach, Secret, StoreError, tool_scope_at,
 };
 use crate::failure::{Classified, Exit, SessionEvidence};
 use crate::providers::{ModelTable, ProviderKind};
@@ -128,6 +128,9 @@ impl Run<'_> {
             Request::NotesTokensAdd { alias, host, apex } => {
                 self.notes_tokens_add(alias, host, *apex)
             }
+            Request::NotesTokensDescribe { alias, text } => self.notes_tokens_describe(alias, text),
+            Request::NotesTokensRemove { alias } => self.notes_tokens_remove(alias),
+            Request::ProviderKeysRemove { kind } => self.provider_keys_remove(*kind),
             Request::ProviderKeys => self.provider_keys(),
             Request::ProviderKeysAdd { kind } => self.provider_keys_add(*kind),
             Request::Task { words } => self.task(words, &line.overrides),
@@ -436,6 +439,135 @@ impl Run<'_> {
                 surface.credential_store(&failure, SessionEvidence::NoSessionExists),
             ),
         }
+    }
+
+    /// [ADR-0007] D7's `describe`, the fourth of that clause's five surfaces.
+    ///
+    /// # The refusal a person meets here has never been reachable before
+    ///
+    /// The text is a user's, so [`Description::new`] can refuse it — and
+    /// until now the only description this harness composed was
+    /// [`notes_entry`]'s machine-made sentence, which cannot carry a control
+    /// character. That is why [`undecided_description`] exists and reports a
+    /// **defect**: for a sentence this module composed, a refusal is this
+    /// harness's fault.
+    ///
+    /// **This path must not go near it.** A typed newline is the user's, and
+    /// `From<DescriptionRefused> for Classified` already classifies it as the
+    /// user's with a remedy naming what to remove. Sending it through the
+    /// defect reporter instead would exit 70, "a defect in Zaru", for somebody
+    /// who pressed Return in the wrong place — [ADR-0016] D3's "never present
+    /// a defect as a user error" inverted, which is a mistake this clause's
+    /// own Status tracking already records twice, on the apex path and on
+    /// `use`.
+    ///
+    /// The store is opened for **writing**, unlike `notes tokens`, because
+    /// setting a description rewrites the file.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    fn notes_tokens_describe(&self, alias: &Alias, text: &str) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let description = match Description::new(text) {
+            Ok(description) => description,
+            // The user's, and it says which character to take out.
+            Err(refusal) => return Outcome::failed(refusal.into()),
+        };
+        let mut store = match Self::store_for_writing() {
+            Ok(store) => store,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        match store.describe(alias, &description, Family::Notes) {
+            Ok(()) => Outcome::printed(vec![format!(
+                "\"{alias}\" now reads: {}",
+                description.as_str()
+            )]),
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
+        }
+    }
+
+    /// [ADR-0007] D7's `rm`, the fifth of that clause's five surfaces.
+    ///
+    /// # It will remove the composer's token, and says so when it does
+    ///
+    /// D4 flags exactly one token `composer`, and this removes it if that is
+    /// the alias named: revoking a credential is the person's to do, and a
+    /// store that refused would leave someone unable to remove a token they
+    /// had already revoked on the server.
+    ///
+    /// What it must not do is let that pass silently. The listing afterwards
+    /// cannot show the role is unheld, because the row that carried it is the
+    /// row that went, so the outcome says so — and says what the composer
+    /// reads with now, which is the three-case reading of
+    /// [`composer_token`](crate::credentials::composer_token) rather than a
+    /// guess. It is asked **after** the write, so it is a reading of the store
+    /// as it now stands.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    fn notes_tokens_remove(&self, alias: &Alias) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let mut store = match Self::store_for_writing() {
+            Ok(store) => store,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        match store.remove(alias, Family::Notes) {
+            Ok(removed) => {
+                let mut lines = vec![format!("removed \"{alias}\"; {SEALED_VALUE_IS_GONE}")];
+                if removed.held_composer_role {
+                    lines.push(format!("  {}", composer_role_now_unheld(&store)));
+                }
+                Outcome::printed(lines)
+            }
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
+        }
+    }
+
+    /// The provider half of D7's `rm`, over the same store operation.
+    ///
+    /// It takes the kind and composes the alias, because a provider key's
+    /// alias is `provider.<kind>` and is not the user's to choose.
+    fn provider_keys_remove(&self, kind: ProviderKind) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let alias = kind.credential_alias();
+        let mut store = match Self::store_for_writing() {
+            Ok(store) => store,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        match store.remove(&alias, Family::Provider(kind)) {
+            Ok(_) => Outcome::printed(vec![format!(
+                "removed the `{kind}` key; {SEALED_VALUE_IS_GONE}"
+            )]),
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
+        }
+    }
+
+    /// The store, opened for writing.
+    ///
+    /// Three commands resolve the root and open it identically; written once
+    /// so the sentence a person reads when their home directory cannot be
+    /// resolved is one sentence. It hands back the store's own refusal rather
+    /// than a rendered outcome, so the caller classifies it the same way it
+    /// classifies everything else the store can say.
+    fn store_for_writing() -> Result<CredentialStore, StoreError> {
+        CredentialStore::open(CredentialStore::default_root()?)
     }
 
     fn notes_tokens(&self) -> Outcome {
@@ -781,6 +913,57 @@ fn undecided_entry(
         },
         SessionEvidence::NoSessionExists,
     ))
+}
+
+/// What `rm` says about the value it took with the credential.
+///
+/// Authored 2026-09-14 and recorded on [ADR-0007]'s amendments page as
+/// Jeshua's to veto. It is a named constant rather than a literal at the two
+/// call sites so that the Notes half and the provider half cannot come to say
+/// different things about one store operation.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+const SEALED_VALUE_IS_GONE: &str = "its sealed value is gone from the store.";
+
+/// What reads your notes now that the composer role is unheld.
+///
+/// # Three cases, and they are the store's rather than this function's
+///
+/// [ADR-0007] D4 says exactly one token carries the role and does not say what
+/// happens when none does — which is the state of every machine that exists,
+/// and which the amendment of 2026-09-14 answers in three cases: a
+/// role-carrying token wins; failing that a **lone** stored Nuclear Notes
+/// token serves the composer's reads; failing that nothing serves and the
+/// strip says so. `composer_token` is the implementation of exactly those
+/// three, so this asks it rather than restating them — a sentence composed
+/// from a second reading of the store would be a second answer to one
+/// question.
+///
+/// It is called **after** the removal, so what it describes is the store as it
+/// now stands rather than as it was.
+///
+/// The three sentences are authored and are recorded on [ADR-0007]'s
+/// amendments page as Jeshua's to veto.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+fn composer_role_now_unheld(store: &CredentialStore) -> String {
+    match crate::credentials::composer_token(store) {
+        // Case 2: one token left, and it serves without carrying the role.
+        Some((alias, _)) => format!(
+            "nothing carries the composer role now; the hint strip searches with \"{alias}\", the \
+             only token stored."
+        ),
+        // Cases 3 and the empty store, told apart because the remedies differ:
+        // one person names a token, the other has none to name.
+        None if store.listed(Listing::Notes).is_empty() => {
+            "nothing carries the composer role now, and no token is stored; the hint strip has \
+             nothing to search with."
+                .to_owned()
+        }
+        None => "nothing carries the composer role now and several tokens are stored, so the hint \
+                 strip has nothing to search with; name one with `zaru notes use <alias>`."
+            .to_owned(),
+    }
 }
 
 /// What building a Nuclear Notes entry can refuse on, so the caller can render

@@ -70,6 +70,14 @@ pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static s
                  after the host for a credential with no instance boundary",
             ),
             (
+                "notes tokens describe <alias> <text>",
+                "set what that token is for; the words after the alias are the description",
+            ),
+            (
+                "notes tokens rm <alias>",
+                "remove that token and its stored value",
+            ),
+            (
                 "notes use <alias>",
                 "move the composer role to that token, so the hint strip searches with it",
             ),
@@ -87,6 +95,10 @@ pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static s
             (
                 "providers keys add <kind>",
                 "store a provider's API key, read from standard input",
+            ),
+            (
+                "providers keys rm <kind>",
+                "remove that provider's key and its stored value",
             ),
         ],
         // **The summary is `Flag::Help`'s own words rather than a second

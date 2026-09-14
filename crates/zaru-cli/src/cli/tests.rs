@@ -260,12 +260,18 @@ fn every_command_the_help_text_lists_is_one_the_parser_accepts() {
             // An alias that is already in the store. Nothing here opens one:
             // the parser is all this exercises.
             ["notes", "use"] => vec!["work"],
+            // An alias and a description. The description is more than one
+            // word on purpose: `describe` is the only command on this surface
+            // whose last argument is a sentence, and an arm supplying one word
+            // would leave the joining unexercised here.
+            ["notes", "tokens", "describe"] => vec!["work", "the", "team", "cortex"],
+            ["notes", "tokens", "rm"] => vec!["work"],
             // `<kind>` is one of ADR-0012 D3's five, and the help text spells
             // the placeholder rather than the value. Taken from
             // `ProviderKind::ALL` rather than written here, so a sixth kind
             // does not leave this arm exercising a name that is no longer the
             // first one.
-            ["providers", "keys", "add"] => vec![
+            ["providers", "keys", "add"] | ["providers", "keys", "rm"] => vec![
                 crate::providers::ProviderKind::ALL
                     .first()
                     .expect("ADR-0012 D3 names at least one kind")
@@ -825,16 +831,26 @@ fn a_word_refused_under_a_verb_names_the_verb_it_was_offered_under() {
     // unknown. `notes tokens rm x` is four words: `rm` is what was not
     // understood, under `notes tokens`.
     for (words, command, offered) in [
-        (vec!["notes", "tokens", "rm", "x"], "notes tokens", "rm"),
+        // `rm` and `describe` under `notes tokens`, and `rm` under `providers
+        // keys`, were the measured spellings this refusal named wrongly. They
+        // are commands as of this arc, so the words below are ones that are
+        // still unknown at the same depth -- the shape is what is pinned, not
+        // the particular word, and a check that kept the old words would have
+        // been deleted by the surfaces rather than kept honest by them.
         (
-            vec!["notes", "tokens", "describe", "x"],
+            vec!["notes", "tokens", "delete", "x"],
             "notes tokens",
-            "describe",
+            "delete",
         ),
         (
-            vec!["providers", "keys", "rm", "gemini"],
+            vec!["notes", "tokens", "rename", "x"],
+            "notes tokens",
+            "rename",
+        ),
+        (
+            vec!["providers", "keys", "revoke", "gemini"],
             "providers keys",
-            "rm",
+            "revoke",
         ),
         (
             vec!["providers", "keys", "add", "nope"],
@@ -1985,6 +2001,181 @@ fn adr_0007_d7s_use_reaches_the_same_request_from_both_surfaces() {
         None,
         "`/notes use` with no alias reached a request"
     );
+}
+
+/// ADR-0007 D7's `describe` and `rm`, out of session, one request each.
+///
+/// The in-session spelling of both is the commit after this one, and this
+/// check grows the other half there — ADR-0015 D2's two entry points are one
+/// operation, and the assertion that they are belongs in the change that
+/// wires the second.
+#[test]
+fn adr_0007_d7s_describe_and_rm_reach_their_requests_out_of_session() {
+    let alias = crate::credentials::Alias::new("work").expect("a legal alias");
+    let typed_words = ["the", "team's", "read-only", "cortex"];
+    let joined = typed_words.join(" ");
+
+    // --- describe ---------------------------------------------------------
+    let mut out = vec!["notes", "tokens", "describe", "work"];
+    out.extend(typed_words);
+    let out_of_session =
+        parse(typed(&out)).expect("`zaru notes tokens describe …` is a command this binary runs");
+    assert_eq!(
+        out_of_session.request,
+        Request::NotesTokensDescribe {
+            alias: alias.clone(),
+            text: joined.clone(),
+        },
+        "`zaru notes tokens describe <alias> <text…>` did not reach D7's `describe` carrying every \
+         word of the description"
+    );
+
+    let _ = &joined;
+
+    // --- rm ---------------------------------------------------------------
+    assert_eq!(
+        parse(typed(&["notes", "tokens", "rm", "work"]))
+            .expect("`zaru notes tokens rm work` is a command this binary runs")
+            .request,
+        Request::NotesTokensRemove {
+            alias: alias.clone()
+        }
+    );
+    let _ = &alias;
+
+    // --- the provider half of `rm`, which takes a kind rather than an alias -
+    assert_eq!(
+        parse(typed(&["providers", "keys", "rm", "gemini"]))
+            .expect("`zaru providers keys rm gemini` is a command this binary runs")
+            .request,
+        Request::ProviderKeysRemove {
+            kind: crate::providers::ProviderKind::Gemini
+        }
+    );
+
+    // --- what each refuses ------------------------------------------------
+    // An argument is required on every one of them: a verb with no alias must
+    // not do something to a token nobody named.
+    for missing in [
+        vec!["notes", "tokens", "describe"],
+        vec!["notes", "tokens", "describe", "work"],
+        vec!["notes", "tokens", "rm"],
+        vec!["providers", "keys", "rm"],
+    ] {
+        assert!(
+            parse(typed(&missing)).is_err(),
+            "`zaru {}` was accepted with an argument missing",
+            missing.join(" ")
+        );
+    }
+    // `rm` takes one alias and nothing after it -- unlike `describe`, whose
+    // remaining words are the description.
+    assert!(
+        parse(typed(&["notes", "tokens", "rm", "work", "extra"])).is_err(),
+        "`zaru notes tokens rm` took a word after the alias"
+    );
+}
+
+/// A description a person typed is the person's, not a defect in Zaru.
+///
+/// # The third time this shape would have arrived on this clause
+///
+/// `Description::new` refuses every control character, and until this arc the
+/// only description this harness composed was `notes_entry`'s machine-made
+/// sentence, which cannot carry one. `undecided_description` exists for that
+/// case and reports a **defect**, correctly: a sentence this module composed
+/// that the store will not take is this harness's fault.
+///
+/// `describe` makes the refusal reachable by a person for the first time, and
+/// routing it through that function would exit 70, "a defect in Zaru", for
+/// somebody who pressed Return in the wrong place. That is ADR-0016 D3's
+/// "never present a defect as a user error" inverted — the same shape the
+/// `endpoint` arc found on the apex path on 2026-09-06 and `notes-hints-wiring`
+/// found on `use` on 2026-09-14, both recorded on ADR-0007's Status tracking.
+#[test]
+fn a_description_a_person_typed_is_the_persons_and_carries_a_remedy() {
+    use crate::credentials::Description;
+    use crate::failure::Classified;
+
+    for offered in [
+        "one line\nand a second",
+        "a\rcarriage return",
+        "a\u{7}bell",
+        "a\u{1b}[31mcolour",
+    ] {
+        let refusal = Description::new(offered).expect_err("a control character is refused");
+        let classified: Classified = refusal.into();
+        match &classified {
+            Classified::UserCorrectable { remedy, .. } => assert!(
+                remedy
+                    .actions()
+                    .any(|action| !action.lead().as_str().trim().is_empty()),
+                "a typed description is refused with an empty remedy, which ADR-0016 D2 calls a \
+                 stack trace with better grammar"
+            ),
+            other => panic!(
+                "a person typed {offered:?} into `notes tokens describe` and the harness calls it \
+                 {other:?} -- somebody who pressed Return in the wrong place is told they found a \
+                 bug in Zaru"
+            ),
+        }
+    }
+
+    // The accepting sibling: ordinary prose is taken, so the check above is
+    // not satisfied by a `Description` that refused everything.
+    Description::new("the team's read-only cortex")
+        .expect("a one-line description is what this field is for");
+}
+
+/// An unknown alias names a listing that could have shown what was asked for.
+///
+/// # Measured from the release binary, on a command this arc added
+///
+/// `zaru providers keys rm gemini` run twice answered *"nothing in the store
+/// answers to the alias \"provider.gemini\""* with the remedy *"run `zaru
+/// notes tokens` to see the aliases this machine holds"* — the Nuclear Notes
+/// listing, which cannot show a provider key and never could. That remedy was
+/// right while every raiser of `UnknownAlias` was a Notes operation, and this
+/// arc's `providers keys rm` made it wrong.
+///
+/// The store holds two families and an alias that answers to nothing could
+/// have been either, so the remedy names both listings rather than guessing at
+/// one. Both names are asserted, and each is asserted to be a command this
+/// binary runs, so a listing that was renamed would fail here rather than in a
+/// terminal.
+#[test]
+fn an_unknown_alias_is_answered_with_a_listing_that_could_have_shown_it() {
+    use crate::credentials::{Alias, StoreError};
+    use crate::failure::{Classified, SessionEvidence};
+
+    let classify = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let classified = classify.credential_store(
+        &StoreError::UnknownAlias {
+            alias: Alias::new("provider.gemini").expect("a legal alias"),
+        },
+        SessionEvidence::NoSessionExists,
+    );
+    let Classified::UserCorrectable { remedy, .. } = &classified else {
+        panic!("an alias nothing holds is the user's: {classified:?}");
+    };
+    let said: String = remedy
+        .actions()
+        .map(|action| action.lead().as_str().to_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    for listing in ["zaru notes tokens", "zaru providers keys"] {
+        assert!(
+            said.contains(listing),
+            "an alias nothing holds is answered without naming `{listing}`, so a person whose \
+             credential is in the other family is sent to a listing that cannot show it: {said}"
+        );
+        let words: Vec<&str> = listing.split_whitespace().skip(1).collect();
+        assert!(
+            parse(typed(&words)).is_ok(),
+            "the remedy names `{listing}`, which this binary does not run"
+        );
+    }
 }
 
 /// The three store refusals `notes use` can raise are not defects.

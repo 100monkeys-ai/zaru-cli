@@ -225,6 +225,57 @@ pub enum Request {
         /// boundary. [ADR-0007] D8.
         apex: bool,
     },
+    /// `zaru notes tokens describe <alias> <text…>` — [ADR-0007] D7's
+    /// `describe`, "set or edit the description".
+    ///
+    /// # The text is every remaining word, joined with one space
+    ///
+    /// A description is prose and every other argument on this surface is a
+    /// token, so this is the one command whose last argument is a sentence.
+    /// Out of session the words arrive as argv, already split by the shell;
+    /// inside one they arrive as a typed line split on whitespace. Both are
+    /// joined the same way, so `describe play my work token` means the same
+    /// thing typed at either place and quoting is optional out of session.
+    ///
+    /// **What the two cannot agree on is a quoted run of interior whitespace**
+    /// — `zaru … describe play "a  b"` keeps both spaces and no terminal line
+    /// can express that at all. Said here rather than normalised away, because
+    /// normalising would be a rule nobody decided.
+    ///
+    /// The text is not validated here. [`crate::credentials::Description`] is
+    /// what refuses a control character, at the store's door, where the same
+    /// rule already governs what `add` writes.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    NotesTokensDescribe {
+        /// Which stored token is being described.
+        alias: Alias,
+        /// D2's `description`, as the user typed it.
+        text: String,
+    },
+    /// `zaru notes tokens rm <alias>` — [ADR-0007] D7's `rm`.
+    ///
+    /// It removes the credential and its sealed secret in one store write,
+    /// and it removes the token carrying D4's composer role if that is the one
+    /// named: revoking a credential is the person's to do. The outcome says
+    /// when the role has gone with it, because the listing afterwards cannot
+    /// — the row that would have shown it is the row that was removed.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    NotesTokensRemove {
+        /// Which stored token is to go.
+        alias: Alias,
+    },
+    /// `zaru providers keys rm <kind>` — the provider half of D7's `rm`.
+    ///
+    /// The kind rather than an alias, because a provider key's alias is
+    /// `provider.<kind>` and is composed rather than chosen — one key per
+    /// kind, which is what the 2026-09-05 accepted Update settled. `zaru
+    /// providers keys` is the listing it answers to.
+    ProviderKeysRemove {
+        /// Which provider's key is to go.
+        kind: ProviderKind,
+    },
     /// `zaru --resume <id>` — [ADR-0010] D4.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript

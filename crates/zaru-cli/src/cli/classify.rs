@@ -98,6 +98,24 @@ fn run(sentence: &str, command: &str) -> Remedy {
     )
 }
 
+/// Where to look when an alias answers to nothing.
+///
+/// **It names both listings, since 2026-09-14.** This named `zaru notes
+/// tokens` alone, which was right while every raiser of
+/// [`StoreError::UnknownAlias`] was a Nuclear Notes operation.
+/// `zaru providers keys rm` raises it too, and a person who mistyped a
+/// provider kind was sent to a listing that could never have shown their key
+/// — a remedy naming something the binary runs, but not the thing the reader
+/// needed. The store holds two families and an alias that answers to nothing
+/// could have been either, so this names both rather than guessing.
+///
+/// A named constant because it is one sentence with one raiser and several
+/// callers, and because a string built at the match arm is a string `cargo
+/// fmt` can wrap into stray whitespace — which is how this one first reached
+/// a terminal.
+const BOTH_LISTINGS: &str =
+    "run `zaru notes tokens` or `zaru providers keys` to see what this machine holds";
+
 /// A user-correctable failure: the refusal's own words, and what to change.
 fn correctable(refusal: &impl core::fmt::Display, remedy: Remedy) -> Classified {
     Classified::UserCorrectable {
@@ -920,10 +938,16 @@ impl<'a> Surface<'a> {
             //
             // Each remedy names something this binary runs, because a remedy
             // that does not is a stack trace with better grammar.
-            StoreError::UnknownAlias { .. } => correctable(
-                failure,
-                act("run `zaru notes tokens` to see the aliases this machine holds".to_owned()),
-            ),
+            // **Both listings, since 2026-09-14.** This named `zaru notes
+            // tokens` alone, which was right while every raiser of this
+            // refusal was a Nuclear Notes operation. `providers keys rm`
+            // raises it too, and a person who mistyped a provider kind was
+            // sent to a listing that could never have shown their key --
+            // ADR-0016 D2's remedy that names something the binary runs, but
+            // not the thing the reader needed. The store holds two families
+            // and an alias that answers to nothing could have been either, so
+            // the remedy names both rather than guessing.
+            StoreError::UnknownAlias { .. } => correctable(failure, act(BOTH_LISTINGS.to_owned())),
             // **The statement is the honest half and it is worth reading.**
             // `notes use` grants the role where none is held; it does not take
             // it from a token that holds one, so this refusal is what a second

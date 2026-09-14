@@ -373,10 +373,49 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
                     offered: extra.escape_debug().to_string(),
                 })
             }
+            // ADR-0007 D7's `describe`. **The one command on this surface
+            // whose last argument is a sentence**, so the words are joined
+            // rather than refused as extra -- see `Request::NotesTokensDescribe`
+            // for why, and for the one input the two spellings cannot agree
+            // on. The text is not validated here: `Description` is what
+            // refuses a control character, at the store's door, where the
+            // same rule already governs what `add` writes.
+            [tokens, describe] if tokens == TOKENS && describe == DESCRIBE => {
+                Err(CommandRefused::ArgumentMissing {
+                    command: format!("{namespace} {TOKENS} {DESCRIBE}"),
+                    argument: "an alias and a description",
+                })
+            }
+            [tokens, describe, _alias] if tokens == TOKENS && describe == DESCRIBE => {
+                Err(CommandRefused::ArgumentMissing {
+                    command: format!("{namespace} {TOKENS} {DESCRIBE}"),
+                    argument: "a description",
+                })
+            }
+            [tokens, describe, alias, text @ ..] if tokens == TOKENS && describe == DESCRIBE => {
+                Ok(Request::NotesTokensDescribe {
+                    alias: Alias::new(alias).map_err(CommandRefused::UnusableAlias)?,
+                    text: text.join(" "),
+                })
+            }
+            // ADR-0007 D7's `rm`, which takes one alias and nothing else.
+            [tokens, rm] if tokens == TOKENS && rm == RM => Err(CommandRefused::ArgumentMissing {
+                command: format!("{namespace} {TOKENS} {RM}"),
+                argument: "an alias",
+            }),
+            [tokens, rm, alias] if tokens == TOKENS && rm == RM => Ok(Request::NotesTokensRemove {
+                alias: Alias::new(alias).map_err(CommandRefused::UnusableAlias)?,
+            }),
+            [tokens, rm, _, extra, ..] if tokens == TOKENS && rm == RM => {
+                Err(CommandRefused::UnexpectedWord {
+                    command: format!("{namespace} {TOKENS} {RM}"),
+                    offered: extra.escape_debug().to_string(),
+                })
+            }
             [tokens, extra, ..] if tokens == TOKENS => Err(CommandRefused::UnknownVerb {
                 command: format!("{namespace} {TOKENS}"),
                 offered: extra.escape_debug().to_string(),
-                nearest: crate::config::nearest::nearest([ADD], extra),
+                nearest: crate::config::nearest::nearest([ADD, DESCRIBE, RM], extra),
             }),
             [extra, ..] => Err(CommandRefused::UnknownVerb {
                 command: namespace.to_string(),
@@ -410,6 +449,31 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
                     offered: extra.escape_debug().to_string(),
                 })
             }
+            // The provider half of ADR-0007 D7's `rm`, riding the same store
+            // operation. It takes a **kind** rather than an alias, because a
+            // provider key's alias is `provider.<kind>` and is composed rather
+            // than chosen -- one key per kind, which is what the 2026-09-05
+            // accepted Update settled.
+            [keys, rm] if keys == KEYS && rm == RM => Err(CommandRefused::ArgumentMissing {
+                command: format!("{namespace} {KEYS} {RM}"),
+                argument: "a provider kind",
+            }),
+            [keys, rm, kind] if keys == KEYS && rm == RM => Ok(Request::ProviderKeysRemove {
+                kind: ProviderKind::parse(kind).ok_or_else(|| CommandRefused::UnknownVerb {
+                    command: format!("{namespace} {KEYS} {RM}"),
+                    offered: kind.escape_debug().to_string(),
+                    nearest: crate::config::nearest::nearest(
+                        ProviderKind::ALL.iter().map(|kind| kind.as_str()),
+                        kind,
+                    ),
+                })?,
+            }),
+            [keys, rm, _, extra, ..] if keys == KEYS && rm == RM => {
+                Err(CommandRefused::UnexpectedWord {
+                    command: format!("{namespace} {KEYS} {RM}"),
+                    offered: extra.escape_debug().to_string(),
+                })
+            }
             // **Open-ended, and it was `[keys, extra]` -- exactly two words --
             // until 2026-09-14.** A three-word spelling whose second word is
             // not `add` matched no arm above and fell all the way to
@@ -422,7 +486,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             [keys, extra, ..] if keys == KEYS => Err(CommandRefused::UnknownVerb {
                 command: format!("{namespace} {KEYS}"),
                 offered: extra.escape_debug().to_string(),
-                nearest: crate::config::nearest::nearest([ADD], extra),
+                nearest: crate::config::nearest::nearest([ADD, RM], extra),
             }),
             [other, ..] => Err(CommandRefused::UnknownVerb {
                 command: namespace.to_string(),
@@ -502,6 +566,15 @@ fn task_or_typo(positionals: &[String]) -> Result<Request, CommandRefused> {
         words: positionals.to_vec(),
     })
 }
+
+/// ADR-0007 D7's `describe`, a verb under `notes tokens`.
+const DESCRIBE: &str = "describe";
+
+/// ADR-0007 D7's `rm`, a verb under `notes tokens` and under `providers keys`.
+///
+/// One constant for both, because it is one word and one operation: the store
+/// takes the family as a parameter and each surface passes its own.
+const RM: &str = "rm";
 
 /// The verb `providers` takes.
 const KEYS: &str = "keys";
