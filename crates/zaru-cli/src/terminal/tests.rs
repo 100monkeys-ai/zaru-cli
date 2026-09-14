@@ -4815,8 +4815,8 @@ fn written_bytes(shell: &Shell, width: u16, height: u16, palette: Palette) -> Ve
         .draw(|frame| shell.render(frame, frame.area(), palette))
         .expect("draw");
     terminal.backend_mut().flush().expect("flush");
-    let bytes = written.0.lock().expect("the buffer").clone();
-    bytes
+    let written = written.0.lock().expect("the buffer");
+    written.clone()
 }
 
 /// The buffer a shell paints at a given size, as rows.
