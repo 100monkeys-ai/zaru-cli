@@ -2779,18 +2779,26 @@ fn the_pane_repaints_while_a_turn_is_suspended() {
     );
 }
 
-/// A keystroke during a turn reaches the composer and starts no second turn.
+/// A keystroke during a turn reaches the composer, and `Enter` queues it as
+/// the next turn's task.
 ///
-/// Two halves, and the second is the one ADR-0015's ruling of 2026-09-05 owes:
-/// the text is **not lost** -- it is on the input row, painted at the moment it
-/// was read -- and it is **not executed as a task**, because `Enter` is
-/// refused with `BUSY` rather than submitted or queued. The composed line
-/// survives the refusal.
+/// **Renamed and rewritten 2026-09-13**, from
+/// `a_keystroke_during_a_turn_is_neither_lost_nor_executed_as_a_task`. That
+/// check asserted ADR-0015's 2026-09-05 ruling, under which the line was
+/// refused with a notice and left on the input row; the 2026-09-13 amendment
+/// reverses it, so the line is queued and the prompt is cleared because the
+/// text moved.
+///
+/// Three halves rather than two: the typed text is **not lost** -- it is on
+/// the input row, painted at the moment it was read -- it is **not executed
+/// as this turn's task**, and on `Enter` it is **queued**, which the pinned
+/// row above the composer says.
 ///
 /// The mutants: route the mid-turn key to nothing; let `Enter` reach the
-/// composer; let `Enter` reach `Shell::key`; clear the composer on the refusal.
+/// composer; let `Enter` reach `Shell::key`; leave the line in the prompt
+/// rather than moving it.
 #[test]
-fn a_keystroke_during_a_turn_is_neither_lost_nor_executed_as_a_task() {
+fn a_keystroke_during_a_turn_is_painted_and_enter_queues_it_as_the_next_task() {
     // Held open until the source is drained: the beat count is far past what
     // the four keys need, so the keys are read while the turn is genuinely
     // suspended rather than after it finished.
@@ -2824,33 +2832,119 @@ fn a_keystroke_during_a_turn_is_neither_lost_nor_executed_as_a_task() {
         crate::terminal::driver::Raced::Ran("the turn finished")
     );
 
-    // Not lost: the text a user typed while waiting is in the composer.
+    // Not lost: every keystroke before the `Enter` reached the composer and
+    // was painted as it was read. The frame taken before the `Enter` is the
+    // one that can say so, because the `Enter` moves the text out.
+    let typed_frame = surface
+        .frames
+        .iter()
+        .find(|frame| input_row(frame).contains("saffron"))
+        .cloned()
+        .expect(
+            "no frame painted `saffron` on the input row, so the keystrokes never reached the \
+             composer or were never painted",
+        );
+    assert!(input_row(&typed_frame).contains("saffron"));
+
+    // Queued rather than run, and the prompt is cleared because the text
+    // moved -- exactly as a typed `Enter` at the prompt moves it.
+    assert_eq!(
+        shell.queued().map(|task| task.task.as_str()),
+        Some("saffron"),
+        "`Enter` during a turn did not queue the line ADR-0015's 2026-09-13 amendment says it \
+         queues; the shell holds {:?}",
+        shell.queued()
+    );
     assert_eq!(
         shell.composer().text(),
-        "saffron",
-        "the line typed during the turn is not in the composer; it reads {:?}",
+        "",
+        "the prompt still holds the line that was queued, so the same text is in two places: \
+         {:?}",
         shell.composer().text()
     );
     let last = surface.frames.last().expect("no frame was painted");
     assert!(
-        input_row(last).contains("saffron"),
-        "the line typed during the turn never reached the input row: {:?}",
-        input_row(last)
+        last.iter().any(|row| row.contains("queued saffron")),
+        "the pinned row does not say what is queued: {last:?}"
     );
+}
 
-    // Not executed as a task, and not queued: the notice ADR-0015's ruling
-    // names is on the pane, and the composer still holds the line.
-    let pane_lines: Vec<String> = shell
-        .pane_lines()
-        .iter()
-        .map(zaru_tui::shell::Line::painted)
-        .collect();
-    assert!(
-        pane_lines
-            .iter()
-            .any(|line| line.contains(crate::terminal::driver::BUSY)),
-        "`Enter` during a turn did not produce the refusal ADR-0015's ruling of 2026-09-05 \
-         requires; the pane holds {pane_lines:?}"
+/// A second `Enter` during one turn replaces what is queued.
+///
+/// Its accepting sibling is the check above: one `Enter` queues what was
+/// typed, so this cannot pass against an implementation that queues nothing.
+#[test]
+fn a_second_enter_during_one_turn_replaces_the_queued_task() {
+    let mut typing = keys("first");
+    typing.push(press(Key::Enter));
+    typing.extend(keys("second"));
+    typing.push(press(Key::Enter));
+    let (source, sent) = live_source(typing);
+    let (staged, pace) = Raceable::gated(1, sent);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    let raced = {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            None,
+            None,
+            staged.turn(),
+        ))
+    };
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Ran("the turn finished")
+    );
+    assert_eq!(
+        shell.queued().map(|task| task.task.as_str()),
+        Some("second"),
+        "the second `Enter` did not replace the first's task; the shell holds {:?}",
+        shell.queued()
+    );
+}
+
+/// An `Enter` on an empty prompt during a turn queues nothing.
+///
+/// A queued nothing would be a pinned row promising a turn that never
+/// arrives. Its accepting sibling is two checks above, where a prompt with
+/// something in it does queue.
+#[test]
+fn an_enter_on_an_empty_prompt_during_a_turn_queues_nothing() {
+    let (source, sent) = live_source(vec![press(Key::Enter)]);
+    let (staged, pace) = Raceable::gated(1, sent);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+
+    {
+        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let _ = futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &mut now,
+            None,
+            None,
+            staged.turn(),
+        ));
+    }
+    assert_eq!(
+        shell.queued(),
+        None,
+        "an `Enter` on an empty prompt queued {:?}",
+        shell.queued()
     );
 }
 
@@ -4328,5 +4422,93 @@ fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read()
         "",
         "the paste reached the composer while a question stood; it holds {:?}",
         shell.composer().text()
+    );
+}
+
+/// A task queued during a turn is submitted the moment the turn ends, without
+/// a keystroke, through the one path a typed `Enter` takes.
+///
+/// # The staging, and why it can tell the two apart
+///
+/// The source carries **exactly** the keys for the first task and nothing
+/// after it. A pump that waited for a keystroke before submitting what was
+/// queued would fall out of its loop when the source ended and leave at
+/// `Exit::Succeeded`; one that drains before reading the terminal runs
+/// `/exit` and leaves through the word. The two exits are the same code, so
+/// the discriminator is the **pane**: leaving through `/exit` never paints a
+/// second refusal, where a second read would have painted nothing at all.
+///
+/// It also asserts the one-path property directly: `/exit` is a command
+/// rather than a task, and it is honoured — so the queue reaches
+/// `Shell::submit` rather than a second grammar that treats everything
+/// queued as task words.
+///
+/// The mutants: never drain; drain only after the next keystroke; submit the
+/// queued line as a task rather than through `Shell::submit`.
+#[test]
+fn a_queued_task_runs_when_the_turn_ends_with_no_keystroke() {
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+    // The first task's keys and nothing else. `typed` appends the `Enter`.
+    let source = Source::scripted(typed("the first thing"));
+    let pace = Held::default();
+    let mut shell = shell();
+    let runner = crate::cli::Run {
+        version: VERSION,
+        report_at: REPORT_AT,
+    };
+    // Staged as though an `Enter` during the first turn had queued it. The
+    // pump's own mid-turn path is asserted by
+    // `a_keystroke_during_a_turn_is_painted_and_enter_queues_it_as_the_next_task`;
+    // this check is about what the pump does with one that is already there,
+    // which `Turnable::Cannot` cannot produce because it races no turn.
+    shell.queue(zaru_tui::shell::Queued::of("/exit"));
+    let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
+        zaru_tui::shell::port::Register::Failed,
+        CANNOT.to_owned(),
+    )]);
+    let pumped = futures_lite_block_on(run(
+        &mut shell,
+        &mut surface,
+        &source,
+        &pace,
+        &runner,
+        &trie,
+        &Vocabulary,
+        &mut turns,
+    ))
+    .expect("the recording terminal never fails");
+
+    assert!(
+        matches!(
+            pumped.outcome,
+            crate::terminal::driver::Pumped::Left(Exit::Succeeded)
+        ),
+        "the pump did not leave"
+    );
+    assert_eq!(
+        shell.queued(),
+        None,
+        "the queued task is still queued after the turn ended: {:?}",
+        shell.queued()
+    );
+    // One refusal, from the one task the source carried. A queued `/exit`
+    // that had been read as task words rather than as a command would have
+    // produced a second.
+    let refusals = shell
+        .pane_lines()
+        .iter()
+        .filter(|line| line.text.contains(CANNOT))
+        .count();
+    assert_eq!(
+        refusals, 1,
+        "the queued `/exit` was submitted as a task rather than through the one path a typed \
+         `Enter` takes, so the pane holds {refusals} refusals rather than one"
+    );
+    let last = surface.frames.last().expect("no frame was painted");
+    assert!(
+        !last.iter().any(|row| row.contains("queued")),
+        "the pinned row outlived the task it was about: {last:?}"
     );
 }

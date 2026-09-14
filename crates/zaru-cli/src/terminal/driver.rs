@@ -26,7 +26,7 @@ use zaru_core::iteration::Interruption;
 use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::Start;
 use zaru_tui::shell::port::{Confirmation, Line, Register};
-use zaru_tui::shell::{Action, Command, Shell, Struck};
+use zaru_tui::shell::{Action, Command, Queued, Shell, Struck};
 
 /// Giving the terminal back to the user.
 ///
@@ -649,8 +649,11 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
     /// The one line an interrupt-and-stay paints.
     ///
     /// [`Register::Announced`], and not [`Register::Failed`], for the reason
-    /// [`BUSY`] already carries: an interruption is the user's own decision
-    /// rather than one of [ADR-0016] D1's five classes, and "a refusal that is
+    /// `ToolRefused` already carries — named in prose rather than linked,
+    /// because the constant that carried it here, `BUSY`, was deleted when a
+    /// mid-turn `Enter` stopped being refused: an interruption is the user's
+    /// own decision rather than one of [ADR-0016] D1's five classes, and "a
+    /// refusal that is
     /// a decision … is rendered in whatever register it renders a decision in,
     /// and never in the error one". [ADR-0016]'s own reading is that an
     /// interruption is not a failure.
@@ -820,32 +823,6 @@ impl zaru_tui::shell::CommandVocabulary for NoVocabulary {
     }
 }
 
-/// What the sentence a task typed during a turn is refused with says.
-///
-/// # The ruling this obeys, and why the case only now exists
-///
-/// [ADR-0015]'s Status tracking, 2026-09-05, under directive 20: "**A task
-/// typed while a turn is running is refused with a notice, not queued.**
-/// Neither D1 nor D2 nor any clause of this record says what a second task
-/// means while the first is still running … Refusing is the safe direction: a
-/// queue is a promise about ordering that no record has made, and a user who
-/// typed while waiting can type again." That ruling also says it is "barely
-/// reachable in practice — the shell reads no keystroke during a turn".
-///
-/// **It is reachable now**, because that sentence stopped being true the
-/// moment a source could be read beside the turn. So the notice exists, and
-/// the composed line stays on the input row rather than being cleared: not
-/// queued, because nothing will submit it, and not lost either.
-///
-/// [`Register::Announced`] rather than [`Register::Failed`] for the reason
-/// `ToolRefused` carries — a refusal that is a decision rather than one of
-/// [ADR-0016] D1's five classes is rendered "in whatever register it renders a
-/// decision in, and never in the error one".
-///
-/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-pub const BUSY: &str = "a turn is already running · this line stays in the prompt until it ends";
-
 /// What became of a turn the pump was running.
 ///
 /// Three cases and no `Option`, for [`Taken`]'s own reason: a turn that ran, a
@@ -936,10 +913,18 @@ pub fn after<R: Redactor + ?Sized>(
     owed: &mut Pending,
     session: &crate::session::Session,
     redactor: &R,
+    queued: &mut Option<Queued>,
 ) -> AfterTurn {
     match turned {
         Turned::Ran(lines) => AfterTurn::Carries(lines),
         Turned::Interrupted(_) => {
+            // **A queued task is discarded**, and that follows from what this
+            // key already means rather than being a second rule for it.
+            // `Ctrl-C` stops the turn, and a queued task is the *next* turn of
+            // the turn being stopped. Discarding costs nothing anybody can
+            // lose, because it was never a record: nothing was written for it
+            // and [ADR-0010] D2's producers are untouched.
+            *queued = None;
             *owed = crate::session::resume(session.directory(), 0)
                 .map(|resumed| Pending::of(&resumed, redactor))
                 .unwrap_or_default();
@@ -1505,9 +1490,9 @@ async fn next_delta(
     }
 }
 
-/// One keystroke read while a turn is running.
+/// One keystroke or paste read while a turn is running.
 ///
-/// # Neither lost nor executed as a task
+/// # Neither lost nor executed as this turn's task
 ///
 /// The keystroke reaches [`zaru_tui::composer::Composer`] and the pane is
 /// painted, so a user typing during a turn sees their text and
@@ -1518,8 +1503,12 @@ async fn next_delta(
 /// **`Enter` is intercepted before the composer**, for two reasons that point
 /// the same way. `Composer::key` would insert a newline into the text area,
 /// because [`Shell::key`] is what reads `Enter` as a submission and this is
-/// not that call. And ADR-0015's ruling says a task typed while a turn is
-/// running is refused with a notice, not queued — see [`BUSY`].
+/// not that call. And [ADR-0015]'s 2026-09-13 amendment says what a submission
+/// means here: **the line is queued as the next turn's**, replacing whatever
+/// was queued before, and the prompt is cleared because the text moved —
+/// exactly as a typed `Enter` at the prompt moves it. That amendment reverses
+/// this record's own 2026-09-05 ruling, under which the line was refused with
+/// a notice and left on the input row.
 ///
 /// A pane the beat could not lock is a defect this counts rather than one it
 /// hangs on, which is [`Pane`]'s own argument; the keystroke is dropped in
@@ -1527,6 +1516,7 @@ async fn next_delta(
 ///
 /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 fn read_while_busy<S: Surface + Send>(
     pane: &std::sync::Mutex<Pane<'_, S>>,
     struck: Struck,
@@ -1544,7 +1534,16 @@ fn read_while_busy<S: Surface + Send>(
             pane.paint();
         }
         Struck::Key(input) if input.key == zaru_tui::shell::Key::Enter => {
-            pane.note(Line::new(Register::Announced, BUSY));
+            // Exactly one is queued, and a second `Enter` replaces it. An
+            // empty prompt queues nothing: there is no task in it, and a
+            // queued nothing would be a row saying a turn was coming that
+            // never arrives.
+            let line = pane.shell.composer().text();
+            if !line.trim().is_empty() {
+                *pane.shell.composer_mut() = zaru_tui::composer::Composer::new();
+                pane.shell.queue(Queued::of(line));
+            }
+            pane.paint();
         }
         Struck::Key(input) => {
             pane.shell.composer_mut().key(input, now, entries);
@@ -1588,14 +1587,36 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
     let mut now = Duration::ZERO;
     surface.draw(shell)?;
 
-    while let Some(struck) = source.next().await {
-        // The shell holds no clock, so the pump supplies one. A keystroke is
-        // one tick, which is enough for the composer's debounce to be ordered
-        // and is not a wall clock -- ADR-0005's whole reason for taking `now`
-        // as an argument.
-        now += Duration::from_millis(1);
+    // What a turn left queued, waiting to be submitted without a keystroke.
+    //
+    // **The loop takes its action from here first, and only then from the
+    // terminal**, which is the whole of how ADR-0015's 2026-09-13 amendment
+    // gets "submitted the moment the running turn ends, without a keystroke"
+    // for nothing: while this is `Some` the loop never reaches `source.next`,
+    // so no key is waited for and none is consumed. And it goes through
+    // `Shell::submit`, which is the same function `Shell::key`'s `Enter` arm
+    // calls, so a queued line naming a namespace runs that command and a
+    // queued leaving word leaves -- there is no second grammar to keep
+    // agreeing with the first.
+    let mut pending: Option<String> = None;
 
-        match shell.struck(struck, now, entries, vocabulary) {
+    loop {
+        let action = match pending.take() {
+            Some(line) => shell.submit(&line, vocabulary),
+            None => {
+                let Some(struck) = source.next().await else {
+                    break;
+                };
+                // The shell holds no clock, so the pump supplies one. A
+                // keystroke is one tick, which is enough for the composer's
+                // debounce to be ordered and is not a wall clock -- ADR-0005's
+                // whole reason for taking `now` as an argument.
+                now += Duration::from_millis(1);
+                shell.struck(struck, now, entries, vocabulary)
+            }
+        };
+
+        match action {
             Action::Idle => {}
             Action::Leave(leaving) => {
                 surface.draw(shell)?;
@@ -1711,7 +1732,13 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                         .await;
                         let redactor = turns.prepared.redactor();
                         let session = turns.session;
-                        match after(turned, &mut turns.interrupted, session, redactor) {
+                        match after(
+                            turned,
+                            &mut turns.interrupted,
+                            session,
+                            redactor,
+                            shell.queued_mut(),
+                        ) {
                             AfterTurn::Carries(lines) => lines,
                             AfterTurn::Stops(exit) => {
                                 return Ok(Pump {
@@ -1725,6 +1752,10 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 for line in lines {
                     shell.notice(line);
                 }
+                // The turn has ended, so whatever was queued during it is the
+                // next one. Taking it is what empties it, so nothing here can
+                // run the same task twice.
+                pending = shell.take_queued().map(|task| task.task);
             }
         }
         surface.draw(shell)?;

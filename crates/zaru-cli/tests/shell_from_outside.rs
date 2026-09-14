@@ -35,7 +35,7 @@ use zaru_cli::terminal::source::{Pace, Source};
 use zaru_cli::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use zaru_cli::terminal::{NOTHING_CACHED, NotesTrie};
 use zaru_notes::trie::{CachedEntry, EntryKind};
-use zaru_tui::shell::{COMPOSER_ROWS, Input, Key, Shell, Status};
+use zaru_tui::shell::{COMPOSER_ROWS, Input, Key, Queued, Shell, Status};
 
 /// A value planted in the session's transcript, so what is read back could
 /// only have come from the file the check wrote.
@@ -1239,11 +1239,15 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
     // here — and against a session with no interruption it would not, which
     // is how that mutation survives a check staged the obvious way round.
     let mut owed = Pending::none();
+    // A task is queued across all four arms, so what each does with it is
+    // asserted rather than assumed: only the interrupted one discards.
+    let mut queued = Some(Queued::of("the next thing"));
     let ran = after(
         Turned::Ran(vec![Line::new(Register::Plain, "an answer")]),
         &mut owed,
         interrupted_session,
         &redactor,
+        &mut queued,
     );
     let AfterTurn::Carries(lines) = ran else {
         panic!("a turn that ran ended the session: {ran:?}");
@@ -1257,6 +1261,12 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         !owed.is_owed(),
         "a turn that ran to completion left the next one owing the model something, so the \
          re-derivation fires on every ending rather than on an interruption"
+    );
+    assert_eq!(
+        queued.as_ref().map(|task| task.task.as_str()),
+        Some("the next thing"),
+        "a turn that ran discarded the queued task, and only an interruption may: the queue \
+         holds {queued:?}"
     );
 
     // The arm this arc changed. Until 2026-09-06 it produced a `Pump` and the
@@ -1278,11 +1288,13 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         zaru_cli::compose::Narrator::interrupted(&narrator)
     };
     let mut owed = Pending::none();
+    let mut queued = Some(Queued::of("the next thing"));
     let interrupted = after(
         Turned::Interrupted(narrated),
         &mut owed,
         interrupted_session,
         &redactor,
+        &mut queued,
     );
     let AfterTurn::Carries(lines) = interrupted else {
         panic!(
@@ -1299,6 +1311,11 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         owed.is_owed(),
         "the interrupt left a `Started` with no `Completed` on disk and the next turn owes the \
          model nothing about it, so ADR-0010 D4's carrier was not re-derived in this process"
+    );
+    assert_eq!(
+        queued, None,
+        "`Ctrl-C` mid-turn left a task queued, and the turn it was the next one of has been \
+         stopped: the queue holds {queued:?}"
     );
 
     // The accepting sibling, through the same arm: a session whose every call
@@ -1320,6 +1337,7 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         &mut owed,
         whole_session,
         &redactor,
+        &mut None,
     );
     assert!(
         !owed.is_owed(),
@@ -1331,10 +1349,21 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
     // carried on from everything would leave a check's pump hanging on a
     // source that has stopped answering.
     let mut owed = Pending::none();
-    let ended = after(Turned::SourceEnded, &mut owed, whole_session, &redactor);
+    let mut queued = Some(Queued::of("the next thing"));
+    let ended = after(
+        Turned::SourceEnded,
+        &mut owed,
+        whole_session,
+        &redactor,
+        &mut queued,
+    );
     assert!(
         matches!(ended, AfterTurn::Stops(_)),
         "a terminal that stopped answering must end the pump: {ended:?}"
+    );
+    assert!(
+        queued.is_some(),
+        "a source that ended discarded the queued task, and only an interruption may"
     );
 }
 
