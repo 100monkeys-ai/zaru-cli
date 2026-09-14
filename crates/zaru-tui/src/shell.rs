@@ -79,6 +79,38 @@ use core::time::Duration;
 /// that host name this crate but not this crate's own dependencies.
 pub use tui_textarea::{Input, Key};
 
+/// What the terminal handed over: a keystroke, or a pasted block.
+///
+/// # Why the paste is a variant here rather than a string of keystrokes
+///
+/// Without bracketed paste a terminal delivers a paste as the characters it
+/// contains, newlines included, and a newline delivered as a keystroke is
+/// `Enter` — so pasting three lines ran two turns and left the third in the
+/// prompt, which is the look-and-feel survey's row 13. With it armed the
+/// terminal frames the block, and the frame is information the shell needs:
+/// **the newlines inside it are text and the block is one prompt**, where a
+/// newline a person actually typed is still a submission.
+///
+/// It lives in this crate for the reason [`Input`] and [`Key`] are re-exported
+/// from it: the host translates real terminal events into what the shell
+/// reads, and [ADR-0003] D8 lets that host name this crate but not this
+/// crate's own dependencies. Nothing here knows what an escape sequence is.
+///
+/// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Struck {
+    /// One key.
+    Key(Input),
+    /// A block the terminal framed as a paste, with its own newlines.
+    Pasted(String),
+}
+
+impl From<Input> for Struck {
+    fn from(input: Input) -> Self {
+        Self::Key(input)
+    }
+}
+
 /// How many rows the strip may occupy inside the composer's reserved area.
 ///
 /// **Drafted under a delegated coordinator ruling of 2026-09-05, open to
@@ -832,7 +864,68 @@ impl Shell {
 
         let line = self.composer.text();
         self.composer = Composer::new();
-        match command::read(&line, vocabulary) {
+        self.submit(&line, vocabulary)
+    }
+
+    /// Apply whatever the terminal handed over at `now`.
+    ///
+    /// One entry point for both kinds, so a host reading a source does not
+    /// decide what a paste means — it hands over what arrived.
+    pub fn struck(
+        &mut self,
+        struck: Struck,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) -> Action {
+        match struck {
+            Struck::Key(input) => self.key(input, now, entries, vocabulary),
+            Struck::Pasted(text) => {
+                self.pasted(&text, now, entries);
+                Action::Idle
+            }
+        }
+    }
+
+    /// Put a pasted block into the prompt at `now`.
+    ///
+    /// **A paste is never a submission.** Its newlines are text, so the block
+    /// waits in the prompt for the `Enter` that submits all of it as one — the
+    /// 2026-09-13 amendment to [ADR-0005] D1 and D2.
+    ///
+    /// **A standing question absorbs it**, exactly as [`Self::key`] has a
+    /// question absorb every key but five: [ADR-0011] D3's `ask` "prompts
+    /// before any write or command", and a prompt a user can paste past is no
+    /// more a prompt than one they can type past.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub fn pasted(&mut self, text: &str, now: Duration, entries: &dyn Entries) {
+        if self.asking.is_some() {
+            return;
+        }
+        self.composer.paste(text, now, entries);
+    }
+
+    /// Read one composed line as [ADR-0015] D2's grammar reads it.
+    ///
+    /// # One path, and that is what stops a second grammar existing
+    ///
+    /// [`Self::key`]'s `Enter` arm calls this, and so does the host draining a
+    /// task queued during a turn — the 2026-09-13 amendment on
+    /// [ADR-0015's amendments page]. So a queued line naming a namespace runs
+    /// that command, a queued [`LEAVE`] leaves, a queued blank line does
+    /// nothing, and a queued anything-else is the next turn: the queue is not
+    /// a third entry point, it is the same one deferred by a turn.
+    ///
+    /// **It does not touch the composer.** Clearing the prompt belongs to the
+    /// caller that took the line out of it, and a drain has no prompt to
+    /// clear.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    /// [ADR-0015's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility-updates
+    pub fn submit(&mut self, line: &str, vocabulary: &dyn CommandVocabulary) -> Action {
+        match command::read(line, vocabulary) {
             Typed::Nothing => Action::Idle,
             Typed::Leave => Action::Leave(Leaving::Word),
             Typed::Task(task) => Action::Task(task),

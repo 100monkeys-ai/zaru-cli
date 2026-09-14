@@ -111,21 +111,26 @@ impl Composer {
     ///
     /// The input is anchored to the top and occupies exactly one row, so its
     /// position is a function of `area` and nothing else. D2.
+    ///
+    /// # The row is composed rather than handed to the text area's widget
+    ///
+    /// Since 2026-09-13, and [`Composer::input_row`] carries the whole of why:
+    /// a prompt may hold newlines now, the `tui-textarea` widget has no way to
+    /// paint one as a glyph, and with several lines in it that widget paints
+    /// the cursor's line alone with nothing saying the rest exist.
+    ///
+    /// **The caret's row is now always the input row.** It was `input.y` plus
+    /// the cursor's *row* until then, which was harmless while the prompt
+    /// could only ever hold one line and would have put the caret on the first
+    /// strip row the moment one held two. [`Composer::input_row`] folds the
+    /// row into a column, so there is nothing left to add.
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect) {
         let [input, strip] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
 
-        frame.render_widget(self.input(), input);
-
-        let (row, column) = self.cursor();
-        frame.set_cursor_position(Position::new(
-            input
-                .x
-                .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
-            input
-                .y
-                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
-        ));
+        let (row, column) = self.input_row(input.width);
+        frame.render_widget(Paragraph::new(Line::from(row)), input);
+        frame.set_cursor_position(Position::new(input.x.saturating_add(column), input.y));
 
         let lines: Vec<Line<'_>> = self.strip_lines().into_iter().map(Line::from).collect();
         if !lines.is_empty() {
@@ -137,12 +142,13 @@ impl Composer {
 #[cfg(test)]
 mod tests {
     use super::KEYWORD_ONLY;
-    use crate::composer::Composer;
     use crate::composer::fixtures::{
         CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, painted, server_results, typing,
     };
     use crate::composer::search::SearchResponse;
+    use crate::composer::{Composer, NEWLINE};
     use core::time::Duration;
+    use tui_textarea::{Input, Key};
 
     const WIDTH: u16 = 40;
     const HEIGHT: u16 = 10;
@@ -154,14 +160,26 @@ mod tests {
     /// Three strips of different heights over identical input text. The trie
     /// size is what varies, so nothing about the text or the cursor changes
     /// between the three — the only declared variable is the strip.
+    ///
+    /// **A pasted block is the second producer**, added 2026-09-13: a prompt
+    /// that holds newlines is still one row, so D2's clause holds over it
+    /// exactly as it holds over a typed line, and a composer that grew a row
+    /// for the block would move the strip and redden here.
     #[test]
     fn the_input_row_is_byte_identical_whatever_the_strip_shows() {
+        for prompt in ["édit", "édit\nagain\nand again"] {
+            input_row_is_fixed_whatever_the_strip_shows(prompt);
+        }
+    }
+
+    /// The body of the check above, run once per prompt shape.
+    fn input_row_is_fixed_whatever_the_strip_shows(prompt: &str) {
         let mut painted_rows = Vec::new();
         let mut cursors = Vec::new();
         for entries in [0_usize, 1, 6] {
             let trie = TrieOf::new(entries);
             let mut composer = Composer::new();
-            typing(&mut composer, "édit", Duration::ZERO, &trie);
+            composer.paste(prompt, Duration::ZERO, &trie);
             let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
             assert_eq!(
                 rows.len() - 1,
@@ -194,8 +212,8 @@ mod tests {
         );
         assert_eq!(
             painted_rows[0].trim_end(),
-            "édit",
-            "the input row should hold what was typed"
+            prompt.replace('\n', NEWLINE),
+            "the input row should hold what was composed"
         );
     }
 
@@ -354,6 +372,205 @@ mod tests {
                 "with semantic_available = {semantic_available} the strip should {} say \
                  {KEYWORD_ONLY:?}; the frame was {rows:?}",
                 if semantic_available { "not" } else { "" }
+            );
+        }
+    }
+    /// One press of `key`, for a check that moves the caret rather than types.
+    fn press(composer: &mut Composer, key: Key, entries: &dyn crate::composer::Entries) {
+        composer.key(
+            Input {
+                key,
+                ctrl: false,
+                alt: false,
+                shift: false,
+            },
+            Duration::ZERO,
+            entries,
+        );
+    }
+
+    /// The premise every measurement of the composed row rests on.
+    ///
+    /// `Line::indent` asserts the same thing about the six register glyphs and
+    /// for the same reason: a two-column marker would put the caret a column
+    /// out for every newline before it, and the row would be measured against
+    /// a budget it does not occupy. A wider glyph reddens here rather than
+    /// skewing every frame.
+    #[test]
+    fn the_newline_marker_occupies_one_column() {
+        assert_eq!(
+            crate::shell::wrap::columns(NEWLINE),
+            1,
+            "the newline marker {NEWLINE:?} occupies {} columns, and the one-row composer is \
+             measured as though it occupied one",
+            crate::shell::wrap::columns(NEWLINE)
+        );
+    }
+
+    /// ADR-0005 D1 and D2, 2026-09-13: a pasted block stays in the one row and
+    /// each of its newlines paints as one marker glyph.
+    ///
+    /// Both arms are literals written here rather than values the composer
+    /// produced, so neither side of the comparison travels through the thing
+    /// under test.
+    #[test]
+    fn a_pasted_block_paints_its_newlines_as_one_marker_each_in_one_row() {
+        let trie = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.paste("óne\ntwo\nthree", Duration::ZERO, &trie);
+
+        let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
+        assert_eq!(
+            rows[0].trim_end(),
+            "óne\u{23ce}two\u{23ce}three",
+            "a three-line paste should paint in one row with two markers; the row reads {:?}",
+            rows[0]
+        );
+        assert_eq!(
+            rows[1], BLANK,
+            "the paste reached a second row, which ADR-0005 D2's one-row input forbids: {:?}",
+            rows[1]
+        );
+        assert_eq!(
+            cursor.y, 0,
+            "the caret left the input row for row {}, which is the strip's",
+            cursor.y
+        );
+        assert_eq!(
+            cursor.x, 13,
+            "the caret should sit past `óne⏎two⏎three`, which is 13 columns; it is at {}",
+            cursor.x
+        );
+        assert_eq!(
+            composer.text(),
+            "óne\ntwo\nthree",
+            "the composer stored the marker rather than the newline; it holds {:?}",
+            composer.text()
+        );
+    }
+
+    /// The marker is a rendering and never a storage form.
+    ///
+    /// A block carrying **both** a real newline and a literal U+23CE is the
+    /// only shape that can tell the two apart: an implementation that stored
+    /// the marker would make the two indistinguishable, and one that read the
+    /// marker back as a newline would submit text the person never pasted.
+    #[test]
+    fn a_pasted_marker_glyph_survives_as_itself_beside_a_pasted_newline() {
+        let trie = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.paste("a\n\u{23ce}b", Duration::ZERO, &trie);
+
+        assert_eq!(
+            composer.text(),
+            "a\n\u{23ce}b",
+            "the round trip altered the pasted bytes; the composer holds {:?} where the paste was \
+             {:?}",
+            composer.text(),
+            "a\n\u{23ce}b"
+        );
+        let (rows, _) = painted(&composer, WIDTH, HEIGHT);
+        assert_eq!(
+            rows[0].trim_end(),
+            "a\u{23ce}\u{23ce}b",
+            "the newline and the pasted marker should paint as two markers side by side; the row \
+             reads {:?}",
+            rows[0]
+        );
+    }
+
+    /// A block wider than the frame paints its visible tail, and the caret
+    /// stays on the input row wherever it is.
+    ///
+    /// Two readings, deliberately: with the caret at the end the window is the
+    /// block's tail, and with the caret moved back past the left edge the
+    /// window follows it. A window anchored at zero passes the first and fails
+    /// the second.
+    #[test]
+    fn a_block_wider_than_the_frame_paints_the_window_the_caret_is_in() {
+        let trie = TrieOf::new(0);
+        let mut composer = Composer::new();
+        let block: String = (0..6)
+            .map(|n| format!("líne-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        composer.paste(&block, Duration::ZERO, &trie);
+
+        // Six pieces of six columns each and five markers: 41 columns, one
+        // past a 40-column frame, so two columns go to leave room for the caret.
+        let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
+        assert_eq!(
+            rows[0].trim_end(),
+            "ne-0\u{23ce}líne-1\u{23ce}líne-2\u{23ce}líne-3\u{23ce}líne-4\u{23ce}líne-5",
+            "the tail of the block is not what the row paints: {:?}",
+            rows[0]
+        );
+        assert_eq!(
+            (cursor.x, cursor.y),
+            (39, 0),
+            "the caret should sit at the right edge of the input row; it is at {cursor:?}"
+        );
+
+        // Twelve presses of Left leave the caret twelve columns back, still
+        // inside the window -- so the window must not move.
+        for _ in 0..12 {
+            press(&mut composer, Key::Left, &trie);
+        }
+        let (moved, caret) = painted(&composer, WIDTH, HEIGHT);
+        assert_eq!(
+            (caret.x, caret.y),
+            (27, 0),
+            "the caret left the window when it moved back; it is at {caret:?}"
+        );
+        assert_eq!(
+            moved, rows,
+            "the window moved although the caret was still inside it: {:?} then {:?}",
+            rows[0], moved[0]
+        );
+    }
+
+    /// The single-line frames this arc inherited are byte-identical, which is
+    /// what pins the horizontal windowing the composer took over from
+    /// `tui-textarea`.
+    ///
+    /// Four widths and two caret positions each — at the end of the text, and
+    /// back inside it — with both arms literals written here. A one-column
+    /// shift in either direction reddens.
+    #[test]
+    fn a_single_line_prompt_paints_where_it_always_painted() {
+        let trie = TrieOf::new(0);
+        // Twelve columns of text, so 40 and 20 hold it whole and 10 and 6 do
+        // not.
+        let text = "édit-a-líne";
+        for (width, at_end, moved_back) in [
+            (40_u16, ("édit-a-líne", 11_u16), ("édit-a-líne", 6_u16)),
+            (20, ("édit-a-líne", 11), ("édit-a-líne", 6)),
+            (10, ("it-a-líne", 9), ("it-a-líne", 4)),
+            (6, ("-líne", 5), ("-líne", 0)),
+        ] {
+            let mut composer = Composer::new();
+            typing(&mut composer, text, Duration::ZERO, &trie);
+            let (rows, cursor) = painted(&composer, width, HEIGHT);
+            assert_eq!(
+                (rows[0].trim_end(), cursor.x),
+                at_end,
+                "at width {width} with the caret at the end the input row and caret read {:?} and \
+                 {}",
+                rows[0],
+                cursor.x
+            );
+
+            for _ in 0..5 {
+                press(&mut composer, Key::Left, &trie);
+            }
+            let (rows, cursor) = painted(&composer, width, HEIGHT);
+            assert_eq!(
+                (rows[0].trim_end(), cursor.x),
+                moved_back,
+                "at width {width} with the caret five back the input row and caret read {:?} and \
+                 {}",
+                rows[0],
+                cursor.x
             );
         }
     }

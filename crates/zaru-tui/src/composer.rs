@@ -46,6 +46,7 @@ pub use search::{
 };
 pub use strip::{PickerKind, StripContent, StripMode};
 
+use core::cell::Cell;
 use core::time::Duration;
 use tui_textarea::{Input, TextArea};
 
@@ -61,6 +62,37 @@ use tui_textarea::{Input, TextArea};
 ///
 /// [ADR Workflow]: https://100monkeys-ai.cortex.page/zaru/p/operations/adr-workflow
 pub const MATCH_LIMIT: usize = 8;
+
+/// What a newline in the prompt paints as, in the one row [ADR-0005] D2 fixes.
+///
+/// U+23CE, RETURN SYMBOL. **Drafted under a delegated coordinator ruling of
+/// 2026-09-06 and 2026-09-13, open to Jeshua's veto**, in the same shape as
+/// the six register glyphs and `STRIP_ROWS`: no record names a glyph for a
+/// newline and one is needed, so it is named once here with its reasoning
+/// rather than typed at a call site. It is recorded on
+/// [ADR-0005's amendments page].
+///
+/// # It is a rendering and never a storage form
+///
+/// [`Composer::text`] returns the bytes as they were typed or pasted, with
+/// real newlines, and a pasted U+23CE is stored and submitted as U+23CE.
+/// Substituting at the *storage* end would have been the smaller change and
+/// is refused: a person pasting a document that contains the return symbol
+/// would have it silently become a line break, and a harness that alters a
+/// person's own bytes as they type them is the opposite of showing them their
+/// work — the argument [ADR-0010] D2's 2026-09-06 Update already makes for
+/// painting a typed line raw.
+///
+/// **One column wide, and that is asserted rather than assumed.** Its East
+/// Asian Width is Neutral, so the `unicode-width` measurement `ratatui` paints
+/// with gives it one; `the_newline_marker_occupies_one_column` pins the
+/// premise, exactly as `every_register_glyph_occupies_one_column` pins it for
+/// the registers, so a wider glyph reddens a check rather than skewing a row.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0005's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
+pub const NEWLINE: &str = "\u{23ce}";
 
 /// What the text in the input is asking for.
 ///
@@ -106,6 +138,21 @@ pub struct Composer {
     /// The query a request has already been emitted for, so one query produces
     /// one request however many times the host steps the composer.
     requested: Option<String>,
+    /// Where the one painted row's window starts, in display columns.
+    ///
+    /// # It is sticky, and that is `tui-textarea`'s rule kept deliberately
+    ///
+    /// The widget this crate used to hand the input row to keeps its viewport
+    /// in an `AtomicU64` and moves it only when the caret would leave it:
+    /// left of the window the window follows the caret, past its right edge it
+    /// tracks the caret, and anywhere inside it the window does not move at
+    /// all. Recomputing the window from zero on every paint instead reads
+    /// simpler and is not the same thing — a caret moved five columns left
+    /// inside a long line would drag the whole row five columns with it, where
+    /// today it does not move at all. So the state is kept, in a [`Cell`] for
+    /// the reason the widget kept it behind interior mutability: painting
+    /// takes `&self`.
+    window: Cell<usize>,
 }
 
 impl Default for Composer {
@@ -133,6 +180,7 @@ impl Composer {
             absence: None,
             last_edit: Duration::ZERO,
             requested: None,
+            window: Cell::new(0),
         }
     }
 
@@ -142,16 +190,86 @@ impl Composer {
         self.input.lines().join("\n")
     }
 
-    /// The text area, for rendering.
-    #[must_use]
-    pub fn input(&self) -> &TextArea<'static> {
-        &self.input
-    }
-
     /// Where the cursor is, as a row and a column in characters.
     #[must_use]
     pub fn cursor(&self) -> (usize, usize) {
         self.input.cursor()
+    }
+
+    /// The one row the input paints at `width`, and the cursor's column in it.
+    ///
+    /// # Why the composer paints its own row, and what that cost
+    ///
+    /// Until 2026-09-13 [`Self::render`] handed the `tui-textarea` widget a
+    /// one-row area and let it scroll its own viewport to keep the cursor
+    /// visible. **A widget has no way to paint a newline as a glyph**, and
+    /// with several lines in it that one paints only the cursor's line with
+    /// nothing on the screen saying the others exist — so with a pasted block
+    /// in the prompt it would show one line of it and hide the rest. The row
+    /// is therefore composed here.
+    ///
+    /// **The cost is that the horizontal windowing is this crate's now**, and
+    /// it is named on [ADR-0005's amendments page] rather than discovered
+    /// later. Two painters — one for plain lines and one for blocks — were
+    /// refused: two renderings of one text are two things that can disagree
+    /// about a character, which is the argument [`Shell::stream_delta`]
+    /// already carries for the streamed answer. What pins the cost is a
+    /// byte-identity check over today's single-line frames at several widths
+    /// and cursor positions.
+    ///
+    /// # The window follows the cursor, which is what "the block's tail" means
+    ///
+    /// The row is the widest `width`-column window that keeps the caret on
+    /// screen, computed exactly as the widget computed it: the window starts
+    /// at zero until the caret would fall off the right edge, and then tracks
+    /// it. With the caret at the end of a pasted block that is the block's
+    /// **visible tail**; with the caret moved left by an arrow key it is
+    /// wherever the caret is.
+    ///
+    /// **The returned column is a column and never a row.** A prompt of three
+    /// lines has a caret somewhere in one composed row, so [`Self::render`]
+    /// has nothing to add to the input area's `y` and the caret cannot land
+    /// on the strip.
+    ///
+    /// [`Shell::stream_delta`]: crate::shell::Shell::stream_delta
+    /// [ADR-0005's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
+    #[must_use]
+    pub fn input_row(&self, width: u16) -> (String, u16) {
+        let budget = usize::from(width).max(1);
+        let lines = self.input.lines();
+        let (row, column) = self.cursor();
+
+        // The caret's column in the composed row: every earlier line and the
+        // marker that stands for the newline after it, then the part of the
+        // cursor's own line that precedes it.
+        let marker = crate::shell::wrap::columns(NEWLINE);
+        let mut caret = 0_usize;
+        for line in lines.iter().take(row) {
+            caret += crate::shell::wrap::columns(line) + marker;
+        }
+        if let Some(line) = lines.get(row) {
+            let before: String = line.chars().take(column).collect();
+            caret += crate::shell::wrap::columns(&before);
+        }
+
+        let display = lines.join(NEWLINE);
+        // `tui_textarea`'s `next_scroll_top`, transcribed: left of the window
+        // the window follows the caret, past its right edge it tracks the
+        // caret, and anywhere inside it the window does not move. See the
+        // `window` field for why the state is kept rather than recomputed.
+        let was = self.window.get();
+        let start = if caret < was {
+            caret
+        } else if was + budget <= caret {
+            caret + 1 - budget
+        } else {
+            was
+        };
+        self.window.set(start);
+        (
+            columns_of(&display, start, budget),
+            u16::try_from(caret.saturating_sub(start)).unwrap_or(u16::MAX),
+        )
     }
 
     /// Which cortex the slow tier searches.
@@ -206,6 +324,41 @@ impl Composer {
     /// slow tier is not consulted here at all.
     pub fn key(&mut self, input: Input, now: Duration, entries: &dyn Entries) {
         self.input.input(input);
+        self.refreshed(now, entries);
+    }
+
+    /// Insert a pasted block at `now`, newlines and all, and refresh the same
+    /// tier a keystroke refreshes.
+    ///
+    /// # A pasted newline is text, and that is [ADR-0005]'s 2026-09-13 Update
+    ///
+    /// Until bracketed paste was armed, every newline in a paste arrived as
+    /// `Enter` and was read as a submission, so pasting three lines ran two
+    /// turns and left the third in the prompt — the look-and-feel survey's
+    /// row 13. The terminal now hands a paste over whole and it lands here as
+    /// **text**, so `Enter` submits the block as one prompt.
+    ///
+    /// **It refreshes through the same body [`Self::key`] does**, so a paste
+    /// and a keystroke cannot disagree about what the strip shows: a pasted
+    /// leading `/` is [ADR-0015] D2's command line exactly as a typed one is,
+    /// and a pasted three characters reach the fast tier exactly as three
+    /// typed ones do. One rule, one place, which is what stops the strip
+    /// having two behaviours keyed on how the text arrived.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub fn paste(&mut self, text: &str, now: Duration, entries: &dyn Entries) {
+        self.input.insert_str(text);
+        self.refreshed(now, entries);
+    }
+
+    /// Mark the text edited at `now` and re-ask the fast tier.
+    ///
+    /// The body [`Self::key`] and [`Self::paste`] share. It was `key`'s whole
+    /// tail until a paste needed it, and it is extracted rather than copied
+    /// for the reason this workspace keeps giving: a rule spelled at two call
+    /// sites is a rule nothing keeps agreeing.
+    fn refreshed(&mut self, now: Duration, entries: &dyn Entries) {
         self.last_edit = now;
 
         let intent = self.intent();
@@ -374,6 +527,39 @@ impl Composer {
             tag,
         }
     }
+}
+
+/// The window of `text` from display column `start`, `budget` columns wide.
+///
+/// Measured with [`crate::shell::wrap::columns`], which is the same
+/// `unicode-width` measurement the terminal's own buffer paints with — a
+/// second measurement would disagree with the buffer about a wide character
+/// and put the caret a column out.
+///
+/// **A character that straddles either edge is dropped rather than split.**
+/// Half a wide character is not a character, and a buffer handed one paints a
+/// replacement the reader cannot make sense of; dropping it loses one column
+/// of a row that is already a window onto something longer.
+fn columns_of(text: &str, start: usize, budget: usize) -> String {
+    let mut at = 0_usize;
+    let mut taken = 0_usize;
+    let mut window = String::new();
+    for character in text.chars() {
+        let mut buffer = [0_u8; 4];
+        let wide = crate::shell::wrap::columns(character.encode_utf8(&mut buffer));
+        if at < start {
+            // Before the window, or straddling its left edge.
+            at += wide;
+            continue;
+        }
+        if taken + wide > budget {
+            break;
+        }
+        window.push(character);
+        taken += wide;
+        at += wide;
+    }
+    window
 }
 
 /// Merge what the two tiers returned, keyed on entity identity.
