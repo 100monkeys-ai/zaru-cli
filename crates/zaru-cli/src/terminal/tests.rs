@@ -4805,12 +4805,23 @@ fn written_bytes(shell: &Shell, width: u16, height: u16, palette: Palette) -> Ve
         }
     }
 
+    // `Terminal::new` asks the backend for its size, and `CrosstermBackend`
+    // answers by asking the **real terminal** -- so it fails wherever there is
+    // not one, which is every continuous-integration runner. A fixed viewport
+    // is the constructor that asks nothing: the size is the check's, the
+    // writer is the check's, and nothing here reaches outside the process.
+    //
+    // Found by CI on 2026-09-14 and not reproducible on a development machine,
+    // where a session reaches a terminal even with every stream redirected.
+    // The repair is to remove the dependency rather than to detect it.
     let written = Shared::default();
-    let mut terminal =
-        Terminal::new(CrosstermBackend::new(written.clone())).expect("a backend over a buffer");
-    terminal
-        .resize(ratatui::layout::Rect::new(0, 0, width, height))
-        .expect("resize");
+    let mut terminal = Terminal::with_options(
+        CrosstermBackend::new(written.clone()),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, width, height)),
+        },
+    )
+    .expect("a backend over a buffer needs no terminal");
     terminal
         .draw(|frame| shell.render(frame, frame.area(), palette))
         .expect("draw");
