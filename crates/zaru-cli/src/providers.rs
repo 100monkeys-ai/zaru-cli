@@ -65,6 +65,7 @@ pub mod inference;
 pub mod kind;
 pub mod negotiation;
 pub mod ollama;
+pub mod openai_compatible;
 pub mod port;
 pub mod resolution;
 pub mod selection;
@@ -82,6 +83,7 @@ pub use negotiation::{
     AliasNegotiation, Disagreement, NegotiationFailure, RemoteModelId, disagreements,
 };
 pub use ollama::{OllamaClient, OllamaFailure};
+pub use openai_compatible::{OpenAiCompatibleClient, OpenAiCompatibleFailure};
 pub use port::Provider;
 pub use resolution::{
     ModelId, ModelIdRefused, ModelTable, ResolvedModel, TableRefused, declare, endpoint_of, fields,

@@ -1,0 +1,18 @@
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1789375623,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"id":"k7YiUuzSJgn132DYaN8gOIVfxflOWeIg","type":"function","function":{"name":"get_weather","arguments":"{"}}]}}],"created":1789375624,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\""}}]}}],"created":1789375624,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"city"}}]}}],"created":1789375624,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\":"}}]}}],"created":1789375624,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \""}}]}}],"created":1789375624,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"Paris"}}]}}],"created":1789375624,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"}"}}]}}],"created":1789375624,"id":"chatcmpl-2MMAX4f8GWb1FY80is0jmNIg30P0WzfK","model":"llama3.2-3b","system_fingerprint":"b1-0f3a71be1","object":"chat.completion.chunk"}
+
+data: {"error":{"code":500,"message":"The model produced output that does not match the expected peg-native format","type":"server_error"}}
+
