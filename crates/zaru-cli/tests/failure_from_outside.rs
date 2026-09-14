@@ -229,3 +229,118 @@ fn the_built_binary_exits_with_adr_0016_d5s_code_for_what_it_did() {
         );
     });
 }
+
+/// **One place in the terminal turns a classified failure into pane lines.**
+///
+/// [ADR-0016] D2 says a correctable failure carries what to do about it. Until
+/// 2026-09-14 four of the five terminal sites that rendered a failure read
+/// `Presentation::of(...).headline` and threw the projection's `lines` away,
+/// so inside a session a refusal said what went wrong and never what to do.
+/// Each site was fixed and each has a frame check; this walk is what stops a
+/// *sixth* site from being written the same way, which no per-site check can
+/// do because a check cannot fail for a site nobody has written yet.
+///
+/// # Why a walk and not a type
+///
+/// `Presentation`'s two fields are public data with three legitimate readers
+/// that correctly take them apart: `main.rs` renders through `Display`,
+/// `session::record::FailureLine::of` stores them separately by design, and
+/// `compose`'s checks compare the headline alone against the transcript.
+/// Making the fields unreachable would break three correct consumers to
+/// constrain one. The walk constrains the surface that actually had the
+/// defect, and leaves the three alone.
+///
+/// # What it exempts, and why `tests.rs` is not the product
+///
+/// `terminal/tests.rs` reads both needles, necessarily: the four frame checks
+/// take their expectation from the refusal's own `Presentation`, so the file
+/// that *asserts* the rule names what the rule forbids. What must have one
+/// answer is what the binary does, which is the same line
+/// `corpus_one_thing_decides_a_working_directory` draws and for the same
+/// reason. `fixtures.rs` is **not** exempted -- it is test support the product
+/// modules compile against, and nothing stops a rendering site being written
+/// there.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn corpus_one_place_in_the_terminal_renders_a_classified_failure() {
+    /// The one module that may project a classified failure into pane lines.
+    const RENDERER: &str = "src/terminal/vocabulary.rs";
+    /// Reading either of these is what turns a `Classified` into shown text.
+    const NEEDLES: [&str; 2] = ["Presentation::of", ".headline"];
+
+    let terminal = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/terminal");
+    let mut scanned = 0usize;
+    let mut lines = 0usize;
+    let mut offences: Vec<String> = Vec::new();
+
+    let mut stack = vec![terminal.clone()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory).expect("the terminal's source directory") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name == "tests.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            scanned += 1;
+            lines += text.lines().count();
+            let relative = path
+                .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            for (number, line) in text.lines().enumerate() {
+                // A doc comment naming the call is prose about the rule, not an
+                // instance of it -- and `vocabulary.rs`'s own comments say why
+                // it is the one caller.
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if NEEDLES.iter().any(|needle| line.contains(needle)) && relative != RENDERER {
+                    offences.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    // Liveness. A walk that read the wrong directory, or one whose exemption
+    // list grew until it excused everything, passes vacuously and says nothing
+    // -- the shape `Verification lessons` §8 names. The terminal is seven files
+    // and some thousands of lines; a floor well under that still catches a scan
+    // that found nothing.
+    println!("scanned {scanned} terminal file(s), {lines} line(s)");
+    assert!(
+        scanned >= 5 && lines > 3_000,
+        "this scan read {scanned} terminal file(s) and {lines} line(s), which is too few to have \
+         asserted anything about where a classified failure is rendered",
+    );
+
+    // The accepting sibling, without which the walk is satisfied by a terminal
+    // that renders no failure at all.
+    let renderer =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(RENDERER))
+            .expect("the one renderer is there");
+    for needle in NEEDLES {
+        assert!(
+            renderer.contains(needle),
+            "{RENDERER} is exempted as the one place that projects a classified failure, and it \
+             does not read {needle}",
+        );
+    }
+
+    assert!(
+        offences.is_empty(),
+        "a classified failure becomes pane lines in {RENDERER} and nowhere else, so that ADR-0016 \
+         D2's remedy cannot be dropped by a site written later. {} other place(s) read it: \n  {}",
+        offences.len(),
+        offences.join("\n  "),
+    );
+}
