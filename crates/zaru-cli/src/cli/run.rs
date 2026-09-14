@@ -679,8 +679,6 @@ impl Run<'_> {
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     fn notes_tokens_add(&self, alias: &Alias, host: &str, apex: bool) -> Outcome {
-        let surface = Surface::new(self.version, self.report_at);
-
         let mut offered = String::new();
         if let Err(failure) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut offered) {
             return Outcome::failed(Surface::token_not_readable(alias, &failure));
@@ -693,13 +691,21 @@ impl Run<'_> {
         // credential can be mangled differently.
         let offered = trim_one_line_ending(&offered);
 
-        let secret = match Secret::notes(offered) {
+        let secret = match a_notes_secret(alias, host, offered) {
             Ok(secret) => secret,
-            // The refusal carries no part of the value: `SecretRefused` is
-            // `Copy` and therefore cannot.
-            Err(refusal) => return Outcome::failed(Surface::token_refused(alias, host, &refusal)),
+            Err(outcome) => return *outcome,
         };
 
+        // **This runtime is now around the scope read alone**, and that is what
+        // the split is for. Until 2026-09-14 it also spanned the store write
+        // and D8's confirmation, and the in-session spelling therefore could
+        // not reach any of it: a shell is already inside
+        // `terminal::open`'s own `block_on`, and a `block_on` inside a
+        // `block_on` panics. Everything after this call is
+        // [`Run::store_a_notes_token`], which builds no runtime at all, so the
+        // pump awaits the scope on the runtime it is already running under and
+        // then calls the same storing function this line falls through to.
+        //
         // The `expect` is the one `terminal::open` already carries and is
         // deliberately not a classification: a reactor that will not register
         // with the operating system is ADR-0016 D3's defect, caught by the
@@ -707,7 +713,69 @@ impl Run<'_> {
         // would be that record's "never present a defect as a user error".
         let runtime = crate::compose::turn::runtime()
             .expect("a current-thread runtime with the io and time drivers");
-        let scope = match runtime.block_on(tool_scope_at(host, &secret)) {
+        let scope = runtime.block_on(tool_scope_at(host, &secret));
+
+        let terminal = TerminalConfirm::available();
+        let confirmer = terminal.as_ref().map(|tty| tty as &dyn Confirm);
+        self.store_a_notes_token(alias, host, apex, secret, scope, confirmer)
+    }
+
+    /// Seal an offered Nuclear Notes token into the store, however it was read
+    /// and wherever [ADR-0007] D8's confirmation is asked.
+    ///
+    /// # Both spellings reach this, and that is what makes them one operation
+    ///
+    /// The twin of [`Run::store_a_provider_key`], for the same [ADR-0015] D2
+    /// reason and split at the same seam. Out of a session the bytes come from
+    /// standard input and the scope read runs on a runtime this module builds;
+    /// inside one they come from [ADR-0011] D3's masked question and the scope
+    /// is awaited on the shell's own runtime. **Everything after the bytes is
+    /// this function and is shared**: the unreachable-instance refusal, the
+    /// entry, the store, D8's gate and the three lines a user reads. It takes
+    /// the scope as a `Result` rather than a `ToolScope` for exactly that
+    /// reason — a caller free to word "that host did not answer" its own way
+    /// is a caller free to word it differently, and which surface a person
+    /// typed at is not a property of whether their instance replied.
+    ///
+    /// # It builds no runtime, and that is the property rather than an
+    /// incidental
+    ///
+    /// The in-session spelling was unreachable for three measured reasons on
+    /// 2026-09-14, and the first was a `block_on` inside the shell's own. This
+    /// function is synchronous and names no `Runtime`, so there is nothing
+    /// here for a second one to be built by;
+    /// `the_terminal_module_names_no_runtime_and_no_block_on` pins the other
+    /// half, that the module which calls this names none either.
+    ///
+    /// # The confirmer is the caller's, and the two are different objects
+    ///
+    /// `None` on a machine with no terminal — a pipeline, a runner, a
+    /// container — and the store then refuses, which is clause 11's
+    /// "a confirmation that refuses rather than defaults when it cannot be
+    /// asked". Out of a session it is `TerminalConfirm`, on `/dev/tty`. Inside
+    /// one that descriptor belongs to a terminal in raw mode, so it is the
+    /// pane's own confirmer instead — see
+    /// `terminal::driver::PaneConfirm`, named in prose because it is
+    /// reached through this trait object and not by this module.
+    ///
+    /// **Nothing this function does echoes the token.** It is handed over,
+    /// sealed, and what is printed afterwards is the alias, the host and a
+    /// count.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub(crate) fn store_a_notes_token(
+        &self,
+        alias: &Alias,
+        host: &str,
+        apex: bool,
+        secret: Secret,
+        scope: Result<crate::credentials::ToolScope, crate::credentials::ReachFailure>,
+        confirmer: Option<&dyn Confirm>,
+    ) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let scope = match scope {
             Ok(scope) => scope,
             Err(failure) => {
                 return Outcome::failed(Surface::notes_unreachable(alias, host, &failure));
@@ -747,8 +815,6 @@ impl Run<'_> {
             }
         };
 
-        let terminal = TerminalConfirm::available();
-        let confirmer = terminal.as_ref().map(|tty| tty as &dyn Confirm);
         match store.add(entry, &keys, confirmer) {
             Ok(()) => Outcome::printed(vec![
                 format!("stored a Nuclear Notes token under the alias `{alias}`."),
@@ -1013,6 +1079,42 @@ pub(crate) fn notes_entry(
     Ok(Entry::notes(alias.clone(), description, secret, reach)
         .map_err(EntryUndecided::Entry)?
         .with_tools(scope))
+}
+
+/// The bytes of a Nuclear Notes token, refused in one place.
+///
+/// Split out for [`Run::store_a_provider_key`]'s own reason: a shared function
+/// that began after `Secret::notes` would leave each surface free to refuse a
+/// token differently, and what a user is told about a value with no notes
+/// prefix on it is not a property of where they typed it. This is the one
+/// refusal `Secret::provider` has no analogue of, so it is the one most worth
+/// having in a single place.
+///
+/// **The refusal carries no part of the value**: `SecretRefused` is `Copy` and
+/// therefore cannot.
+///
+/// It answers with the [`Outcome`] rather than the refusal because both
+/// callers do the same thing with it, and a second `match` at the second call
+/// site is a second chance to classify it differently.
+///
+/// # Errors
+///
+/// The [`Outcome`] the caller should return, boxed for the reason
+/// [`crate::terminal::open::shell_for`]'s and [`crate::compose::turn::prepare`]'s
+/// errors are: an `Outcome` carries the lines and the ADR-0016 exit, which is
+/// far larger than a [`Secret`], and `clippy::result_large_err` refuses a
+/// `Result` shaped that way. One allocation on the refusal path, and none on
+/// the path a token is actually stored on.
+pub(crate) fn a_notes_secret(
+    alias: &Alias,
+    host: &str,
+    offered: &str,
+) -> Result<Secret, Box<Outcome>> {
+    Secret::notes(offered).map_err(|refusal| {
+        Box::new(Outcome::failed(Surface::token_refused(
+            alias, host, &refusal,
+        )))
+    })
 }
 
 /// [ADR-0007] D8's confirmation, asked on the controlling terminal.
