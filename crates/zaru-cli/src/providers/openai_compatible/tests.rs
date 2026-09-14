@@ -1158,6 +1158,54 @@ fn corpus_a_rejected_key_failure_carries_neither_the_key_nor_its_ascii_core() {
 }
 
 #[test]
+fn corpus_a_failure_quoting_only_the_keys_ascii_core_is_withheld_too() {
+    // **This check exists because a mutation found the hole it fills.**
+    // Removing the ASCII-core arm from `redacted_detail` reddened NOTHING,
+    // because the sibling check above quotes the key whole and the by-value arm
+    // catches that on its own. The arm is there for the rendering that escapes
+    // the non-ASCII tail -- `{:?}` turns a combining mark into `\u{301}`, and a
+    // server echoing such a rendering publishes every ASCII byte of the key
+    // while containing the value nowhere.
+    let escaped = format!("{A_KEY:?}");
+    assert!(
+        !escaped.contains(A_KEY),
+        "the escaped rendering does not contain the value, which is the whole problem: {escaped}",
+    );
+    assert!(
+        escaped.contains(ascii_core(A_KEY)),
+        "but it does contain every ASCII byte of it: {escaped}",
+    );
+
+    // Built through `serde_json` rather than by hand, because an escaped
+    // rendering pasted into a JSON literal is not JSON -- which this check
+    // discovered by failing on the unmutated code and reporting "90 bytes that
+    // are not an error envelope". A body that does not parse is withheld by a
+    // different branch entirely, so the check would have passed for the wrong
+    // reason against the very mutant it exists to catch.
+    let body = serde_json::json!({
+        "error": { "message": format!("bad key: {escaped}"), "type": "authentication_error" }
+    })
+    .to_string();
+    let failure = OpenAiCompatibleFailure::from_status(500, body.as_bytes(), "m", &alias(), A_KEY);
+    let said = failure.to_string();
+    assert!(
+        said.contains(DETAIL_WITHHELD),
+        "an escaped rendering is withheld by the ASCII core, which by-value alone cannot see: \
+         {said}",
+    );
+    assert!(
+        !said.contains(ascii_core(A_KEY)),
+        "and not one byte of it reaches the reader: {said}",
+    );
+
+    // The accepting sibling: a sentence sharing no prefix with the key passes
+    // through, so this is redaction rather than a branch that withholds
+    // everything.
+    let clean = OpenAiCompatibleFailure::from_status(500, LOADING.as_bytes(), "m", &alias(), A_KEY);
+    assert!(clean.to_string().contains("Loading model"), "{clean}");
+}
+
+#[test]
 fn corpus_a_client_holding_no_key_withholds_nothing_and_reads_the_servers_sentence() {
     // The empty-key guard. Without it `"anything".contains("")` is true and a
     // reader with a local server would get DETAIL_WITHHELD for every failure
