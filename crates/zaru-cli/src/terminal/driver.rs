@@ -816,6 +816,79 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
     }
 }
 
+/// [ADR-0007] D8's confirmation, asked on the pane instead of `/dev/tty`.
+///
+/// # A second port on one object, rather than a second confirmer
+///
+/// `credentials::port::Confirm` and [`crate::tools::port::Confirm`] are two
+/// traits with two questions — "store this apex credential?" and "run this
+/// tool?" — and this type answers both by composing the first into the
+/// second's [`Question`] and calling **its own** `confirm`. So the pane lock,
+/// the paste rule, the repaint, the beat and the `Taken::Ended` rule are one
+/// implementation rather than two that have to be kept agreeing. The
+/// confirmer *count* is unchanged and
+/// `this_harness_has_exactly_two_confirmers_and_the_masked_question_is_not_a_third`
+/// stays green: this declares no trait.
+///
+/// It is reached only from the pump's own command arm, where the terminal in
+/// raw mode holds the descriptor `TerminalConfirm` would have opened.
+///
+/// # `ConfirmFailure` answers `false`, and the misfit is the port's
+///
+/// `confirm_apex` returns a bare `bool`, so a terminal that stopped answering
+/// — which `crate::tools::port::Confirm` distinguishes from a decline, on
+/// purpose, because "the user declined" in the transcript of a question nobody
+/// saw is a lie — has nowhere to go but `false`. The store then reports
+/// `ApexDeclined`, "a decline the user made", of a question that was never
+/// answered.
+///
+/// **This is the port's return type and not a shortcut taken here.**
+/// `TerminalConfirm` already answers `false` on every IO error for the same
+/// reason, so this matches the port's only other implementation rather than
+/// inventing a posture, and the two surfaces cannot drift. The narrower
+/// outcome — a third state the store could tell from a decline — waits on
+/// `confirm_apex` returning something that can carry one, and the finding is
+/// recorded on ADR-0007's amendments page rather than left in this comment.
+///
+/// Nothing is stored either way, which is the property that matters: `false`
+/// is refused by `CredentialStore::add` before the sealing key is minted.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+impl<S: Surface + Send, P: Pace + Sync> crate::credentials::port::Confirm
+    for PaneConfirm<'_, '_, S, P>
+{
+    fn confirm_apex(&self, alias: &crate::credentials::Alias, grants: &str) -> bool {
+        // **`prominent`**: ADR-0011 D6 raises a prompt's prominence for what
+        // reaches outside the boundary, and a credential with no instance
+        // boundary at all is that reading applied to ADR-0007 D8. The
+        // statement crosses as a value for D3's own reason -- what the user
+        // was told and what the store believes it asked cannot drift apart --
+        // and `grants` is the store's own sentence, passed in and never
+        // composed here.
+        let question = Question {
+            statement: apex_statement(alias, grants),
+            prominent: true,
+        };
+        crate::tools::port::Confirm::confirm(self, &question).unwrap_or(false)
+    }
+}
+
+/// The sentence [ADR-0007] D8's confirmation states on the pane.
+///
+/// **Authored under a delegated coordinator ruling of 2026-09-14, open to
+/// Jeshua's veto.** It is `TerminalConfirm`'s own two sentences minus its
+/// third, "Type `yes` to store it", which is that surface's way of taking an
+/// answer and not part of what D8 requires stated. The pane takes its answer
+/// through `crate::tools::prompt::SUFFIX`, which
+/// [`question_for_the_shell`] already appends, so repeating the instruction
+/// here would put two different ways to answer on one question.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[must_use]
+pub fn apex_statement(alias: &crate::credentials::Alias, grants: &str) -> String {
+    format!("`{alias}` has {grants}. This is never stored without being asked.")
+}
+
 /// The composer sees no keystroke while a question stands, so the entries it
 /// would search are never asked for.
 #[derive(Debug)]
@@ -1699,25 +1772,64 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // has none. So the pump stands the question, and what it gets
                 // goes to the same storing function the out-of-session
                 // spelling reaches.
-                if let Some(kind) = secret_for(&command) {
+                if let Some(asking) = secret_for(&command) {
                     let request = zaru_tui::shell::SecretRequest::new(
-                        secret_statement(kind),
+                        secret_statement(&asking),
                         SECRET_GUIDANCE,
                     );
                     match ask_for_a_secret(shell, surface, source, request).await? {
                         Asked::Given(offered) => {
-                            let outcome = runner.store_a_provider_key(kind, offered.trim_end());
-                            let stored = !matches!(outcome.exit, Exit::Failed(_));
-                            let mut said: Vec<Line> = outcome
-                                .lines
-                                .into_iter()
-                                .map(|text| Line::new(Register::Plain, text))
-                                .collect();
-                            if let Exit::Failed(classified) = &outcome.exit {
-                                said.extend(crate::terminal::vocabulary::refusal_lines(classified));
-                            }
-                            if stored {
-                                said.push(Line::new(Register::Plain, KEY_IS_STORED));
+                            // **What the bytes become is the intent's, and
+                            // whether the session re-opens is the intent's
+                            // too.** A provider key always buys a re-open --
+                            // `compose::turn::prepare` ran without it, so the
+                            // session that stored it could not use it. A
+                            // Nuclear Notes token buys one only when it
+                            // changed which token the composer reads with, and
+                            // that is measured rather than assumed: see
+                            // `add_a_notes_token`.
+                            let Some((mut said, reopen)) = (match &asking {
+                                Asking::ProviderKey(kind) => {
+                                    let (mut said, stored) = said_of(
+                                        runner.store_a_provider_key(*kind, offered.trim_end()),
+                                    );
+                                    if stored {
+                                        said.push(Line::new(Register::Plain, KEY_IS_STORED));
+                                    }
+                                    Some((said, stored))
+                                }
+                                Asking::NotesToken { alias, host, apex } => {
+                                    match add_a_notes_token(
+                                        shell,
+                                        surface,
+                                        source,
+                                        pace,
+                                        entries,
+                                        &mut now,
+                                        runner,
+                                        alias,
+                                        host,
+                                        *apex,
+                                        offered.trim_end(),
+                                    )
+                                    .await
+                                    {
+                                        Added::Said { said, reopen } => Some((said, reopen)),
+                                        Added::Ended => None,
+                                    }
+                                }
+                            }) else {
+                                // The terminal stopped answering during the
+                                // scope read. The same exit the pump's own
+                                // `source.next()` returning `None` takes, and
+                                // for the same reason: nothing was stored, so
+                                // nothing is claimed either way.
+                                surface.draw(shell)?;
+                                return Ok(Pump {
+                                    outcome: Pumped::Left(Exit::Succeeded),
+                                });
+                            };
+                            if reopen {
                                 // **A stored key re-opens this session, and
                                 // that is not a restart anybody invented.** It
                                 // is the switch `/session continue` already
@@ -1750,7 +1862,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                                     });
                                 }
                             }
-                            for line in said {
+                            for line in said.drain(..) {
                                 shell.notice(line);
                             }
                         }
@@ -2197,6 +2309,41 @@ fn out_of_session_spelling(command: &Command) -> Option<String> {
     Some(spelling)
 }
 
+/// What a credential-reading spelling asks for, with everything the storing
+/// function will need and nothing it will not.
+///
+/// # One intent rather than two mappings
+///
+/// [`secret_for`] answered a [`ProviderKind`] until 2026-09-14, when
+/// [ADR-0007] D7's `tokens add` got an in-session route and needed the same
+/// masked question. Widening the one mapping is deliberate: two mappings would
+/// be two places a credential-reading spelling is decided, and a spelling that
+/// reached only one of them would read a secret nobody could store or store
+/// one nobody was asked for.
+///
+/// **It carries no bytes and cannot.** The value is read at [ADR-0011] D3's
+/// masked question, after this has already said what is being asked for —
+/// which is [`secret_for`]'s own reason for existing.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asking {
+    /// [ADR-0007] D7's `providers keys add <kind>`.
+    ProviderKey(ProviderKind),
+    /// [ADR-0007] D7's `notes tokens add <alias> <host> [apex]`.
+    NotesToken {
+        /// The alias the token is stored under, already refused every shape
+        /// `AliasRefused` names.
+        alias: crate::credentials::Alias,
+        /// The instance host, unvalidated here: the store refuses it.
+        host: String,
+        /// Whether the person typed D8's `apex` word. There is no flag, no
+        /// default and no inference from the host.
+        apex: bool,
+    },
+}
+
 /// Which secret a slash command asks for, deciding nothing and doing nothing.
 ///
 /// **Separate from the asking for the reason `request_for` is separate from
@@ -2218,15 +2365,59 @@ fn out_of_session_spelling(command: &Command) -> Option<String> {
 /// handed to `cli::Run::store_a_provider_key` — the same function the
 /// out-of-session spelling reaches, named in prose for the reason above.
 ///
+/// **What travels is [`Asking`] as of 2026-09-14**, because ADR-0007 D7's
+/// `tokens add` reads a token for the same reason and through the same
+/// question. It carries an alias, a host and D8's `apex` word — everything the
+/// storing function needs and none of the bytes.
+///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[must_use]
-pub fn secret_for(command: &Command) -> Option<ProviderKind> {
+pub fn secret_for(command: &Command) -> Option<Asking> {
     match (command.slash, command.verb) {
         ("/providers", Some("keys")) => match command.words.as_slice() {
-            [add, kind] if add == "add" => ProviderKind::parse(kind),
+            [add, kind] if add == "add" => ProviderKind::parse(kind).map(Asking::ProviderKey),
             _ => None,
         },
+        // [ADR-0007] D7's `add`, mirroring `cli::parse`'s own grammar word for
+        // word: an alias, a host, and the optional literal `apex`. **A fifth
+        // word falls through to `unavailable`**, which names every word typed
+        // and the out-of-session spelling -- the same fall-through
+        // `/providers keys add gemini extra` already takes, and the reason
+        // this arm does not end in a `..` pattern.
+        //
+        // `Alias::new` gates here because it gates out of session, at
+        // `cli::parse`'s own line. It is the *only* validation this mapping
+        // does: a host is the store's to refuse and a token is
+        // `Secret::notes`'s, at the doors the subcommand goes through. A
+        // grammar that checked either here would be a second answer to a
+        // question `zaru-cli` already answers in one place.
+        ("/notes", Some("tokens")) => {
+            match command.words.as_slice() {
+                [add, alias, host] if add == "add" => crate::credentials::Alias::new(alias)
+                    .ok()
+                    .map(|alias| Asking::NotesToken {
+                        alias,
+                        host: host.clone(),
+                        apex: false,
+                    }),
+                // ADR-0007 D8: instance-locked "unless the user explicitly chooses
+                // otherwise". The choice is this word and there is no flag, no
+                // default and no inference from the host -- `cli::parse`'s own
+                // sentence, and the grammars agree because they are the same
+                // grammar typed against the same record.
+                [add, alias, host, apex] if add == "add" && apex == "apex" => {
+                    crate::credentials::Alias::new(alias)
+                        .ok()
+                        .map(|alias| Asking::NotesToken {
+                            alias,
+                            host: host.clone(),
+                            apex: true,
+                        })
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -2241,8 +2432,17 @@ pub fn secret_for(command: &Command) -> Option<ProviderKind> {
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[must_use]
-pub fn secret_statement(kind: ProviderKind) -> String {
-    format!("the {kind} API key, which is not shown as you type")
+pub fn secret_statement(asking: &Asking) -> String {
+    match asking {
+        Asking::ProviderKey(kind) => format!("the {kind} API key, which is not shown as you type"),
+        // The host where the kind was, for the reason the kind is there: it is
+        // the one word that says *which* credential this question is about,
+        // and a person with tokens on two instances has nothing else to tell
+        // them apart.
+        Asking::NotesToken { host, .. } => {
+            format!("the Nuclear Notes token for {host}, which is not shown as you type")
+        }
+    }
 }
 
 /// What follows the masked row: how to finish, and how to decline.
@@ -2296,6 +2496,278 @@ pub const SECRET_DECLINED: &str = "nothing was stored.";
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 pub const KEY_IS_STORED: &str =
     "  this session reopened with it, so the next thing you ask will use it.";
+
+/// An outcome's lines, and whether it did what was asked.
+///
+/// The fold the pump's command arm ran inline until 2026-09-14, named because
+/// two intents now reach it and a second copy would be a second way a failure
+/// reaches the pane.
+fn said_of(outcome: crate::cli::run::Outcome) -> (Vec<Line>, bool) {
+    let stored = !matches!(outcome.exit, Exit::Failed(_));
+    let mut said: Vec<Line> = outcome
+        .lines
+        .into_iter()
+        .map(|text| Line::new(Register::Plain, text))
+        .collect();
+    if let Exit::Failed(classified) = &outcome.exit {
+        // **Whole, through the one function in `terminal` that projects.**
+        // This pushed `Presentation::of(classified).headline` and nothing
+        // under it until `in-session-remedy` landed on 2026-09-14; that is
+        // the defect its arc fixed at every other site, and an arm written
+        // against the older shape would have reintroduced it at the one site
+        // that did not exist yet. `vocabulary::refusal_lines` also picks the
+        // register from the class, so a refusal is not painted plain.
+        said.extend(crate::terminal::vocabulary::refusal_lines(classified));
+    }
+    (said, stored)
+}
+
+/// Which stored token the composer's hint strip would read with, by alias.
+///
+/// # It reads no secret, and that is why it can be asked twice
+///
+/// [`crate::credentials::composer_token`] answers `(Alias, String)` — an alias
+/// and a host — and this drops the host too, because the only question being
+/// asked is *whether the answer changed*. The sealed value is never opened.
+///
+/// A store that will not open answers `None`, for
+/// `terminal::open::composer_reader`'s own reason: a person with no credential
+/// store has no token, and refusing to store one because the file is
+/// unreadable would be a worse answer than the store's own refusal, which the
+/// caller is about to print.
+fn composer_token_now() -> Option<crate::credentials::Alias> {
+    let root = crate::credentials::CredentialStore::default_root().ok()?;
+    let store = crate::credentials::CredentialStore::reading(root).ok()?;
+    crate::credentials::composer_token(&store).map(|(alias, _)| alias)
+}
+
+/// What the pane says while the instance is being read.
+///
+/// **Authored under a delegated coordinator ruling of 2026-09-14, open to
+/// Jeshua's veto**, in `terminal::trie`'s own idiom — that module's
+/// `"looking in your notes…"` is the same ellipsis for the same reason. It
+/// says what is happening and names no internals: a person who typed a token
+/// and is watching a still pane for one to two seconds is owed the sentence,
+/// not the method name.
+///
+/// The measurement is `notes-hints-wiring`'s: a real instance answers
+/// `tools/list` in one to two seconds over three requests.
+#[must_use]
+pub fn notes_looking(host: &str) -> String {
+    format!("  reading what {host} grants…")
+}
+
+/// What the pane says after a token is stored **and the hint strip gained
+/// one**.
+///
+/// **Authored under a delegated coordinator ruling of 2026-09-14, open to
+/// Jeshua's veto, and it is said conditionally because of a measurement.**
+///
+/// [`KEY_IS_STORED`]'s reasoning does not carry across unchanged, and assuming
+/// it did would have put a false sentence on the pane.
+/// [`crate::credentials::composer_token`] answers in three cases, and a stored
+/// token moves it in only two directions:
+///
+/// - **no notes token before, one now** — the strip gains a corpus, and this
+///   line is true;
+/// - **an apex token stored** — `StoredReach::Apex` carries no host, so
+///   `composer_token` is unchanged and the strip is unaffected. Nothing is
+///   said and the session does not re-open, because there is nothing to
+///   re-open *for*;
+/// - **a second non-apex token with no composer role anywhere** — case 2 of
+///   `composer_token` requires *exactly one*, so the strip **loses** its
+///   corpus. That is [`NOTES_STRIP_HAS_NO_SINGLE_TOKEN`], and the re-open is
+///   what makes it visible rather than silent.
+///
+/// So the condition is not "a token was stored" but "the composer's answer
+/// changed", asked either side of the write by `composer_token_now`, which
+/// reads no secret.
+pub const NOTES_TOKEN_IS_STORED: &str =
+    "  this session reopened with it, so the hint strip searches with it now.";
+
+/// What the pane says when a stored token left the hint strip with no single
+/// token to read with.
+///
+/// Authored under the same ruling. See [`NOTES_TOKEN_IS_STORED`] for the three
+/// cases; this is the third, and it is stated rather than left silent because
+/// a strip that stops searching without saying so is the "silently runs a
+/// different command" shape `request_for`'s own guard was added for.
+///
+/// **It names no remedy on purpose.** `notes use` is the operation that would
+/// pick one, and it refuses every token whose cached `tools/list` reaches
+/// outside ADR-0006 D4's set — which was every token measured on 2026-09-14 —
+/// so naming it here would be ADR-0016 D2's remedy that fails.
+pub const NOTES_STRIP_HAS_NO_SINGLE_TOKEN: &str =
+    "  this session reopened; the hint strip has no single token to search with now.";
+
+/// How [`add_a_notes_token`] ended.
+///
+/// Two states and no `Option`, for [`Pumped`]'s own reason: a caller that
+/// could ignore the second would keep a person at a terminal that stopped
+/// answering.
+#[derive(Debug)]
+pub enum Added {
+    /// What to put on the pane, and whether the session should re-open.
+    Said {
+        /// The store's own lines, and a refusal's headline where there was
+        /// one.
+        said: Vec<Line>,
+        /// Whether [`crate::credentials::composer_token`]'s answer changed.
+        reopen: bool,
+    },
+    /// The terminal stopped answering. Nothing was stored.
+    Ended,
+}
+
+/// [ADR-0007] D7's `tokens add`, run from inside a session.
+///
+/// # The three reasons it was unreachable, and what each became
+///
+/// Measured on 2026-09-14 from the release binary over a pseudo-terminal, and
+/// filed on `operations/known-defects`:
+///
+/// 1. **A `block_on` inside the shell's own.** `cli::run::notes_tokens_add`
+///    built a second runtime to read the scope. It now builds one around
+///    *only* that read, and everything after it is
+///    `cli::Run::store_a_notes_token`, which builds none — so this function
+///    awaits the read on the runtime it is already running under and calls the
+///    same storing function. There is no `Runtime` named anywhere in
+///    `terminal/`, and
+///    `the_terminal_module_names_no_runtime_and_no_block_on` is what keeps it
+///    that way.
+/// 2. **D8's apex confirmation on `/dev/tty`.** A terminal in raw mode holds
+///    that descriptor. The confirmer handed to the store is [`PaneConfirm`]'s
+///    second port instead, which asks on the pane.
+/// 3. **A network call between the two.** It is awaited through [`race`], so
+///    the pane keeps painting, keystrokes still reach the composer, and
+///    `Ctrl-C` abandons the add.
+///
+/// # `Ctrl-C` during the read abandons it, and that is a decision
+///
+/// [`race`]'s terminal arm answers [`Raced::Interrupted`] and this returns
+/// [`SECRET_DECLINED`] — **nothing is stored and the secret is dropped**. It
+/// falls out of the mechanism rather than being built, but it is user-visible
+/// and no record said it before, so it is recorded on ADR-0007's amendments
+/// page and beside ADR-0015 D2's key-table divergences rather than left to be
+/// discovered. Accepted 2026-09-14 under a delegated coordinator ruling, open
+/// to Jeshua's veto.
+///
+/// # Nothing here reads the value
+///
+/// The bytes arrive already taken from the shell, become a
+/// [`Secret`](crate::credentials::Secret) at
+/// `cli::run::a_notes_secret` — the one place either surface refuses one — and
+/// are moved into the store. This function paints around them and never
+/// inspects them; the apex question states the store's own `grants` sentence,
+/// which is a count.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[allow(clippy::too_many_arguments)]
+pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
+    shell: &mut Shell,
+    surface: &mut S,
+    source: &Source,
+    pace: &P,
+    entries: &dyn zaru_tui::composer::Entries,
+    now: &mut Duration,
+    runner: &crate::cli::Run<'_>,
+    alias: &crate::credentials::Alias,
+    host: &str,
+    apex: bool,
+    offered: &str,
+) -> Added {
+    let secret = match crate::cli::run::a_notes_secret(alias, host, offered) {
+        Ok(secret) => secret,
+        Err(outcome) => {
+            let (said, _) = said_of(*outcome);
+            return Added::Said {
+                said,
+                reopen: false,
+            };
+        }
+    };
+
+    // Asked **before** the write, because the question is whether this add
+    // changed the answer. See `NOTES_TOKEN_IS_STORED`.
+    let before = composer_token_now();
+
+    // The pane borrows the shell for the length of the read and the write, so
+    // everything that needs both is inside this block and the lines come out.
+    let (said, stored) = {
+        let pane = std::sync::Mutex::new(Pane::of(shell, surface));
+        {
+            // `lock` rather than `try_lock`: nothing else holds this yet, and
+            // a poisoned mutex here would mean a panic already happened, which
+            // the boundary in `main` owns.
+            let mut held = pane
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            held.note(Line::new(Register::Plain, notes_looking(host)));
+        }
+
+        let scope = match race(
+            &pane,
+            source,
+            pace,
+            entries,
+            now,
+            None,
+            None,
+            crate::credentials::tool_scope_at(host, &secret),
+        )
+        .await
+        {
+            Raced::Ran(scope) => scope,
+            // Nothing is stored and the secret is dropped with this scope.
+            Raced::Interrupted => {
+                return Added::Said {
+                    said: vec![Line::new(Register::Announced, SECRET_DECLINED.to_owned())],
+                    reopen: false,
+                };
+            }
+            Raced::SourceEnded => return Added::Ended,
+        };
+
+        // **The confirmer is handed to the store rather than asked here**, and
+        // that is ADR-0007 D8's own shape: the gate lives inside
+        // `CredentialStore::add`, before the sealing key is minted, so a token
+        // the user declined never causes a key to be minted into their
+        // keyring. Asking outside and passing a yes-confirmer would move the
+        // gate out of the store and make it a convention.
+        let confirm = PaneConfirm::over(&pane, source, pace);
+        said_of(runner.store_a_notes_token(
+            alias,
+            host,
+            apex,
+            secret,
+            scope,
+            Some(&confirm as &dyn crate::credentials::Confirm),
+        ))
+    };
+
+    if !stored {
+        return Added::Said {
+            said,
+            reopen: false,
+        };
+    }
+
+    let mut said = said;
+    let after = composer_token_now();
+    let reopen = before != after;
+    if reopen {
+        said.push(Line::new(
+            Register::Plain,
+            if after.is_some() {
+                NOTES_TOKEN_IS_STORED
+            } else {
+                NOTES_STRIP_HAS_NO_SINGLE_TOKEN
+            }
+            .to_owned(),
+        ));
+    }
+    Added::Said { said, reopen }
+}
 
 /// How a masked question ended.
 ///
@@ -2380,15 +2852,17 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
         // way to find out. With the guard it reaches `unavailable`, which
         // names the words and the out-of-session spelling.
         //
-        // `tokens add` is not reachable in a session for three measured
-        // reasons -- a nested `block_on`, ADR-0007 D8's apex confirmation on
-        // `/dev/tty`, and a network call between them -- and they are on
-        // `operations/known-defects` rather than here.
+        // **`tokens add` is reachable as of 2026-09-14 and is not a
+        // `Request`**, for the reason `providers keys add` is not: the bytes
+        // cannot travel on one. `secret_for` maps that spelling onto ADR-0011
+        // D3's masked question instead, so it falls past this guard the way
+        // `keys add …` falls past the one below.
         ("/notes", Some("tokens")) if command.words.is_empty() => Some(Request::NotesTokens),
-        // ADR-0007 D7's `describe` and `rm`, which are reachable in a session
-        // for the reason `use` is and `tokens add` is not: each takes words
-        // the person typed on this line and reads nothing from standard
-        // input, which a terminal in raw mode has taken.
+        // ADR-0007 D7's `describe` and `rm`, which are `Request`s for the
+        // reason `use` is and `tokens add` is not: each takes words the person
+        // typed on this line and reads nothing a terminal in raw mode has
+        // taken. `tokens add` reads a token, so it goes to `secret_for` and
+        // ADR-0011 D3's masked question instead -- reachable, but not here.
         //
         // **The description is every word after the alias, joined with one
         // space** -- `Command::words` is the typed line split on whitespace,
@@ -2423,18 +2897,9 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
                 _ => None,
             }
         }
-        // ADR-0007 D7's fifth surface, and it is reachable inside a session
-        // where `tokens add` is not: this takes an alias that is already in
-        // the store and reads nothing.
-        //
-        // **Corrected 2026-09-14.** This used to give "`add` reads the token
-        // from standard input and a terminal in raw mode has none to hand it"
-        // as the whole reason, which stopped being sufficient the day
-        // `/providers keys add <kind>` got a masked question for exactly that
-        // problem. `tokens add` stays out for three further reasons measured
-        // that day -- a `block_on` inside the shell's own `block_on`, ADR-0007
-        // D8's apex confirmation on `/dev/tty`, and a network call between
-        // them -- and they are on `operations/known-defects`.
+        // ADR-0007 D7's fifth surface: this takes an alias that is already in
+        // the store and reads nothing, so it is a `Request` and travels as
+        // one.
         ("/notes", Some("use")) => command
             .words
             .first()

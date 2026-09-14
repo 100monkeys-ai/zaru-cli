@@ -1814,15 +1814,16 @@ fn walk(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// `secret_for` names the kind and nothing else, and every neighbouring
-/// spelling answers `None`.
+/// `secret_for` names what is being asked for and nothing else, and every
+/// neighbouring spelling answers `None`.
 ///
 /// The pure mapping beside `request_for` and `switch_for`, asked without being
 /// answered — which is the whole reason it is a separate function.
 #[test]
 fn secret_for_names_the_kind_and_no_neighbouring_spelling() {
+    use zaru_cli::credentials::Alias;
     use zaru_cli::providers::ProviderKind;
-    use zaru_cli::terminal::secret_for;
+    use zaru_cli::terminal::{Asking, secret_for};
     use zaru_tui::shell::Command;
 
     for kind in ProviderKind::ALL {
@@ -1832,10 +1833,50 @@ fn secret_for_names_the_kind_and_no_neighbouring_spelling() {
                 verb: Some("keys"),
                 words: vec!["add".to_owned(), kind.as_str().to_owned()],
             }),
-            Some(kind),
+            Some(Asking::ProviderKey(kind)),
             "`/providers keys add {kind}` did not name its own kind"
         );
     }
+
+    // ADR-0007 D7's `tokens add`, reachable in a session as of 2026-09-14.
+    assert_eq!(
+        secret_for(&Command {
+            slash: "/notes",
+            verb: Some("tokens"),
+            words: vec![
+                "add".to_owned(),
+                "work".to_owned(),
+                "notes.example".to_owned()
+            ],
+        }),
+        Some(Asking::NotesToken {
+            alias: Alias::new("work").expect("a usable alias"),
+            host: "notes.example".to_owned(),
+            apex: false,
+        }),
+        "`/notes tokens add work notes.example` did not name the token it asks for"
+    );
+
+    // D8's word, and there is no flag, no default and no inference from the
+    // host -- so the *only* spelling that answers `apex: true` is the literal.
+    assert_eq!(
+        secret_for(&Command {
+            slash: "/notes",
+            verb: Some("tokens"),
+            words: vec![
+                "add".to_owned(),
+                "work".to_owned(),
+                "notes.example".to_owned(),
+                "apex".to_owned(),
+            ],
+        }),
+        Some(Asking::NotesToken {
+            alias: Alias::new("work").expect("a usable alias"),
+            host: "notes.example".to_owned(),
+            apex: true,
+        }),
+        "D8's `apex` word was not carried"
+    );
 
     for (why, command) in [
         (
@@ -1871,16 +1912,299 @@ fn secret_for_names_the_kind_and_no_neighbouring_spelling() {
             },
         ),
         (
-            "another namespace's token is not a provider key",
+            "`tokens add` with no host is not a question to ask -- the \
+             out-of-session spelling refuses it by name, and `unavailable` is \
+             what says so here",
             Command {
                 slash: "/notes",
                 verb: Some("tokens"),
                 words: vec!["add".to_owned(), "work".to_owned()],
             },
         ),
+        (
+            "the token listing must stay a listing",
+            Command {
+                slash: "/notes",
+                verb: Some("tokens"),
+                words: Vec::new(),
+            },
+        ),
+        (
+            "a fifth word is not this grammar",
+            Command {
+                slash: "/notes",
+                verb: Some("tokens"),
+                words: vec![
+                    "add".to_owned(),
+                    "work".to_owned(),
+                    "notes.example".to_owned(),
+                    "apex".to_owned(),
+                    "extra".to_owned(),
+                ],
+            },
+        ),
+        (
+            "a fourth word that is not `apex` is not D8's word",
+            Command {
+                slash: "/notes",
+                verb: Some("tokens"),
+                words: vec![
+                    "add".to_owned(),
+                    "work".to_owned(),
+                    "notes.example".to_owned(),
+                    "APEX".to_owned(),
+                ],
+            },
+        ),
+        (
+            "an alias `Alias::new` refuses is not a token to ask for",
+            Command {
+                slash: "/notes",
+                verb: Some("tokens"),
+                words: vec!["add".to_owned(), String::new(), "notes.example".to_owned()],
+            },
+        ),
+        (
+            "`describe` reads no secret and stays a request",
+            Command {
+                slash: "/notes",
+                verb: Some("tokens"),
+                words: vec![
+                    "describe".to_owned(),
+                    "work".to_owned(),
+                    "a note".to_owned(),
+                ],
+            },
+        ),
+        (
+            "`rm` reads no secret and stays a request",
+            Command {
+                slash: "/notes",
+                verb: Some("tokens"),
+                words: vec!["rm".to_owned(), "work".to_owned()],
+            },
+        ),
     ] {
         assert_eq!(secret_for(&command), None, "{why}");
     }
+}
+
+/// The two grammars for [ADR-0007] D7's `tokens add` agree, word for word.
+///
+/// # Why this is a check and not a shared parser
+///
+/// `cli::parse` walks an `OsString` argv and answers a `Request`; `secret_for`
+/// matches a `zaru_tui::shell::Command` a person typed into the composer and
+/// answers an `Asking`. The two take different inputs and answer different
+/// types, and a shared function between them would have to be generic over
+/// both — so the grammar is typed twice and *pinned* once, here.
+///
+/// **What it pins is the pair.** For every spelling, either both accept and
+/// agree about the alias, the host and D8's `apex` word, or both refuse. A
+/// session that accepted a spelling the command line rejects would be
+/// ADR-0015 D2's two entry points stopping being one operation.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[test]
+fn the_two_grammars_for_a_notes_token_agree() {
+    use zaru_cli::cli::{Request, parse};
+    use zaru_cli::terminal::{Asking, secret_for};
+    use zaru_tui::shell::Command;
+
+    for words in [
+        vec!["add", "work", "notes.example"],
+        vec!["add", "work", "notes.example", "apex"],
+        // Refused by both, for different reasons each states in its own words.
+        vec!["add", "work"],
+        vec!["add"],
+        vec!["add", "work", "notes.example", "apex", "extra"],
+        vec!["add", "work", "notes.example", "APEX"],
+        vec!["add", "", "notes.example"],
+    ] {
+        let in_session = secret_for(&Command {
+            slash: "/notes",
+            verb: Some("tokens"),
+            words: words.iter().map(|word| (*word).to_owned()).collect(),
+        });
+
+        let mut argv = vec!["notes".to_owned(), "tokens".to_owned()];
+        argv.extend(words.iter().map(|word| (*word).to_owned()));
+        let out_of_session = parse(argv.iter().map(std::ffi::OsString::from))
+            .ok()
+            .and_then(|line| match line.request {
+                Request::NotesTokensAdd { alias, host, apex } => Some((alias, host, apex)),
+                _ => None,
+            });
+
+        let typed = words.join(" ");
+        match (in_session, out_of_session) {
+            (
+                Some(Asking::NotesToken { alias, host, apex }),
+                Some((other_alias, other_host, other_apex)),
+            ) => {
+                assert_eq!(
+                    (alias, host, apex),
+                    (other_alias, other_host, other_apex),
+                    "`notes tokens {typed}` was read differently by the two surfaces"
+                );
+            }
+            (None, None) => {}
+            (in_session, out_of_session) => panic!(
+                "`notes tokens {typed}` was accepted by one surface and refused by the other: in \
+                 a session {in_session:?}, on the command line {out_of_session:?}"
+            ),
+        }
+    }
+}
+
+/// The masked question names the host and never any part of the token.
+///
+/// [ADR-0011] D3's question is asked *before* a byte is read, so there is
+/// nothing of the value for it to carry — but the statement is composed from
+/// the intent, and the intent is the one thing that reaches it. This pins that
+/// what it says is the host: a person with tokens on two instances has nothing
+/// else to tell the two questions apart.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn the_masked_question_for_a_token_names_the_host_and_never_the_token() {
+    use zaru_cli::credentials::Alias;
+    use zaru_cli::terminal::{Asking, secret_statement};
+
+    let statement = secret_statement(&Asking::NotesToken {
+        alias: Alias::new("work").expect("a usable alias"),
+        host: "notes.example".to_owned(),
+        apex: false,
+    });
+
+    assert!(
+        statement.contains("notes.example"),
+        "the question did not name the instance it is about: {statement}"
+    );
+    assert!(
+        statement.contains("not shown as you type"),
+        "the question did not say the value is masked: {statement}"
+    );
+}
+
+/// Nothing under `src/terminal/` builds a runtime or blocks on a future.
+///
+/// # The defect this pins, measured from the release binary
+///
+/// `/notes tokens add` was unreachable in a session until 2026-09-14, and the
+/// first of its three reasons was that `cli::run::notes_tokens_add` built a
+/// second Tokio runtime to read the instance's `tools/list`. A shell is
+/// already inside `terminal::open`'s own `block_on`, and a `block_on` inside a
+/// `block_on` panics.
+///
+/// The fix was to put the runtime around **only** the scope read, leaving
+/// `cli::Run::store_a_notes_token` free of one, so the in-session route awaits
+/// the read on the runtime it is already running under. This check is what
+/// keeps that true: a `Runtime::new` or a `block_on` anywhere under
+/// `src/terminal/` would be the same defect returning, in a module whose whole
+/// job is to run inside somebody else's runtime.
+///
+/// # One `block_on` is permitted, and it is pinned at one
+///
+/// `terminal::open` builds the runtime the whole session runs on and blocks on
+/// the pump once — that is *the* outer `block_on`, and the thing every other
+/// file in the module must not add a second of. So this check does not forbid
+/// it; it requires `open.rs` to hold exactly one and every other product file
+/// to hold none. A second one appearing in `open.rs` would be as much the
+/// defect as one appearing in `driver.rs`.
+///
+/// The module's own `tests.rs` is skipped, for the reason
+/// `this_harness_has_exactly_two_confirmers_and_the_masked_question_is_not_a_third`
+/// skips it: a check that drives the pump has to build a runtime to drive it
+/// with, and that is the harness of the check rather than the product.
+///
+/// It is a walking check rather than a compile-time one because there is no
+/// type that says "does not build a runtime".
+#[test]
+fn the_terminal_module_names_no_runtime_and_no_block_on() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("terminal");
+
+    let mut sources: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut frontier = vec![root.clone()];
+    while let Some(here) = frontier.pop() {
+        for entry in std::fs::read_dir(&here)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", here.display()))
+        {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                frontier.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("fixtures.rs" | "tests.rs")
+                )
+            {
+                let body = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
+                sources.push((path, body));
+            }
+        }
+    }
+    // `terminal.rs` itself sits beside the directory rather than in it.
+    let beside = root.with_extension("rs");
+    let body = std::fs::read_to_string(&beside)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", beside.display()));
+    sources.push((beside, body));
+
+    let lines: usize = sources.iter().map(|(_, body)| body.lines().count()).sum();
+    println!(
+        "the runtime walk scanned {} file(s) and {lines} line(s)",
+        sources.len()
+    );
+    assert!(
+        sources.len() >= 5 && lines >= 3_000,
+        "scanned {} file(s) and {lines} line(s), which is less than this module holds; the \
+         walk is broken rather than the tree clean",
+        sources.len()
+    );
+
+    let mut found: Vec<String> = Vec::new();
+    let mut outer = 0_usize;
+    for (path, body) in &sources {
+        let named = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("?")
+            .to_owned();
+        for (number, line) in body.lines().enumerate() {
+            // The code, not the prose: this module *explains* the defect at
+            // length, and a check that read its own reasoning would fail on
+            // the paragraph that describes what it forbids.
+            let code = line.split("//").next().unwrap_or(line);
+            for forbidden in ["block_on", "Runtime::new", "runtime::Builder"] {
+                if !code.contains(forbidden) {
+                    continue;
+                }
+                if named == "open.rs" && forbidden == "block_on" {
+                    outer += 1;
+                } else {
+                    found.push(format!("{named}:{}: {forbidden}", number + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "`src/terminal/` builds or blocks on a runtime at {found:#?}. A shell is already inside \
+         `terminal::open`'s own `block_on`, and a `block_on` inside a `block_on` panics -- which \
+         is the first of the three measured reasons `/notes tokens add` was unreachable in a \
+         session before 2026-09-14. Await on the runtime the pump is already running under, the \
+         way `add_a_notes_token` does."
+    );
+    assert_eq!(
+        outer, 1,
+        "`terminal::open` should hold exactly one `block_on` -- the outer one the whole session \
+         runs on -- and it holds {outer}. A second is the same defect as one in `driver.rs`, \
+         wearing the name of the file that is allowed the first"
+    );
 }
 
 /// A refusal never silently absorbs a word, and where an out-of-session
@@ -1899,6 +2223,20 @@ fn secret_for_names_the_kind_and_no_neighbouring_spelling() {
 /// the guard, which puts the listing's own output on the pane instead of a
 /// refusal; `out_of_session_spelling` answering for an unbuilt namespace,
 /// which would offer a remedy that fails.
+///
+/// # The spelling moved on 2026-09-14, and the check is the same check
+///
+/// This drove `/notes tokens add work play.cortex.page` until that day, when
+/// that spelling stopped falling through: `secret_for` now maps it onto
+/// ADR-0011 D3's masked question and it *stores a token*. The check drives
+/// `/notes tokens add work` instead — the same namespace, one word short of a
+/// host, which `secret_for` refuses and `request_for` has no arm for, so it
+/// reaches the same fall-through the original did.
+///
+/// **That is the guard still doing its job, on the new grammar.** Four typed
+/// words are named back rather than three of them silently dropped, and the
+/// word this version is short of is the one the out-of-session spelling
+/// refuses by name.
 #[test]
 fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session() {
     let scratch = Scratch::new("refusal");
@@ -1910,7 +2248,7 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
     let mut shell = Shell::open(Status::new("bare", scratch.id.to_string()));
     shell.refresh(&Pane::of(&resumed.tail));
 
-    let mut keys = typed("/notes tokens add work play.cortex.page");
+    let mut keys = typed("/notes tokens add work");
     keys.extend(typed("/exit"));
 
     let mut surface = Recorded::of();
@@ -1946,13 +2284,13 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
     }
 
     assert!(
-        said.iter().any(|line| line
-            .contains("`/notes tokens add work play.cortex.page` needs something this harness")),
+        said.iter()
+            .any(|line| line.contains("`/notes tokens add work` needs something this harness")),
         "the refusal did not name every word that was typed: {said:#?}"
     );
     assert!(
-        said.iter().any(|line| line
-            .contains("outside a session it is `zaru notes tokens add work play.cortex.page`")),
+        said.iter()
+            .any(|line| line.contains("outside a session it is `zaru notes tokens add work`")),
         "the refusal did not name the out-of-session spelling: {said:#?}"
     );
     // The guard's own half: the listing did **not** run. Its first line on an
