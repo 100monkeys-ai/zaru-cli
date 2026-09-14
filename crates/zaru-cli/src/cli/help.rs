@@ -39,7 +39,12 @@ use crate::cli::namespace::Namespace;
 ///
 /// One arm per built namespace, wildcard-free, so a namespace that becomes
 /// built has to be given a line here.
-fn summaries(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
+///
+/// Public so a check can read one namespace's summary without re-deriving it
+/// from the whole printed help, which is what
+/// `the_help_row_says_what_the_flag_beside_it_says` needs.
+#[must_use]
+pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
     match namespace {
         Namespace::Runtime => &[("runtime", "print the tier and what changing it would alter")],
         Namespace::Models => &[(
@@ -84,6 +89,13 @@ fn summaries(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
                 "store a provider's API key, read from standard input",
             ),
         ],
+        // **The summary is `Flag::Help`'s own words rather than a second
+        // description of one thing.** The row and the flag print the same
+        // lines, so a summary written afresh here would be two sentences about
+        // one command, which is the drift D2's one-table rule exists to
+        // prevent; `the_help_row_says_what_the_flag_beside_it_says` holds them
+        // equal rather than leaving it to whoever edits one of them next.
+        Namespace::Help => &[("help", "print this")],
         Namespace::Stack | Namespace::Memory | Namespace::Learned | Namespace::Inbox => &[],
     }
 }
@@ -106,7 +118,7 @@ pub fn lines(version: &str) -> Vec<String> {
     let commands: Vec<(&str, &str)> = Namespace::ALL
         .into_iter()
         .filter(|namespace| namespace.is_built())
-        .flat_map(|namespace| summaries(namespace).iter().copied())
+        .flat_map(|namespace| summaries_of(namespace).iter().copied())
         .collect();
     let width = commands
         .iter()

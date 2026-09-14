@@ -750,6 +750,51 @@ fn a_slash_command_produces_what_its_subcommand_spelling_produces() {
     );
 }
 
+/// ADR-0015 D2's `/help` row: the in-session spelling paints exactly what
+/// `--help` prints, and refuses nothing.
+///
+/// # Why it compares against the printed lines rather than a sample of them
+///
+/// The row's whole content is that the two spellings are one table. A check
+/// that asserted `/help` paints *some* help would pass against a second,
+/// shorter help text written beside the first, which is the drift D2's
+/// one-table rule exists to prevent — and which was measured to be tempting,
+/// because the printed table needs 37 rows at 100 columns against a pane of
+/// 22 and the pane shows the tail. So every line
+/// [`crate::cli::help::lines`] produces must be a line the pane was given, and
+/// the count is asserted too so a renderer that painted nothing cannot pass.
+#[test]
+fn adr_0015_d2s_help_row_paints_what_help_prints_and_refuses_nothing() {
+    let (shell, _, _) = pump(typed("/help"));
+    let given = shell.pane_lines();
+    let painted: Vec<String> = given.iter().map(|line| line.text.clone()).collect();
+    let printed = crate::cli::help::lines(VERSION);
+    assert!(
+        !printed.is_empty(),
+        "the help produced no lines, so this check compared two empty lists"
+    );
+    for line in &printed {
+        assert!(
+            painted.contains(line),
+            "`/help` did not paint the line `--help` prints: {line:?} is absent from {painted:?}"
+        );
+    }
+    // **The register rather than a substring.** This arm read
+    // `line.contains("there is no")` when it was written, and it fired on the
+    // green tree against the `init` row's own summary — "write a project
+    // manifest into this directory, once, **if there is none**". A refusal is
+    // a register, not a phrase, so that is what is read.
+    let refused: Vec<&String> = given
+        .iter()
+        .filter(|line| line.register == zaru_tui::shell::Register::Failed)
+        .map(|line| &line.text)
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "`/help` painted a refusal rather than answering: {refused:?}"
+    );
+}
+
 /// The four namespaces D2 names and this build does not implement are refused
 /// in the pane saying so, and the session stays open.
 #[test]

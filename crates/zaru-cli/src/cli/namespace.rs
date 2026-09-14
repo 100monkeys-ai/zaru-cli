@@ -94,14 +94,31 @@ pub enum Namespace {
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Providers,
+    /// D2 row 12, added 2026-09-14 — the surface itself.
+    ///
+    /// **An accepted Update to [ADR-0015] D2 under directives 20, 25 and 31**,
+    /// open to Jeshua's veto. `--help` has printed the walked table since
+    /// 2026-09-05 and inside a session there was no answer at all: typing
+    /// `/help` in the first minute answered that the nearest command was
+    /// `/models`. D2's two-entry-point sentence is what makes it a namespace
+    /// rather than a second word of the shell's own like `/exit` — leaving a
+    /// session has no out-of-session half and help does, so the shadowing rule
+    /// reaches this spelling exactly as it reaches `models` and `init`.
+    ///
+    /// **`zaru help` is the out-of-session half and it is new.** Before this
+    /// row it was refused, placed by nearest match against `zaru models` with
+    /// a second line naming `--help`; it is Jeshua's to veto as a word.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Help,
 }
 
 impl Namespace {
     /// Every namespace, in D2's table order.
     ///
-    /// The length is annotated, so a twelfth fails to compile here as well as
-    /// in every exhaustive match below.
-    pub const ALL: [Self; 11] = [
+    /// The length is annotated, so a thirteenth fails to compile here as well
+    /// as in every exhaustive match below.
+    pub const ALL: [Self; 12] = [
         Self::Runtime,
         Self::Stack,
         Self::Notes,
@@ -113,6 +130,7 @@ impl Namespace {
         Self::Models,
         Self::Init,
         Self::Providers,
+        Self::Help,
     ];
 
     /// The spelling inside a session — D2's own first column.
@@ -130,6 +148,7 @@ impl Namespace {
             Self::Models => "/models",
             Self::Init => "/init",
             Self::Providers => "/providers",
+            Self::Help => "/help",
         }
     }
 
@@ -153,6 +172,7 @@ impl Namespace {
             Self::Models => "models",
             Self::Init => "init",
             Self::Providers => "providers",
+            Self::Help => "help",
         }
     }
 
@@ -171,6 +191,7 @@ impl Namespace {
             Self::Models => "alias resolution",
             Self::Init => "the project manifest",
             Self::Providers => "provider credentials",
+            Self::Help => "the surface itself",
         }
     }
 
@@ -187,7 +208,7 @@ impl Namespace {
 
     /// Whether this harness implements the namespace's out-of-session half.
     ///
-    /// **Four of the eleven answer `false`, and that is a statement about this
+    /// **Four of the twelve answer `false`, and that is a statement about this
     /// build rather than about D2.** `/stack` needs [ADR-0003] D7's component
     /// fetch, `/memory` needs [ADR-0031]'s relationship memory, `/learned` and
     /// `/inbox` need [ADR-0002]'s announcement channel — none of which exists
@@ -208,7 +229,8 @@ impl Namespace {
             | Self::Session
             | Self::Models
             | Self::Init
-            | Self::Providers => true,
+            | Self::Providers
+            | Self::Help => true,
             Self::Stack | Self::Memory | Self::Learned | Self::Inbox => false,
         }
     }
@@ -240,6 +262,7 @@ impl Namespace {
             | Self::Config
             | Self::Notes
             | Self::Providers
+            | Self::Help
             | Self::Stack
             | Self::Memory
             | Self::Learned
@@ -256,7 +279,7 @@ impl Namespace {
     #[must_use]
     pub const fn verbs(self) -> &'static [&'static str] {
         match self {
-            Self::Runtime | Self::Models | Self::Init => &[],
+            Self::Runtime | Self::Models | Self::Init | Self::Help => &[],
             Self::Config => &["explain"],
             Self::Session => &["list", "rm"],
             // Like `providers`, one verb with a verb of its own under it:

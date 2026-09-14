@@ -279,6 +279,10 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
     // arrive without its out-of-session grammar being written here.
     match namespace {
         Namespace::Runtime => whole(namespace, rest, Request::Runtime),
+        // ADR-0015 D2's `/help` row, added 2026-09-14. The subcommand and the
+        // flag are one request, so there is one executor and no second help
+        // text can exist.
+        Namespace::Help => whole(namespace, rest, Request::Help),
         Namespace::Models => whole(namespace, rest, Request::Models),
         Namespace::Init => whole(namespace, rest, Request::Init),
         Namespace::Config => match verb(namespace, rest)? {

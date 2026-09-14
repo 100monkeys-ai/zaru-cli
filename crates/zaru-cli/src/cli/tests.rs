@@ -41,6 +41,71 @@ fn refused(words: &[&str]) -> CommandRefused {
 // ADR-0015 D2 — the namespace table, both spellings, closed
 // ---------------------------------------------------------------------------
 
+/// ADR-0015 D2's `/help` row, from the subcommand side: `zaru help` is the
+/// out-of-session spelling of `/help` and produces the same request `--help`
+/// does.
+///
+/// # Both spellings are one request, and that is what keeps them from drifting
+///
+/// D2's two-entry-point sentence makes a namespace answer to a subcommand
+/// outside a session and to a slash command inside one. The row was added
+/// 2026-09-14 under a delegated coordinator ruling open to Jeshua's veto, and
+/// the thing it must not become is a second help text: `Request::Help` is one
+/// variant with one executor, so the two words reach
+/// [`crate::cli::help::lines`] and nothing else can.
+#[test]
+fn adr_0015_d2s_help_row_answers_to_its_subcommand_spelling() {
+    assert_eq!(
+        accepted(&["help"]).request,
+        Request::Help,
+        "`zaru help` does not produce the request `zaru --help` produces"
+    );
+    assert_eq!(
+        accepted(&["--help"]).request,
+        Request::Help,
+        "the flag stopped producing the request this row was placed beside"
+    );
+}
+
+/// The `/help` row and the `--help` flag say the same words about themselves.
+///
+/// Two descriptions of one command are two things that can come to disagree,
+/// and the row exists precisely because the two spellings are one operation.
+/// The mutant is a summary written afresh for the row.
+#[test]
+fn the_help_row_says_what_the_flag_beside_it_says() {
+    let row = crate::cli::help::summaries_of(Namespace::Help);
+    assert_eq!(
+        row,
+        &[("help", crate::cli::flag::Flag::Help.summary())],
+        "the `help` command and the `--help` flag describe themselves differently, so a reader \
+         meets two sentences about one operation"
+    );
+}
+
+/// The row appears in what `--help` prints, because the list is **walked**.
+///
+/// # The mutant this exists for is the empty summary
+///
+/// [`crate::cli::help::lines`] flat-maps [`summaries`](crate::cli::help), so a
+/// built namespace whose summary list is empty contributes no line and
+/// `--help` stays byte-identical — which was one of the three shapes available
+/// for this row and was rejected, because a command that runs and is not
+/// listed falsifies that module's own "help lists exactly the commands and
+/// flags this binary implements, **and nothing it does not**" in the other
+/// direction. This asserts the shape that was ruled.
+#[test]
+fn the_help_row_is_listed_by_the_help_it_prints() {
+    let printed = crate::cli::help::lines("0.0.0");
+    assert!(
+        printed
+            .iter()
+            .any(|line| line.trim_start().starts_with("help ")),
+        "`--help` lists no `help` command, so a command this binary runs is absent from the \
+         list that claims to name exactly what runs: {printed:?}"
+    );
+}
+
 /// D2's table governs both spellings and neither is derived from the other.
 ///
 /// The mutant this catches is the obvious economy — deriving the subcommand
@@ -87,9 +152,9 @@ fn every_namespace_carries_both_of_adr_0015_d2s_spellings_and_one_pair_differs()
 fn the_namespace_set_is_closed_and_no_two_namespaces_share_a_spelling() {
     assert_eq!(
         Namespace::ALL.len(),
-        11,
+        12,
         "ADR-0015 D2's table has eight rows plus `/models`, `/init` and `/providers`, all \
-         three added 2026-09-05"
+         three added 2026-09-05, and `/help`, added 2026-09-14"
     );
 
     let mut slashes: Vec<&str> = Namespace::ALL.iter().map(|n| n.slash()).collect();

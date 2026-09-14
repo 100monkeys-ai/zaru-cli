@@ -2010,6 +2010,9 @@ pub fn switch_for(command: &Command) -> Option<crate::terminal::open::Opening> {
 pub(crate) fn request_for(command: &Command) -> Option<Request> {
     match (command.slash, command.verb) {
         ("/runtime", None) => Some(Request::Runtime),
+        // ADR-0015 D2's `/help` row: the in-session spelling of `--help`,
+        // reaching the same request and therefore the same lines.
+        ("/help", None) => Some(Request::Help),
         ("/models", None) => Some(Request::Models),
         ("/init", None) => Some(Request::Init),
         ("/notes", Some("tokens")) => Some(Request::NotesTokens),
