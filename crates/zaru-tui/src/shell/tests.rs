@@ -2943,6 +2943,26 @@ fn corpus_a_secret_typed_at_the_question_reaches_no_cell_of_any_frame() {
                      character(s):\n{frame}",
                     typed + 1
                 );
+                // **And the rejoined form**, which is the arm an absence
+                // assertion actually needs. A value broken across a wrap is
+                // absent from the joined-with-newlines form for a reason that
+                // has nothing to do with masking, so a check reading only that
+                // form would pass over a renderer that painted the value and
+                // wrapped it -- the inverse of
+                // `corpus_a_held_secret_split_across_a_wrap_still_reaches_the_\
+                // buffer_whole`, which establishes that the buffer does hold a
+                // broken value whole.
+                let rejoined: String = rows
+                    .iter()
+                    .map(|row| row.trim_end().to_owned())
+                    .collect::<Vec<_>>()
+                    .concat();
+                assert!(
+                    !rejoined.contains(so_far),
+                    "what had been typed reached the frame at width {width} across a wrap \
+                     after {} character(s):\n{rejoined}",
+                    typed + 1
+                );
             }
         }
         assert!(

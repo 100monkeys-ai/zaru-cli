@@ -1747,6 +1747,13 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
         said.contains("nothing was stored."),
         "declining the question said nothing:\n{said}"
     );
+    // The declining path stores nothing, so it must **not** carry the line
+    // that only a stored key earns. Measured as a pair, because a build that
+    // said it unconditionally would read as reassuring and be false.
+    assert!(
+        !said.contains("`/session continue` re-opens this session with the key"),
+        "a declined question claimed a key was stored:\n{said}"
+    );
     assert!(
         shell.composer().text().is_empty(),
         "the key was left in the composer: {:?}",

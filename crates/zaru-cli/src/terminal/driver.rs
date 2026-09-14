@@ -1686,6 +1686,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                     match ask_for_a_secret(shell, surface, source, request).await? {
                         Asked::Given(offered) => {
                             let outcome = runner.store_a_provider_key(kind, offered.trim_end());
+                            let stored = !matches!(outcome.exit, Exit::Failed(_));
                             for text in outcome.lines {
                                 shell.notice(Line::new(Register::Plain, text));
                             }
@@ -1694,6 +1695,9 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                                     Register::Failed,
                                     crate::failure::Presentation::of(classified).headline,
                                 ));
+                            }
+                            if stored {
+                                shell.notice(Line::new(Register::Plain, KEY_IS_FOR_NEXT_TURN));
                             }
                         }
                         // A declined question is not a failure -- the harness
@@ -2202,6 +2206,48 @@ pub const SECRET_GUIDANCE: &str = "enter to store it · esc or ctrl-c to cancel"
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 pub const SECRET_DECLINED: &str = "nothing was stored.";
+
+/// What the pane says after a key is stored, because the session that stored
+/// it will not use it.
+///
+/// **Authored under a delegated coordinator ruling of 2026-09-14, open to
+/// Jeshua's veto, and it exists because of a measurement rather than a
+/// preference.** [`crate::compose::turn::prepare`] runs **once**, when the
+/// shell opens — a session's tier, model, boundary, manifest, key, client and
+/// [ADR-0012] clause 3 witness do not change between two of its turns, which
+/// is [`Turnable`]'s whole reason for having two variants and no third. So a
+/// key stored inside a session is on disk and sealed, and the *running*
+/// session still holds the refusal it resolved at the door.
+///
+/// Measured on the release binary over a pseudo-terminal: the pane said
+/// *"stored a `gemini` key under the alias `provider.gemini`."* and the very
+/// next task said *"the alias `default` resolves to \"gemini-3.6-flash\" and
+/// this machine holds no provider key"*. Two true sentences, one after the
+/// other, that a person reads as the harness contradicting itself.
+///
+/// # Why a sentence and not a restart
+///
+/// Re-preparing inside the pump is not available: `Turns` borrows the
+/// resolution, the session and the `Prepared` from `terminal::open::shell_for`,
+/// so there is nothing inside [`run`] that could rebuild one. Returning
+/// [`Pumped::Switch`] to this session's own id **would** work — it is the path
+/// `/session continue` already takes, and the 2026-09-06 ruling has that
+/// re-open "saying nothing" — but it throws away this session's notices,
+/// including the two lines saying the key was stored, so a person would watch
+/// the confirmation vanish. Restarting a person's session as a side effect of
+/// a credential write is also a lifecycle decision [ADR-0010] D4 owns and no
+/// clause makes.
+///
+/// So the harness says what is true and names the command that already exists.
+/// **One more line, no new mechanism, and nothing about a session's lifetime
+/// changes.** If this record's author would rather the session re-opened
+/// itself, the mechanism is one `Pumped::Switch` away and this constant is
+/// what goes.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+pub const KEY_IS_FOR_NEXT_TURN: &str = "  this session resolved its provider before the key existed, so it is still using what it \
+     found then. `/session continue` re-opens this session with the key.";
 
 /// How a masked question ended.
 ///
