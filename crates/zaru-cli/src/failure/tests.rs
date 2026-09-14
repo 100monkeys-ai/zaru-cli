@@ -1096,3 +1096,99 @@ fn a_credential_shaped_value_is_classified_without_publishing_it() {
          {shown}"
     );
 }
+
+/// A flattened line carries both of its fields, and it is the one place they
+/// become one string.
+///
+/// # What this holds, and the defect that made it worth holding
+///
+/// [`crate::failure::Line`] carries a lead-in and a text, and three things in
+/// this workspace need them as one string: the out-of-session projection
+/// [`Presentation`]'s own `Display` writes to standard error, the transcript's
+/// [`crate::session::FailureLine`], and the terminal's pane adapter. Until
+/// 2026-09-14 the same `match` was typed in each of them. **What a duplicated
+/// projection costs here is specific**: the pane paints a remedy live and
+/// repaints it from the transcript on `--resume`, so two spellings of the join
+/// make one refusal read two ways depending on when you look at it.
+///
+/// # What this check can and cannot discriminate, measured rather than assumed
+///
+/// The first form of this check asserted that the projection and the
+/// transcript **agree** with [`crate::failure::Line::flattened`], and **the
+/// mutant that drops the lead-in survived it**: once the duplication is gone
+/// both consumers derive from that one function, so they agree whatever it
+/// does and the assertion is a tautology. That is the change working, and it
+/// is the shape [Verification lessons] §8 names — a check whose subject became
+/// its own instrument.
+///
+/// So this asserts the **contract** instead, against the two fields rather
+/// than against the function: a flattened line carries its text; a
+/// lead-bearing one carries its lead **before** that text; and it is no
+/// shorter than the two together. That the three consumers cannot diverge is
+/// held by construction and by
+/// `no_terminal_site_renders_a_headline_without_its_lines`, which refuses a
+/// second `line.lead` anywhere outside this module — not by an assertion here,
+/// because there is nothing left here for one to compare.
+///
+/// **The mutants:** `flattened` returning `self.text.clone()` — *"a
+/// user-correctable line's flattened form does not carry its lead-in"*; and
+/// returning the lead alone, which the text arm catches.
+///
+/// **Its accepting arm is the lead-bearing line itself**: over classes whose
+/// lines all carried `lead: None` a `flattened` that dropped the lead would
+/// pass every assertion, so the count of lead-bearing lines is asserted
+/// non-zero and printed.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_flattened_line_carries_its_lead_in_and_its_text() {
+    let mut with_a_lead = 0_usize;
+    let mut lines_seen = 0_usize;
+
+    for (class, classified) in one_of_each_class() {
+        for line in &Presentation::of(&classified).lines {
+            let flattened = line.flattened();
+            lines_seen += 1;
+
+            assert!(
+                flattened.contains(&line.text),
+                "a {class:?} failure's flattened line does not carry its text {:?}: \
+                 {flattened:?}",
+                line.text
+            );
+
+            if let Some(lead) = &line.lead {
+                with_a_lead += 1;
+                let at = flattened.find(lead.as_str()).unwrap_or_else(|| {
+                    panic!(
+                        "a {class:?} failure's flattened line does not carry its lead-in \
+                         {lead:?}: {flattened:?}"
+                    )
+                });
+                let text_at = flattened
+                    .find(line.text.as_str())
+                    .expect("the text arm above already found it");
+                assert!(
+                    at < text_at,
+                    "a {class:?} failure's lead-in follows its text rather than leading it: \
+                     {flattened:?}"
+                );
+                assert!(
+                    flattened.len() >= lead.len() + line.text.len(),
+                    "a {class:?} failure's flattened line is shorter than its two fields, so \
+                     one of them was truncated into the other: {flattened:?}"
+                );
+            }
+        }
+    }
+
+    assert!(
+        lines_seen > 0,
+        "no class produced a line, so nothing above was asserted"
+    );
+    assert!(
+        with_a_lead > 0,
+        "no line under any class carries a lead-in, so a `flattened` that dropped the lead \
+         would pass every assertion above. {lines_seen} line(s) seen"
+    );
+}

@@ -74,6 +74,29 @@ impl Line {
             text: text.into(),
         }
     }
+
+    /// The line as one string: the lead-in, a space, and the text.
+    ///
+    /// **The one place the two fields become one string**, and that is the
+    /// whole reason it exists rather than being written at each call site.
+    /// Three consumers need exactly this — the out-of-session projection
+    /// below, the transcript's [`crate::session::FailureLine`], and the
+    /// terminal's pane adapter — and until 2026-09-14 the same three lines were
+    /// typed in each of them. A remedy the pane paints and the same remedy
+    /// repainted from the file on `--resume` must not be able to disagree
+    /// about a space.
+    ///
+    /// **It carries no indent, no glyph and no width**, for the reason this
+    /// module carries none: where the line sits is the renderer's. The
+    /// out-of-session projection adds its own two spaces; the pane's indent is
+    /// its register's glyph column.
+    #[must_use]
+    pub fn flattened(&self) -> String {
+        match &self.lead {
+            Some(lead) => format!("{lead} {}", self.text),
+            None => self.text.clone(),
+        }
+    }
 }
 
 /// What a renderer must show for one failure.
@@ -195,10 +218,7 @@ impl fmt::Display for Presentation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.headline)?;
         for line in &self.lines {
-            match &line.lead {
-                Some(lead) => write!(f, "\n  {lead} {}", line.text)?,
-                None => write!(f, "\n  {}", line.text)?,
-            }
+            write!(f, "\n  {}", line.flattened())?;
         }
         Ok(())
     }

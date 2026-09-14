@@ -42,7 +42,7 @@ pub(super) fn policy() -> RetryPolicy {
 /// sixth class fails to compile here as well as in the taxonomy — the same
 /// signal `zaru-core`'s state-set check and `config`'s layer table already
 /// give.
-pub(super) fn one_of_each_class() -> Vec<(Class, Classified)> {
+pub(crate) fn one_of_each_class() -> Vec<(Class, Classified)> {
     Class::ALL
         .into_iter()
         .map(|class| (class, of_class(class)))
@@ -53,7 +53,7 @@ pub(super) fn one_of_each_class() -> Vec<(Class, Classified)> {
 ///
 /// Exhaustive with no wildcard arm: a sixth class cannot arrive without a
 /// fixture being written for it, so no check can silently stop covering one.
-pub(super) fn of_class(class: Class) -> Classified {
+pub(crate) fn of_class(class: Class) -> Classified {
     match class {
         Class::Expected => Classified::Expected(Expected::new(statement("expected"))),
         Class::UserCorrectable => Classified::UserCorrectable {

@@ -104,6 +104,6 @@ pub use remedy::{Action, Remedy, Statement, StatementRefused, THERE_ARE_EXACTLY,
 pub use wait::{Backoff, RETRY_LABEL, RetryCeiling, RetryRecord, Wait, WaitRefused};
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;

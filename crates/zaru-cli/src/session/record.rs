@@ -236,11 +236,8 @@ impl FailureLine {
             headline: presentation.headline,
             lines: presentation
                 .lines
-                .into_iter()
-                .map(|line| match line.lead {
-                    Some(lead) => format!("{lead} {}", line.text),
-                    None => line.text,
-                })
+                .iter()
+                .map(crate::failure::Line::flattened)
                 .collect(),
         }
     }

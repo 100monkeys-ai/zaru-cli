@@ -2531,15 +2531,12 @@ pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
     if let Exit::Failed(classified) = &ran.exit {
         let presentation = crate::failure::Presentation::of(classified);
         lines.push(Line::new(Register::Failed, presentation.headline));
-        lines.extend(presentation.lines.into_iter().map(|line| {
-            Line::new(
-                Register::Plain,
-                match line.lead {
-                    Some(lead) => format!("{lead} {}", line.text),
-                    None => line.text,
-                },
-            )
-        }));
+        lines.extend(
+            presentation
+                .lines
+                .iter()
+                .map(|line| Line::new(Register::Plain, line.flattened())),
+        );
     }
     lines
 }
