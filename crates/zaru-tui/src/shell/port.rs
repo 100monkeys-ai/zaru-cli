@@ -105,7 +105,25 @@ pub trait CommandVocabulary {
 /// words are that it "surfaces as `LoopExhausted`... rather than either
 /// claiming completion or reporting a generic failure".
 ///
+/// # Why the loop's own setback has a variant of its own
+///
+/// [ADR-0028] D2's heading: "Failure is shown, **in its own register**, never
+/// as an error." Until 2026-09-13 the loop's failure had no register of its
+/// own — an iteration that failed and a validator that failed were
+/// [`Register::Plain`], the register of ordinary narration, *because* D2's
+/// second half forbids [`Register::Failed`]. So the second half was honoured
+/// and the heading was not, and D2's remaining word — "coloured" — could not
+/// be satisfied at all, since colouring `Plain` colours every line of
+/// narration and is a theme rather than a register.
+///
+/// [`Setback`] is the register the heading names. It changes nothing about
+/// the second half: an iteration's failure is still never in the register
+/// reserved for defects, and that is now held by a check that reads the
+/// painted cell rather than by the absence of an alternative.
+///
+/// [`Setback`]: Register::Setback
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Register {
     /// Ordinary narration: a user message, an iteration starting, a candidate.
@@ -122,6 +140,20 @@ pub enum Register {
     Announced,
     /// The loop finished the work.
     Succeeded,
+    /// [ADR-0028] D2's own subject: an iteration that failed, or a validator
+    /// whose expectation did not hold.
+    ///
+    /// **Never [`Register::Failed`]**, which is the register D2's second half
+    /// reserves for defects — see the type's own documentation for why this
+    /// variant exists and what it does not change.
+    ///
+    /// A validator that *passed* or that never ran is [`Register::Plain`]. A
+    /// skip is not a setback: [ADR-0009] D2's `skipped` is a validator whose
+    /// prerequisite failed, so the setback is the prerequisite's.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    Setback,
     /// The loop stopped at its ceiling or its window, per [ADR-0008] D5.
     ///
     /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
@@ -134,18 +166,22 @@ pub enum Register {
 
 impl Register {
     /// Every register, so a check can walk them rather than list them.
-    pub const ALL: [Self; 6] = [
+    ///
+    /// The length is annotated, so an eighth fails to compile here as well as
+    /// in every exhaustive match below.
+    pub const ALL: [Self; 7] = [
         Self::Plain,
         Self::Call,
         Self::Announced,
         Self::Succeeded,
+        Self::Setback,
         Self::Exhausted,
         Self::Failed,
     ];
 
     /// The glyph that opens a line in this register.
     ///
-    /// # Three of these are the records' and three are drafted
+    /// # Three of these are the records' and four are drafted
     ///
     /// `◈` is [ADR-0002] D4's and D5's announcement marker and [ADR-0015] D6's
     /// attribution marker, spelled in both records' own examples. `✗` is
@@ -161,9 +197,21 @@ impl Register {
     /// exactly that, and the check holds the distinctness rather than the
     /// characters.
     ///
+    /// **`!` is drafted the same way, under the ruling of 2026-09-13 recorded
+    /// as an accepted Update on [ADR-0028], and is Jeshua's to veto.** It is
+    /// ASCII and one column, so it cannot skew a wrapped line's continuation
+    /// indent. **One collision is recorded rather than hidden:**
+    /// [`crate::shell::render::PROMINENT`] is also `"!"` and prefixes
+    /// [ADR-0011] D6's prominent permission prompt. The two never appear in
+    /// one region — that prompt takes the composer's area and a register's
+    /// glyph opens a pane row — but one character now means two things on one
+    /// screen, and that is a thing to veto rather than a thing to discover.
+    ///
     /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     #[must_use]
     pub const fn glyph(self) -> &'static str {
         match self {
@@ -171,6 +219,7 @@ impl Register {
             Self::Call => "·",
             Self::Announced => "◈",
             Self::Succeeded => "✓",
+            Self::Setback => "!",
             Self::Exhausted => "⊘",
             Self::Failed => "✗",
         }

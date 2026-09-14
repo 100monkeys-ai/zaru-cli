@@ -19,7 +19,7 @@ use crate::tools::port::Question;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
-use zaru_tui::shell::port::{CommandVocabulary, TranscriptSource};
+use zaru_tui::shell::port::{CommandVocabulary, Register, TranscriptSource};
 use zaru_tui::shell::{COMPOSER_ROWS, Key, Shell, Status, Struck};
 
 const VERSION: &str = "0.0.0";
@@ -1200,6 +1200,100 @@ fn every_loop_event_renders_as_a_sentence_and_never_as_debug() {
         assert!(
             !line.text.trim().is_empty(),
             "{event:?} rendered as nothing at all"
+        );
+    }
+}
+
+/// [ADR-0028] D2's own subject is in the register D2's heading names, and
+/// still never in the register its second half reserves.
+///
+/// # Both halves of one clause, asserted apart
+///
+/// D2's heading is "Failure is shown, **in its own register**, never as an
+/// error", and its body is "never in the register reserved for defects". Until
+/// 2026-09-13 an iteration's failure was `Register::Plain` — the register of
+/// ordinary narration — which honoured the body and not the heading, and left
+/// D2's remaining word, "coloured", unsatisfiable: colouring `Plain` colours
+/// every line of narration and is a theme rather than a register. `Setback` is
+/// the register the heading names, accepted as an Update on that record under
+/// the coordinator's ruling of 2026-09-13 23:58Z and open to Jeshua's veto.
+///
+/// **Three assertions rather than one.** `Setback` alone would pass on a
+/// renderer that put every line there; `not Failed` alone is what stood before
+/// and says nothing about the heading; `not Plain` is what changed.
+///
+/// The cell-level form of the same claim —  read out of a painted buffer with
+/// the colour on it — is
+/// [`corpus_an_iteration_failure_never_carries_the_error_registers_colour`].
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn an_iteration_failure_is_a_setback_and_never_the_error_register() {
+    let line = painted_loop_line(&zaru_core::iteration::Event::IterationFailed {
+        n: 2,
+        reason: "greets: failed".to_owned(),
+        elapsed: core::time::Duration::from_millis(2_570),
+    });
+
+    assert_eq!(
+        line.register,
+        Register::Setback,
+        "ADR-0028 D2's heading is \"Failure is shown, in its own register\", and an \
+         iteration's failure rendered in {:?} instead: {:?}",
+        line.register,
+        line.text
+    );
+    assert_ne!(
+        line.register,
+        Register::Failed,
+        "ADR-0028 D2 puts an iteration's failure \"never in the register reserved for \
+         defects\", which is ADR-0016 D1's error register: {:?}",
+        line.text
+    );
+    assert_ne!(
+        line.register,
+        Register::Plain,
+        "an iteration's failure is back in the register of ordinary narration, which is \
+         what the Update of 2026-09-13 on ADR-0028 D2 moved it out of: {:?}",
+        line.text
+    );
+}
+
+/// Only a validator that **failed** is a setback, and the other two outcomes
+/// are ordinary narration.
+///
+/// The accepting sibling of the check above, and it is the arm that stops
+/// `Setback` becoming a second name for `Plain`. A skip is deliberately not a
+/// setback: [ADR-0009] D2's `skipped` is a validator whose prerequisite
+/// failed, so the setback belongs to the prerequisite and its own row already
+/// carries it.
+///
+/// Walks every variant of the outcome enum rather than the two the change was
+/// about, so a fourth outcome arriving with no register decision is a failure
+/// here as well as a build error in `vocabulary::register_for`.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+#[test]
+fn only_a_failing_validator_is_a_setback() {
+    use zaru_core::iteration::ValidatorOutcome as What;
+
+    for (outcome, expected) in [
+        (What::Failed, Register::Setback),
+        (What::Passed, Register::Plain),
+        (What::Skipped, Register::Plain),
+    ] {
+        let line = painted_loop_line(&zaru_core::iteration::Event::ValidatorEvaluated {
+            name: "greets".to_owned(),
+            outcome,
+            detail: "the third assertion did not hold".to_owned(),
+        });
+        assert_eq!(
+            line.register,
+            expected,
+            "a validator that {} rendered in {:?} rather than {expected:?}: {:?}",
+            crate::cli::render::validator_outcome(outcome),
+            line.register,
+            line.text
         );
     }
 }

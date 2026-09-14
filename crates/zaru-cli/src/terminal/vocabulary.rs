@@ -395,6 +395,28 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
     }
 }
 
+/// Which register a validator's verdict is written in.
+///
+/// [ADR-0028] D2's heading — "Failure is shown, **in its own register**" —
+/// applied to [ADR-0009] D2's three outcomes. Only the failing one is a
+/// setback; a validator that passed is ordinary narration, and one that never
+/// ran is ordinary narration too, because a skip is the *prerequisite's*
+/// setback and that row carries it.
+///
+/// Exhaustive and with no wildcard arm, so a fourth outcome is a build error
+/// naming this function rather than a silent assignment to whichever side the
+/// match happened to fall through to.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+const fn register_for(outcome: zaru_core::iteration::ValidatorOutcome) -> Register {
+    use zaru_core::iteration::ValidatorOutcome as What;
+    match outcome {
+        What::Failed => Register::Setback,
+        What::Passed | What::Skipped => Register::Plain,
+    }
+}
+
 /// One of [ADR-0008] D3's eight events, as a sentence.
 ///
 /// # One function, two callers
@@ -429,10 +451,17 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
             format!("ran, exit {exit_code} · {}", seconds(*elapsed)),
         ),
         // The outcome in ADR-0009 D2's words rather than the enum's Rust
-        // spelling. `Plain` for all three, including the failing one: ADR-0028
-        // D2 has an iteration's failure render "as a plot point ... placed as
-        // part of the work — the mechanism operating — and never in the
-        // register reserved for defects", which is `Register::Failed`.
+        // spelling. The **failing** one is `Register::Setback` since
+        // 2026-09-13 and the other two stay `Plain`: ADR-0028 D2 has an
+        // iteration's failure render "as a plot point ... placed as part of
+        // the work — the mechanism operating — and never in the register
+        // reserved for defects", which is `Register::Failed`, and that
+        // record's heading — "Failure is shown, **in its own register**" —
+        // is what `Setback` answers. A skip is not a setback: ADR-0009 D2's
+        // `skipped` is a validator whose prerequisite failed, so the setback
+        // belongs to the prerequisite and was already painted on its own row.
+        // The match is exhaustive with no wildcard, so a fourth outcome is a
+        // build error here rather than a guess.
         // A silent validator says so rather than trailing an em dash with
         // nothing after it. The phrase is `zaru-core`'s `PRODUCED_NO_OUTPUT`,
         // read rather than retyped, because the refinement prompt composes
@@ -456,7 +485,7 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
             name,
             outcome,
             detail,
-        } => Line::new(Register::Plain, {
+        } => Line::new(register_for(*outcome), {
             let word = crate::cli::render::validator_outcome(*outcome);
             match (outcome, detail.trim().is_empty()) {
                 (_, false) => format!("{name}: {word} — {detail}"),
@@ -471,8 +500,13 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
                 }
             }
         }),
+        // ADR-0028 D2's own subject, in the register its heading names since
+        // 2026-09-13. Still never `Register::Failed`, which is that clause's
+        // second half and is what `corpus_an_iteration_failure_is_painted_in_
+        // the_setback_register_and_never_the_error_registers_colour` holds
+        // off the painted cell rather than off this arm.
         Event::IterationFailed { n, reason, elapsed } => Line::new(
-            Register::Plain,
+            Register::Setback,
             format!("iteration {n} failed: {reason} · {}", seconds(*elapsed)),
         ),
         Event::RefinementConstructed { n, failure_excerpt } => Line::new(
