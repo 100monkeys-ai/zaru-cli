@@ -175,7 +175,7 @@ impl fmt::Display for ManifestRefused {
                 f,
                 "the validator {validator:?} expects a schema at {declared:?}, which resolves to \
                  {} and is outside the working directory {}. A manifest arrives from a repository \
-                 that was cloned, and ADR-0014 D6 exists so that one cannot configure its way to \
+                 that was cloned, and one cannot configure its way to \
                  more than the user granted",
                 resolved.display(),
                 working_directory.display(),

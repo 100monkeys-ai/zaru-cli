@@ -50,6 +50,7 @@
 
 use crate::config::file::{FileRefused, SizeCeiling, TomlFile};
 use crate::config::{Source, SourceFailure, Table, Value};
+use crate::failure::THERE_ARE_EXACTLY;
 use crate::manifest::document::{
     MANIFEST_FILE, Manifest, ManifestRefused, PROJECT_TABLE, RUNTIME_TABLE, VALIDATOR_TABLE,
 };
@@ -174,7 +175,7 @@ impl fmt::Display for ManifestNotRead {
             } => write!(
                 f,
                 "the project manifest resolves to {} and is outside the working directory {}. \
-                 ADR-0011 D4 makes the working directory the boundary, and `./{MANIFEST_FILE}` is \
+                 The working directory is the boundary, and `./{MANIFEST_FILE}` is \
                  inside it by definition unless it is a link out of the tree",
                 resolved.display(),
                 working_directory.display(),
@@ -185,17 +186,20 @@ impl fmt::Display for ManifestNotRead {
                 nearest,
             } => write!(
                 f,
-                "`{offered}` in {} is not something a manifest declares; ADR-0009 D1 gives it \
+                // ADR-0009 D1 gives a manifest its three tables.
+                "`{offered}` in {} is not something a manifest declares; it declares \
                  `[{PROJECT_TABLE}]`, `[{RUNTIME_TABLE}]` and `[[{VALIDATOR_TABLE}]]`. Did you \
                  mean `{nearest}`?",
                 path.display(),
             ),
             Self::NotATable { table, found } => {
-                write!(f, "`{table}` is {found}, and ADR-0009 D1 makes it a table",)
+                // ADR-0009 D1 makes it a table.
+                write!(f, "`{table}` is {found}, and a manifest makes it a table",)
             }
             Self::ValidatorsNotAList { found } => write!(
                 f,
-                "`{VALIDATOR_TABLE}` is {found}; ADR-0009 D1 declares validators as \
+                // ADR-0009 D1 declares validators as an array of tables.
+                "`{VALIDATOR_TABLE}` is {found}; validators are declared as \
                  `[[{VALIDATOR_TABLE}]]`, which is an array of tables",
             ),
             Self::ValidatorNotATable { position, found } => write!(
@@ -205,8 +209,9 @@ impl fmt::Display for ManifestNotRead {
             ),
             Self::ValidatorMissing { position, field } => write!(
                 f,
-                "validator {position} declares no `{field}`; ADR-0009 D1 gives every validator a \
-                 `name`, a `run` and an `expect`",
+                // ADR-0009 D1 gives every validator these three.
+                "validator {position} declares no `{field}`; every validator has a `name`, a \
+                 `run` and an `expect`",
             ),
             Self::ValidatorWrongShape {
                 position,
@@ -229,9 +234,10 @@ impl fmt::Display for ManifestNotRead {
                 nearest,
             } => write!(
                 f,
-                "validator {position} expects {offered}, which names no kind; ADR-0009 D3 defines \
-                 exactly four and says the fifth is where a validator vocabulary becomes a build \
-                 system. Did you mean `{nearest}`?",
+                // ADR-0009 D3 defines exactly four and says the fifth is where a
+                // validator vocabulary becomes a build system.
+                "validator {position} expects {offered}, which names no kind; {THERE_ARE_EXACTLY} \
+                 four. Did you mean `{nearest}`?",
             ),
             Self::ExpectNotOneKind { position, entries } => write!(
                 f,

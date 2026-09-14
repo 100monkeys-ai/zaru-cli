@@ -73,7 +73,7 @@ use std::path::{Path, PathBuf};
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub const TEMPLATE: &str = r#"[project]
 name = "acme-api"
-workspace = "acme-engineering"   # Nuclear Notes workspace, per ADR-0006 D5
+workspace = "acme-engineering"   # the Nuclear Notes workspace this project reads
 
 [runtime]
 max_iterations = 3
@@ -133,7 +133,7 @@ impl fmt::Display for InitRefused {
             Self::AlreadyThere { path } => write!(
                 f,
                 "{} already exists, and this command writes a manifest only when there is none. \
-                 ADR-0009 D6: the manifest is read, never written — configuration a tool silently \
+                 The manifest is read, never written — configuration a tool silently \
                  rewrites is configuration the user stops trusting, and this file governs what \
                  runs on their machine",
                 path.display(),
