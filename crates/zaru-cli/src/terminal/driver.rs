@@ -2016,6 +2016,15 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
         ("/models", None) => Some(Request::Models),
         ("/init", None) => Some(Request::Init),
         ("/notes", Some("tokens")) => Some(Request::NotesTokens),
+        // ADR-0007 D7's fifth surface, and it is reachable inside a session
+        // where `tokens add` is not: `add` reads the token from standard
+        // input and a terminal in raw mode has none to hand it, while this
+        // takes an alias that is already in the store and reads nothing.
+        ("/notes", Some("use")) => command
+            .words
+            .first()
+            .and_then(|word| crate::credentials::Alias::new(word).ok())
+            .map(|alias| Request::NotesUse { alias }),
         // `providers keys` lists; `providers keys add <kind>` reads the key
         // from standard input, which a shell has taken. So the listing is
         // reachable inside a session and the write is not, and that is a

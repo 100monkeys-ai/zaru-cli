@@ -192,6 +192,9 @@ fn every_command_the_help_text_lists_is_one_the_parser_accepts() {
             // An alias and an instance host. Neither is reached: the parser is
             // all this exercises, and nothing here opens a session.
             ["notes", "tokens", "add"] => vec!["work", "cortex.page"],
+            // An alias that is already in the store. Nothing here opens one:
+            // the parser is all this exercises.
+            ["notes", "use"] => vec!["work"],
             // `<kind>` is one of ADR-0012 D3's five, and the help text spells
             // the placeholder rather than the value. Taken from
             // `ProviderKind::ALL` rather than written here, so a sixth kind
@@ -1746,4 +1749,53 @@ fn a_narrow_spelling_drops_labelling_and_never_a_number() {
             context.narrow
         );
     }
+}
+
+/// ADR-0007 D7's `use`, on both surfaces, naming the alias it was given.
+///
+/// The two guards above — that every help row parses and that every built
+/// namespace reaches a request from the slash side — both reddened while this
+/// verb was half-wired, which is what caught the in-session spelling. Neither
+/// says *which* request a spelling reaches, so this does.
+#[test]
+fn adr_0007_d7s_use_reaches_the_same_request_from_both_surfaces() {
+    let alias = crate::credentials::Alias::new("work").expect("a legal alias");
+
+    let out_of_session = parse(typed(&["notes", "use", "work"]))
+        .expect("`zaru notes use work` is a command this binary runs");
+    assert_eq!(
+        out_of_session.request,
+        Request::NotesUse {
+            alias: alias.clone()
+        },
+        "`zaru notes use <alias>` did not reach D7's fifth surface carrying the alias"
+    );
+
+    let in_session = crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+        slash: "/notes",
+        verb: Some("use"),
+        words: vec!["work".to_owned()],
+    });
+    assert_eq!(
+        in_session,
+        Some(Request::NotesUse { alias }),
+        "`/notes use <alias>` inside a session did not reach the same request as the subcommand, \
+         so the two spellings ADR-0007 D7 gives are two different operations"
+    );
+
+    // An alias is required on both. A verb with no argument is refused rather
+    // than doing something to a token nobody named.
+    assert!(
+        parse(typed(&["notes", "use"])).is_err(),
+        "`zaru notes use` with no alias was accepted"
+    );
+    assert_eq!(
+        crate::terminal::driver::request_for(&zaru_tui::shell::Command {
+            slash: "/notes",
+            verb: Some("use"),
+            words: Vec::new(),
+        }),
+        None,
+        "`/notes use` with no alias reached a request"
+    );
 }

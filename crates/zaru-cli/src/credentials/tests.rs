@@ -1776,3 +1776,121 @@ async fn a_refused_listing_refuses_the_corpus_and_an_empty_one_does_not() {
         "an empty atom listing was treated as something other than no atoms"
     );
 }
+
+// ADR-0007 D4's role, and what the composer reads with when none carries it.
+
+/// Stage one Notes entry under a given alias label, with a chosen scope.
+fn staged_notes(label: &str, tools: Vec<&str>, apex: bool) -> Entry {
+    let (base, _) = staged_entry(label);
+    Entry::notes(
+        base.alias().clone(),
+        base.description().clone(),
+        base.secret().clone(),
+        if apex {
+            EntryReach::Apex
+        } else {
+            base.reach().expect("a Notes entry has a reach").clone()
+        },
+    )
+    .expect("an nn_ value builds a Nuclear Notes entry")
+    .with_tools(ToolScope::new(tools))
+}
+
+/// D4's role wins, one token serves, several serve nothing.
+///
+/// The three cases the 2026-09-14 reading names, asserted separately because
+/// each is a different decision. Case 1 is D4 unchanged. Case 2 is the
+/// amendment. Case 3 is the refusal to guess which cortex a person meant,
+/// which is the failure D5's namespace design prevents one level up.
+#[test]
+fn the_composer_reads_with_the_role_then_with_the_only_token_and_never_with_a_guess() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    // Case 2 first, because it is the state of a machine that has just run
+    // `notes tokens add` once: one token, no role, and it serves.
+    let only = staged_notes("only", vec!["pages.list", "atoms.list"], false);
+    let only_alias = only.alias().clone();
+    store.add(only, &keys, None).expect("stored");
+    assert_eq!(
+        crate::credentials::composer_token(&store).map(|(alias, _)| alias),
+        Some(only_alias.clone()),
+        "the only stored token did not serve, so a person with one credential gets an empty strip"
+    );
+
+    // Case 3: a second token with no role, and nothing serves. The harness
+    // must not pick.
+    let second = staged_notes("second", vec!["pages.list"], false);
+    let second_alias = second.alias().clone();
+    store.add(second, &keys, None).expect("stored");
+    assert_eq!(
+        crate::credentials::composer_token(&store),
+        None,
+        "two tokens and no role, and the harness picked one anyway -- which is it guessing which \
+         cortex the person meant"
+    );
+
+    // Case 1: granting the role settles it, and the role wins over both.
+    store
+        .grant_composer_role(&second_alias)
+        .expect("a scope inside D4's set may hold the role");
+    assert_eq!(
+        crate::credentials::composer_token(&store).map(|(alias, _)| alias),
+        Some(second_alias),
+        "the composer role was granted and the token carrying it did not win"
+    );
+    assert_ne!(
+        crate::credentials::composer_token(&store).map(|(alias, _)| alias),
+        Some(only_alias),
+        "the role moved and the composer is still reading with the other token"
+    );
+}
+
+/// An apex token names no host, so it cannot be the one the composer opens.
+///
+/// `notes tokens add <alias> <host> apex` stores the reach and **not** the
+/// host, correctly, because an apex token is not bound to one. `HttpEndpoint`
+/// reaches an instance by host, so there is no address to open. Skipped here
+/// rather than opened against a host invented at the call site.
+///
+/// The accepting sibling is in the same check: the same store with an
+/// instance-locked token beside it serves that one, so this is "apex is not
+/// addressable" rather than "refuse everything".
+#[test]
+fn an_apex_token_names_no_host_so_it_is_not_the_one_the_composer_opens() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    let apex = staged_notes("apexonly", vec!["pages.list"], true);
+    let accepting = crate::credentials::fixtures::StagedConfirmer::accepting();
+    store
+        .add(apex, &keys, Some(&accepting))
+        .expect("D8's confirmation was asked and accepted");
+    assert_eq!(
+        crate::credentials::composer_token(&store),
+        None,
+        "an apex entry was chosen as the composer's, and there is no host on it to open"
+    );
+
+    // The accepting sibling, in a store of its own. It has to be a second
+    // store rather than a second entry, and that is the finding this check
+    // made rather than assumed: "exactly one stored Nuclear Notes token" counts
+    // the apex one too, so an apex entry BESIDE an instance-locked one is two
+    // tokens and case 3 -- nothing serves, and the harness does not quietly
+    // treat the unaddressable one as absent in order to reach a majority of
+    // one. Only the single-token store shows that this is "apex names no host"
+    // rather than "refuse everything".
+    let beside = ScratchRoot::new();
+    let mut alone = CredentialStore::open(beside.store_root()).expect("a fresh root opens");
+    let locked = staged_notes("locked", vec!["pages.list"], false);
+    let locked_alias = locked.alias().clone();
+    alone.add(locked, &keys, None).expect("stored");
+    assert_eq!(
+        crate::credentials::composer_token(&alone).map(|(alias, _)| alias),
+        Some(locked_alias),
+        "an instance-locked token on its own must serve -- otherwise this is refusing everything \
+         rather than skipping what has no host"
+    );
+}

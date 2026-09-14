@@ -167,6 +167,32 @@ pub enum Request {
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     NotesTokens,
+    /// `zaru notes use <alias>` — [ADR-0007] D7's fifth surface, "move the
+    /// composer role to another token".
+    ///
+    /// # It could only ever refuse, and now it can do both
+    ///
+    /// That clause's own Status tracking recorded why this was the last of the
+    /// five to be built: it "maps to `grant_composer_role`, which could only
+    /// ever refuse, because nothing in this harness can put a token in the
+    /// store for the role to move to". `add` arrived on 2026-09-06 and the
+    /// second half of that sentence stopped being true.
+    ///
+    /// **The first half is still true of every token that exists**, and that
+    /// is the honest surface rather than a defect: the store refuses the role
+    /// to a token whose cached scope reaches outside [ADR-0006] D4's set, and
+    /// every Nuclear Notes token measured on 2026-09-14 grants 94 tools. So
+    /// what a person running this sees today is a refusal **naming the tool**
+    /// that put the token outside the set. That is the store holding D4
+    /// correctly, and the command exists so that the refusal is something a
+    /// person can read rather than a code path nothing reaches.
+    ///
+    /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    NotesUse {
+        /// Which stored token is to carry the role.
+        alias: Alias,
+    },
     /// `zaru notes tokens add <alias> <host> [apex]` — [ADR-0007] D7's
     /// `add`, the second of that clause's five surfaces to exist.
     ///

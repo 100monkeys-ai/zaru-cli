@@ -683,6 +683,8 @@ fn every_built_namespace_reaches_a_request_from_the_slash_side() {
             let words: Vec<String> = match (namespace.slash, verb) {
                 ("/config", Some("explain")) => vec!["runtime.tier".to_owned()],
                 ("/session", Some("rm")) => vec!["01JQZX8N3K4M5P6R7S8T9V0W1X".to_owned()],
+                // ADR-0007 D7's `use` takes the alias whose role is to move.
+                ("/notes", Some("use")) => vec!["work".to_owned()],
                 _ => Vec::new(),
             };
             let named = request_for(&zaru_tui::shell::Command {

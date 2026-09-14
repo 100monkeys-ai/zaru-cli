@@ -64,6 +64,10 @@ fn summaries(namespace: Namespace) -> &'static [(&'static str, &'static str)] {
                 "store a Nuclear Notes token, read from standard input; add the word `apex` \
                  after the host for a credential with no instance boundary",
             ),
+            (
+                "notes use <alias>",
+                "move the composer role to that token, so the hint strip searches with it",
+            ),
         ],
         Namespace::Init => &[(
             "init",

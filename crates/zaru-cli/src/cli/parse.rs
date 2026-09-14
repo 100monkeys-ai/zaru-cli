@@ -319,6 +319,21 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
         Namespace::Notes => match rest {
             [] => Err(CommandRefused::VerbMissing { namespace }),
             [tokens] if tokens == TOKENS => Ok(Request::NotesTokens),
+            // ADR-0007 D7's `use`, which is a sibling of `tokens` rather than
+            // a verb under it: `notes tokens ...` is about the collection and
+            // `notes use <alias>` moves a role between its members. Spelled as
+            // D7 spells it.
+            [verb] if verb == USE => Err(CommandRefused::ArgumentMissing {
+                command: format!("{namespace} {USE}"),
+                argument: "an alias",
+            }),
+            [verb, alias] if verb == USE => Ok(Request::NotesUse {
+                alias: Alias::new(alias).map_err(CommandRefused::UnusableAlias)?,
+            }),
+            [verb, _, extra, ..] if verb == USE => Err(CommandRefused::UnexpectedWord {
+                command: format!("{namespace} {USE}"),
+                offered: extra.escape_debug().to_string(),
+            }),
             [tokens, add] if tokens == TOKENS && add == ADD => {
                 Err(CommandRefused::ArgumentMissing {
                     command: format!("{namespace} {TOKENS} {ADD}"),
@@ -362,7 +377,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             [extra, ..] => Err(CommandRefused::UnknownVerb {
                 namespace,
                 offered: extra.escape_debug().to_string(),
-                nearest: crate::config::nearest::nearest([TOKENS], extra),
+                nearest: crate::config::nearest::nearest([TOKENS, USE], extra),
             }),
         },
         // The one namespace whose grammar is two words deep, so it does not
@@ -483,6 +498,9 @@ const ADD: &str = "add";
 
 /// The verb under `notes`, spelled once.
 const TOKENS: &str = "tokens";
+
+/// ADR-0007 D7's fifth surface, spelled as that clause spells it.
+const USE: &str = "use";
 
 /// The word ADR-0007 D8 requires a user to type to store a credential with no
 /// instance boundary. Never a default and never inferred.

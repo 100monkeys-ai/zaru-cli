@@ -124,6 +124,7 @@ impl Run<'_> {
             Request::Resume { id } => self.resume(id),
             Request::Continue => self.resume_latest(),
             Request::NotesTokens => self.notes_tokens(),
+            Request::NotesUse { alias } => self.notes_use(alias),
             Request::NotesTokensAdd { alias, host, apex } => {
                 self.notes_tokens_add(alias, host, *apex)
             }
@@ -429,6 +430,64 @@ impl Run<'_> {
         };
         match CredentialStore::reading(root) {
             Ok(store) => Outcome::printed(render::tokens(&store)),
+            Err(failure) => Outcome::failed(
+                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+            ),
+        }
+    }
+
+    /// [ADR-0007] D7's `use`, the third of that clause's five surfaces.
+    ///
+    /// # What a person running this sees today, and why that is the point
+    ///
+    /// D7 is "`/notes use <alias>` — move the composer role to another
+    /// token", and this calls `CredentialStore::grant_composer_role`, which
+    /// is the operation that clause names. That function has existed since
+    /// 2026-09-04 with **no caller outside checks**, because until `add`
+    /// landed there was no token in the store for a role to move to.
+    ///
+    /// **It refuses every token that exists, naming the tool.** The store
+    /// refuses the composer role to a credential whose cached `tools/list`
+    /// reaches outside [ADR-0006] D4's set, and every Nuclear Notes token
+    /// measured on 2026-09-14 grants 94 tools — the whole surface. So the
+    /// ordinary outcome of this command is a refusal that names the first
+    /// offending tool and says what the composer's credential may carry.
+    ///
+    /// That is not a broken command. It is the store holding D4 correctly,
+    /// made **readable**: before this, the refusal was a code path no surface
+    /// reached, so a person could not find out why their token was not the
+    /// composer's. The composer meanwhile reads with the single stored token
+    /// under the 2026-09-14 reading — see
+    /// [`composer_token`](crate::credentials::composer_token) — so refusing
+    /// the role does not leave the strip empty.
+    ///
+    /// The store is opened for **writing**, unlike `notes tokens`, because
+    /// granting a role rewrites the file.
+    ///
+    /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    fn notes_use(&self, alias: &Alias) -> Outcome {
+        let surface = Surface::new(self.version, self.report_at);
+        let root = match CredentialStore::default_root() {
+            Ok(root) => root,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        let mut store = match CredentialStore::open(root) {
+            Ok(store) => store,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        match store.grant_composer_role(alias) {
+            Ok(()) => Outcome::printed(vec![format!(
+                "\"{alias}\" now carries the composer role; the hint strip searches with it."
+            )]),
             Err(failure) => Outcome::failed(
                 surface.credential_store(&failure, SessionEvidence::NoSessionExists),
             ),

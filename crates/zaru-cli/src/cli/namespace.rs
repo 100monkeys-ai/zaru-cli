@@ -263,7 +263,11 @@ impl Namespace {
             // `notes tokens` lists and `notes tokens add <alias> <host>`
             // writes. Both namespaces are therefore parsed by matching the
             // words rather than through `verb`.
-            Self::Notes => &["tokens"],
+            // `use` is a sibling of `tokens` and not a verb under it:
+            // ADR-0007 D7 lists `/notes use <alias>` at the top level beside
+            // `/notes tokens ...`, because the first is about one token's role
+            // and the rest are about the collection.
+            Self::Notes => &["tokens", "use"],
             // One verb with a verb of its own under it, which is why this
             // namespace is the one arm of the grammar that does not go
             // through `verb`: `providers keys` lists and `providers keys add
