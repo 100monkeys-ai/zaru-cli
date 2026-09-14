@@ -68,8 +68,8 @@ pub use entry::{
 };
 pub use family::Family;
 pub use notes::{
-    Cached, ReachFailure, Refreshed, ScopeError, bearer_for_dispatch, composer_token, corpus_at,
-    corpus_from, tool_scope_at,
+    Cached, ReachFailure, Refreshed, ScopeError, bearer_for_dispatch, composer_apex_marking,
+    composer_token, corpus_at, corpus_from, tool_scope_at,
 };
 pub use port::Confirm;
 pub use projection::{Listed, Listing, NAMESPACE_PREFIX, Namespace};

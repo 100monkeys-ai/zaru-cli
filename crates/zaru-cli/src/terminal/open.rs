@@ -195,20 +195,34 @@ fn attached_workspace(directory: &std::path::Path) -> String {
 /// the transcript, serve the strip, fetch into it, resume the conversation.
 type Opened = (Shell, Transcript, NotesTrie, Option<Populating>, Resumed);
 
+/// The credential store this session reads, opened once.
+///
+/// **One open, two readers**, because two opens of one file are two answers
+/// that can disagree: [`composer_reader`] asks which entry the composer reads
+/// with, and [ADR-0007] D8's marking asks whether the entry carrying the role
+/// is apex. A store that will not open is not an error here and is
+/// deliberately not classified: a person with no credential store has no
+/// token, which is exactly the state [`NotesTrie::nothing_cached`] describes
+/// and the state an unmarked row describes, and refusing to open a shell
+/// because `~/.zaru/credentials.json` is unreadable would make the composer's
+/// hint strip able to stop a session starting. The strip says what it can see
+/// and so does the row.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+fn credential_store() -> Option<crate::credentials::CredentialStore> {
+    let root = crate::credentials::CredentialStore::default_root().ok()?;
+    crate::credentials::CredentialStore::reading(root).ok()
+}
+
 /// Which stored token this session's composer reads with, if any.
 ///
-/// Opens the credential store for **reading** and asks
-/// [`credentials::notes::composer_token`](crate::credentials::composer_token)
-/// which entry serves. A store that will not open is not an error here and is
-/// deliberately not classified: a person with no credential store has no
-/// token, which is exactly the state [`NotesTrie::nothing_cached`] describes,
-/// and refusing to open a shell because `~/.zaru/credentials.json` is
-/// unreadable would make the composer's hint strip able to stop a session
-/// starting. The strip says what it can see.
-fn composer_reader(workspace: &str) -> Option<Populating> {
-    let root = crate::credentials::CredentialStore::default_root().ok()?;
-    let store = crate::credentials::CredentialStore::reading(root).ok()?;
-    let (alias, host) = crate::credentials::composer_token(&store)?;
+/// Asks [`credentials::notes::composer_token`](crate::credentials::composer_token)
+/// which entry serves, over the store [`credential_store`] opened.
+fn composer_reader(
+    store: &crate::credentials::CredentialStore,
+    workspace: &str,
+) -> Option<Populating> {
+    let (alias, host) = crate::credentials::composer_token(store)?;
     let keyring = crate::credentials::OsKeyring::for_store(store.root());
     let keys = crate::credentials::HarnessKeys::from_process(&keyring);
     let secret = store.secret(&alias, &keys).ok()?;
@@ -305,7 +319,38 @@ pub fn shell_for(
         ))
     })?;
 
-    let mut shell = Shell::open(Status::new(tier.tier().to_string(), id.to_string()));
+    // The store is opened here rather than inside `composer_reader`, because
+    // two things read it and one of them is not conditional on a workspace
+    // being attached. `None` is a machine with no store, which is every
+    // machine before the first `notes tokens add`.
+    let store = credential_store();
+
+    let mut status = Status::new(tier.tier().to_string(), id.to_string());
+    // ADR-0007 D8's third marking place, and the only one that is a session's
+    // rather than a command's: "Apex entries are marked wherever the token
+    // appears: `/notes tokens`, the status line when the composer holds one,
+    // and the description the agent reads."
+    //
+    // **It is set here and never afterwards**, which is why `Status` has no
+    // setter for it: the 2026-09-06 amendment to ADR-0001 D2 argues the same
+    // discipline for the model and the mode -- "a value the record fixes for
+    // the session is handed to the row once, so nothing can change it and the
+    // immutability is a shape rather than a rule anybody keeps". A role moved
+    // mid-session reaches the row on the next paint anyway, because
+    // `terminal::open`'s loop re-enters this function on every switch and the
+    // switch a stored key or token takes is one of them -- so re-reading is
+    // the mechanism the session already has rather than a second call site.
+    //
+    // A store that will not open leaves the row unmarked, which is the same
+    // thing an absent store and an instance-locked composer say and is the
+    // right answer for all three: the row states a marking it read, never the
+    // absence of one it could not.
+    status.credential = store
+        .as_ref()
+        .and_then(crate::credentials::composer_apex_marking)
+        .map(str::to_owned);
+
+    let mut shell = Shell::open(status);
     let transcript = Transcript::of(&resumed.tail);
     shell.refresh(&transcript);
 
@@ -327,9 +372,10 @@ pub fn shell_for(
     // second sentence about a missing pin was refused: the existing line is
     // what a person sees, unchanged.
     let attached = attached_workspace(&directory);
-    let populating = (!attached.is_empty())
-        .then(|| composer_reader(&attached))
-        .flatten();
+    let populating = store
+        .as_ref()
+        .filter(|_| !attached.is_empty())
+        .and_then(|store| composer_reader(store, &attached));
     let trie = match &populating {
         Some(_) => NotesTrie::awaiting(attached),
         None => NotesTrie::nothing_cached(attached),

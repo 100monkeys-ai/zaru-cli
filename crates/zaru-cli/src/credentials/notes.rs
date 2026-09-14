@@ -532,3 +532,55 @@ pub fn composer_token(store: &CredentialStore) -> Option<(Alias, String)> {
     }
     host(only.1).map(|host| (only.0.clone(), host))
 }
+
+/// [ADR-0007] D8's marking for the status line, when the composer's credential
+/// is apex.
+///
+/// D8: "Apex entries are **marked wherever the token appears**: `/notes
+/// tokens`, the status line when the composer holds one, and the description
+/// the agent reads." This is the reader for the second of those three; the
+/// listing reads [`Reach::APEX_MARKING`](crate::credentials::Reach) at
+/// `cli::render` and the agent's description reads it at
+/// `credentials::projection`, and all three now answer with the one constant.
+///
+/// # Why this is not read off [`composer_token`]
+///
+/// Because that function answers `None` in exactly the case this one exists
+/// for. Its first case consults [`CredentialStore::composer`] and then maps
+/// the record through a host — and an apex entry has none, so **a composer
+/// role held by an apex token makes `composer_token` answer nothing at all**.
+/// The session therefore opens with no Nuclear Notes client, the hint strip
+/// shows its absence line, and this marking is the one thing the row can
+/// truthfully say about a credential the session holds and cannot use. Reading
+/// the marking off a function that has already discarded the entry would have
+/// made the row silent in the one state D8 names.
+///
+/// It is also the narrower read. It touches [`CredentialStore::composer`] and
+/// [`Record::reach`](crate::credentials::Record) and nothing else: **no
+/// secret, no keyring and no sealing key**, so a session on a machine whose
+/// key is unreachable still marks an apex composer.
+///
+/// # What answers `None`, and why every machine that exists does
+///
+/// A store with no composer, a composer that is instance-locked, and a store
+/// that will not open at all. The first of those is the ordinary case:
+/// [`CredentialStore::grant_composer_role`] refuses the role to any token
+/// whose cached scope leaves [ADR-0006] D4's set, and every Nuclear Notes
+/// token measured on 2026-09-06 and 2026-09-14 grants 94 tools against that
+/// set's nine. So **no real credential can hold the composer role on any
+/// machine today, apex or not**, and this function's `Some` arm is reachable
+/// only from a store built by hand. That is a fact about the substrate's token
+/// scoping rather than about this code, and it is the same standing limit
+/// `notes use` and `notes tokens rm` each report.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[must_use]
+pub fn composer_apex_marking(store: &CredentialStore) -> Option<&'static str> {
+    let (_, record) = store.composer()?;
+    matches!(
+        record.reach(),
+        Some(crate::credentials::store::StoredReach::Apex)
+    )
+    .then_some(crate::credentials::Reach::APEX_MARKING)
+}
