@@ -51,7 +51,7 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
-use crate::shell::{COMPOSER_ROWS, Palette, Row, Shell};
+use crate::shell::{COMPOSER_ROWS, Line, Palette, Row, Shell};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line as TextLine;
@@ -66,6 +66,22 @@ use ratatui::widgets::Paragraph;
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub const PROMINENT: &str = "!";
+
+/// The last `height` rows `lines` paint as in a pane `width` columns wide.
+///
+/// The body [`Shell::visible`] carried until 2026-09-14, lifted out because
+/// the renderer now takes a tail **twice**: once over the lines the pane was
+/// given and once over the answer still arriving, each into its own region.
+/// Two copies of a tail is two places a fencepost can be wrong, and the two
+/// would agree for the life of any defect in either.
+///
+/// Rows rather than lines, and `width` rather than a bare count, for the
+/// reasons on [`Shell::visible`].
+fn tail(lines: &[Line], height: u16, width: u16) -> Vec<Row> {
+    let rows: Vec<Row> = lines.iter().flat_map(|line| line.rows(width)).collect();
+    let start = rows.len().saturating_sub(usize::from(height));
+    rows[start..].to_vec()
+}
 
 impl Shell {
     /// The three regions, top to bottom.
@@ -104,13 +120,7 @@ impl Shell {
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     #[must_use]
     pub fn visible(&self, height: u16, width: u16) -> Vec<Row> {
-        let rows: Vec<Row> = self
-            .pane_lines()
-            .iter()
-            .flat_map(|line| line.rows(width))
-            .collect();
-        let start = rows.len().saturating_sub(usize::from(height));
-        rows[start..].to_vec()
+        tail(&self.pane_lines(), height, width)
     }
 
     /// What the composer's area shows: the prompt, or a standing question.
