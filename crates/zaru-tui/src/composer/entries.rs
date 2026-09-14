@@ -95,4 +95,32 @@ impl Entry {
 pub trait Entries {
     /// Every entry whose prefix matches, best first, at most `limit` of them.
     fn matches(&self, prefix: &str, limit: usize) -> Vec<Entry>;
+
+    /// What the strip should say when there is nothing to show, if anything.
+    ///
+    /// # Why this is on the port and not a value handed in once
+    ///
+    /// [`Composer::set_absence`](super::Composer::set_absence) is how the line
+    /// arrives and stays how it arrives: the composer renders a line it is
+    /// **handed**, exactly as it renders a standing tip, because whether a
+    /// token exists and which workspace is attached are the host's knowledge
+    /// and not this crate's. What changed on 2026-09-14 is that the answer is
+    /// no longer fixed for the life of a session. The corpus is built after
+    /// the shell opens — a population against a real server was measured at
+    /// one to two seconds, and blocking the first frame on it is one to two
+    /// seconds of dead terminal — so the honest line is "still looking" while
+    /// it runs and something else when it finishes.
+    ///
+    /// The host still composes every one of those sentences. This method only
+    /// lets the pump **ask again**, which a value handed in at session open
+    /// cannot express. A second port was considered and refused: two ports
+    /// over one value are two things that can disagree about whether there is
+    /// anything to search.
+    ///
+    /// **Defaulted to `None`**, so every existing implementation is unchanged
+    /// — a fast tier that is simply empty says nothing, which is what every
+    /// implementation in this crate's own checks does.
+    fn absence(&self) -> Option<String> {
+        None
+    }
 }

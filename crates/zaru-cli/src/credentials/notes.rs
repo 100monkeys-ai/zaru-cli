@@ -464,3 +464,67 @@ pub async fn corpus_at(
     .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
     corpus_from(&session, workspace).await
 }
+
+/// Which stored token the composer reads with, and the host it reaches.
+///
+/// # [ADR-0007] D4 says which token wins; it does not say what happens when
+/// none does
+///
+/// D4 is "exactly one token is flagged `composer`", and that clause is
+/// unchanged: a token carrying the role wins whenever one exists. What D4 does
+/// not cover is a store where **none** carries it, which is the state of every
+/// machine — `CredentialStore::grant_composer_role` refuses the role to any
+/// token whose cached scope leaves [ADR-0006] D4's set, and every Nuclear
+/// Notes token measured on 2026-09-14 grants 94 tools.
+///
+/// So the rule, accepted 2026-09-14 under a delegated coordinator ruling and
+/// open to Jeshua's veto, in three cases:
+///
+/// 1. A token carrying the role wins.
+/// 2. Otherwise, **exactly one** stored Nuclear Notes token serves. One token
+///    is unambiguous; refusing to read with the only credential the user has
+///    would be the harness declining to use what it was given.
+/// 3. Otherwise nothing serves. Several tokens with no role is a **choice**,
+///    and a harness that picked one would be guessing which cortex the person
+///    meant — the failure [ADR-0007] D5's namespace design exists to prevent
+///    one level up, arriving in the one place D5 does not reach. The remedy is
+///    to grant the role, which `zaru notes use <alias>` offers.
+///
+/// What makes case 2 safe is not this function. It is
+/// [`Corpus`](zaru_notes::session::Corpus): the builder is handed a port of
+/// two listings, so there is no write to make whatever the token's scope is.
+///
+/// # An apex token names no host, so it cannot be the one
+///
+/// [ADR-0007] D8's apex entry has "no instance boundary" and
+/// `notes tokens add <alias> <host> apex` stores [`Reach::Apex`] **without the
+/// host** — correctly, because an apex token is not bound to one. But
+/// `HttpEndpoint` reaches an instance by host, so there is no address to open.
+/// An apex entry is therefore skipped here rather than opened against a host
+/// invented at this call site, and a store holding only apex tokens serves
+/// nothing. Named rather than silently falling into case 3.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+#[must_use]
+pub fn composer_token(store: &CredentialStore) -> Option<(Alias, String)> {
+    let host = |record: &crate::credentials::store::Record| match record.reach() {
+        Some(crate::credentials::store::StoredReach::InstanceLocked(host)) => Some(host.clone()),
+        Some(crate::credentials::store::StoredReach::Apex) | None => None,
+    };
+
+    // Case 1. D4's own clause, and it is consulted first so that granting the
+    // role always changes which token is used.
+    if let Some((alias, record)) = store.composer() {
+        return host(record).map(|host| (alias.clone(), host));
+    }
+
+    // Cases 2 and 3. `is_notes` is what keeps a provider key out: it carries
+    // no reach, no tools and no role, and it speaks no MCP at all.
+    let mut notes = store.records().filter(|(_, record)| record.is_notes());
+    let only = notes.next()?;
+    if notes.next().is_some() {
+        return None;
+    }
+    host(only.1).map(|host| (only.0.clone(), host))
+}

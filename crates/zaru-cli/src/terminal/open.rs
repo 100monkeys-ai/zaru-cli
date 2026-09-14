@@ -187,6 +187,75 @@ fn attached_workspace(directory: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
+/// Which stored token this session's composer reads with, if any.
+///
+/// Opens the credential store for **reading** and asks
+/// [`credentials::notes::composer_token`](crate::credentials::composer_token)
+/// which entry serves. A store that will not open is not an error here and is
+/// deliberately not classified: a person with no credential store has no
+/// token, which is exactly the state [`NotesTrie::nothing_cached`] describes,
+/// and refusing to open a shell because `~/.zaru/credentials.json` is
+/// unreadable would make the composer's hint strip able to stop a session
+/// starting. The strip says what it can see.
+fn composer_reader(workspace: &str) -> Option<Populating> {
+    let root = crate::credentials::CredentialStore::default_root().ok()?;
+    let store = crate::credentials::CredentialStore::reading(root).ok()?;
+    let (alias, host) = crate::credentials::composer_token(&store)?;
+    let keyring = crate::credentials::OsKeyring::for_store(store.root());
+    let keys = crate::credentials::HarnessKeys::from_process(&keyring);
+    let secret = store.secret(&alias, &keys).ok()?;
+    Some(Populating {
+        workspace: workspace.to_owned(),
+        host,
+        secret,
+    })
+}
+
+/// Everything one session needs to fetch its corpus, and nothing more.
+///
+/// # Why the secret is carried here rather than read inside the task
+///
+/// The store, the keyring and the sealing key are all read on the shell's own
+/// thread before the terminal is taken, so a store that will not open is a
+/// thing that has already happened by the time anything is spawned. Reading
+/// them inside the task instead would put a keyring call on a path where its
+/// failure has nowhere to go.
+///
+/// **It holds a [`Secret`](crate::credentials::Secret) and therefore renders
+/// nothing.** That type has no `Display`, its `Debug` prints a fixed marker,
+/// and the one function that exposes the value is named for the single place
+/// it is allowed to go — so this struct inherits ADR-0007 D3 rather than
+/// restating it, and there is no field here a value could be copied into.
+///
+/// **Public only because it appears in [`shell_for`]'s return, and opaque
+/// otherwise**: every field is private, [`Populating::fetch`] is private, and
+/// there is no constructor outside this module. So a caller can hold one and
+/// hand it back, which is all `one_session` does, and can read nothing out of
+/// it — which is the property that matters, since what it holds is a bearer.
+pub struct Populating {
+    /// ADR-0006 D5's attached workspace, the one workspace the corpus covers.
+    workspace: String,
+    /// The instance host, from the token's own instance-locked reach.
+    host: String,
+    /// The stored bearer, sealed until `corpus_at` hands it to the endpoint.
+    secret: crate::credentials::Secret,
+}
+
+impl Populating {
+    /// [ADR-0005] D3's corpus for the attached workspace, over the real server.
+    ///
+    /// Three requests — an attach and two listings — measured at one to two
+    /// seconds on 2026-09-14, which is the whole reason this is awaited off
+    /// the shell's first frame rather than before it.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    async fn fetch(self) -> Result<Vec<zaru_notes::trie::CachedEntry>, String> {
+        crate::credentials::corpus_at(&self.host, &self.secret, &self.workspace)
+            .await
+            .map_err(|failure| failure.to_string())
+    }
+}
+
 /// Build the shell for one session, without taking a terminal.
 ///
 /// The error is boxed for the reason [`crate::cli::run`]'s `Outcome` already
@@ -210,7 +279,7 @@ pub fn shell_for(
     version: &str,
     report_at: &str,
     overrides: &Overrides,
-) -> Result<(Shell, Transcript, NotesTrie, Resumed), Box<Exit>> {
+) -> Result<(Shell, Transcript, NotesTrie, Option<Populating>, Resumed), Box<Exit>> {
     let classify = Classify::new(version, report_at);
 
     let resolution = crate::cli::layers::resolve_from_process(overrides)
@@ -232,16 +301,40 @@ pub fn shell_for(
     let transcript = Transcript::of(&resumed.tail);
     shell.refresh(&transcript);
 
-    // ADR-0005 D3's fast tier. Nothing populates it on a real machine yet, and
-    // the reason changed on 2026-09-05: it was that
-    // `zaru_notes::session::Endpoint` had no implementation, so no listing
-    // could be made at all. It has one. What is missing now is narrower and is
-    // one step rather than a transport -- nothing here reads a stored token
-    // into a session -- and the composer is told to say so rather than paint
-    // nothing.
-    let trie = NotesTrie::nothing_cached(attached_workspace(&directory));
+    // ADR-0005 D3's fast tier. The comment here recorded, on 2026-09-05, that
+    // "nothing here reads a stored token into a session" and that the composer
+    // was told to say so. **That is what this arc closed.** A token is
+    // selected below and the corpus is fetched by `one_session`, which holds
+    // the runtime; what is decided here is only which sentence the strip opens
+    // with, because the shell is painted before any of it has happened.
+    //
+    // **Two things must both be true before anything is fetched.** A workspace
+    // to search -- ADR-0006 D5's pin, read from this session's own `meta.toml`
+    // -- and a token to search it with. Either missing is the no-token line,
+    // and that is a ruling rather than an oversight: D5's other half falls back
+    // to the account's personal workspace, and the handshake's
+    // `_grounding.you` was measured on 2026-09-14 and does **not** name one a
+    // token can read -- the workspace it reports as current was refused on the
+    // very next call. So there is nothing to fall back to, and inventing a
+    // second sentence about a missing pin was refused: the existing line is
+    // what a person sees, unchanged.
+    let attached = attached_workspace(&directory);
+    let populating = (!attached.is_empty())
+        .then(|| composer_reader(&attached))
+        .flatten();
+    let trie = match &populating {
+        Some(_) => NotesTrie::awaiting(attached),
+        None => NotesTrie::nothing_cached(attached),
+    };
     shell.composer_mut().set_absence(trie.absence());
-    Ok((shell, transcript, trie, resumed))
+
+    // **The fetch is handed back rather than started here**, and the reason is
+    // that this function deliberately takes no terminal and no runtime: its
+    // whole purpose is that a check can assert the status line, the pane and
+    // the transcript without the three system calls `open` makes. Spawning a
+    // task would have put a reactor in that path. `one_session` holds the
+    // runtime and starts it there.
+    Ok((shell, transcript, trie, populating, resumed))
 }
 
 /// [ADR-0013] D1's layer 6 as this session left it, and which turn is next.
@@ -436,7 +529,38 @@ fn one_session(
     runtime: &tokio::runtime::Runtime,
     source: &Source,
 ) -> Result<crate::terminal::driver::Pumped, Box<Exit>> {
-    let (mut shell, _, trie, resumed) = shell_for(id, version, report_at, overrides)?;
+    let (mut shell, _, trie, populating, resumed) =
+        shell_for(id, version, report_at, overrides)?;
+
+    // ADR-0005 D3's corpus, fetched **into** a shell that is already open.
+    //
+    // The trie is shared rather than moved because two things hold it: the
+    // pump, which reads it on every keystroke, and the task below, which
+    // writes it once. `Entries::matches` takes `&self`, so this needed no
+    // change to the port and no dependency -- the corpus sits behind an
+    // `RwLock` inside `NotesTrie` and this is an `Arc` of the same value.
+    //
+    // **The runtime is the one this shell already built**, before the terminal
+    // was taken. It is a current-thread runtime, so a task spawned here is
+    // driven by the same `block_on` that runs the pump -- every time the pump
+    // awaits a keystroke or the beat, which is at least ten times a second.
+    // No second runtime and no second thread.
+    //
+    // A refusal ends in `unreachable`, carrying the client's own sentence, so
+    // that ADR-0005 D8's "degrade honestly" reaches the person who typed
+    // rather than a log nobody reads. There is deliberately no retry: D3
+    // builds the corpus at session start, and a loop here would spend a rate
+    // budget against a server that has already said no.
+    let trie = std::sync::Arc::new(trie);
+    if let Some(populating) = populating {
+        let filling = std::sync::Arc::clone(&trie);
+        runtime.spawn(async move {
+            match populating.fetch().await {
+                Ok(entries) => filling.reached(entries),
+                Err(detail) => filling.unreachable(detail),
+            }
+        });
+    }
 
     // ADR-0008 D1's turns, resolved once for the whole session. Everything
     // below happens **before** the terminal is taken, so a refusal is written
@@ -529,7 +653,10 @@ fn one_session(
             source,
             &Beat,
             &runner,
-            &trie,
+            // The `Arc` is what the filling task holds; the pump takes the
+            // value inside it, because `Entries` is implemented for the trie
+            // and not for a smart pointer around it.
+            trie.as_ref(),
             &Vocabulary,
             &mut turns,
         ))

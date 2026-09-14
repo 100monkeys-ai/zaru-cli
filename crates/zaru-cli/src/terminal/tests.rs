@@ -13,7 +13,7 @@ use crate::terminal::driver::{
 use crate::terminal::fixtures::{Counting, Held, Recording, Restores, press, typed};
 use crate::terminal::open::{Opening, opening_for};
 use crate::terminal::source::{Source, Taken};
-use crate::terminal::trie::{NOTHING_CACHED, NotesTrie};
+use crate::terminal::trie::{LOOKING, NOTHING_CACHED, NotesTrie, UNREACHABLE};
 use crate::terminal::vocabulary::{Transcript as Pane, Vocabulary};
 use crate::tools::port::Question;
 use std::sync::Arc;
@@ -78,6 +78,27 @@ fn pump_over(keys: Vec<zaru_tui::shell::Input>, trie: &NotesTrie) -> (Shell, Rec
     pump_staged_over(keys.into_iter().map(Into::into).collect(), trie)
 }
 
+/// The same pump over any implementation of the composer's port.
+///
+/// Separate from [`pump_over`] so a check can stage a fast tier whose answer
+/// **changes during the pump**, which a `NotesTrie` cannot be made to do from
+/// outside without a second thread racing the run.
+///
+/// It reaches the same `pump_staged_painting` every other helper does — that
+/// function took a `&NotesTrie` until 2026-09-14 and takes the port instead,
+/// which narrows what it can ask for rather than widening it: `absence` and
+/// `matches` are the only two things it ever used.
+fn pump_entries(
+    keys: Vec<zaru_tui::shell::Input>,
+    trie: &dyn zaru_tui::composer::Entries,
+) -> (Shell, Recording, Exit) {
+    pump_staged_painting(
+        keys.into_iter().map(Into::into).collect(),
+        trie,
+        Palette::Coloured,
+    )
+}
+
 /// The same pump under a palette a check chose.
 ///
 /// The product's own `Surface::draw` path, which is what makes this different
@@ -107,7 +128,7 @@ fn pump_staged_over(
 /// pass what the product passes when `NO_COLOR` is unset.
 fn pump_staged_painting(
     struck: Vec<zaru_tui::shell::Struck>,
-    trie: &NotesTrie,
+    trie: &dyn zaru_tui::composer::Entries,
     palette: Palette,
 ) -> (Shell, Recording, Exit) {
     let restores: Restores = Arc::new(AtomicUsize::new(0));
@@ -5085,5 +5106,195 @@ fn a_queued_task_runs_when_the_turn_ends_with_no_keystroke() {
     assert!(
         !last.iter().any(|row| row.contains("queued")),
         "the pinned row outlived the task it was about: {last:?}"
+    );
+}
+
+// ADR-0005 D3's corpus arriving after the shell opens, and D8's honest
+// degradation while it does. The three states the strip can be in with a
+// token, beside the no-token line the check above pins byte for byte.
+
+/// A population in flight says it is looking, and the shell paints anyway.
+///
+/// **This is the evidence that the first frame is not blocked.** A corpus is
+/// three requests against a real server, measured at one to two seconds on
+/// 2026-09-14, and the shell deliberately does not wait for it — so there is
+/// an interval in which a person types into a shell whose fast tier is empty
+/// *and has a token*. A frame is painted here with the corpus still absent,
+/// which is that interval reproduced.
+///
+/// The line must not be `NOTHING_CACHED`. That sentence tells a reader to run
+/// `zaru notes tokens add`, and telling somebody to add the token they have
+/// already added is ADR-0016 D2's "error message whose reader cannot act".
+#[test]
+fn a_population_in_flight_says_it_is_looking_and_the_shell_paints_without_waiting() {
+    let trie = NotesTrie::awaiting(WORKSPACE);
+    assert_eq!(trie.cached(), 0, "nothing has arrived yet");
+
+    let (_, surface, _) = pump_over(keys("mém"), &trie);
+    assert!(
+        !surface.frames.is_empty(),
+        "no frame was painted while the corpus was still being fetched, so the shell waited for \
+         something it was built not to wait for"
+    );
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert_eq!(
+        strip,
+        vec![LOOKING.to_owned()],
+        "a session whose corpus is still on its way must say so; the composer rows were {strip:?}"
+    );
+    assert!(
+        !strip.iter().any(|row| row == NOTHING_CACHED),
+        "a session that HAS a token was told to add one, which is a remedy its reader cannot act \
+         on: {strip:?}"
+    );
+}
+
+/// The corpus lands mid-session and the strip stops saying anything.
+///
+/// The line is not cleared by anybody: `absence` answers `None` once the
+/// attached workspace holds an entry, and the pump re-asks on every input. So
+/// the same trie, pumped twice with a fill in between, paints two different
+/// strips — which is the whole of what "the trie arrives after the shell
+/// opens" means to a person.
+#[test]
+fn a_corpus_that_lands_mid_session_replaces_the_line_with_its_own_matches() {
+    let trie = NotesTrie::awaiting(WORKSPACE);
+
+    let (_, before, _) = pump_over(keys("mém"), &trie);
+    assert_eq!(
+        strip_rows(before.frames.last().expect("a frame")),
+        vec![LOOKING.to_owned()],
+        "the strip did not open in the in-flight state"
+    );
+
+    trie.reached(vec![
+        entry("mémoire/one", "Mémoire ✦", CachedKind::Page),
+        entry("other/two", "Other", CachedKind::Atom),
+    ]);
+
+    let (_, after, _) = pump_over(keys("mém"), &trie);
+    let strip = strip_rows(after.frames.last().expect("a frame"));
+    assert_eq!(
+        strip,
+        vec!["Mémoire ✦".to_owned()],
+        "the corpus landed and the strip still is not serving it; the composer rows were {strip:?}"
+    );
+    assert_eq!(trie.cached(), 2, "both entities reached the attached workspace");
+}
+
+/// A cortex that was reached and holds nothing says **nothing**.
+///
+/// The tempting alternative is a line, and it would be wrong: a workspace the
+/// harness reached and which holds no entity is not a failure, and a sentence
+/// there would be the harness reporting the user's own empty workspace as a
+/// fault. The accepting sibling of the three lines above.
+#[test]
+fn a_workspace_that_was_reached_and_holds_nothing_says_nothing_at_all() {
+    let trie = NotesTrie::awaiting(WORKSPACE);
+    trie.reached(Vec::new());
+
+    let (_, surface, _) = pump_over(keys("mém"), &trie);
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert!(
+        strip.is_empty(),
+        "a cortex that answered and holds nothing had its emptiness reported as a fault: {strip:?}"
+    );
+    assert_eq!(trie.absence(), None, "and there is no line to hand the composer");
+}
+
+/// An instance that refuses says so, in the server's own words.
+///
+/// ADR-0005 D8 is "degrade honestly", and the dishonest option is the
+/// tempting one: a strip that silently stayed empty would make an unreachable
+/// cortex indistinguishable from an empty one — which is the failure
+/// `zaru_notes::session::found` exists because of.
+///
+/// The sentence is the server's, carried through and never paraphrased. The
+/// one used here is what the live substrate actually answered on 2026-09-14
+/// when the `play` token was asked for a workspace it is not a member of, so
+/// the check pins a real refusal rather than an invented one.
+#[test]
+fn an_instance_that_refuses_says_so_carrying_the_servers_own_sentence() {
+    const REFUSAL: &str = "You are not a member of that workspace.";
+
+    let trie = NotesTrie::awaiting(WORKSPACE);
+    trie.unreachable(REFUSAL);
+
+    let (_, surface, _) = pump_over(keys("mém"), &trie);
+    let strip = strip_rows(surface.frames.last().expect("a frame"));
+    assert_eq!(strip.len(), 1, "the strip should carry one line: {strip:?}");
+    assert!(
+        strip[0].starts_with(UNREACHABLE),
+        "the line does not open with the state it describes: {strip:?}"
+    );
+    assert!(
+        strip[0].contains(REFUSAL),
+        "the server's own sentence did not reach the person who typed, so an unreachable cortex \
+         is indistinguishable from an empty one: {strip:?}"
+    );
+    assert!(
+        !strip[0].contains(NOTHING_CACHED),
+        "a token that exists was reported as a token that does not: {strip:?}"
+    );
+}
+
+/// The pump re-asks for the line; it does not keep the one set at session open.
+///
+/// **This exists because a mutation escaped the four checks above.** Deleting
+/// the pump's `refresh_absence` call reddened none of them, and the reason is
+/// that `pump_over` sets the line once before the run exactly as
+/// `terminal::open` does — so every one of them was satisfied by the value set
+/// at session open and said nothing about whether the pump ever asks again.
+/// Recorded here rather than left, because a check that passes for a reason
+/// other than the one it names is worse than no check.
+///
+/// What pins it is a fast tier whose answer **changes mid-pump**, which is the
+/// real shape: the corpus lands while the person is typing. Two keystrokes,
+/// two frames, and the second must not be the first.
+#[test]
+fn the_pump_asks_the_fast_tier_again_rather_than_keeping_the_line_it_opened_with() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A fast tier that is "looking" until it has been consulted once, and
+    /// has an answer afterwards. Stands in for a corpus landing mid-session.
+    struct LandsMidPump {
+        consulted: AtomicUsize,
+    }
+
+    // **It returns no match, ever, and that is the point.** A staged tier that
+    // also started matching would hide the thing being asserted: the composer
+    // paints the absence line only when it has nothing else to show, so a
+    // match arriving would clear the line whether or not the pump ever asked
+    // again. The only thing that moves here is the answer to `absence`.
+    impl zaru_tui::composer::Entries for LandsMidPump {
+        fn matches(&self, _prefix: &str, _limit: usize) -> Vec<zaru_tui::composer::Entry> {
+            self.consulted.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        }
+
+        fn absence(&self) -> Option<String> {
+            if self.consulted.load(Ordering::SeqCst) == 0 {
+                Some(LOOKING.to_owned())
+            } else {
+                None
+            }
+        }
+    }
+
+    let staged = LandsMidPump {
+        consulted: AtomicUsize::new(0),
+    };
+    let (_, surface, _) = pump_entries(keys("mé"), &staged);
+
+    let frames: Vec<Vec<String>> = surface.frames.iter().map(|frame| strip_rows(frame)).collect();
+    assert!(
+        frames.iter().any(|strip| strip == &vec![LOOKING.to_owned()]),
+        "no frame in this run showed the in-flight line, so the run says nothing about it: \
+         {frames:?}"
+    );
+    assert!(
+        frames.last().expect("a frame").is_empty(),
+        "the fast tier stopped having anything to say during the pump and the strip still shows \
+         the line it opened with, which means the pump never asked it again: {frames:?}"
     );
 }

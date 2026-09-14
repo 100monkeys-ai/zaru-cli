@@ -1510,6 +1510,34 @@ async fn next_delta(
 /// this record's own 2026-09-05 ruling, under which the line was refused with
 /// a notice and left on the input row.
 ///
+/// Re-ask the fast tier what the strip should say when it has nothing.
+///
+/// # Why this is asked again rather than set once
+///
+/// [ADR-0005]'s 2026-09-05 Update makes the honest line something the composer
+/// is **handed**, because "whether a token exists and which workspace is
+/// attached are the host's knowledge". `terminal::open` still hands it in at
+/// session open and that is still right. What changed on 2026-09-14 is that
+/// the answer stops being fixed for the life of a session: the corpus is
+/// fetched **after** the shell opens — a population against a real server was
+/// measured at one to two seconds, and blocking the first frame on that is one
+/// to two seconds of dead terminal — so the line is "still looking" while it
+/// runs and something else when it lands.
+///
+/// **Asked on every input rather than on a clock**, and that is the whole
+/// trick: the strip only matters when somebody is typing, and a keystroke is
+/// exactly the moment it is about to be repainted anyway. There is no timer
+/// here, no second repaint path, and nothing that fires while the terminal is
+/// idle.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+fn refresh_absence(
+    shell: &mut zaru_tui::shell::Shell,
+    entries: &dyn zaru_tui::composer::Entries,
+) {
+    shell.composer_mut().set_absence(entries.absence());
+}
+
 /// A pane the beat could not lock is a defect this counts rather than one it
 /// hangs on, which is [`Pane`]'s own argument; the keystroke is dropped in
 /// that case and the count is asserted zero.
@@ -1526,6 +1554,12 @@ fn read_while_busy<S: Surface + Send>(
     let Ok(mut pane) = pane.try_lock() else {
         return;
     };
+    // The same re-ask the outer loop makes, so a corpus that lands while the
+    // model is thinking reaches the strip the person is typing into rather
+    // than waiting for the turn to end. Above the match rather than inside one
+    // arm, because all three repaint the composer and the queued-task arm is
+    // the one where a person is most likely to be waiting on something.
+    refresh_absence(&mut pane.shell, entries);
     match struck {
         // A block pasted during a turn lands in the prompt exactly as one
         // pasted at it does, and waits for the `Enter` that submits it.
@@ -1601,6 +1635,13 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
     let mut pending: Option<String> = None;
 
     loop {
+        // ADR-0005 D8's honest degradation, re-asked because the answer moves
+        // during the session. See `refresh_absence`. Above the action rather
+        // than inside the terminal arm, so a queued task submitted without a
+        // keystroke -- ADR-0015's 2026-09-13 amendment -- repaints a strip
+        // that is as current as one a keystroke reached.
+        refresh_absence(shell, entries);
+
         let action = match pending.take() {
             Some(line) => shell.submit(&line, vocabulary),
             None => {
