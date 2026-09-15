@@ -362,3 +362,58 @@ fn the_path_defaults_without_a_built_in_row_and_a_set_value_wins() {
     .expect("a user layer naming the page resolves");
     assert_eq!(path_in(&set), "notes/who-i-am");
 }
+
+/// A cache hit owes a refresh; nothing else does.
+///
+/// **This is the callee's half of the defect the artefact of 2026-09-15
+/// found.** The caller's half was `compose::turn::task` taking this and
+/// dropping it, which made [ADR-0005] D8's eviction unreachable on the
+/// one-shot surface — a page the instance refuses served from the file for
+/// ever. Both halves are needed: a `Serving` that owed nothing would make the
+/// caller correct and the behaviour still wrong.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+#[test]
+fn a_cache_hit_owes_a_refresh_and_taking_it_owes_it_once() {
+    let scratch = Scratch::new("owed");
+    let cache = scratch.cache();
+    cache
+        .append("h", "w", "p", "a cached persona", 1, &HeldSecrets::none())
+        .expect("the append lands");
+
+    let mut owed = super::Serving::over(
+        Some("a cached persona".to_owned()),
+        Some(super::Refreshing::of(
+            "h".to_owned(),
+            "w".to_owned(),
+            "p".to_owned(),
+            crate::credentials::Secret::notes("nn_mcp_stagedvalueforthischeck".to_owned())
+                .expect("nn_mcp_ names a kind"),
+            cache,
+            HeldSecrets::none(),
+        )),
+    );
+    assert!(
+        owed.pending(),
+        "a cache hit owes no refresh, so a revoked page would be served from the file for ever \
+         and ADR-0005 D8's eviction would be unreachable"
+    );
+    assert!(
+        owed.take_refreshing().is_some(),
+        "the refresh was not there"
+    );
+    assert!(
+        !owed.pending() && owed.take_refreshing().is_none(),
+        "the refresh is owed twice, so a caller could run it twice against one instance"
+    );
+
+    let mut nothing = super::Serving::nothing();
+    assert!(
+        !nothing.pending() && nothing.take_refreshing().is_none(),
+        "a session with no persona at all owes a refresh"
+    );
+    assert!(
+        nothing.body().is_none(),
+        "a session with no persona at all serves one"
+    );
+}

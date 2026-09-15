@@ -658,6 +658,30 @@ impl fmt::Debug for Refreshing {
 }
 
 impl Refreshing {
+    /// One, from its parts. Crate-private: nothing outside this crate builds
+    /// a value that holds a [`Secret`](crate::credentials::Secret).
+    ///
+    /// [`for_session`] builds every real one through here, so a check driving
+    /// it is driving the product's own constructor rather than a shape of its
+    /// own.
+    pub(crate) const fn of(
+        host: String,
+        workspace: String,
+        path: String,
+        secret: crate::credentials::Secret,
+        cache: PersonaCache,
+        held: crate::redaction::HeldSecrets,
+    ) -> Self {
+        Self {
+            host,
+            workspace,
+            path,
+            secret,
+            cache,
+            held,
+        }
+    }
+
     /// Read the page again and leave the file agreeing with the instance.
     ///
     /// **What this cannot do is change the session it was started from.** The
@@ -699,6 +723,14 @@ pub struct Serving {
 }
 
 impl Serving {
+    /// One, from its parts. Crate-private, for the same reason
+    /// [`Refreshing::of`] is, and used by [`for_session`] on both of its
+    /// arms — so a constructor that lost the refresh is the defect of
+    /// 2026-09-15 arriving in one place rather than two.
+    pub(crate) const fn over(body: Option<String>, refreshing: Option<Refreshing>) -> Self {
+        Self { body, refreshing }
+    }
+
     /// Nothing served and nothing to refresh.
     #[must_use]
     pub const fn nothing() -> Self {
@@ -714,7 +746,16 @@ impl Serving {
         self.body.as_deref()
     }
 
-    /// The refresh, taken out so the caller can spawn it.
+    /// Whether a refresh is owed.
+    ///
+    /// A caller that answers `true` and then does nothing is the defect the
+    /// artefact of 2026-09-15 found: see [`Self::take_refreshing`].
+    #[must_use]
+    pub const fn pending(&self) -> bool {
+        self.refreshing.is_some()
+    }
+
+    /// The refresh, taken out so the caller can run or spawn it.
     ///
     /// `None` where there is nothing to refresh **and where the fetch already
     /// happened on this thread**: a session that missed the cache has just
@@ -722,11 +763,58 @@ impl Serving {
     /// budget against an instance that has already answered — the same "there
     /// is deliberately no retry" [ADR-0005] D3's corpus states for itself.
     ///
+    /// # Every caller that takes one must run it, and here is what happens
+    /// when it does not
+    ///
+    /// **Found by running the binary on 2026-09-15 rather than by reading
+    /// it.** `compose::turn::task` dropped this, on the reasoning that a
+    /// one-shot process has no next frame to spend a second on. What that
+    /// actually produced was a `zaru "<task>"` surface on which **a page the
+    /// instance refuses is served from the cache for ever**: the eviction arm
+    /// is reached only by a refresh, so a token that had lost its membership
+    /// kept handing its old body to a model as a system prompt, session after
+    /// session. Measured: `persona.path` pointed at a page that does not
+    /// exist, with a stale line planted for it, and the request body carried
+    /// the stale body with the file unchanged.
+    ///
+    /// **So the refresh runs on both paths**, and the only difference is when:
+    /// the shell spawns it onto the runtime it already holds, and `task`
+    /// awaits it **after the turn**, where it cannot touch a prefix that was
+    /// built before the turn began. [ADR-0005] D8's "at once rather than at
+    /// the next open" is then true of both — the session that meets the
+    /// refusal is the session that empties the file.
+    ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     #[must_use]
     pub fn take_refreshing(&mut self) -> Option<Refreshing> {
         self.refreshing.take()
     }
+}
+
+/// Run an owed refresh to completion on a runtime built for it.
+///
+/// For a caller with **no runtime of its own that outlives the prefix** —
+/// `compose::turn::task`, which runs one turn and exits. A caller that holds
+/// one spawns [`Refreshing::refresh`] instead and does not come here.
+///
+/// **Call it after the turn, never before.** The whole reason the persona is
+/// resolved before the prefix exists is [ADR-0013] trigger clause 1, and a
+/// refresh that landed before the prefix was built would be a second answer to
+/// which page this session is running on.
+///
+/// A runtime that will not build, and every failure the refresh meets, are
+/// silent: the turn has already happened and there is nothing a person could
+/// do with the sentence.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+pub fn refresh_now(serving: &mut Serving) {
+    let Some(refreshing) = serving.take_refreshing() else {
+        return;
+    };
+    let Ok(runtime) = crate::compose::turn::runtime() else {
+        return;
+    };
+    drop(runtime.block_on(refreshing.refresh()));
 }
 
 /// [ADR-0027]'s persona for one session, resolved **before** its prefix exists.
@@ -781,17 +869,17 @@ pub fn for_session(resolution: &Resolution, workspace: Option<&str>) -> Serving 
     drop(cache.compact());
 
     match cache.read(&host, workspace, &path).ok().flatten() {
-        Some(hit) => Serving {
-            body: Some(hit.body),
-            refreshing: Some(Refreshing {
+        Some(hit) => Serving::over(
+            Some(hit.body),
+            Some(Refreshing::of(
                 host,
-                workspace: workspace.to_owned(),
+                workspace.to_owned(),
                 path,
                 secret,
                 cache,
                 held,
-            }),
-        },
+            )),
+        ),
         None => {
             // One synchronous fetch, on a runtime built for it and dropped
             // again -- the shape `compose::turn::block_on` already has, and
@@ -812,10 +900,7 @@ pub fn for_session(resolution: &Resolution, workspace: Option<&str>) -> Serving 
                 crate::terminal::corpus::now_in_millis(),
                 &held,
             );
-            Serving {
-                body: fetched.body().map(str::to_owned),
-                refreshing: None,
-            }
+            Serving::over(fetched.body().map(str::to_owned), None)
         }
     }
 }

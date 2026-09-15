@@ -1784,15 +1784,15 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     // arrived later could not reach layer 1 without breaking it. See
     // `crate::compose::persona`.
     //
-    // **The refresh is dropped on this path and that is stated rather than
-    // hidden**: `zaru "<task>"` runs one turn and exits, so there is no
-    // runtime that outlives this prefix and a task spawned here would be a
-    // silent no-op rather than a refresh. A person who only runs one-shot
-    // tasks sees a persona change on their next terminal session. That is the
-    // corpus's own shape -- this path touches `corpus.jsonl` not at all.
+    // **The refresh is owed and is run after the turn**, at the end of this
+    // function. It was dropped here until the artefact of 2026-09-15 ran, on
+    // the reasoning that a one-shot process has no next frame to spend a
+    // second on; what that produced was a surface on which a page the instance
+    // refuses is served from the cache for ever, because the eviction arm is
+    // reached only by a refresh. `persona::refresh_now`'s own documentation
+    // carries the measurement.
     let workspace = crate::manifest::attached_workspace(resolution);
     let mut serving = crate::compose::persona::for_session(resolution, workspace.as_deref());
-    drop(serving.take_refreshing());
 
     // --- ADR-0010 D1's session, and the first `meta.toml` a product writes --
     let (session, mut context) = match start(
@@ -1873,8 +1873,21 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         // callers; see `record_the_failure`.
         let classified = Surface::checkpoint(&failure, evidence);
         record_the_failure(&session, &classified);
+        // The refresh is owed on this path too, and a refused run owes it as
+        // much as a successful one: the instance's answer about what this
+        // token may read has nothing to do with whether the checkpoint wrote.
+        crate::compose::persona::refresh_now(&mut serving);
         return Ran::refused_having_said(ran.lines, classified);
     }
+
+    // --- ADR-0027's persona, refreshed for the next session ----------------
+    //
+    // **After the turn**, where it cannot touch a prefix built before it, and
+    // on a runtime of its own because this process has none that outlives
+    // either. It is what makes ADR-0005 D8's eviction reachable on this
+    // surface at all; see `persona::refresh_now` for the defect that being
+    // dropped here produced.
+    crate::compose::persona::refresh_now(&mut serving);
 
     ran
 }
