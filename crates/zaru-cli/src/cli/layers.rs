@@ -810,7 +810,7 @@ pub const WINDOW_WHEN_NO_PROVIDER: u64 = crate::providers::ollama::endpoint::DEF
 /// real limit" and "wrong for it" the moment a second kind had a client.
 /// Three kinds had clients when this changed. The window is now
 /// [ADR-0012] D3's capability descriptor's, per kind, and reaches here
-/// through [`crate::compose::Prepared::context_limits`]; the citation went
+/// through [`crate::compose::Prepared::context_shape`]; the citation went
 /// with it, to [`crate::providers::gemini::CONTEXT_WINDOW_TOKENS`].
 ///
 /// **The three quarters stayed**, and it is still the one place that

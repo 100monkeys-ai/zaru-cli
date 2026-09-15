@@ -90,7 +90,7 @@ pub mod sink;
 pub mod summarise;
 pub mod turn;
 
-pub use boundary::SessionContext;
+pub use boundary::{ContextShape, SessionContext};
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
 pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrated, Narrator};

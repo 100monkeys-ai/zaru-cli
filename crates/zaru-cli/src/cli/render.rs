@@ -597,10 +597,10 @@ pub fn thousands(tokens: u64) -> String {
 /// number nobody can read as near or far — approaching is a relation, so it
 /// needs the thing being approached.
 ///
-/// **The pressure threshold itself is deliberately not shown.** It is
-/// [`crate::cli::layers::PRESSURE_THRESHOLD_TOKENS`], it is not on `Usage`,
-/// and putting it here would be a third number on a row two records already
-/// share. What D6 asks for is that the number be visible and rising; where
+/// **The pressure threshold itself is deliberately not shown.** It is what
+/// [`crate::cli::layers::context_limits`] derives from the kind's window, it
+/// is not on `Usage`, and putting it here would be a third number on a row
+/// two records already share. What D6 asks for is that the number be visible and rising; where
 /// compaction begins is [ADR-0013] D3's announcement's job, which says so at
 /// the moment it happens. Ruled 2026-09-05 under directive 20, open to
 /// Jeshua's veto.

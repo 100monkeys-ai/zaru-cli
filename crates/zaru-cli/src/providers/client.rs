@@ -137,7 +137,6 @@ impl ProviderClient {
         }
     }
 
-    /// Send this client's answer text to `sender` as each frame arrives.
     /// What this client's tool surface costs, in bytes as it is sent.
     ///
     /// Dispatched to the kind that answers, because the wire shape is the
@@ -166,6 +165,7 @@ impl ProviderClient {
         }
     }
 
+    /// Send this client's answer text to `sender` as each frame arrives.
     pub fn stream_deltas_to(&self, sender: tokio::sync::mpsc::UnboundedSender<String>) {
         match self {
             Self::Gemini(client) => client.stream_deltas_to(sender),

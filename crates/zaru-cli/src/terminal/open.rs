@@ -391,6 +391,30 @@ pub fn shell_for(
     Ok((shell, transcript, trie, populating, resumed))
 }
 
+/// How a session's context is sized, whether or not a provider was prepared.
+///
+/// **A session whose `prepare` refused still opens**, says what is wrong, and
+/// shows [ADR-0013] D6's row while the reader reads that refusal — so it
+/// needs a window, and there is no provider to give it one. See
+/// [`crate::cli::layers::WINDOW_WHEN_NO_PROVIDER`]; the reserve is zero,
+/// because no client means no tool surface will be sent.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[must_use]
+pub fn context_shape_of(
+    prepared: Option<&crate::compose::Prepared>,
+) -> crate::compose::ContextShape {
+    prepared.map_or_else(
+        || {
+            crate::compose::ContextShape::of(
+                crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+                0,
+            )
+        },
+        crate::compose::Prepared::context_shape,
+    )
+}
+
 /// [ADR-0013] D1's layer 6 as this session left it, and which turn is next.
 ///
 /// # A resumed session does not remember its own conversation, until now
@@ -440,18 +464,15 @@ pub fn restored_context(
     resumed: &Resumed,
     classify: &Classify,
     evidence: SessionEvidence,
-    limits: zaru_core::context::ContextLimits,
-    reserved: u64,
+    shape: crate::compose::ContextShape,
 ) -> Result<crate::compose::SessionContext, Box<Exit>> {
     let prefix = crate::compose::prefix_for();
     match &resumed.checkpoint {
-        Some(checkpoint) => crate::compose::SessionContext::restored(
-            prefix, limits, reserved, checkpoint,
-        )
-        .map_err(|error| Box::new(Exit::Failed(classify.checkpoint_contents(&error, evidence)))),
-        None => Ok(crate::compose::SessionContext::opened(
-            prefix, limits, reserved,
-        )),
+        Some(checkpoint) => crate::compose::SessionContext::restored(prefix, shape, checkpoint)
+            .map_err(|error| {
+                Box::new(Exit::Failed(classify.checkpoint_contents(&error, evidence)))
+            }),
+        None => Ok(crate::compose::SessionContext::opened(prefix, shape)),
     }
 }
 
@@ -559,10 +580,7 @@ pub fn mint(
     // ADR-0013's window is the prepared provider's, and this session may have
     // none -- see `cli::layers::WINDOW_WHEN_NO_PROVIDER` for what a session
     // that cannot run a turn carries instead.
-    let limits = prepared.as_ref().map_or_else(
-        || crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-        crate::compose::Prepared::context_limits,
-    );
+    let shape = context_shape_of(prepared.as_ref());
     let workspace = crate::manifest::attached_workspace(&resolution);
     let (session, _) = crate::compose::turn::start(
         root,
@@ -570,10 +588,7 @@ pub fn mint(
         provider,
         workspace,
         here.root(),
-        limits,
-        prepared
-            .as_ref()
-            .map_or(0, crate::compose::Prepared::context_reserve),
+        shape,
         &classify,
     )
     .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
@@ -671,13 +686,7 @@ fn one_session(
         &resumed,
         &classify,
         session.evidence(),
-        prepared.as_ref().map_or_else(
-            |_| crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-            crate::compose::Prepared::context_limits,
-        ),
-        prepared
-            .as_ref()
-            .map_or(0, crate::compose::Prepared::context_reserve),
+        context_shape_of(prepared.as_ref().ok()),
     )?;
 
     let mut turns = match &prepared {

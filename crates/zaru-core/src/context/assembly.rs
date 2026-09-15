@@ -214,9 +214,10 @@ impl Context {
     /// deliberately **not** added when a single exchange is measured, because
     /// those measurements answer a different question:
     ///
-    /// - [`Self::oldest_span_covering`] asks how many of the oldest exchanges
-    ///   it takes to cover an overage. A fixed addend on each exchange would
-    ///   make every exchange look larger than it is and take too few.
+    /// - The span selection inside [`Self::compact`] asks how many of the
+    ///   oldest exchanges it takes to cover an overage. A fixed addend on
+    ///   each exchange would make every exchange look larger than it is and
+    ///   take too few.
     /// - ADR-0013 D3's announcement carries the before-and-after counts of
     ///   the span that was replaced. A fixed addend there would report a
     ///   compaction that saved bytes it never held.

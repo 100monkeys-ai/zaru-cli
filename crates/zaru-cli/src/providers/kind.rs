@@ -185,6 +185,17 @@ impl ProviderKind {
     /// refused by [`Key::new`].
     ///
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    #[must_use]
+    pub fn endpoint_key(self) -> Key {
+        Key::new(&format!(
+            "{}.{}.{}",
+            Self::TABLE,
+            self.key_segment(),
+            Self::ENDPOINT_LEAF
+        ))
+        .expect("ADR-0012 D3's kind segments are well-formed configuration keys")
+    }
+
     /// The [ADR-0014] configuration key that names this kind's context window.
     ///
     /// `provider.<kind>.context_tokens`. **A project may lower it and may not
@@ -209,17 +220,6 @@ impl ProviderKind {
             Self::TABLE,
             self.key_segment(),
             Self::CONTEXT_TOKENS_LEAF
-        ))
-        .expect("ADR-0012 D3's kind segments are well-formed configuration keys")
-    }
-
-    #[must_use]
-    pub fn endpoint_key(self) -> Key {
-        Key::new(&format!(
-            "{}.{}.{}",
-            Self::TABLE,
-            self.key_segment(),
-            Self::ENDPOINT_LEAF
         ))
         .expect("ADR-0012 D3's kind segments are well-formed configuration keys")
     }

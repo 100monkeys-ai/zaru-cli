@@ -90,6 +90,52 @@ use zaru_core::redaction::{Redacted, Redactor};
 /// reader that spell one key twice are two spellings that can drift.
 const EXCHANGES: &str = "exchanges";
 
+/// How a session's context is sized: its limits and what a request spends
+/// outside it.
+///
+/// # One value because they are one decision
+///
+/// Both come from [ADR-0012] D3's capability descriptor for the kind that
+/// answered — the window it declares, and the bytes its own wire mapping
+/// makes of the tool surface every exchange carries. They are resolved
+/// together in `crate::compose::turn::prepare` and used together by
+/// [`SessionContext::opened`] and [`SessionContext::restored`], and passing
+/// them separately through two callers was what took
+/// `crate::compose::turn::start` over clippy's argument bound — which is the
+/// lint doing its job: two parameters that always travel together are one
+/// value with no name yet.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextShape {
+    limits: ContextLimits,
+    reserved: u64,
+}
+
+impl ContextShape {
+    /// The limits a context is held under and what a request spends beside it.
+    #[must_use]
+    pub const fn of(limits: ContextLimits, reserved: u64) -> Self {
+        Self { limits, reserved }
+    }
+
+    /// [ADR-0013]'s window and pressure threshold.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    #[must_use]
+    pub const fn limits(self) -> ContextLimits {
+        self.limits
+    }
+
+    /// What every request spends that the context does not contain, in bytes.
+    ///
+    /// See [`zaru_core::context::Context::reserved`].
+    #[must_use]
+    pub const fn reserved(self) -> u64 {
+        self.reserved
+    }
+}
+
 /// A session's context, owned across the turns it holds.
 ///
 /// See the module documentation: this is the only thing that can compact, and
@@ -115,9 +161,9 @@ impl fmt::Debug for SessionContext {
 impl SessionContext {
     /// Open a session's context around a prefix that is now fixed.
     #[must_use]
-    pub const fn opened(prefix: StablePrefix, limits: ContextLimits, reserved: u64) -> Self {
+    pub const fn opened(prefix: StablePrefix, shape: ContextShape) -> Self {
         Self {
-            context: Context::opened(prefix, limits, reserved),
+            context: Context::opened(prefix, shape.limits(), shape.reserved()),
         }
     }
 
@@ -216,15 +262,14 @@ impl SessionContext {
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     pub fn restored(
         prefix: StablePrefix,
-        limits: ContextLimits,
-        reserved: u64,
+        shape: ContextShape,
         checkpoint: &serde_json::Value,
     ) -> Result<Self, serde_json::Error> {
         let stored = checkpoint
             .get(EXCHANGES)
             .unwrap_or(&serde_json::Value::Null);
         let exchanges: Vec<Exchange> = serde_json::from_value(stored.clone())?;
-        let mut context = Context::opened(prefix, limits, reserved);
+        let mut context = Context::opened(prefix, shape.limits(), shape.reserved());
         for exchange in exchanges {
             context.record_exchange(exchange);
         }

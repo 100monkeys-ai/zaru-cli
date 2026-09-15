@@ -879,7 +879,10 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
 
     // A session that said two things, checkpointed through the product's own
     // writer rather than by writing JSON here.
-    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits, 0);
+    let mut said = SessionContext::opened(
+        zaru_cli::compose::prefix_for(),
+        zaru_cli::compose::ContextShape::of(limits, 0),
+    );
     said.record(zaru_core::context::Exchange::of_turn(
         "user: remember the word saffron",
         &[],
@@ -908,8 +911,10 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         &reopened,
         &classifier(),
         evidence(),
-        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-        0,
+        zaru_cli::compose::ContextShape::of(
+            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+            0,
+        ),
     )
     .expect("a checkpoint this harness wrote reads back");
     let held_texts: Vec<&str> = restored
@@ -932,7 +937,10 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
     // holds the span it replaced. Restoring the transcript's records instead
     // would bring the span back.
     let span = format!("user: the raw span {NONCE} nobody should restore");
-    let mut compacted = SessionContext::opened(zaru_cli::compose::prefix_for(), limits, 0);
+    let mut compacted = SessionContext::opened(
+        zaru_cli::compose::prefix_for(),
+        zaru_cli::compose::ContextShape::of(limits, 0),
+    );
     compacted.record(zaru_core::context::Exchange::summary(
         "a summary standing for earlier turns",
     ));
@@ -955,8 +963,10 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         &reopened,
         &classifier(),
         evidence(),
-        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-        0,
+        zaru_cli::compose::ContextShape::of(
+            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+            0,
+        ),
     )
     .expect("the compacted checkpoint reads back");
     let rendered: String = restored
@@ -1003,8 +1013,10 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         &reopened,
         &classifier(),
         evidence(),
-        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-        0,
+        zaru_cli::compose::ContextShape::of(
+            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+            0,
+        ),
     )
     .expect("an absent checkpoint is not a failure");
     assert!(
@@ -1090,8 +1102,7 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
     let reopened = resumed(&directory);
     let error = SessionContext::restored(
         zaru_cli::compose::prefix_for(),
-        limits,
-        0,
+        zaru_cli::compose::ContextShape::of(limits, 0),
         reopened
             .checkpoint
             .as_ref()
@@ -1103,8 +1114,10 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         &reopened,
         &classifier(),
         evidence(),
-        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-        0,
+        zaru_cli::compose::ContextShape::of(
+            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+            0,
+        ),
     )
     .expect_err("the shell refuses to open over a checkpoint it cannot read");
 
@@ -1156,7 +1169,10 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
     }
 
     // The accepting sibling: the same document, well-formed.
-    let mut said = SessionContext::opened(zaru_cli::compose::prefix_for(), limits, 0);
+    let mut said = SessionContext::opened(
+        zaru_cli::compose::prefix_for(),
+        zaru_cli::compose::ContextShape::of(limits, 0),
+    );
     said.record(zaru_core::context::Exchange::verbatim(secret.clone()));
     zaru_cli::session::Checkpoint::at(directory.join("context.json"))
         .write(&said.checkpoint())
@@ -1166,8 +1182,10 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         &reopened,
         &classifier(),
         evidence(),
-        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-        0,
+        zaru_cli::compose::ContextShape::of(
+            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+            0,
+        ),
     )
     .expect("a checkpoint this harness wrote reads back");
     assert_eq!(
