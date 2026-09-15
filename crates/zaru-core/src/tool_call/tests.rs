@@ -11,7 +11,7 @@
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use crate::iteration::fixtures::ManualClock;
-use crate::iteration::port::Interruption;
+use crate::iteration::port::{ContextRefusal, Interruption};
 use crate::redaction::Redacted;
 use crate::redaction::fixtures::{
     HoldingOne, NothingHeld, ascii_core as redaction_ascii_core, staged_secret,
@@ -19,8 +19,8 @@ use crate::redaction::fixtures::{
 use crate::tool_call::error::{PortKind, ToolCallError};
 use crate::tool_call::event::{Event, TurnEnding};
 use crate::tool_call::fixtures::{
-    Act, Answer, Projector, Recorder, RecordingContext, StagedInner, StagedModel, StagedTools,
-    ascii_core, descriptor, nonce, request, tag,
+    Act, Answer, Projector, Recorder, RecordingContext, RefusingContext, StagedInner, StagedModel,
+    StagedTools, ascii_core, descriptor, nonce, request, tag,
 };
 use crate::tool_call::limits::ToolCallCeiling;
 use crate::tool_call::machine::{Outcome, Start, run};
@@ -722,6 +722,90 @@ async fn elapsed_comes_from_the_callers_clock_and_not_from_the_machines() {
     }
 }
 
+/// A turn whose context will not assemble carries both numbers out, and the
+/// model is never asked.
+///
+/// # The two halves, and why neither alone would do
+///
+/// [ADR-0013] D7's window-pressure route reaches *this* loop as well as the
+/// iteration loop's, and until 2026-09-15 it left here as a `PortFailure`
+/// holding a **string**: the refusal's two numbers were rendered into prose by
+/// `to_string()` and there was nothing structured left for `zaru-cli` to
+/// classify by, so a reader whose own `provider.<kind>.context_tokens` was too
+/// small was told they had found a bug in the harness. **So the first half is
+/// that the numbers survive the trip**, asserted as the two integers the
+/// policy refused with rather than as a substring of a sentence.
+///
+/// **The second half is that the model was never asked**, and it is what makes
+/// the arrangement checkable without a provider at all: assembly happens at
+/// the turn boundary and the socket only after it, so a turn that cannot
+/// assemble spends nothing. `StagedModel` records every prompt it is handed,
+/// and the assertion is that it recorded none.
+///
+/// The mutant: folding the refusal back into a `PortFailure`, which loses the
+/// numbers; and assembling after the first exchange rather than before it,
+/// which would spend a model call on a turn that cannot run.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[tokio::test]
+async fn a_context_that_will_not_fit_carries_both_numbers_out_and_asks_no_model() {
+    let clock = manual_clock();
+    let model = StagedModel::new(
+        vec![Answer::Text(nonce("an answer no turn should reach"))],
+        Arc::clone(&clock),
+        Duration::ZERO,
+    );
+    let mut executor = StagedTools::new(Vec::new(), tools(), Arc::clone(&clock), Duration::ZERO);
+    let context = RefusingContext {
+        refusal: ContextRefusal::WindowExceeded {
+            needed: 9_001,
+            window: 4_096,
+        },
+    };
+    let mut recorder = Recorder::default();
+
+    let error = run::<_, _, _, _, _, StagedInner>(
+        1,
+        Start::Task("t"),
+        roomy(),
+        ToolCalling::required(&model, "staged").expect("can call tools"),
+        Ports {
+            model: &model,
+            tools: &mut executor,
+            context: &context,
+            clock: &*clock,
+            redactor: &NothingHeld,
+        },
+        None,
+        &mut [&mut recorder],
+    )
+    .await
+    .expect_err("a turn that cannot assemble has no outcome to return");
+
+    match error {
+        ToolCallError::ContextWindowExceeded { needed, window } => {
+            assert_eq!(
+                (needed, window),
+                (9_001, 4_096),
+                "the refusal's own two numbers did not survive the trip out of the loop, so \
+                 nothing downstream can say by how much the window was missed"
+            );
+        }
+        ToolCallError::Port { port, failure, .. } => panic!(
+            "a window that will not fit left as a {} port failure saying {failure:?} -- the \
+             numbers are prose again and a classifier has nothing to read",
+            port.as_str()
+        ),
+    }
+
+    assert!(
+        model.prompts.lock().expect("prompts poisoned").is_empty(),
+        "the model was asked {:?} on a turn whose context never assembled; assembly is the turn \
+         boundary and nothing should be spent past it",
+        model.prompts.lock().expect("prompts poisoned")
+    );
+}
+
 /// ADR-0008 D5's three-way split, stated for this loop: a port failure is an
 /// error, and neither an answer nor an exhaustion.
 ///
@@ -773,6 +857,14 @@ async fn a_port_failure_is_an_error_and_neither_an_answer_nor_an_exhaustion() {
                 assert_eq!(port, which, "the error named the wrong port");
                 assert_eq!(round, 1, "it failed on the first exchange");
             }
+            // No staging here refuses on a window, so reaching this arm means
+            // a failing port was reported as a context that would not fit --
+            // a different register, and a different class in `zaru-cli`.
+            ToolCallError::ContextWindowExceeded { needed, window } => panic!(
+                "a failing {} port was reported as a window that will not fit, {needed} needed \
+                 against {window} allowed, and nothing staged here refuses on a window",
+                which.as_str()
+            ),
         }
         assert!(
             !recorder

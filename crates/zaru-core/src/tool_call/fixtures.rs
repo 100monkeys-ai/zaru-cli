@@ -315,6 +315,22 @@ impl ContextPolicy for RecordingContext {
     }
 }
 
+/// A context policy that refuses with whatever refusal it was built from.
+///
+/// [`RecordingContext`] always succeeds, which is right for every check about
+/// what a turn does once it has a prompt and useless for the one about what it
+/// does when it cannot get one.
+#[derive(Debug)]
+pub(super) struct RefusingContext {
+    pub(super) refusal: ContextRefusal,
+}
+
+impl ContextPolicy for RefusingContext {
+    async fn assemble(&self, _turn: &Turn<'_>) -> Result<Prompt, ContextRefusal> {
+        Err(self.refusal.clone())
+    }
+}
+
 /// An iteration loop that answers from a staged outcome and records that it
 /// was entered.
 #[derive(Debug)]
