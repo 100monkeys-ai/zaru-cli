@@ -17,11 +17,12 @@
 //! possible failure of it. `zaru providers keys add gemini` with a malformed
 //! `ZARU_CREDENTIAL_KEY` — the first error a person on a headless machine
 //! meets, because that machine has no keyring — answered a 191-byte remedy
-//! line reading `set ZARU_CREDENTIAL_KEY to exactly 64 lower-case hexadecimal`
-//! + twenty-two spaces + `characters; its current value is not, and neither it
-//! nor its length is` + twenty-two more + `quoted anywhere`. The literal was
-//! one source line carrying the indentation of the source lines it had been
-//! joined from, and six more literals carried twelve such runs between them.
+//! line made of `set ZARU_CREDENTIAL_KEY to exactly 64 lower-case hexadecimal`,
+//! then twenty-two spaces, then `characters; its current value is not, and
+//! neither it nor its length is`, then twenty-two more, then `quoted
+//! anywhere`. The literal was one source line carrying the indentation of the
+//! source lines it had been joined from, and six more literals carried twelve
+//! such runs between them.
 //!
 //! # The unit is a sentence, never a line, and that is the whole design
 //!
@@ -545,10 +546,10 @@ fn holds_a_width(literal: &str) -> bool {
         match byte {
             b'{' => opened = Some(at),
             b'}' => {
-                if let Some(from) = opened.take() {
-                    if bytes[from..at].contains(&b':') {
-                        return true;
-                    }
+                if let Some(from) = opened.take()
+                    && bytes[from..at].contains(&b':')
+                {
+                    return true;
                 }
             }
             _ => {}
