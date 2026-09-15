@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::composer::fixtures::{TrieOf, typing};
+use crate::composer::fixtures::{NoPaths, TrieOf, typing};
 use crate::shell::command::{LEAVE, Refused, Typed, read};
 use crate::shell::fixtures::{
     SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, cells, painted,
@@ -85,6 +85,7 @@ fn key(shell: &mut Shell, key: Key) -> Action {
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
+        &NoPaths,
     )
 }
 
@@ -1057,6 +1058,7 @@ fn both_ways_of_leaving_exit_zero() {
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
+        &NoPaths,
     );
     assert_eq!(action, Action::Leave(Leaving::Interrupt));
 
@@ -1139,7 +1141,14 @@ fn the_leave_rule_has_one_spelling_and_the_shell_uses_it() {
                     );
 
                     let mut shell = shell();
-                    let acted = shell.key(input, pane(), NOW, &TrieOf::new(0), &StagedVocabulary);
+                    let acted = shell.key(
+                        input,
+                        pane(),
+                        NOW,
+                        &TrieOf::new(0),
+                        &StagedVocabulary,
+                        &NoPaths,
+                    );
                     let acted_leave = match acted {
                         Action::Leave(leaving) => Some(leaving),
                         Action::Idle
@@ -1191,6 +1200,7 @@ fn an_interrupt_leaves_from_the_middle_of_a_line() {
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
+        &NoPaths,
     );
     assert_eq!(action, Action::Leave(Leaving::Interrupt));
 }
@@ -1379,6 +1389,7 @@ fn a_standing_question_absorbs_a_paste_and_the_composer_receives_none() {
         Duration::ZERO,
         &TrieOf::new(0),
         &StagedVocabulary,
+        &NoPaths,
     );
     assert_eq!(
         shell.composer().text(),
@@ -1402,6 +1413,7 @@ fn a_paste_reaches_the_composer_whole_when_no_question_stands() {
         Duration::ZERO,
         &TrieOf::new(0),
         &StagedVocabulary,
+        &NoPaths,
     );
     assert_eq!(
         shell.composer().text(),
@@ -1560,6 +1572,7 @@ fn a_paste_at_the_door_reaches_the_composer_and_answers_nothing() {
         Duration::ZERO,
         &TrieOf::new(0),
         &StagedVocabulary,
+        &NoPaths,
     );
     assert_eq!(
         shell.composer().text(),
@@ -2641,7 +2654,13 @@ fn corpus_a_pasted_block_cannot_forge_a_field_on_the_status_row() {
 
     let mut shell = shell();
     let before = shell.status().painted(WIDTH);
-    shell.pasted(&forgery, Duration::ZERO, &TrieOf::new(0), &StagedVocabulary);
+    shell.pasted(
+        &forgery,
+        Duration::ZERO,
+        &TrieOf::new(0),
+        &StagedVocabulary,
+        &NoPaths,
+    );
     let after = shell.status().painted(WIDTH);
     assert_eq!(
         before, after,
@@ -2694,7 +2713,7 @@ fn corpus_a_block_wider_than_the_frame_is_submitted_whole() {
     assert_eq!(block.chars().count(), 500);
 
     let mut shell = shell();
-    shell.pasted(&block, Duration::ZERO, &trie, &StagedVocabulary);
+    shell.pasted(&block, Duration::ZERO, &trie, &StagedVocabulary, &NoPaths);
     let (row, caret) = shell.composer().input_row(WIDTH);
     // One column short of the frame, because the caret sits at the right edge
     // and needs a cell — the same arithmetic `tui-textarea`'s own viewport
@@ -2723,7 +2742,13 @@ fn corpus_a_block_wider_than_the_frame_is_submitted_whole() {
     // The sibling: a block that fits is submitted whole too, so the assertion
     // above is not satisfied by an implementation that submits the row.
     let mut short = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
-    short.pasted("a short one", Duration::ZERO, &trie, &StagedVocabulary);
+    short.pasted(
+        "a short one",
+        Duration::ZERO,
+        &trie,
+        &StagedVocabulary,
+        &NoPaths,
+    );
     let (row, _) = short.composer().input_row(WIDTH);
     assert_eq!(row.trim_end(), "a short one");
     assert_eq!(
@@ -3479,7 +3504,13 @@ fn a_typed_line_still_reaches_the_composer_once_the_question_is_gone() {
 #[test]
 fn corpus_a_pasted_secret_reaches_no_cell_and_is_what_take_secret_yields() {
     let mut shell = asking_for_a_secret();
-    shell.pasted(TYPED_SECRET, NOW, &TrieOf::new(0), &StagedVocabulary);
+    shell.pasted(
+        TYPED_SECRET,
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary,
+        &NoPaths,
+    );
 
     let (rows, _) = painted(&shell, WIDTH, HEIGHT);
     assert!(
@@ -3521,7 +3552,7 @@ fn a_confirmation_still_absorbs_a_paste() {
         Answers::ToolCall,
         false,
     ));
-    shell.pasted("y\n", NOW, &TrieOf::new(0), &StagedVocabulary);
+    shell.pasted("y\n", NOW, &TrieOf::new(0), &StagedVocabulary, &NoPaths);
     assert!(
         shell.asking().is_some(),
         "the confirmation was answered by a paste"
@@ -3571,7 +3602,14 @@ fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
     ] {
         let mut shell = asking_for_a_secret();
         type_the_secret(&mut shell);
-        let acted = shell.key(input, pane(), NOW, &TrieOf::new(0), &StagedVocabulary);
+        let acted = shell.key(
+            input,
+            pane(),
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary,
+            &NoPaths,
+        );
         assert_eq!(
             acted,
             Action::Idle,
@@ -3612,6 +3650,7 @@ fn a_confirmation_still_ignores_ctrl_c() {
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
+        &NoPaths,
     );
     assert_eq!(acted, Action::Idle);
     assert!(
@@ -3905,7 +3944,8 @@ fn home_and_end_reach_the_pane_only_while_the_composer_is_empty() {
             pane,
             NOW,
             &TrieOf::new(0),
-            &StagedVocabulary
+            &StagedVocabulary,
+            &NoPaths,
         ),
         "Home on an empty composer is the pane's"
     );
@@ -3919,7 +3959,8 @@ fn home_and_end_reach_the_pane_only_while_the_composer_is_empty() {
             pane,
             NOW,
             &TrieOf::new(0),
-            &StagedVocabulary
+            &StagedVocabulary,
+            &NoPaths,
         ),
         "Home on a composer holding text belongs to the text area"
     );
@@ -3934,7 +3975,8 @@ fn home_and_end_reach_the_pane_only_while_the_composer_is_empty() {
             pane,
             NOW,
             &TrieOf::new(0),
-            &StagedVocabulary
+            &StagedVocabulary,
+            &NoPaths,
         ),
         "PageUp is the pane's whatever the composer holds"
     );
@@ -3955,7 +3997,8 @@ fn up_walks_the_history_and_down_walks_back_out_of_it() {
         pane,
         NOW,
         &TrieOf::new(0),
-        &StagedVocabulary
+        &StagedVocabulary,
+        &NoPaths,
     ));
     assert_eq!(
         shell.composer().text(),
@@ -3967,7 +4010,8 @@ fn up_walks_the_history_and_down_walks_back_out_of_it() {
         pane,
         NOW,
         &TrieOf::new(0),
-        &StagedVocabulary
+        &StagedVocabulary,
+        &NoPaths,
     ));
     assert_eq!(
         shell.composer().text(),
@@ -3979,7 +4023,8 @@ fn up_walks_the_history_and_down_walks_back_out_of_it() {
         pane,
         NOW,
         &TrieOf::new(0),
-        &StagedVocabulary
+        &StagedVocabulary,
+        &NoPaths,
     ));
     assert_eq!(
         shell.composer().text(),
@@ -3992,7 +4037,8 @@ fn up_walks_the_history_and_down_walks_back_out_of_it() {
         pane,
         NOW,
         &TrieOf::new(0),
-        &StagedVocabulary
+        &StagedVocabulary,
+        &NoPaths,
     ));
     assert_eq!(shell.composer().text(), "second task");
     assert!(shell.moved(
@@ -4000,7 +4046,8 @@ fn up_walks_the_history_and_down_walks_back_out_of_it() {
         pane,
         NOW,
         &TrieOf::new(0),
-        &StagedVocabulary
+        &StagedVocabulary,
+        &NoPaths,
     ));
     assert_eq!(
         shell.composer().text(),
@@ -4023,7 +4070,8 @@ fn the_walk_stops_at_an_edited_composer() {
         pane,
         NOW,
         &TrieOf::new(0),
-        &StagedVocabulary
+        &StagedVocabulary,
+        &NoPaths,
     ));
     typing(shell.composer_mut(), "!", NOW, &TrieOf::new(0));
     assert_eq!(shell.composer().text(), "first task!");
@@ -4034,7 +4082,8 @@ fn the_walk_stops_at_an_edited_composer() {
             pane,
             NOW,
             &TrieOf::new(0),
-            &StagedVocabulary
+            &StagedVocabulary,
+            &NoPaths,
         ),
         "a walk does not reach a composer somebody has typed into"
     );
@@ -4103,6 +4152,7 @@ fn a_masked_answer_never_becomes_a_submitted_line() {
             NOW,
             &TrieOf::new(0),
             &StagedVocabulary,
+            &NoPaths,
         );
     }
     assert_eq!(shell.composer().text(), "", "the composer saw none of it");

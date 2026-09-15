@@ -71,7 +71,7 @@ pub use port::{
     Register, Row, SecretAnswer, SecretRequest, TranscriptSource,
 };
 
-use crate::composer::{Composer, Entries};
+use crate::composer::{Composer, Entries, Paths};
 use core::time::Duration;
 use ratatui::layout::Rect;
 
@@ -1287,10 +1287,11 @@ impl Shell {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) {
         self.composer = Composer::new();
         if !text.is_empty() {
-            self.composer.paste(text, now, entries, vocabulary);
+            self.composer.paste(text, now, entries, vocabulary, paths);
         }
         self.walk.placed = Some(text.to_owned());
     }
@@ -1301,6 +1302,7 @@ impl Shell {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) {
         let next = match self.walk.at {
             None => self.walk.lines.len().checked_sub(1),
@@ -1309,7 +1311,7 @@ impl Shell {
         };
         if let Some(at) = next {
             let line = self.walk.lines[at].clone();
-            self.place(&line, now, entries, vocabulary);
+            self.place(&line, now, entries, vocabulary, paths);
             self.walk.at = Some(at);
         }
     }
@@ -1320,16 +1322,17 @@ impl Shell {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) {
         match self.walk.at {
             None => {}
             Some(at) if at + 1 < self.walk.lines.len() => {
                 let line = self.walk.lines[at + 1].clone();
-                self.place(&line, now, entries, vocabulary);
+                self.place(&line, now, entries, vocabulary, paths);
                 self.walk.at = Some(at + 1);
             }
             Some(_) => {
-                self.place("", now, entries, vocabulary);
+                self.place("", now, entries, vocabulary, paths);
                 self.walk.at = None;
             }
         }
@@ -1378,6 +1381,7 @@ impl Shell {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) -> bool {
         if input.ctrl || input.alt {
             return false;
@@ -1387,8 +1391,8 @@ impl Shell {
             Key::PageDown => self.page_down(pane.height, pane.width),
             Key::Home if self.composer.text().is_empty() => self.to_top(),
             Key::End if self.composer.text().is_empty() => self.to_tail(),
-            Key::Up if self.walkable() => self.walk_back(now, entries, vocabulary),
-            Key::Down if self.walkable() => self.walk_forward(now, entries, vocabulary),
+            Key::Up if self.walkable() => self.walk_back(now, entries, vocabulary, paths),
+            Key::Down if self.walkable() => self.walk_forward(now, entries, vocabulary, paths),
             _ => return false,
         }
         true
@@ -1553,6 +1557,7 @@ impl Shell {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) -> Action {
         if let Some(Standing::Secret(_, typed)) = &mut self.standing {
             match input.key {
@@ -1592,7 +1597,7 @@ impl Shell {
                 Key::Char(_)
                     if answers.spare_input_reaches_the_composer() && !input.ctrl && !input.alt =>
                 {
-                    self.composer.key(input, now, entries, vocabulary);
+                    self.composer.key(input, now, entries, vocabulary, paths);
                 }
                 _ => {}
             }
@@ -1609,12 +1614,12 @@ impl Shell {
         // The pane's window and the history walk, before the composer sees
         // the key. `moved` is the whole table and its one other caller is the
         // read that happens while a turn runs.
-        if self.moved(&input, pane, now, entries, vocabulary) {
+        if self.moved(&input, pane, now, entries, vocabulary, paths) {
             return Action::Idle;
         }
 
         if input.key != Key::Enter {
-            self.composer.key(input, now, entries, vocabulary);
+            self.composer.key(input, now, entries, vocabulary, paths);
             return Action::Idle;
         }
 
@@ -1634,11 +1639,12 @@ impl Shell {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) -> Action {
         match struck {
-            Struck::Key(input) => self.key(input, pane, now, entries, vocabulary),
+            Struck::Key(input) => self.key(input, pane, now, entries, vocabulary, paths),
             Struck::Pasted(text) => {
-                self.pasted(&text, now, entries, vocabulary);
+                self.pasted(&text, now, entries, vocabulary, paths);
                 Action::Idle
             }
         }
@@ -1671,6 +1677,7 @@ impl Shell {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) {
         // **A secret question takes it**, where a confirmation absorbs it, and
         // the two rules are consistent rather than in tension. The failure a
@@ -1687,7 +1694,7 @@ impl Shell {
         {
             return;
         }
-        self.composer.paste(text, now, entries, vocabulary);
+        self.composer.paste(text, now, entries, vocabulary, paths);
     }
 
     /// Read one composed line as [ADR-0015] D2's grammar reads it.

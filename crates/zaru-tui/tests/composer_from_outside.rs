@@ -26,9 +26,22 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use tui_textarea::{Input, Key};
 use zaru_tui::composer::{
-    Composer, Entries, Entry, EntryKind, KEYWORD_ONLY, Scope, SearchResponse,
+    Composer, Entries, Entry, EntryKind, KEYWORD_ONLY, PathEntry, Paths, Scope, SearchResponse,
 };
 use zaru_tui::shell::{CommandVocabulary, Namespace};
+
+/// A working directory a stranger could write, holding nothing.
+///
+/// Every check in this file is about the Nuclear Notes tiers, so the third
+/// corpus answers nothing and says nothing: a row from it appearing in a
+/// frame here would be a row this file did not stage.
+struct NoPaths;
+
+impl Paths for NoPaths {
+    fn matches(&self, _prefix: &str, _limit: usize) -> Vec<PathEntry> {
+        Vec::new()
+    }
+}
 
 /// A trie a stranger could write, holding two entities.
 struct Notes;
@@ -114,6 +127,7 @@ fn a_caller_outside_this_crate_can_drive_the_composer_to_a_frame() {
             typed_at,
             &notes,
             &Commands,
+            &NoPaths,
         );
     }
 

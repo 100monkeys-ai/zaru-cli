@@ -35,11 +35,13 @@
 //! [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 
 pub mod entries;
+pub mod paths;
 pub mod render;
 pub mod search;
 pub mod strip;
 
 pub use entries::{Entries, Entry, EntryKind};
+pub use paths::{PathEntry, Paths};
 pub use render::{KEYWORD_ONLY, continues};
 pub use search::{
     DEBOUNCE, MIN_QUERY_CHARS, RequestRefused, Scope, SearchRequest, SearchResponse, SearchState,
@@ -49,7 +51,7 @@ pub use strip::{PickerKind, StripContent, StripMode};
 use crate::shell::port::{CommandVocabulary, Extension, Namespace};
 use core::cell::Cell;
 use core::time::Duration;
-use tui_textarea::{Input, Key, TextArea};
+use tui_textarea::{CursorMove, Input, Key, TextArea};
 
 /// How many entries the strip asks the corpus for.
 ///
@@ -164,6 +166,9 @@ enum Intent {
     },
     /// The cursor sits inside an explicit picker's token. D1 row 6.
     Picker { kind: PickerKind, filter: String },
+    /// The cursor sits inside an `@` token: the path corpus, filtered by what
+    /// follows the sigil. See [`StripContent::Paths`].
+    Paths { filter: String },
     /// Ordinary text. D1 rows 4 and 5, split on the character floor.
     Query { query: String, tag: Option<String> },
 }
@@ -180,6 +185,14 @@ pub struct Composer {
     tip: Option<String>,
     /// The trie's matches for whatever the input currently asks for.
     matches: Vec<Entry>,
+    /// The path corpus's matches for whatever follows an `@`, or empty when
+    /// the cursor is not inside one.
+    ///
+    /// Cached on the keystroke exactly as [`Composer::matches`] and
+    /// [`Composer::commands`] are, for D1's own reason: the strip's content is
+    /// a pure function of composer state, so no arm of [`Composer::strip`]
+    /// may reach a port.
+    path_matches: Vec<PathEntry>,
     /// The command namespaces the word being typed reaches, in [ADR-0015] D2's
     /// table order, or empty when the line is not a command line being typed.
     ///
@@ -209,6 +222,15 @@ pub struct Composer {
     /// What to say when the fast tier has nothing to search, or `None` when it
     /// has. Handed in, exactly as a standing tip is — see [`Composer::set_absence`].
     absence: Option<String>,
+    /// The same, for the path corpus, and a separate field rather than a
+    /// second use of the one above.
+    ///
+    /// A session can perfectly well have a cortex to search and a working
+    /// directory with nothing to offer, or the reverse, and the two sentences
+    /// are about different things. One field would make the strip say the
+    /// wrong one in exactly those sessions. Handed in — see
+    /// [`Composer::set_path_absence`].
+    path_absence: Option<String>,
     /// When the text last changed, in the caller's clock.
     last_edit: Duration,
     /// The query a request has already been emitted for, so one query produces
@@ -251,11 +273,13 @@ impl Composer {
             deposits: 0,
             tip: None,
             matches: Vec::new(),
+            path_matches: Vec::new(),
             commands: Vec::new(),
             extensions: Vec::new(),
             server: None,
             search: SearchState::Idle,
             absence: None,
+            path_absence: None,
             last_edit: Duration::ZERO,
             requested: None,
             window: Cell::new(0),
@@ -395,6 +419,21 @@ impl Composer {
         self.absence = absence;
     }
 
+    /// What the strip says when the **path corpus** has nothing to offer.
+    ///
+    /// The same door as [`Composer::set_absence`] and a separate one on
+    /// purpose. What a working directory holds is the host's knowledge and not
+    /// this crate's — this crate cannot open a directory at all — and the two
+    /// corpora fail independently, so a session with a cortex and an empty
+    /// tree must be able to say the second thing without claiming the first.
+    ///
+    /// `Some` means the corpus has nothing to offer and this is why; `None`
+    /// means it has something, and a filter matching nothing is then an
+    /// ordinary miss.
+    pub fn set_path_absence(&mut self, absence: Option<String>) {
+        self.path_absence = absence;
+    }
+
     /// Apply one keystroke at `now`, and refresh both corpora.
     ///
     /// The trie is consulted here, on every keystroke that leaves something to
@@ -435,20 +474,40 @@ impl Composer {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) {
-        if input.key == Key::Tab
-            && !input.ctrl
-            && !input.alt
-            && let Intent::Command { picking } = self.intent()
-        {
-            if let Some(filter) = picking {
-                self.complete(&filter);
+        if input.key == Key::Tab && !input.ctrl && !input.alt {
+            match self.intent() {
+                Intent::Command { picking } => {
+                    if let Some(filter) = picking {
+                        self.complete(&filter);
+                    }
+                    self.refreshed(now, entries, vocabulary, paths);
+                    return;
+                }
+                Intent::Paths { filter } => {
+                    self.complete_path(&filter);
+                    self.refreshed(now, entries, vocabulary, paths);
+                    return;
+                }
+                // An open `[[` picker absorbs `Tab` and completes nothing.
+                // **Absorbing it is the fix rather than the tidy**: the key
+                // fell through to `tui-textarea`'s `insert_tab`, the spaces it
+                // inserted emptied the cursor's token, and the intent silently
+                // became a query — so a person who pressed `Tab` at a picker
+                // watched it turn into a search of their notes. Measured on
+                // the release binary at `3c1bf0a`. What `Tab` should *insert*
+                // at a `[[` picker is a citation under D5, which is not built,
+                // so nothing is invented here.
+                Intent::Picker { .. } => {
+                    self.refreshed(now, entries, vocabulary, paths);
+                    return;
+                }
+                Intent::Empty | Intent::Query { .. } => {}
             }
-            self.refreshed(now, entries, vocabulary);
-            return;
         }
         self.input.input(input);
-        self.refreshed(now, entries, vocabulary);
+        self.refreshed(now, entries, vocabulary, paths);
     }
 
     /// Replace the word being typed with the one namespace it reaches.
@@ -486,6 +545,95 @@ impl Composer {
         self.window.set(0);
     }
 
+    /// Replace the `@` token at the cursor with as much as the corpus agrees
+    /// on.
+    ///
+    /// # It completes the longest common prefix, and the command picker's
+    /// uniqueness rule could not work here
+    ///
+    /// [`Composer::complete`] completes only where exactly one namespace
+    /// matched, which is right for a flat vocabulary of a dozen words. A tree
+    /// is not flat: `src/` and `src/lib.rs` are two entries and every prefix
+    /// of the first is a prefix of the second, so a rule keyed on "exactly
+    /// one" would refuse to complete **any** directory that had anything in
+    /// it — which is every directory worth offering, and would make the
+    /// descend-on-`Tab` behaviour unreachable.
+    ///
+    /// So the rule is the shell's own and the one a person's hands already
+    /// know: complete to the longest prefix every match shares, and insert
+    /// nothing when that is already what was typed. A single match completes
+    /// whole, because a set of one shares all of it. `séance.txt` and `src/`
+    /// against `@s` share only the `s` that was typed, so nothing is inserted
+    /// — the ambiguous case, reached by the same arithmetic rather than by a
+    /// second rule.
+    ///
+    /// # A possibly-truncated set completes nothing
+    ///
+    /// The corpus is asked for at most [`MATCH_LIMIT`] entries, so a filter
+    /// reaching more than that is answered with a **prefix of the matches**
+    /// and a common prefix computed over it could be longer than the whole
+    /// set's — `src/` completed over eight files under `src` while a ninth
+    /// match, `style.css`, was never returned. A full answer is therefore
+    /// treated as "the corpus has not finished narrowing" and completes
+    /// nothing; the overflow row `render::fitted` paints already says `type to
+    /// narrow`, which is the same instruction.
+    ///
+    /// # It edits the token and never the line
+    ///
+    /// [`Composer::complete`] rebuilds the whole prompt, which it may do
+    /// because a command line is the word and nothing else. An `@` token can
+    /// sit anywhere — `read @src/l` is the ordinary shape — so this one
+    /// replaces the run of characters from the sigil to the cursor and leaves
+    /// everything on either side, the caret included, where it was.
+    ///
+    /// # A directory keeps its separator, which is what makes the next `Tab`
+    /// descend
+    ///
+    /// The corpus offers a directory as `src/`, so completing it leaves the
+    /// cursor after the separator and the next keystroke narrows inside it.
+    /// Nothing special happens on the second `Tab`: `src/` is simply a filter
+    /// that only the entries under `src` begin with.
+    fn complete_path(&mut self, filter: &str) {
+        if self.path_matches.len() >= MATCH_LIMIT {
+            return;
+        }
+        let Some(spelling) = shared_prefix(&self.path_matches) else {
+            return;
+        };
+        if spelling == filter {
+            return;
+        }
+        let lines = self.input.lines().to_vec();
+        let (row, col) = self.input.cursor();
+        let line = lines.get(row).map_or("", String::as_str);
+        let before: String = line.chars().take(col).collect();
+        let after: String = line.chars().skip(col).collect();
+        // The token is `@` and the filter, which is exactly what `intent`
+        // matched to get here, so its length is known rather than re-derived.
+        let kept: String = before
+            .chars()
+            .take(col.saturating_sub(filter.chars().count() + 1))
+            .collect();
+        let head = format!("{kept}@{spelling}");
+        let caret = u16::try_from(head.chars().count()).unwrap_or(u16::MAX);
+        let mut replaced = lines;
+        let rebuilt = format!("{head}{after}");
+        if let Some(slot) = replaced.get_mut(row) {
+            *slot = rebuilt;
+        }
+        let mut input = TextArea::default();
+        input.insert_str(replaced.join("\n"));
+        input.move_cursor(CursorMove::Jump(
+            u16::try_from(row).unwrap_or(u16::MAX),
+            caret,
+        ));
+        self.input = input;
+        // The window is sticky by design and the row under it has just been
+        // rewritten, so the only honest starting point is the left edge — the
+        // reasoning `complete` already carries.
+        self.window.set(0);
+    }
+
     /// Insert a pasted block at `now`, newlines and all, and refresh the same
     /// tier a keystroke refreshes.
     ///
@@ -512,9 +660,10 @@ impl Composer {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) {
         self.input.insert_str(text);
-        self.refreshed(now, entries, vocabulary);
+        self.refreshed(now, entries, vocabulary, paths);
     }
 
     /// Mark the text edited at `now` and re-ask the fast tier.
@@ -528,6 +677,7 @@ impl Composer {
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
+        paths: &dyn Paths,
     ) {
         self.last_edit = now;
 
@@ -547,6 +697,7 @@ impl Composer {
             Intent::Command { picking: None }
             | Intent::Empty
             | Intent::Picker { .. }
+            | Intent::Paths { .. }
             | Intent::Query { .. } => Vec::new(),
         };
         // The same narrowing over the same keystroke, on the corpus a project
@@ -563,12 +714,27 @@ impl Composer {
             Intent::Command { picking: None }
             | Intent::Empty
             | Intent::Picker { .. }
+            | Intent::Paths { .. }
+            | Intent::Query { .. } => Vec::new(),
+        };
+        // The **third** corpus, narrowed by the same rule on the same
+        // keystroke: the working directory, offered only while the cursor sits
+        // inside an `@` token. The port is asked here rather than in
+        // `Composer::strip`, so that arm stays a pure function of composer
+        // state — D1's own clause, and the reason the other two are cached.
+        self.path_matches = match &intent {
+            Intent::Paths { filter } => paths.matches(filter, MATCH_LIMIT),
+            Intent::Command { .. }
+            | Intent::Empty
+            | Intent::Picker { .. }
             | Intent::Query { .. } => Vec::new(),
         };
         match &intent {
             // ADR-0015 D2 decides this before the strip sees the keystroke: a
             // leading `/` is a command, and a command is not a search.
-            Intent::Empty | Intent::Command { .. } => self.matches.clear(),
+            // The path corpus is not the trie's, so a keystroke inside an `@`
+            // token leaves the trie alone exactly as a command line does.
+            Intent::Empty | Intent::Command { .. } | Intent::Paths { .. } => self.matches.clear(),
             Intent::Picker { kind, filter } => {
                 self.matches = entries
                     .matches(filter, MATCH_LIMIT)
@@ -585,7 +751,10 @@ impl Composer {
         // old one, and re-arms the debounce for the new one.
         let asking_for = match &intent {
             Intent::Query { query, .. } => Some(query.as_str()),
-            Intent::Empty | Intent::Command { .. } | Intent::Picker { .. } => None,
+            Intent::Empty
+            | Intent::Command { .. }
+            | Intent::Picker { .. }
+            | Intent::Paths { .. } => None,
         };
         if self.requested.as_deref() != asking_for {
             self.requested = None;
@@ -602,6 +771,9 @@ impl Composer {
     /// been emitted. A keystroke inside the window moves `last_edit`, so the
     /// window restarts rather than a second request queuing behind the first.
     pub fn step(&mut self, now: Duration) -> Option<SearchRequest> {
+        // Every other intent returns here, the path corpus included: it is
+        // local, it is not a search, and D3's slow tier has nothing to say
+        // about a filename.
         let Intent::Query { query, tag } = self.intent() else {
             return None;
         };
@@ -669,6 +841,10 @@ impl Composer {
                 filter,
                 matches: self.matches.clone(),
             },
+            Intent::Paths { filter } => StripContent::Paths {
+                filter,
+                matches: self.path_matches.clone(),
+            },
             Intent::Query { query, .. } => {
                 if query.chars().count() < MIN_QUERY_CHARS {
                     StripContent::Trie {
@@ -687,9 +863,20 @@ impl Composer {
     /// What the text and the cursor are asking for.
     ///
     /// The cursor token is the run of non-whitespace characters ending at the
-    /// cursor. ADR-0005 D4 gives `[[` and `@` their meanings; `#` is not a
-    /// picker here, because D4 has it "scope the live search" and attach
-    /// nothing, and D1 row 6 names only the other two.
+    /// cursor. ADR-0005 D4 gives `[[` its meaning and the amendment of
+    /// 2026-09-15 gives `@` the path corpus; `#` is not a picker here, because
+    /// D4 has it "scope the live search" and attach nothing.
+    ///
+    /// # The token must **begin** with the sigil, and that is what keeps an
+    /// email address typeable
+    ///
+    /// `a@b.com` is one token and it does not start with `@`, so it is
+    /// ordinary text and reaches the hint tiers as a query — measured on the
+    /// release binary before this change and asserted by
+    /// `an_at_inside_a_word_opens_no_path_corpus` after it. Nothing about that
+    /// rule is new; it is the shape this function has always had, and it is
+    /// written down here because the path corpus is the first sigil for which
+    /// a person would notice if it were wrong.
     fn intent(&self) -> Intent {
         let lines = self.input.lines();
         let text = lines.join("\n");
@@ -730,8 +917,7 @@ impl Composer {
             };
         }
         if let Some(filter) = token.strip_prefix('@') {
-            return Intent::Picker {
-                kind: PickerKind::Atoms,
+            return Intent::Paths {
                 filter: filter.to_owned(),
             };
         }
@@ -749,6 +935,28 @@ impl Composer {
             tag,
         }
     }
+}
+
+/// The longest prefix every spelling in `matches` shares, or `None` when there
+/// are none.
+///
+/// Compared by **character** rather than by byte, so a common prefix can never
+/// be cut inside a multi-byte one — the same reason ADR-0005 D3's floor counts
+/// characters, and the difference shows on exactly the accented names a
+/// project is full of.
+fn shared_prefix(matches: &[PathEntry]) -> Option<String> {
+    let mut entries = matches.iter();
+    let mut shared: Vec<char> = entries.next()?.spelling().chars().collect();
+    for entry in entries {
+        let common = entry
+            .spelling()
+            .chars()
+            .zip(shared.iter())
+            .take_while(|(a, b)| a == *b)
+            .count();
+        shared.truncate(common);
+    }
+    Some(shared.into_iter().collect())
 }
 
 /// The window of `text` from display column `start`, `budget` columns wide.
@@ -813,10 +1021,12 @@ pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests {
     use super::fixtures::{
-        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, VocabularyOf, press, server_results,
-        typing, typing_with,
+        CountingTrie, NoPaths, PathsOf, SERVER_NONCE, TRIE_NONCE, TrieOf, VocabularyOf, press,
+        press_paths, server_results, typing, typing_paths, typing_with,
     };
-    use super::{Composer, DEBOUNCE, PickerKind, Scope, SearchResponse, StripContent, StripMode};
+    use super::{
+        Composer, DEBOUNCE, PathEntry, PickerKind, Scope, SearchResponse, StripContent, StripMode,
+    };
     use crate::shell::fixtures::StagedVocabulary;
     use crate::shell::port::CommandVocabulary;
     use core::time::Duration;
@@ -968,10 +1178,18 @@ mod tests {
         );
     }
 
-    /// ADR-0005 D4. The two pickers mean different things and offer different
-    /// things: `[[` is a citation over pages and atoms, `@` a transclusion
-    /// over atoms. The staged trie returns one of each kind, so a picker that
-    /// offered everything would be visible here.
+    /// ADR-0005 D4 as amended 2026-09-15. The two pickers mean different
+    /// things and offer different **corpora**: `[[` is a citation over the
+    /// cortex's pages and atoms, `@` the working directory.
+    ///
+    /// **The name is unchanged and so is its truth.** It said "different
+    /// pickers" when `@` was a transclusion over atoms and it says the same
+    /// now that `@` is the path corpus; what moved is which corpus the second
+    /// one is over, which the body asserts and the name never stated. The
+    /// staged trie returns one page and one atom, so a `[[` that offered less
+    /// than both would be visible here, and the staged working directory holds
+    /// a spelling no trie entry could produce, so a `@` served from the trie
+    /// would be too.
     #[test]
     fn a_double_bracket_and_an_at_open_different_pickers() {
         let trie = CountingTrie::staged();
@@ -997,31 +1215,20 @@ mod tests {
             "`[[` offers pages and atoms, and the staged trie holds one of each: {matches:?}"
         );
 
-        let mut transcluding = Composer::new();
-        typing(&mut transcluding, "@é", Duration::ZERO, &trie);
-        let StripContent::Picker {
-            kind,
-            filter,
-            matches,
-        } = transcluding.strip()
-        else {
+        let tree = PathsOf::new(["édge-case.md", "src/"]);
+        let mut naming = Composer::new();
+        typing_paths(&mut naming, "@é", Duration::ZERO, &trie, &tree);
+        let StripContent::Paths { filter, matches } = naming.strip() else {
             panic!(
-                "`@` did not open a picker; the strip was {:?}",
-                transcluding.strip()
+                "`@` did not open the path corpus; the strip was {:?}",
+                naming.strip()
             );
         };
-        assert_eq!(kind, PickerKind::Atoms);
         assert_eq!(filter, "é");
         assert_eq!(
-            matches.len(),
-            1,
-            "`@` offers atoms alone, and the staged trie holds one atom and one page: {matches:?}"
-        );
-        assert!(
-            matches
-                .iter()
-                .all(|entry| entry.kind == super::EntryKind::Atom),
-            "a page reached the `@` picker: {matches:?}"
+            matches.iter().map(PathEntry::spelling).collect::<Vec<_>>(),
+            ["édge-case.md"],
+            "`@` offers the working directory, narrowed by what follows the sigil: {matches:?}"
         );
     }
 
@@ -1352,6 +1559,233 @@ mod tests {
         );
     }
 
+    /// `@` narrows the working directory and `Tab` completes the one spelling
+    /// it reaches, in five arms, the shape the command picker's own `Tab`
+    /// check already has.
+    ///
+    /// The arms are the uniqueness rule's whole surface: one match, several,
+    /// none, the spelling already whole, and the sigil sitting mid-line, which
+    /// is the shape `read @src/l` has and the one the command picker cannot
+    /// produce because its sigil is always the first character.
+    #[test]
+    fn tab_completes_a_unique_path_and_otherwise_inserts_nothing() {
+        for (typed, after, why) in [
+            (
+                "@RE",
+                "@README.md",
+                "a unique incomplete spelling is completed",
+            ),
+            (
+                "@s",
+                "@s",
+                "the spellings beginning with `s` share only the `s` that was typed",
+            ),
+            (
+                "@",
+                "@",
+                "a bare `@` reaches every spelling and completes none of them",
+            ),
+            (
+                "@README.md",
+                "@README.md",
+                "the whole spelling is already there and there is nothing to add",
+            ),
+            (
+                "@zzz",
+                "@zzz",
+                "nothing begins with `zzz`, and a miss completes nothing",
+            ),
+            (
+                "read @RE",
+                "read @README.md",
+                "the sigil need not start the line; the token at the cursor is what is replaced",
+            ),
+        ] {
+            let trie = CountingTrie::staged();
+            let tree = PathsOf::new(["README.md", "src/", "src/lib.rs", "séance.txt"]);
+            let mut composer = Composer::new();
+            typing_paths(&mut composer, typed, Duration::ZERO, &trie, &tree);
+            press_paths(&mut composer, Key::Tab, &trie, &tree);
+            assert_eq!(
+                composer.text(),
+                after,
+                "{typed:?} then Tab should hold {after:?} because {why}; it holds {:?}",
+                composer.text()
+            );
+        }
+    }
+
+    /// A directory keeps its separator and the next `Tab` descends into it.
+    ///
+    /// Two presses in one check, because the property is the *sequence*: the
+    /// first completes `src/` and the second completes the one thing under it.
+    /// Asserted on the composer's own bytes, so an implementation that dropped
+    /// the separator would complete `src` and then have nothing to descend
+    /// into.
+    #[test]
+    fn a_directory_completes_with_its_separator_and_the_next_tab_descends() {
+        let trie = CountingTrie::staged();
+        let tree = PathsOf::new(["README.md", "src/", "src/lib.rs"]);
+        let mut composer = Composer::new();
+        typing_paths(&mut composer, "@sr", Duration::ZERO, &trie, &tree);
+        press_paths(&mut composer, Key::Tab, &trie, &tree);
+        assert_eq!(
+            composer.text(),
+            "@src/",
+            "a directory is completed with the separator that lets the next keystroke narrow \
+             inside it; the composer holds {:?}",
+            composer.text()
+        );
+        press_paths(&mut composer, Key::Tab, &trie, &tree);
+        assert_eq!(
+            composer.text(),
+            "@src/lib.rs",
+            "the second Tab descends, because `src/` is a filter only what is under it begins \
+             with; the composer holds {:?}",
+            composer.text()
+        );
+    }
+
+    /// An `@` inside a word is not a sigil, so an email address stays
+    /// typeable.
+    ///
+    /// The accepting sibling is the same text with the `@` starting a word:
+    /// without it, an implementation that never opened the corpus at all would
+    /// pass the first half.
+    #[test]
+    fn an_at_inside_a_word_opens_no_path_corpus() {
+        let trie = CountingTrie::staged();
+        let tree = PathsOf::new(["README.md"]);
+
+        let mut writing = Composer::new();
+        typing_paths(
+            &mut writing,
+            "mail me at a@b.com",
+            Duration::ZERO,
+            &trie,
+            &tree,
+        );
+        assert!(
+            !matches!(writing.strip(), StripContent::Paths { .. }),
+            "`a@b.com` is one token that does not begin with the sigil, so it is ordinary text; \
+             the strip was {:?}",
+            writing.strip()
+        );
+
+        let mut naming = Composer::new();
+        typing_paths(&mut naming, "mail me at @RE", Duration::ZERO, &trie, &tree);
+        assert!(
+            matches!(naming.strip(), StripContent::Paths { .. }),
+            "a sigil that does begin a word opens the corpus, which is what makes the arm above \
+             a statement about the position rather than about the corpus; the strip was {:?}",
+            naming.strip()
+        );
+    }
+
+    /// The path corpus is local and is not a search, so no keystroke inside it
+    /// emits a request however long the host waits.
+    ///
+    /// Clause 1's property, held for the third corpus: the count is the
+    /// check's own rather than anything the composer reports about itself, and
+    /// the instants step well past the debounce.
+    #[test]
+    fn the_path_corpus_emits_no_search_request() {
+        let trie = CountingTrie::staged();
+        let tree = PathsOf::new(["README.md", "src/lib.rs"]);
+        let mut composer = Composer::new();
+        typing_paths(&mut composer, "@README", Duration::ZERO, &trie, &tree);
+        for instant in [0, 250, 500, 1_000, 10_000] {
+            assert!(
+                composer.step(Duration::from_millis(instant)).is_none(),
+                "a path is not a query, so nothing may be emitted at {instant} ms"
+            );
+        }
+    }
+
+    /// `Tab` at an open `[[` picker inserts nothing and leaves the picker
+    /// open.
+    ///
+    /// The defect this is written against: the key fell through to
+    /// `tui-textarea`'s `insert_tab`, the spaces emptied the cursor's token,
+    /// and the picker silently became a search of the notes — measured on the
+    /// release binary at `3c1bf0a`. Both halves are asserted, because an
+    /// implementation that absorbed the key and *closed* the picker would pass
+    /// the first.
+    #[test]
+    fn tab_at_a_notes_picker_inserts_nothing_and_leaves_it_open() {
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "[[é", Duration::ZERO, &trie);
+        press(&mut composer, Key::Tab, &trie);
+        assert_eq!(
+            composer.text(),
+            "[[é",
+            "Tab at a picker inserts nothing; the composer holds {:?}",
+            composer.text()
+        );
+        assert!(
+            matches!(composer.strip(), StripContent::Picker { .. }),
+            "the picker is still open after Tab, rather than having become a query; the strip was \
+             {:?}",
+            composer.strip()
+        );
+    }
+
+    /// The same, for the path corpus: `Tab` that completes nothing still
+    /// leaves the corpus open rather than turning it into a search.
+    #[test]
+    fn tab_that_completes_no_path_leaves_the_corpus_open() {
+        let trie = CountingTrie::staged();
+        let tree = PathsOf::new(["src/", "séance.txt"]);
+        let mut composer = Composer::new();
+        typing_paths(&mut composer, "@s", Duration::ZERO, &trie, &tree);
+        press_paths(&mut composer, Key::Tab, &trie, &tree);
+        assert_eq!(
+            composer.text(),
+            "@s",
+            "an ambiguous Tab inserts nothing at all, spaces included; the composer holds {:?}",
+            composer.text()
+        );
+        assert!(
+            matches!(composer.strip(), StripContent::Paths { .. }),
+            "an ambiguous Tab leaves the corpus open; the strip was {:?}",
+            composer.strip()
+        );
+    }
+
+    /// A command line containing an `@` opens no path corpus, because
+    /// ADR-0015 D2 decides before the strip sees the keystroke.
+    ///
+    /// The accepting sibling is the same token with no leading `/`.
+    #[test]
+    fn a_command_line_containing_an_at_opens_no_path_corpus() {
+        let trie = CountingTrie::staged();
+        let tree = PathsOf::new(["README.md"]);
+
+        let mut commanding = Composer::new();
+        typing_paths(
+            &mut commanding,
+            "/session @RE",
+            Duration::ZERO,
+            &trie,
+            &tree,
+        );
+        assert!(
+            !matches!(commanding.strip(), StripContent::Paths { .. }),
+            "a command line is not a search and no part of it is; the strip was {:?}",
+            commanding.strip()
+        );
+
+        let mut naming = Composer::new();
+        typing_paths(&mut naming, "session @RE", Duration::ZERO, &trie, &tree);
+        assert!(
+            matches!(naming.strip(), StripContent::Paths { .. }),
+            "the same words without the leading slash do open the corpus, which is what makes the \
+             arm above a statement about the command grammar; the strip was {:?}",
+            naming.strip()
+        );
+    }
+
     /// The hint strip returns the instant the leading `/` goes, absence line
     /// and all.
     ///
@@ -1500,13 +1934,26 @@ mod tests {
         );
     }
 
-    /// The absence line never reaches the empty prompt or a picker.
+    /// The absence line never reaches the empty prompt, and it does reach an
+    /// open picker.
     ///
     /// D1 rows 1 to 3 are the standing tip's and the deposit count's, and
-    /// ADR-0002 D8's tip must not be crowded out by a line about search. An
-    /// open picker with no matches is what a miss looks like.
+    /// ADR-0002 D8's tip must not be crowded out by a line about search. That
+    /// half is unchanged.
+    ///
+    /// **The picker half reversed on 2026-09-15 and the name moved with it.**
+    /// This check read `…_and_never_enters_a_picker` and asserted that an open
+    /// picker with no matches is a miss — which is true of a **miss** and was
+    /// being used to cover an **absence**. A `[[` in a session with no Nuclear
+    /// Notes token painted six blank rows and said nothing about why, measured
+    /// on the release binary at `3c1bf0a`, while the trie arm beside it has
+    /// had a sentence for that exact state since 2026-09-05. The absence is
+    /// handed in only where the host says the corpus holds nothing at all, so
+    /// the two are distinguishable and now render differently. The miss half
+    /// keeps its accepting sibling: the check above this one asserts that a
+    /// picker with no line handed in still says nothing.
     #[test]
-    fn the_absence_line_yields_the_empty_prompt_to_the_tip_and_never_enters_a_picker() {
+    fn the_absence_line_yields_the_empty_prompt_to_the_tip_and_reaches_an_open_picker() {
         const ABSENCE: &str = "no Nuclear Notes token · nothing to search";
         let empty = TrieOf::new(0);
 
@@ -1533,9 +1980,31 @@ mod tests {
         let mut composer = Composer::new();
         composer.set_absence(Some(ABSENCE.to_owned()));
         typing(&mut composer, "[[é", Duration::ZERO, &empty);
+        assert_eq!(
+            composer.strip_lines(),
+            vec![ABSENCE.to_owned()],
+            "a picker over a corpus the host says is empty says so, rather than painting blank \
+             rows: {:?}",
+            composer.strip_lines()
+        );
+
+        let mut composer = Composer::new();
+        composer.set_path_absence(Some(ABSENCE.to_owned()));
+        typing(&mut composer, "@é", Duration::ZERO, &empty);
+        assert_eq!(
+            composer.strip_lines(),
+            vec![ABSENCE.to_owned()],
+            "and so does the path corpus, through its own sentence rather than the trie's: {:?}",
+            composer.strip_lines()
+        );
+
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        typing(&mut composer, "@é", Duration::ZERO, &empty);
         assert!(
             composer.strip_lines().is_empty(),
-            "an open picker with no matches is a miss, not an absence: {:?}",
+            "the two corpora fail independently: a cortex that is absent says nothing about the \
+             working directory, and the path corpus does not borrow its sentence: {:?}",
             composer.strip_lines()
         );
     }
@@ -1644,7 +2113,7 @@ mod tests {
         let vocabulary = VocabularyOf::new(2).and_commands(2);
         let mut composer = Composer::new();
         typing_with(&mut composer, "/sérai", Duration::ZERO, &trie, &vocabulary);
-        composer.key(tab(), Duration::ZERO, &trie, &vocabulary);
+        composer.key(tab(), Duration::ZERO, &trie, &vocabulary, &NoPaths);
         assert_eq!(
             composer.text(),
             "/sérail",
@@ -1653,7 +2122,7 @@ mod tests {
 
         let mut composer = Composer::new();
         typing_with(&mut composer, "/zzz", Duration::ZERO, &trie, &vocabulary);
-        composer.key(tab(), Duration::ZERO, &trie, &vocabulary);
+        composer.key(tab(), Duration::ZERO, &trie, &vocabulary, &NoPaths);
         assert_eq!(
             composer.text(),
             "/zzz",
@@ -1666,7 +2135,7 @@ mod tests {
         let one_of_each = VocabularyOf::new(4).and_commands(2);
         let mut composer = Composer::new();
         typing_with(&mut composer, "/sédu", Duration::ZERO, &trie, &one_of_each);
-        composer.key(tab(), Duration::ZERO, &trie, &one_of_each);
+        composer.key(tab(), Duration::ZERO, &trie, &one_of_each, &NoPaths);
         assert_eq!(
             composer.text(),
             "/sédu",
@@ -1676,7 +2145,7 @@ mod tests {
 
         let mut composer = Composer::new();
         typing_with(&mut composer, "/sé", Duration::ZERO, &trie, &vocabulary);
-        composer.key(tab(), Duration::ZERO, &trie, &vocabulary);
+        composer.key(tab(), Duration::ZERO, &trie, &vocabulary, &NoPaths);
         assert_eq!(
             composer.text(),
             "/sé",

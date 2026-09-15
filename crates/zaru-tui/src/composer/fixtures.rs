@@ -24,6 +24,7 @@
 
 use crate::composer::Composer;
 use crate::composer::entries::{Entries, Entry, EntryKind};
+use crate::composer::paths::{PathEntry, Paths};
 use crate::shell::fixtures::StagedVocabulary;
 use crate::shell::port::{CommandVocabulary, Extension, Namespace};
 use core::time::Duration;
@@ -104,8 +105,65 @@ pub(crate) fn server_results() -> Vec<Entry> {
     ]
 }
 
+/// A working directory holding nothing, which is what every check that is not
+/// about the path corpus should be typing against.
+///
+/// It answers no matches and no absence, so a strip reached through it is
+/// exactly the strip that was painted before the third corpus existed — which
+/// is what keeps this file's other assertions byte-identical.
+#[derive(Debug)]
+pub(crate) struct NoPaths;
+
+impl Paths for NoPaths {
+    fn matches(&self, _prefix: &str, _limit: usize) -> Vec<PathEntry> {
+        Vec::new()
+    }
+}
+
+/// A working directory whose spellings are `spellings`, offered whenever they
+/// begin with the filter.
+///
+/// The narrowing is here rather than in the composer for the reason
+/// [`CountingTrie`] puts its own there: the port's contract is "every spelling
+/// that begins with `prefix`", so a fixture that ignored the prefix would let
+/// a composer which never passed one through pass anyway.
+#[derive(Debug)]
+pub(crate) struct PathsOf {
+    spellings: Vec<String>,
+}
+
+impl PathsOf {
+    pub(crate) fn new<I: IntoIterator<Item = S>, S: Into<String>>(spellings: I) -> Self {
+        Self {
+            spellings: spellings.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl Paths for PathsOf {
+    fn matches(&self, prefix: &str, limit: usize) -> Vec<PathEntry> {
+        self.spellings
+            .iter()
+            .filter(|spelling| spelling.starts_with(prefix) && spelling.as_str() != prefix)
+            .take(limit)
+            .map(PathEntry::new)
+            .collect()
+    }
+}
+
 /// Type `text` into `composer`, every keystroke at `now`.
 pub(crate) fn typing(composer: &mut Composer, text: &str, now: Duration, entries: &dyn Entries) {
+    typing_paths(composer, text, now, entries, &NoPaths);
+}
+
+/// The same, against a chosen working directory.
+pub(crate) fn typing_paths(
+    composer: &mut Composer,
+    text: &str,
+    now: Duration,
+    entries: &dyn Entries,
+    paths: &dyn Paths,
+) {
     for ch in text.chars() {
         composer.key(
             Input {
@@ -117,6 +175,7 @@ pub(crate) fn typing(composer: &mut Composer, text: &str, now: Duration, entries
             now,
             entries,
             &StagedVocabulary,
+            paths,
         );
     }
 }
@@ -124,6 +183,16 @@ pub(crate) fn typing(composer: &mut Composer, text: &str, now: Duration, entries
 /// Press `key` once, for a check that moves the caret or completes rather than
 /// types.
 pub(crate) fn press(composer: &mut Composer, key: Key, entries: &dyn Entries) {
+    press_paths(composer, key, entries, &NoPaths);
+}
+
+/// The same, against a chosen working directory.
+pub(crate) fn press_paths(
+    composer: &mut Composer,
+    key: Key,
+    entries: &dyn Entries,
+    paths: &dyn Paths,
+) {
     composer.key(
         Input {
             key,
@@ -134,6 +203,7 @@ pub(crate) fn press(composer: &mut Composer, key: Key, entries: &dyn Entries) {
         Duration::ZERO,
         entries,
         &StagedVocabulary,
+        paths,
     );
 }
 
@@ -230,6 +300,7 @@ pub(crate) fn typing_with(
             now,
             entries,
             vocabulary,
+            &NoPaths,
         );
     }
 }
