@@ -1609,3 +1609,164 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
         reported.prompt_tokens()
     );
 }
+
+/// The crossing reached the way a reader reaches it: a configured window.
+///
+/// # What this asserts that the checks above do not
+///
+/// Those stage `ContextLimits` directly, which is the seam. This one goes
+/// through the whole path a person walks — `provider.ollama.context_tokens`
+/// set at the project layer, resolved through [ADR-0014]'s five layers,
+/// turned into limits by `cli::layers::context_limits`, and crossed by
+/// ordinary turns — so it is the reachability half that no mutant of the
+/// arithmetic can see, and it is what makes [ADR-0013] clause 2's crossing a
+/// thing the binary does rather than a thing a check stages.
+///
+/// The window is 3,000 and the threshold therefore 2,250. The reserve is the
+/// real tool surface, because it is on every request and a reader's session
+/// crosses with it: **the crossing is reached sooner than the conversation
+/// alone would reach it**, which is the whole point of counting it. The
+/// numbers are chosen so that the span taken is a *proper prefix* of layer 6
+/// — a window small enough to take everything would satisfy an oldest-first
+/// assertion and a newest-first implementation equally, which is exactly the
+/// weakness the mutation below found when this check was first written at a
+/// window of 2,000.
+///
+/// Watched red three ways, each mutation confirmed applied on disk and the
+/// file restored byte-identical:
+///
+/// - the threshold made equal to the window (`window / 4 * 3` to `window`) —
+///   *"three quarters of 3,000"*, left 3000, right 2250, so compaction would
+///   have fired only once the context already did not fit;
+/// - `Context::compact` compacting newest-first — the raw span came back as
+///   the newest exchanges where the oldest are required. **This is the
+///   mutation that found the check's own first weakness**: at a window of
+///   2,000 the whole of layer 6 was taken, so oldest and newest were the same
+///   span and the mutant passed. The window is 3,000 for that reason, and at
+///   it the mutant prints the newest two exchanges where the oldest two are
+///   required;
+/// - the announcement reporting `after` twice — *"the announcement's counts
+///   are the span's own, measured here from the staged text rather than read
+///   back through the code under test"*, left `(2, 44)`, right `(2, 212)`.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[test]
+fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_counts() {
+    use crate::config::{Contribution, Layer, Resolution, Source, Table, Value};
+
+    let key = crate::providers::ProviderKind::Ollama.context_tokens_key();
+    let mut project = Table::new();
+    project.insert_path(&key, Value::Integer(3_000));
+    let resolution = Resolution::resolve(
+        &crate::cli::layers::schema(),
+        vec![
+            Contribution::new(Layer::BuiltIn, Layer::BuiltIn.default_source(), {
+                use crate::config::LayerSource;
+                crate::cli::layers::BuiltIn::new()
+                    .read()
+                    .expect("layer 1 reads")
+            }),
+            Contribution::new(Layer::Project, Source::named("./zaru.toml"), project),
+        ],
+    )
+    .expect("a project lowering a window is what ADR-0014 D6 permits");
+
+    let Some(Value::Integer(resolved)) = resolution.get(&key) else {
+        panic!("the project's window is the effective one");
+    };
+    let window = u64::try_from(*resolved).expect("a window fits");
+    assert_eq!(
+        window, 3_000,
+        "the configured window, not the built-in 4,096"
+    );
+
+    let limits = crate::cli::layers::context_limits(window);
+    assert_eq!(limits.threshold().get(), 2_250, "three quarters of 3,000");
+
+    let client = crate::providers::ollama::OllamaClient::new(
+        crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
+            .expect("a well-formed origin"),
+        model_named("llama3.2:3b"),
+        window,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let reserved = client
+        .tool_surface_bytes(crate::tools::descriptor_set())
+        .expect("the built-in descriptors' schemas are JSON this client can map");
+
+    let held = HeldSecrets::none();
+    let mut session =
+        crate::compose::SessionContext::opened(context::prefix_for(), limits, reserved);
+
+    // Ordinary turns, each the size of a short answer, until the threshold is
+    // behind us. Asserted rather than assumed: a session that felt no
+    // pressure would satisfy every assertion below by standing still.
+    for nth in 0..6 {
+        session.record(zaru_core::context::Exchange::verbatim(format!(
+            "user: what did we decide about item {nth}?\n\nzaru: {}",
+            "we settled it. ".repeat(4)
+        )));
+    }
+    let used = session.usage(&held).used();
+    assert!(
+        used > limits.threshold().get(),
+        "the configured window is crossed by this conversation: {used} used against a threshold \
+         of {}, with {reserved} bytes of that the tool surface every request carries",
+        limits.threshold().get()
+    );
+
+    let before: Vec<String> = session
+        .exchanges()
+        .iter()
+        .map(|exchange| exchange.as_str().to_owned())
+        .collect();
+    let summariser = Counting::answering("they went through six items and settled each");
+
+    let compaction = futures_lite_block_on(session.at_turn_boundary(&summariser, &held))
+        .expect("the staged summariser answers");
+
+    let raw = compaction.raw.as_ref().expect("layer 6 was compacted");
+    let taken: Vec<String> = raw
+        .exchanges()
+        .iter()
+        .map(|exchange| exchange.as_str().to_owned())
+        .collect();
+    assert!(
+        !taken.is_empty() && taken.len() < before.len(),
+        "the span is SOME of layer 6 and not all of it, or oldest-first and newest-first are the \
+         same span and this check cannot tell them apart; {} of {} were taken",
+        taken.len(),
+        before.len()
+    );
+    assert_eq!(
+        taken,
+        before[..taken.len()],
+        "ADR-0013 D2 compacts oldest first, and the raw span is what ADR-0010 D2's transcript keeps"
+    );
+
+    let Some(zaru_core::context::Announcement::Compacted {
+        turns,
+        before: cost_before,
+        after,
+    }) = compaction.announcements.first()
+    else {
+        panic!("a crossing announces itself once, with counts: {compaction:?}");
+    };
+    let staged: u64 = taken.iter().map(|text| text.len() as u64).sum();
+    assert_eq!(
+        (*turns as usize, *cost_before),
+        (taken.len(), staged),
+        "the announcement's counts are the span's own, measured here from the staged text rather \
+         than read back through the code under test"
+    );
+    assert_eq!(
+        *after,
+        "they went through six items and settled each".len() as u64,
+        "and the after-count is the summary's own bytes"
+    );
+    assert!(
+        *after < *cost_before,
+        "a compaction that grew the context is not a compaction: {after} against {cost_before}"
+    );
+}
