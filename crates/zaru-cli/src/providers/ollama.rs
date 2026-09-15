@@ -193,6 +193,44 @@ impl OllamaClient {
         })
     }
 
+    /// What this client's tool surface costs, in bytes as it is sent.
+    ///
+    /// # ADR-0013's window is read against a request, and this is the rest of
+    /// one
+    ///
+    /// The context the harness measures is the prompt. What reaches the
+    /// provider is the prompt **and** every tool declaration, on every
+    /// exchange -- and a window is what the provider measures the whole of
+    /// that against. Measured 2026-09-14 from the release binary against a
+    /// local Ollama through a logging proxy: the first exchange of a session
+    /// put **1,967 bytes** on the wire, of which **231** were message content
+    /// and the rest the seven tool declarations, and the provider reported
+    /// **465** prompt tokens. A count over the message content alone is
+    /// therefore *below* the provider's own, which is the direction that
+    /// overflows a window in silence.
+    ///
+    /// So this number reaches
+    /// [`Context::reserved`](zaru_core::context::Context::reserved), where it
+    /// is on every whole-context measurement and on no single exchange's.
+    ///
+    /// **Per kind, because the wire shape is per kind.** It is measured
+    /// through this client's own `tools_of`, so it is the bytes this client
+    /// sends rather than a guess made from the descriptors.
+    ///
+    /// # Errors
+    ///
+    /// The mapping failure a request carrying these tools would raise, so a
+    /// schema this harness cannot map is refused at configuration time rather
+    /// than on the first exchange.
+    pub fn tool_surface_bytes(
+        &self,
+        descriptors: &[zaru_core::tool_call::ToolDescriptor],
+    ) -> Result<u64, OllamaFailure> {
+        let tools = map::tools_of(descriptors)?;
+        let rendered = serde_json::to_string(&tools).unwrap_or_default();
+        Ok(rendered.len() as u64)
+    }
+
     /// Send this client's answer text to `sender` as each frame arrives.
     pub fn stream_deltas_to(&self, sender: tokio::sync::mpsc::UnboundedSender<String>) {
         match self.deltas.lock() {

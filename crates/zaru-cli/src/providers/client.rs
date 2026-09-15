@@ -138,6 +138,34 @@ impl ProviderClient {
     }
 
     /// Send this client's answer text to `sender` as each frame arrives.
+    /// What this client's tool surface costs, in bytes as it is sent.
+    ///
+    /// Dispatched to the kind that answers, because the wire shape is the
+    /// kind's: `gemini` narrows each schema to Google's subset and packs
+    /// every declaration into one entry, while the other two offer the schema
+    /// whole in one entry each. See each client's own method for the
+    /// measurement this closes.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderFailure`] for a schema this kind cannot map.
+    pub fn tool_surface_bytes(
+        &self,
+        descriptors: &[zaru_core::tool_call::ToolDescriptor],
+    ) -> Result<u64, ProviderFailure> {
+        match self {
+            Self::Gemini(client) => client
+                .tool_surface_bytes(descriptors)
+                .map_err(ProviderFailure::from),
+            Self::Ollama(client) => client
+                .tool_surface_bytes(descriptors)
+                .map_err(ProviderFailure::from),
+            Self::OpenAiCompatible(client) => client
+                .tool_surface_bytes(descriptors)
+                .map_err(ProviderFailure::from),
+        }
+    }
+
     pub fn stream_deltas_to(&self, sender: tokio::sync::mpsc::UnboundedSender<String>) {
         match self {
             Self::Gemini(client) => client.stream_deltas_to(sender),

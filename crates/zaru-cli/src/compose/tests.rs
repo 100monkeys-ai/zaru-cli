@@ -1461,3 +1461,151 @@ fn appending_the_third_client_changes_no_machine_that_already_had_an_answer() {
         }
     }
 }
+
+/// A `ModelId` through the door the product uses.
+///
+/// `ModelId` is constructible only inside the resolution table, which is
+/// ADR-0012 D1 as a compile error — so a check stages a configuration and
+/// reads the alias back out of it, exactly as the binary does. The same
+/// reasoning, and the same shape, as `providers::ollama::tests::model`.
+fn model_named(name: &str) -> crate::providers::ModelId {
+    use crate::config::{Contribution, Layer, Resolution};
+    use crate::providers::{ModelAlias, ResolvedModel, declare, resolution::ModelTable};
+
+    let key = ModelAlias::Default.key();
+    let schema = declare(crate::config::Schema::new());
+    let document = crate::config::fixtures::document([(
+        Box::leak(key.as_str().to_owned().into_boxed_str()) as &'static str,
+        crate::config::fixtures::text(name),
+    )]);
+    let resolution = Resolution::resolve(
+        &schema,
+        vec![Contribution::new(
+            Layer::Flag,
+            crate::config::Source::named("a check"),
+            document,
+        )],
+    )
+    .expect("the staged fixture resolves");
+
+    match ModelTable::from_configuration(&resolution)
+        .expect("every value is text")
+        .row(ModelAlias::Default)
+    {
+        ResolvedModel::Resolved { model, .. } => model.clone(),
+        ResolvedModel::Unresolved => panic!("the alias was set above"),
+    }
+}
+
+/// A provider that reports a prompt count and nothing else, for the one
+/// assertion that needs a real one beside a counted context.
+#[derive(Debug)]
+struct Reporting {
+    endpoint: crate::providers::ProviderEndpoint,
+    prompt_tokens: u64,
+}
+
+impl crate::providers::Provider for Reporting {
+    fn kind(&self) -> crate::providers::ProviderKind {
+        crate::providers::ProviderKind::Ollama
+    }
+
+    fn endpoint(&self) -> &crate::providers::ProviderEndpoint {
+        &self.endpoint
+    }
+
+    fn capabilities(&self) -> crate::providers::ProviderCapabilities {
+        crate::providers::ProviderCapabilities::declared(
+            true,
+            true,
+            true,
+            Some(crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS),
+        )
+    }
+
+    fn usage(&self) -> Option<crate::providers::TokenUsage> {
+        Some(crate::providers::TokenUsage::counted(
+            self.prompt_tokens,
+            23,
+        ))
+    }
+}
+
+/// The counted context carries the tool surface, so the harness's number is
+/// not below the provider's own.
+///
+/// # The measurement this is built from, and why it is not a round trip
+///
+/// Measured 2026-09-14 from the release binary at `4c89977` against a local
+/// Ollama through a logging proxy, one real turn:
+///
+/// ```text
+/// exchange 1  whole request 1,967 bytes  message content 231  prompt_eval_count 465
+/// ```
+///
+/// `compose::count`'s whole soundness argument was `bytes >= tokens`, and
+/// **231 is not at least 465**. The gap is the tool surface, which every
+/// request carries and the context does not contain. So this stages that
+/// exact shape — a conversation of the measured size, the reserve taken from
+/// the **real** `ollama` client's own wire mapping of the **real** built-in
+/// descriptor set, and a provider reporting the number that server actually
+/// reported — and requires the harness's count to be at least the provider's.
+///
+/// The reserve is not a literal here, and deliberately: what this client
+/// sends is `serde_json`'s compact form, which came to **1,619** bytes for
+/// the seven built-ins when this check was written. Taking it from the client
+/// rather than writing the number down is the point — a literal would be a
+/// measurement of a request nobody sends, and it would go stale the first
+/// time a descriptor's wording changed.
+///
+/// Watched red once, the mutation confirmed applied on disk and restored:
+/// opening the context with a reserve of zero, which is what the harness did
+/// until this landed.
+#[test]
+fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_own_count() {
+    use crate::providers::Provider as _;
+
+    let client = crate::providers::ollama::OllamaClient::new(
+        crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
+            .expect("a well-formed origin"),
+        model_named("llama3.2:3b"),
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let reserved = client
+        .tool_surface_bytes(crate::tools::descriptor_set())
+        .expect("the built-in descriptors' schemas are JSON this client can map");
+    assert!(
+        reserved > 1_000,
+        "the seven built-in descriptors are a real surface, not a rounding: {reserved} bytes"
+    );
+
+    let held = HeldSecrets::none();
+    let mut session = crate::compose::SessionContext::opened(
+        context::prefix_for(),
+        crate::cli::layers::context_limits(
+            crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+        ),
+        reserved,
+    );
+    // The measured 231 bytes of message content, as one exchange.
+    session.record(zaru_core::context::Exchange::verbatim("m".repeat(231)));
+
+    let reported = Reporting {
+        endpoint: crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
+            .expect("a well-formed origin"),
+        prompt_tokens: 465,
+    }
+    .usage()
+    .expect("this provider accounts");
+
+    let counted = session.usage(&held).used();
+    assert!(
+        counted >= reported.prompt_tokens(),
+        "the harness counted {counted} where the provider counted {} prompt tokens for the same \
+         request. Measured 2026-09-14: 231 bytes of message content and {reserved} bytes of tool \
+         schema reached a provider that reported 465, so a count that leaves the tool surface out \
+         is BELOW the provider's own and overflows the window in silence",
+        reported.prompt_tokens()
+    );
+}

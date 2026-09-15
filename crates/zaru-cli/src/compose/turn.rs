@@ -255,6 +255,11 @@ pub struct Prepared {
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     window: u64,
+    /// What every exchange of this session spends on tool declarations, in
+    /// bytes as this kind sends them.
+    ///
+    /// See [`Self::context_reserve`].
+    reserved: u64,
 }
 
 impl Prepared {
@@ -309,6 +314,17 @@ impl Prepared {
     #[must_use]
     pub fn context_limits(&self) -> zaru_core::context::ContextLimits {
         crate::cli::layers::context_limits(self.window)
+    }
+
+    /// What every request spends that the context does not contain, in bytes.
+    ///
+    /// [`zaru_core::context::Context::reserved`] takes it. It is this
+    /// session's tool surface as the kind that answered will send it, and it
+    /// is what makes `crate::compose::ByteCounter`'s claim about itself true
+    /// of a request rather than only of a prompt — see that module.
+    #[must_use]
+    pub const fn context_reserve(&self) -> u64 {
+        self.reserved
     }
 
     /// Which of [ADR-0012] D3's kinds is answering.
@@ -847,6 +863,23 @@ pub fn prepare(
         }
     };
 
+    // --- ADR-0013's reserve: what this request spends beside the prompt ----
+    //
+    // Measured through the client's own mapping rather than from the
+    // descriptors, because the wire shape is the kind's and what a window is
+    // read against is what is sent. `crate::tools::descriptor_set` is the
+    // same static seven the executor declares, so this is the surface every
+    // exchange of this session will carry.
+    //
+    // A schema this kind cannot map is refused here rather than on the first
+    // exchange, which is where the same failure would otherwise arrive.
+    let reserved = match client.tool_surface_bytes(crate::tools::descriptor_set()) {
+        Ok(bytes) => bytes,
+        Err(failure) => {
+            return Err(Box::new(Ran::refused(Surface::provider(&failure))));
+        }
+    };
+
     // --- ADR-0012 clause 3: the model is asked before the loop starts ------
     //
     // **Here rather than in `run_one`, and that is the clause's own word.**
@@ -879,6 +912,7 @@ pub fn prepare(
         witness,
         store_root,
         window,
+        reserved,
     })
 }
 /// Run one turn of a session that already exists.
@@ -1326,6 +1360,7 @@ pub fn start(
     workspace: Option<String>,
     here: &std::path::Path,
     limits: zaru_core::context::ContextLimits,
+    reserved: u64,
     surface: &Surface<'_>,
 ) -> Result<(crate::session::Session, SessionContext), Box<crate::failure::Classified>> {
     let session_store = SessionStore::open(root).map_err(|failure| surface.session(&failure))?;
@@ -1358,7 +1393,7 @@ pub fn start(
     MetaFile::at(session.meta_path())
         .write(&meta)
         .map_err(|failure| Box::new(Surface::meta(&failure, evidence.clone())))?;
-    let context = SessionContext::opened(context::prefix_for(), limits, 0);
+    let context = SessionContext::opened(context::prefix_for(), limits, reserved);
     Checkpoint::at(session.checkpoint_path())
         .write(&context.checkpoint())
         .map_err(|failure| Box::new(Surface::checkpoint(&failure, evidence.clone())))?;
@@ -1407,6 +1442,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         crate::manifest::attached_workspace(resolution),
         prepared.here.root(),
         prepared.context_limits(),
+        prepared.context_reserve(),
         &surface,
     ) {
         Ok(started) => started,

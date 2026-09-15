@@ -265,8 +265,33 @@ pub fn request_from(
         });
     }
 
-    let mut declarations = Vec::with_capacity(request.tools.len());
-    for tool in request.tools {
+    Ok(wire::Request {
+        contents,
+        tools: tools_of(request.tools)?,
+    })
+}
+
+/// This kind's wire shape for a set of tool descriptors.
+///
+/// **One spelling, called twice**: by [`request_from`], which sends them, and
+/// by [`GeminiClient::tool_surface_bytes`](super::GeminiClient::tool_surface_bytes),
+/// which measures what they cost. Two spellings would be a measurement of a
+/// request nobody sends -- and this kind narrows each schema to Google's own
+/// subset, so the difference between the two would be real.
+///
+/// One `Tool` entry carrying every declaration, rather than one entry per
+/// tool. Both are accepted; one entry is what Google's own examples show, and
+/// a client that sent N entries would be making a choice the documentation
+/// does not.
+///
+/// # Errors
+///
+/// [`GeminiFailure::ToolSchemaUnreadable`], naming the tool.
+pub fn tools_of(
+    descriptors: &[zaru_core::tool_call::ToolDescriptor],
+) -> Result<Vec<wire::Tool>, GeminiFailure> {
+    let mut declarations = Vec::with_capacity(descriptors.len());
+    for tool in descriptors {
         let parameters: Value = serde_json::from_str(&tool.parameters).map_err(|error| {
             GeminiFailure::ToolSchemaUnreadable {
                 tool: tool.name.clone(),
@@ -279,21 +304,12 @@ pub fn request_from(
             parameters: within_geminis_subset(parameters),
         });
     }
-
-    Ok(wire::Request {
-        contents,
-        // One `Tool` entry carrying every declaration, rather than one entry
-        // per tool. Both are accepted; one entry is what Google's own
-        // examples show, and a client that sent N entries would be making a
-        // choice the documentation does not.
-        tools: if declarations.is_empty() {
-            Vec::new()
-        } else {
-            vec![wire::Tool {
-                function_declarations: declarations,
-            }]
-        },
-    })
+    if declarations.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![wire::Tool {
+        function_declarations: declarations,
+    }])
 }
 
 /// Read a response body as one of the port's three arms.

@@ -441,14 +441,17 @@ pub fn restored_context(
     classify: &Classify,
     evidence: SessionEvidence,
     limits: zaru_core::context::ContextLimits,
+    reserved: u64,
 ) -> Result<crate::compose::SessionContext, Box<Exit>> {
     let prefix = crate::compose::prefix_for();
     match &resumed.checkpoint {
-        Some(checkpoint) => crate::compose::SessionContext::restored(prefix, limits, 0, checkpoint)
-            .map_err(|error| {
-                Box::new(Exit::Failed(classify.checkpoint_contents(&error, evidence)))
-            }),
-        None => Ok(crate::compose::SessionContext::opened(prefix, limits, 0)),
+        Some(checkpoint) => crate::compose::SessionContext::restored(
+            prefix, limits, reserved, checkpoint,
+        )
+        .map_err(|error| Box::new(Exit::Failed(classify.checkpoint_contents(&error, evidence)))),
+        None => Ok(crate::compose::SessionContext::opened(
+            prefix, limits, reserved,
+        )),
     }
 }
 
@@ -568,6 +571,9 @@ pub fn mint(
         workspace,
         here.root(),
         limits,
+        prepared
+            .as_ref()
+            .map_or(0, crate::compose::Prepared::context_reserve),
         &classify,
     )
     .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
@@ -669,6 +675,9 @@ fn one_session(
             |_| crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
             crate::compose::Prepared::context_limits,
         ),
+        prepared
+            .as_ref()
+            .map_or(0, crate::compose::Prepared::context_reserve),
     )?;
 
     let mut turns = match &prepared {

@@ -179,23 +179,7 @@ pub fn request_from(
         }
     }
 
-    let mut tools = Vec::with_capacity(request.tools.len());
-    for descriptor in request.tools {
-        let parameters: Value = serde_json::from_str(&descriptor.parameters).map_err(|error| {
-            OpenAiCompatibleFailure::ToolSchemaUnreadable {
-                tool: descriptor.name.clone(),
-                parser: error.to_string(),
-            }
-        })?;
-        tools.push(wire::Tool {
-            kind: TOOL_FUNCTION.to_owned(),
-            function: wire::DeclaredFunction {
-                name: descriptor.name.clone(),
-                description: descriptor.description.clone(),
-                parameters,
-            },
-        });
-    }
+    let tools = tools_of(request.tools)?;
 
     Ok(wire::Request {
         model: model.to_owned(),
@@ -436,4 +420,36 @@ pub fn assistant_turn(answer: &Answer) -> (wire::Message, Vec<wire::ToolCall>) {
         tool_call_id: None,
     };
     (message, calls)
+}
+
+/// This kind's wire shape for a set of tool descriptors.
+///
+/// **One spelling, called twice**: by [`request_from`], which sends them, and
+/// by [`OpenAiCompatibleClient::tool_surface_bytes`](super::OpenAiCompatibleClient::tool_surface_bytes),
+/// which measures what they cost.
+///
+/// # Errors
+///
+/// [`OpenAiCompatibleFailure::ToolSchemaUnreadable`], naming the tool.
+pub fn tools_of(
+    descriptors: &[zaru_core::tool_call::ToolDescriptor],
+) -> Result<Vec<wire::Tool>, OpenAiCompatibleFailure> {
+    let mut tools = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let parameters: Value = serde_json::from_str(&descriptor.parameters).map_err(|error| {
+            OpenAiCompatibleFailure::ToolSchemaUnreadable {
+                tool: descriptor.name.clone(),
+                parser: error.to_string(),
+            }
+        })?;
+        tools.push(wire::Tool {
+            kind: TOOL_FUNCTION.to_owned(),
+            function: wire::DeclaredFunction {
+                name: descriptor.name.clone(),
+                description: descriptor.description.clone(),
+                parameters,
+            },
+        });
+    }
+    Ok(tools)
 }

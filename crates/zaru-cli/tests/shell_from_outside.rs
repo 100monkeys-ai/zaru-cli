@@ -909,6 +909,7 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         &classifier(),
         evidence(),
         zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+        0,
     )
     .expect("a checkpoint this harness wrote reads back");
     let held_texts: Vec<&str> = restored
@@ -955,6 +956,7 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         &classifier(),
         evidence(),
         zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+        0,
     )
     .expect("the compacted checkpoint reads back");
     let rendered: String = restored
@@ -1002,6 +1004,7 @@ fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcri
         &classifier(),
         evidence(),
         zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+        0,
     )
     .expect("an absent checkpoint is not a failure");
     assert!(
@@ -1101,6 +1104,7 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         &classifier(),
         evidence(),
         zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+        0,
     )
     .expect_err("the shell refuses to open over a checkpoint it cannot read");
 
@@ -1163,6 +1167,7 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         &classifier(),
         evidence(),
         zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+        0,
     )
     .expect("a checkpoint this harness wrote reads back");
     assert_eq!(

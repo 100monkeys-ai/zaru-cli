@@ -209,12 +209,40 @@ pub fn request_from(
         }
     }
 
-    let mut tools = Vec::with_capacity(request.tools.len());
-    for descriptor in request.tools {
-        // The schema is offered whole. Unlike the `gemini` client, this one
-        // narrows nothing: Ollama hands the schema to the model's own
-        // template and imposes no subset, so there is no keyword to drop and
-        // no narrowing to justify.
+    let tools = tools_of(request.tools)?;
+
+    Ok(wire::Request {
+        model: model.to_owned(),
+        messages,
+        tools,
+        stream: true,
+        options: wire::Options {
+            num_thread: NUM_THREAD,
+            num_ctx: context_tokens,
+        },
+    })
+}
+
+/// This kind's wire shape for a set of tool descriptors.
+///
+/// **One spelling, called twice**: by [`request_from`] above, which sends
+/// them, and by
+/// [`OllamaClient::tool_surface_bytes`](super::OllamaClient::tool_surface_bytes),
+/// which measures what they cost. Two spellings would be a measurement of a
+/// request nobody sends.
+///
+/// The schema is offered whole. Unlike the `gemini` client, this one narrows
+/// nothing: Ollama hands the schema to the model's own template and imposes
+/// no subset, so there is no keyword to drop and no narrowing to justify.
+///
+/// # Errors
+///
+/// [`OllamaFailure::ToolSchemaUnreadable`], naming the tool.
+pub fn tools_of(
+    descriptors: &[zaru_core::tool_call::ToolDescriptor],
+) -> Result<Vec<wire::Tool>, OllamaFailure> {
+    let mut tools = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
         let parameters: Value = serde_json::from_str(&descriptor.parameters).map_err(|error| {
             OllamaFailure::ToolSchemaUnreadable {
                 tool: descriptor.name.clone(),
@@ -230,17 +258,7 @@ pub fn request_from(
             },
         });
     }
-
-    Ok(wire::Request {
-        model: model.to_owned(),
-        messages,
-        tools,
-        stream: true,
-        options: wire::Options {
-            num_thread: NUM_THREAD,
-            num_ctx: context_tokens,
-        },
-    })
+    Ok(tools)
 }
 
 /// Reduce every frame of one exchange to a single response.

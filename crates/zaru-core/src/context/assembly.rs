@@ -199,13 +199,14 @@ impl Context {
     /// would put them into the conversation the model is shown twice.
     ///
     /// **Measured, 2026-09-14, from the release binary against a local
-    /// Ollama through a logging proxy:** the first exchange of a session sent
-    /// **231 bytes** of message content and **1,760 bytes** of tool schema,
-    /// and the provider reported **465** prompt tokens. So a count over the
-    /// message content alone is *below* the provider's own count — which is
-    /// the direction that overflows a window silently, and the opposite of
-    /// what [`TokenCounter`]'s only implementation in this workspace claims
-    /// for itself.
+    /// Ollama through a logging proxy:** the first exchange of a session put
+    /// **1,967 bytes** on the wire, of which **231** were message content and
+    /// the rest the seven tool declarations, and the provider reported
+    /// **465** prompt tokens. So a count over the message content alone is
+    /// *below* the provider's own count — which is the direction that
+    /// overflows a window silently, and the opposite of what
+    /// [`TokenCounter`]'s only implementation in this workspace claims for
+    /// itself.
     ///
     /// This number closes that gap. It is added to what
     /// [`Self::usage`] reports, to what [`Self::assemble`] refuses on, and to
