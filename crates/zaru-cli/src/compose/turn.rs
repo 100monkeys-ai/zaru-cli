@@ -444,6 +444,16 @@ impl Prepared {
 pub struct Owed {
     notice: Option<SessionNotice>,
     recommendation: Option<crate::manifest::MissingManifest>,
+    /// [ADR-0002] D8's `tips = false`, which "disables **both**".
+    ///
+    /// It is held here rather than read where each line is emitted, because
+    /// D8 gives the two kinds one switch and a switch read in two places is
+    /// two switches that agree until one of them is edited. A default
+    /// [`Owed`] owes nothing and offers nothing, which is the state of a
+    /// session whose composition resolved no provider.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    tips: bool,
 }
 
 impl Owed {
@@ -464,22 +474,82 @@ impl Owed {
     /// A session being minted passes `AlreadySaid::none()`, which is a fact
     /// about a directory that has just been created rather than a default.
     ///
+    /// # `tips` is a parameter, and only one of the two lines it reaches
+    ///
+    /// [ADR-0002] D8's `tips = false` "disables both" **recommendations** —
+    /// the event-anchored kind and the standing tip. It does not reach
+    /// [ADR-0011] D2's notice, which is not a recommendation at all: that
+    /// sentence is a statement about a missing membrane, its rule is a
+    /// property of a tier, and a person who turned tips off has not asked to
+    /// be told less about what a tool call can reach. The two are already two
+    /// rules in this struct, which is the reason it holds two fields rather
+    /// than one.
+    ///
+    /// It is read from a resolved configuration by
+    /// [`crate::compose::tips::enabled`] and passed in, because this function
+    /// reads nothing.
+    ///
     /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
     #[must_use]
-    pub fn of(prepared: &Prepared, said: &crate::session::AlreadySaid) -> Self {
+    pub fn of(prepared: &Prepared, said: &crate::session::AlreadySaid, tips: bool) -> Self {
         Self {
             notice: SessionNotice::for_tier_in_session(
                 prepared.tier.tier(),
                 prose::NOT_A_SANDBOX,
                 said,
             ),
-            recommendation: crate::manifest::MissingManifest::for_manifest_in_session(
-                prepared.manifest.as_ref(),
-                crate::failure::Statement::sanitised(prose::NO_VALIDATORS),
-                crate::failure::Statement::sanitised(prose::DECLARE_ONE),
-                said,
-            ),
+            recommendation: tips
+                .then(|| {
+                    crate::manifest::MissingManifest::for_manifest_in_session(
+                        prepared.manifest.as_ref(),
+                        crate::failure::Statement::sanitised(prose::NO_VALIDATORS),
+                        crate::failure::Statement::sanitised(prose::DECLARE_ONE),
+                        said,
+                    )
+                })
+                .flatten(),
+            tips,
         }
+    }
+
+    /// Whether [ADR-0002] D8's budget has room for a standing tip.
+    ///
+    /// D8: "At most **one recommendation of either kind per session**."
+    ///
+    /// # The event-anchored kind outranks the standing tip, and that is a
+    /// reading
+    ///
+    /// **Accepted 2026-09-15 under directive 20 and open to Jeshua's veto**,
+    /// written on [ADR-0002's amendments page]. D8 gives one budget to two
+    /// kinds and says nothing about which spends it when both are available,
+    /// and something has to: a standing tip is offered at the empty prompt
+    /// before any turn, so first-come would let it spend the budget of every
+    /// session whose project has no manifest and silence
+    /// [ADR-0009](https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators)
+    /// D4's line in exactly the sessions that need it.
+    ///
+    /// The rank is [ADR-0005](https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer)
+    /// D1's own, one level over: "Deposits outrank tips. A deposit exists
+    /// because the user armed something; a tip exists because Zaru chose to
+    /// offer it. User intent wins." An event-anchored recommendation exists
+    /// because something happened in the user's own work — D8's "at the
+    /// moment the advice is true" — and a standing tip exists because Zaru
+    /// chose to offer it.
+    ///
+    /// **So the budget is held here rather than by a spent flag.** A flag
+    /// that both kinds set would have an arm nothing could reach, because a
+    /// tip is never offered while a recommendation is owed and no
+    /// recommendation can arise after a session has opened.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    /// [ADR-0002's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output-updates
+    #[must_use]
+    pub fn has_room_for_a_tip(&self) -> bool {
+        self.tips
+            && !self
+                .recommendation
+                .as_ref()
+                .is_some_and(crate::manifest::MissingManifest::is_owed)
     }
 
     /// Whether either line is still owed. A reader for a check, not a second
@@ -1471,7 +1541,11 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     };
     // A session this call is about to mint has said nothing, and that is a
     // fact about a directory that does not exist yet rather than a default.
-    let mut owed = Owed::of(&prepared, &crate::session::AlreadySaid::none());
+    let mut owed = Owed::of(
+        &prepared,
+        &crate::session::AlreadySaid::none(),
+        crate::compose::tips::enabled(resolution),
+    );
 
     // --- ADR-0010 D1's session, and the first `meta.toml` a product writes --
     let (session, mut context) = match start(

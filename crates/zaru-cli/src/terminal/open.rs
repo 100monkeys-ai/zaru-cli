@@ -192,9 +192,25 @@ fn attached_workspace(directory: &std::path::Path) -> String {
 ///
 /// A named tuple rather than five positional values in a signature, because
 /// `clippy::type_complexity` refuses the second at four and this became five
-/// on 2026-09-14. The order is the order a caller uses them in: paint, read
-/// the transcript, serve the strip, fetch into it, resume the conversation.
-type Opened = (Shell, Transcript, NotesTrie, Option<Populating>, Resumed);
+/// on 2026-09-14 and six on 2026-09-15. The order is the order a caller uses
+/// them in: paint, read the transcript, serve the strip, fetch into it,
+/// resume the conversation, offer a tip.
+///
+/// The last is [ADR-0002](https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output)
+/// D8's [`Conditions`](crate::compose::Conditions), and it is returned rather
+/// than decided here because a tip needs **two** things this function has only
+/// one of: the capability's condition, which is the credential store's and is
+/// read here, and D8's budget, which is
+/// [`Owed`](crate::compose::Owed)'s and is not built until a provider has
+/// resolved. See `one_session`.
+type Opened = (
+    Shell,
+    Transcript,
+    NotesTrie,
+    Option<Populating>,
+    Resumed,
+    crate::compose::Conditions,
+);
 
 /// The credential store this session reads, opened once.
 ///
@@ -520,7 +536,17 @@ pub fn shell_for(
     // the transcript without the three system calls `open` makes. Spawning a
     // task would have put a reactor in that path. `one_session` holds the
     // runtime and starts it there.
-    Ok((shell, transcript, trie, populating, resumed))
+    // ADR-0002 D8's condition, read from the store this function already
+    // opened. `composer` is ADR-0006 D4's role holder -- the token the hint
+    // strip searches with -- so its absence is exactly "a capability the user
+    // has not discovered", and its arrival is exactly D8's "without action".
+    let conditions = crate::compose::Conditions {
+        composer_token: store
+            .as_ref()
+            .is_some_and(|store| store.composer().is_some()),
+    };
+
+    Ok((shell, transcript, trie, populating, resumed, conditions))
 }
 
 /// How a session's context is sized, whether or not a provider was prepared.
@@ -759,7 +785,8 @@ fn one_session(
     source: &Source,
     saying: Vec<zaru_tui::shell::Line>,
 ) -> Result<crate::terminal::driver::Pumped, Box<Exit>> {
-    let (mut shell, _, trie, populating, resumed) = shell_for(id, version, report_at, overrides)?;
+    let (mut shell, _, trie, populating, resumed, conditions) =
+        shell_for(id, version, report_at, overrides)?;
 
     // What the switch that opened this session had to say, put on the pane
     // before anything else. Empty for a switch the person asked for; see
@@ -913,7 +940,11 @@ fn one_session(
             // ADR-0011 D2's notice and ADR-0002 D8's recommendation, each
             // already spent if this session's transcript says it said it.
             // The same source as `next` below, read once by `session::resume`.
-            owed: crate::compose::Owed::of(prepared, &resumed.said),
+            owed: crate::compose::Owed::of(
+                prepared,
+                &resumed.said,
+                crate::compose::tips::enabled(&resolution),
+            ),
             // ADR-0013 D1's layers, restored from ADR-0010 D3's checkpoint
             // rather than opened empty. Layer 6 is what this session said
             // before the process it said it in ended, and it is what every
@@ -961,6 +992,44 @@ fn one_session(
             Some(crate::terminal::driver::Described::of(turns.prepared)),
             turns.prepared.redactor(),
         );
+    }
+
+    // ADR-0002 D8's standing tip, offered once, before the session's first
+    // frame. **This is the only product caller of
+    // `Composer::set_standing`**, which had none until 2026-09-15: the
+    // renderer, the precedence over a deposit count and the instant yield on
+    // a keystroke have all been in `zaru-tui` since 2026-09-05 with nothing
+    // to hand them.
+    //
+    // **The deposit count is `0` and that is not a placeholder.** D3 gives a
+    // deposit one producer -- an armed trigger -- and its own last paragraph
+    // ships every trigger but one interrupt disarmed. Nothing in this harness
+    // can arm one, so the count is a fact rather than a value waiting to be
+    // filled in, and it is written here rather than defaulted so that
+    // whoever builds D2's arming surface finds the call site.
+    //
+    // **The display is recorded at the same moment**, which is the reading on
+    // `compose::tips`: a display is one session's showing. This is before the
+    // terminal is taken and therefore before the row that carries the tip is
+    // painted, so a process that dies in between costs one count -- the bound
+    // ADR-0010 D2 already accepts for the event in flight.
+    //
+    // A tips file that cannot be read or written leaves the strip collapsed
+    // rather than ending the session, which is the same answer the history
+    // file's failure gets one screen up: a person opened a session to work,
+    // not to be told about a counter.
+    if let Turnable::Ready(turns) = &turns {
+        let tips = crate::compose::Tips::under(store.root());
+        if let Ok(Some(tip)) =
+            crate::compose::tips::eligible(turns.owed.has_room_for_a_tip(), conditions, &tips)
+            && tips
+                .record_a_showing(tip, &crate::commands::date::today())
+                .is_ok()
+        {
+            shell
+                .composer_mut()
+                .set_standing(0, Some(tip.line().to_owned()));
+        }
     }
 
     let runner = crate::cli::Run { version, report_at };

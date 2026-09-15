@@ -578,8 +578,10 @@ impl Files {
 ///
 /// [ADR-0012]'s fifteen and [ADR-0009]'s two, from those records' own
 /// `declare`, plus [ADR-0011]'s `tools.allowlist` and `tools.mode` from its
-/// own, plus [ADR-0001]'s `runtime.tier` and `runtime.max_iterations` from
-/// that record's own `field`. **Nothing is spelled here**, which is
+/// own, plus [ADR-0002]'s `tips` from
+/// [`crate::compose::tips::declare`], plus [ADR-0001]'s `runtime.tier` and
+/// `runtime.max_iterations` from that record's own `field`. **Nothing is
+/// spelled here**, which is
 /// [ADR-0014]'s Neutral section: "Each record owns its own keys; this one owns
 /// how they resolve."
 ///
@@ -590,6 +592,7 @@ impl Files {
 /// layer 3 could be read.
 ///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
@@ -599,6 +602,7 @@ pub fn schema() -> Schema {
     let declared = crate::manifest::declare(declared);
     let declared = crate::tools::allowlist::declare(declared);
     let declared = crate::tools::mode::declare(declared);
+    let declared = crate::compose::tips::declare(declared);
     declared
         .with(crate::runtime::key(), crate::runtime::field())
         .with(
