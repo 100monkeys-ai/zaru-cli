@@ -130,6 +130,53 @@ pub const DECLARE_ONE: &str = "declare one in `./zaru.toml`";
 pub const INTERRUPTED: &str = "turn interrupted · the session stays open, and what the turn had \
                                already written is in the transcript";
 
+/// What the pane says when an exchange has generated nothing yet.
+///
+/// # The gap this closes, measured twice
+///
+/// [operations/harness-look-and-feel-audit-2] row 2: "the pane does not
+/// change for most of a reasoning turn", 34.0 s of a 40.8-second turn and
+/// 14.2 s of a 17.5-second one. Re-measured by `turn-liveness` from the
+/// release binary at `793712c` on 2026-09-15: **37.55 s of a 40.73-second
+/// turn at a hundred columns, 92.2%**, and 56.4 s of about 59 s at forty.
+/// A person cannot tell that from a hang.
+///
+/// **The cause is the provider and not the harness.** Two probes of
+/// `streamGenerateContent?alt=sse` the same day timestamped every line of
+/// the response: the first SSE byte arrived at 46.0 s of a 55.8-second
+/// request and at 92.7 s of a 106.4-second one, with **no frame of any kind**
+/// before it. So there is nothing to render, and the honest thing to render
+/// is that there is nothing.
+///
+/// # Why a sentence and not a spinner
+///
+/// [ADR-0028] D1 refuses a spinner in as many words. This is a narrative row
+/// like the ones beside it: painted **once** per exchange that goes quiet,
+/// in [`Register::Plain`](zaru_tui::shell::port::Register::Plain) whose
+/// marker is the absence of a marker, never repainted and never taken away.
+/// `crate::terminal::source::QUIET` is how long an exchange may say nothing
+/// first, and `crate::terminal::driver::Pane` is what says it.
+///
+/// **At forty columns this line is the whole of it.** `Rank::Tokens` and
+/// `Rank::Elapsed` are both dropped before `Rank::Context` at that width, so
+/// the status row carries no token figure and no clock at all — measured on
+/// the same binary, where a 9,201-token turn left the row reading
+/// `runtime.tier = bare · 3.8k/1048.5k` throughout. Nothing else on that
+/// screen moves.
+///
+/// # Its subject is the model
+///
+/// [ADR-0002] D7 forbids a line about the user's own behaviour, and
+/// [`crate::compose::emission::Unprompted::StillGenerating`] declares
+/// [`Subject::TheModel`](crate::compose::emission::Subject::TheModel) for
+/// that reason: what is reported is what the provider is doing, not how long
+/// somebody has been sitting there.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+/// [operations/harness-look-and-feel-audit-2]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+pub const STILL_GENERATING: &str = "the model is generating; nothing has come back yet";
+
 /// What [ADR-0013] D1's layer 1 says when there is no persona to put in it.
 ///
 /// # This one is not transcribed, and here is exactly what it is

@@ -111,6 +111,38 @@ pub const POLL: Duration = Duration::from_millis(50);
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 pub const TICK: Duration = Duration::from_millis(100);
 
+/// How long an exchange may generate nothing before the pane says so.
+///
+/// **Two seconds, drafted under the coordinator's ruling of 2026-09-15 under
+/// directives 20, 25 and 35 and open to Jeshua's veto**, batched as a number
+/// the way [ADR-0028]'s other drafted figures are.
+///
+/// # The number is measured rather than chosen
+///
+/// The ruling's phrase was "longer than a beat", and a beat is [`TICK`]'s
+/// hundred milliseconds — which would fire on an exchange that answered
+/// immediately. Two seconds is the smallest round figure above every
+/// promptly-answered turn measured and far below every slow one:
+///
+/// - The audit's own non-reasoning turn painted its first text at **1.53 s**
+///   (`frames/M-stream-100x30.txt`), so two seconds does not fire on a turn
+///   that answers.
+/// - The shortest silent stretch measured on a reasoning turn is **14.2 s**
+///   and the longest **56.4 s**, so two seconds fires on every one of them
+///   with about an order of magnitude to spare.
+///
+/// So the line separates thinking from answering rather than separating fast
+/// from slow, and no measured turn falls near the boundary.
+///
+/// # It bounds nothing and cancels nothing
+///
+/// This is a threshold a repaint is compared against, not a deadline. What
+/// bounds a quiet exchange is `crate::providers::gemini::EXCHANGE_TIMEOUT`,
+/// which is a different number owned by a different record.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+pub const QUIET: Duration = Duration::from_secs(2);
+
 /// How long the shell waits when nothing has happened.
 ///
 /// # One concept, two shapes, because the two callers differ in kind

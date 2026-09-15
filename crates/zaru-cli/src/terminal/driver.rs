@@ -487,6 +487,35 @@ pub struct Pane<'a, S: Surface + Send> {
     /// The first paint that failed, kept rather than lost — the rule
     /// [`crate::compose::Records`] follows for the same reason.
     first_failure: Option<std::io::Error>,
+    /// The turn's own clock, borrowed rather than started again.
+    ///
+    /// The same [`zaru_core::iteration::SystemClock`] [`Meter`] reads, built
+    /// once in [`run_a_turn`] — so the quiet an exchange is measured against
+    /// and the elapsed figure on the row cannot drift apart, and **no new
+    /// port and no new dependency** arrives for this.
+    ///
+    /// **`+ Sync`, because the pane lives behind a `Mutex` that
+    /// [`PaneConfirm`] and [`PaneNarrator`] both require to be `Sync`** — the
+    /// same requirement the `Mutex` itself exists for, arriving one field
+    /// down. `SystemClock` holds an `Instant` and satisfies it; a clock that
+    /// did not could not be borrowed by a turn at all.
+    clock: &'a (dyn zaru_core::iteration::Clock + Sync),
+    /// When the exchange now generating began, or `None` between exchanges.
+    ///
+    /// `Some` means an exchange is in flight and has produced no text yet, so
+    /// [`Self::tick`] may say so once it has been quiet for
+    /// [`crate::terminal::source::QUIET`]. See [`Self::armed_by`] for exactly
+    /// which events arm it and which disarm it, and why "quiet" is not the
+    /// same question as "an exchange is generating".
+    generating_since: Option<Duration>,
+    /// Whether this exchange's line has already been said.
+    ///
+    /// **This is what makes it a narrative row rather than a spinner.**
+    /// [ADR-0028] D1 refuses a spinner in as many words; a line painted once
+    /// and left alone is the opposite of one that repaints.
+    ///
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    said_generating: bool,
 }
 
 impl<S: Surface + Send> core::fmt::Debug for Pane<'_, S> {
@@ -498,13 +527,85 @@ impl<S: Surface + Send> core::fmt::Debug for Pane<'_, S> {
 }
 
 impl<'a, S: Surface + Send> Pane<'a, S> {
-    /// Borrow a shell and its terminal for the length of one turn.
-    pub fn of(shell: &'a mut Shell, surface: &'a mut S) -> Self {
+    /// Borrow a shell and its terminal for the length of one turn, by the
+    /// clock that turn is measured on.
+    ///
+    /// The clock arrives here because the pane is where every repaint happens
+    /// and therefore where "this exchange has put nothing on the screen" is
+    /// knowable. It is [`run_a_turn`]'s, already built for [`Meter`].
+    pub fn during(
+        shell: &'a mut Shell,
+        surface: &'a mut S,
+        clock: &'a (dyn zaru_core::iteration::Clock + Sync),
+    ) -> Self {
         Self {
             shell,
             surface,
             first_failure: None,
+            clock,
+            generating_since: None,
+            said_generating: false,
         }
+    }
+
+    /// Whether an exchange begins after this event, or one stops generating.
+    ///
+    /// # Why the events and not the quiet
+    ///
+    /// A pane that had simply gone quiet would also be quiet while a
+    /// `cmd.run` child is running, and the line's subject is the work the
+    /// **model** is doing. So the arming is read off [ADR-0008] D3's own
+    /// event stream, which [`PaneSink`] already receives:
+    ///
+    /// - `TurnStarted`, `ToolCompleted` and `ToolRefused` are each followed
+    ///   immediately by an exchange, so each **arms**.
+    /// - `ModelResponded`, `ToolRequested`, `ToolPermissionDecided` and
+    ///   `TurnEnded` each mean the model is not generating, so each
+    ///   **disarms**.
+    ///
+    /// **A round of several tool calls needs no special case.** The next
+    /// `ToolRequested` disarms again within milliseconds of the
+    /// `ToolCompleted` that armed it, which is orders of magnitude inside
+    /// [`crate::terminal::source::QUIET`] — so the pane never has to know how
+    /// many calls a round holds, which it could only learn by reading loop
+    /// internals, and D3 forbids that.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    const fn armed_by(event: &zaru_core::tool_call::Event) -> bool {
+        use zaru_core::tool_call::Event;
+        matches!(
+            event,
+            Event::TurnStarted { .. } | Event::ToolCompleted { .. } | Event::ToolRefused { .. }
+        )
+    }
+
+    /// Arm or disarm on one event, then narrate it.
+    ///
+    /// The event travels **beside** the line rather than instead of it: the
+    /// wording stays [`crate::terminal::vocabulary`]'s, which is what keeps a
+    /// watched turn and a resumed one saying the same words.
+    fn note_event(&mut self, event: &zaru_core::tool_call::Event, line: Line) {
+        if Self::armed_by(event) {
+            self.generating_since = Some(self.clock.now());
+            self.said_generating = false;
+        } else {
+            self.generating_since = None;
+        }
+        self.note(line);
+    }
+
+    /// [ADR-0028] D5's line for an exchange that has produced nothing yet.
+    ///
+    /// **This is [`crate::compose::emission::Door::StillGeneratingRow`]**,
+    /// and `compose/emission/tests.rs` fails if it is opened from any file
+    /// that door does not name.
+    ///
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    fn say_still_generating(&mut self) {
+        self.shell.notice(Line::new(
+            zaru_tui::shell::port::Register::Plain,
+            crate::compose::prose::STILL_GENERATING.to_owned(),
+        ));
     }
 
     /// Add a line and paint.
@@ -520,6 +621,11 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
     /// ends and the turn's own rendered lines arrive — see that method for
     /// why the answer is painted once, from one place.
     fn stream(&mut self, text: &str, meter: Option<&Meter<'_>>) {
+        // **The "and has produced no text" half of the condition, held by the
+        // text itself rather than by a timer.** An exchange that has said a
+        // word is no longer an exchange that has said nothing, so it can
+        // never earn the line however long the rest of it takes.
+        self.generating_since = None;
         self.shell.stream_delta(text);
         self.tick(meter);
     }
@@ -535,6 +641,24 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
     fn tick(&mut self, meter: Option<&Meter<'_>>) {
         if let Some(meter) = meter {
             meter.refresh(self.shell);
+        }
+        // ADR-0028 D5's other half, on the same beat and for the same reason.
+        // At a hundred columns the numbers above say the work is proceeding;
+        // at forty, where `Rank::Tokens` and `Rank::Elapsed` are both dropped
+        // before `Rank::Context`, **this row is the only thing that says it
+        // at all** -- measured 2026-09-15, where a 9,201-token turn left the
+        // row reading `runtime.tier = bare · 3.8k/1048.5k` throughout.
+        //
+        // Two guards, one clause each: `!said_generating` is D1's "never
+        // repainted", and the comparison is "longer than a beat". Said
+        // **before** the paint below, so the row a person sees is the row
+        // this beat wrote.
+        if let Some(since) = self.generating_since
+            && !self.said_generating
+            && self.clock.now().saturating_sub(since) >= crate::terminal::source::QUIET
+        {
+            self.said_generating = true;
+            self.say_still_generating();
         }
         self.paint();
     }
@@ -619,7 +743,13 @@ impl<'m, 'a, S: Surface + Send> PaneSink<'m, 'a, S> {
 impl<S: Surface + Send> zaru_core::tool_call::EventSink for PaneSink<'_, '_, S> {
     fn emit(&mut self, event: &zaru_core::tool_call::Event) {
         match self.pane.try_lock() {
-            Ok(mut pane) => pane.note(crate::terminal::vocabulary::turn_line(event)),
+            // The event travels with its line so the pane can arm ADR-0028
+            // D5's quiet line on it. `Pane::armed_by` says which events arm
+            // and which disarm, and why the pane reads the event rather than
+            // the silence.
+            Ok(mut pane) => {
+                pane.note_event(event, crate::terminal::vocabulary::turn_line(event));
+            }
             Err(_) => self.contended += 1,
         }
     }
@@ -1221,7 +1351,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let meter = Meter::started(&clock, &reported);
 
     let outcome: Result<crate::compose::Ran, Turned> = {
-        let pane = std::sync::Mutex::new(Pane::of(shell, surface));
+        let pane = std::sync::Mutex::new(Pane::during(shell, surface, &clock));
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
         let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
@@ -3140,8 +3270,15 @@ pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
 
     // The pane borrows the shell for the length of the read and the write, so
     // everything that needs both is inside this block and the lines come out.
+    //
+    // A clock, because `Pane` takes one -- and it is never read here: this
+    // pane serves no turn, so no `PaneSink` arms ADR-0028 D5's quiet line on
+    // it and `generating_since` stays `None` for the whole block. A second
+    // constructor for the clockless case would be a second shape of one type
+    // to avoid building a value that holds an `Instant`.
+    let outside_a_turn = zaru_core::iteration::SystemClock::started_now();
     let (said, stored) = {
-        let pane = std::sync::Mutex::new(Pane::of(shell, surface));
+        let pane = std::sync::Mutex::new(Pane::during(shell, surface, &outside_a_turn));
         {
             // `lock` rather than `try_lock`: nothing else holds this yet, and
             // a poisoned mutex here would mean a panic already happened, which

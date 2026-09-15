@@ -37,6 +37,23 @@ use zaru_cli::terminal::{NOTHING_CACHED, NotesTrie};
 use zaru_notes::trie::{CachedEntry, EntryKind};
 use zaru_tui::shell::{COMPOSER_ROWS, Input, Key, Palette, Queued, Shell, Status};
 
+/// A clock that never advances, for a pane whose check is not about quiet.
+///
+/// `Pane::during` takes a clock because ADR-0028 D5's quiet line is measured
+/// against one. A pane whose check is about something else is handed this, so
+/// the elapsed quiet is always zero and the line can never be earned.
+#[derive(Debug)]
+struct Stopped;
+
+impl zaru_core::iteration::Clock for Stopped {
+    fn now(&self) -> core::time::Duration {
+        core::time::Duration::ZERO
+    }
+}
+
+/// The one [`Stopped`], so a pane can borrow it without a local per check.
+static STOPPED: Stopped = Stopped;
+
 /// A session with no [ADR-0015] D3 command anywhere, which is what every check
 /// in this file that predates them is about.
 ///
@@ -681,9 +698,10 @@ fn corpus_an_interrupt_between_two_tool_calls_leaves_at_most_the_event_in_flight
     let mut now = std::time::Duration::ZERO;
 
     let raced = {
-        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
             &mut shell,
             &mut surface,
+            &STOPPED,
         ));
         zaru_cli::compose::turn::runtime()
             .expect("a runtime")
@@ -750,9 +768,10 @@ fn an_uninterrupted_turn_leaves_a_matched_pair_for_every_call() {
     let mut now = std::time::Duration::ZERO;
 
     let raced = {
-        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
             &mut shell,
             &mut surface,
+            &STOPPED,
         ));
         zaru_cli::compose::turn::runtime()
             .expect("a runtime")
@@ -818,9 +837,10 @@ fn a_standing_tip_yields_on_the_first_keystroke_during_a_turn() {
     surface.draw(&shell).expect("the opening frame");
 
     let raced = {
-        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
             &mut shell,
             &mut surface,
+            &STOPPED,
         ));
         zaru_cli::compose::turn::runtime()
             .expect("a runtime")
@@ -1290,9 +1310,10 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         });
         let mut now = std::time::Duration::ZERO;
         {
-            let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+            let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
                 &mut shell,
                 &mut surface,
+                &STOPPED,
             ));
             let _ = zaru_cli::compose::turn::runtime()
                 .expect("a runtime")
@@ -1364,9 +1385,10 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
     let mut shell = Shell::open(Status::new("bare", "01ARZ3NDEKTSV4RRFFQ69G5FAV"));
     let mut surface = Recorded::wide();
     let narrated = {
-        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
             &mut shell,
             &mut surface,
+            &STOPPED,
         ));
         let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
         zaru_cli::compose::Narrator::interrupted(&narrator)
@@ -1409,9 +1431,10 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
     let mut shell = Shell::open(Status::new("bare", "01ARZ3NDEKTSV4RRFFQ69G5FAV"));
     let mut surface = Recorded::wide();
     let narrated = {
-        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
             &mut shell,
             &mut surface,
+            &STOPPED,
         ));
         let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
         zaru_cli::compose::Narrator::interrupted(&narrator)
@@ -1476,9 +1499,10 @@ fn corpus_an_interrupt_says_so_on_the_pane_in_the_register_a_decision_takes() {
     let mut surface = Recorded::wide();
 
     let painted = {
-        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::of(
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
             &mut shell,
             &mut surface,
+            &STOPPED,
         ));
         let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
         let _: zaru_cli::compose::Narrated = Narrator::interrupted(&narrator);

@@ -322,7 +322,7 @@ fn every_authored_sentence_in_an_unprompted_home_is_a_member_or_exempt() {
 fn every_member_names_a_cause_a_clause_a_door_and_a_wording() {
     assert_eq!(
         Unprompted::ALL.len(),
-        15,
+        16,
         "the emission set changed size without this check being read"
     );
 

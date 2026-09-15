@@ -191,6 +191,24 @@ fn pump_staged_painting(
 
 // ------------------------------------------------- ADR-0008 clause 3, whole
 
+/// A clock that never advances, for a pane whose check is not about quiet.
+///
+/// `Pane::during` takes a clock because ADR-0028 D5's quiet line is measured
+/// against one. A pane whose check is about something else is handed this, so
+/// the elapsed quiet is always zero, the line can never be earned, and every
+/// check written before that line existed asserts exactly what it asserted.
+#[derive(Debug)]
+struct Stopped;
+
+impl zaru_core::iteration::Clock for Stopped {
+    fn now(&self) -> core::time::Duration {
+        core::time::Duration::ZERO
+    }
+}
+
+/// The one [`Stopped`], so a pane can borrow it without a local per check.
+static STOPPED: Stopped = Stopped;
+
 /// A clock the check sets, so every elapsed time is an exact value.
 #[derive(Debug, Default)]
 struct Ticking(std::sync::Mutex<core::time::Duration>);
@@ -332,7 +350,7 @@ fn one_emission_reaches_the_transcript_and_the_pane() {
     let witness = ToolCalling::required(&model, "a-model").expect("the model calls tools");
 
     let outcome = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let mut painted = PaneSink::over(&pane);
         let mut sinks: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut written, &mut painted];
         let ran = futures_lite_block_on(zaru_core::tool_call::run(
@@ -440,7 +458,7 @@ fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
         let mut surface = Recording::of(restores);
         let source = Source::scripted(vec![press(Key::Char('q')), press(key)]);
         let pace = Held::default();
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let confirm = PaneConfirm::over(&pane, &source, &pace);
 
         let answered = confirm
@@ -472,7 +490,7 @@ fn a_pane_that_runs_out_of_keys_refuses_rather_than_declining() {
     let mut surface = Recording::of(restores);
     let source = Source::scripted(Vec::new());
     let pace = Held::default();
-    let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+    let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
     let confirm = PaneConfirm::over(&pane, &source, &pace);
 
     let outcome = confirm.confirm(&Question {
@@ -501,7 +519,7 @@ fn the_question_reaches_the_painted_frame_before_a_key_is_read() {
     let source = Source::scripted(vec![press(Key::Char('y'))]);
     let pace = Held::default();
     {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let confirm = PaneConfirm::over(&pane, &source, &pace);
         confirm
             .confirm(&Question {
@@ -1534,7 +1552,7 @@ fn the_inner_loops_narrative_is_painted_on_the_frame_as_it_arrives() {
     let mut surface = Recording::of(Arc::clone(&restores));
 
     let narrator = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let narrator = PaneNarrator::over(&pane);
         for event in &events {
             narrator.narrate(event);
@@ -1620,7 +1638,7 @@ fn success_exhaustion_and_failure_reach_the_frame_as_three_different_glyphs() {
     };
 
     {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let narrator = PaneNarrator::over(&pane);
         narrator.narrate(&succeeded);
         narrator.narrate(&exhausted);
@@ -2421,7 +2439,7 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
     let mut surface = Recording::of(Arc::clone(&restores));
     let pace = Counted(Arc::clone(&beats));
     let painted = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let confirm = PaneConfirm::over(&pane, &source, &pace);
         confirm
             .confirm(&Question {
@@ -2707,6 +2725,246 @@ fn status_rows(surface: &Recording) -> Vec<String> {
         .collect()
 }
 
+// ------------------------------- ADR-0028 D5's quiet line, audit-2 row 2
+
+/// How many beats of [`crate::terminal::source::TICK`] make one
+/// [`crate::terminal::source::QUIET`], plus enough to watch what happens next.
+///
+/// Derived rather than written, so changing `QUIET` changes these checks
+/// instead of silently leaving them asserting about a boundary that moved.
+fn beats_past_quiet() -> usize {
+    let quiet =
+        crate::terminal::source::QUIET.as_nanos() / crate::terminal::source::TICK.as_nanos();
+    usize::try_from(quiet).expect("a small beat count") + 5
+}
+
+/// Arm or disarm the pane by putting real events through the real sink.
+///
+/// The product's own path: `PaneSink` is what `compose::turn::run_one` writes
+/// to, so a check that armed a field directly would be asserting about a
+/// field rather than about the events `Pane::armed_by` reads.
+fn emit_into<S: crate::terminal::driver::Surface + Send>(
+    pane: &std::sync::Mutex<TurnPane<'_, S>>,
+    events: &[zaru_core::tool_call::Event],
+) {
+    let mut sink = crate::terminal::driver::PaneSink::over(pane);
+    for event in events {
+        zaru_core::tool_call::EventSink::emit(&mut sink, event);
+    }
+    assert_eq!(
+        sink.contended(),
+        0,
+        "the sink could not lock the pane, so this check staged nothing"
+    );
+}
+
+/// How many rows of the last painted frame carry the quiet line.
+fn quiet_rows(surface: &Recording) -> usize {
+    surface
+        .frames
+        .last()
+        .expect("the race painted no frame at all")
+        .iter()
+        .filter(|row| row.contains(crate::compose::prose::STILL_GENERATING))
+        .count()
+}
+
+/// The first frame carrying the quiet line, if any did.
+fn first_quiet_frame(surface: &Recording) -> Option<usize> {
+    surface.frames.iter().position(|frame| {
+        frame
+            .iter()
+            .any(|row| row.contains(crate::compose::prose::STILL_GENERATING))
+    })
+}
+
+/// One turn, held open for `beats`, with the pane armed by `events` first.
+fn quiet_race(
+    beats: usize,
+    events: &[zaru_core::tool_call::Event],
+    delta: Option<&str>,
+) -> Recording {
+    let (source, owed) = live_source(Vec::new());
+    let (staged, pace) = Raceable::gated(beats, &source, owed);
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+    let (sender, mut deltas) = tokio::sync::mpsc::unbounded_channel();
+    if let Some(text) = delta {
+        sender
+            .send(text.to_owned())
+            .expect("the receiver is alive in this scope");
+    }
+    let meter = crate::terminal::driver::Meter::started(&pace, &|| None);
+
+    let raced = {
+        // **The pace is the clock**, so the quiet an exchange is measured
+        // against and the beats the race counts are one number. A second
+        // clock here could drift past `QUIET` on a beat the race had not
+        // reached, which would make this a check over two instruments.
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &pace));
+        emit_into(&pane, events);
+        futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &Vocabulary,
+            &mut now,
+            Some(&mut deltas),
+            Some(&meter),
+            staged.turn(),
+        ))
+    };
+    assert_eq!(
+        raced,
+        crate::terminal::driver::Raced::Ran("the turn finished")
+    );
+    assert!(
+        staged.finished.load(Ordering::SeqCst),
+        "the staged turn never ran, so this check asserted nothing"
+    );
+    surface
+}
+
+/// An exchange begins and put a first event on the pane.
+fn turn_started() -> zaru_core::tool_call::Event {
+    zaru_core::tool_call::Event::TurnStarted { n: 1, of: 8 }
+}
+
+/// [ADR-0028] D5's quiet line is said **once** when an exchange generates
+/// nothing, and row 2 of the second audit is what asked for it.
+///
+/// Audit 2 measured the pane unchanged for 34.0 s of a 40.8-second turn;
+/// `turn-liveness` re-measured 37.55 s of 40.73 at the tip, and the wire
+/// probe of the same day found **no frame of any kind** on the socket for
+/// 82 to 87 per cent of a reasoning request. So there is nothing to render
+/// and this row says so.
+///
+/// The mutants: dropping `said_generating`, so the row is painted on every
+/// beat and the last frame carries many; painting it before the threshold.
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn an_exchange_that_generates_nothing_says_so_once() {
+    let beats = beats_past_quiet();
+    let surface = quiet_race(beats, &[turn_started()], None);
+
+    assert_eq!(
+        quiet_rows(&surface),
+        1,
+        "the quiet line is on the last frame {} time(s), and a line painted \
+         more than once is the spinner ADR-0028 D1 refuses",
+        quiet_rows(&surface)
+    );
+    let first = first_quiet_frame(&surface).expect("no frame carried the quiet line at all");
+    // Frames are zero-indexed and the beat that paints is the one whose
+    // reading has **reached** `QUIET`, so the earliest honest frame is the
+    // twentieth beat's, at index nineteen.
+    let earliest = usize::try_from(
+        crate::terminal::source::QUIET.as_nanos() / crate::terminal::source::TICK.as_nanos(),
+    )
+    .expect("a small beat count")
+        - 1;
+    assert!(
+        first >= earliest,
+        "the quiet line was painted on frame {first}, before {earliest} beats of QUIET had passed"
+    );
+}
+
+/// An exchange that answers promptly is never called quiet.
+///
+/// The accepting sibling of the check above: the same staging, the same
+/// beats, one delta. **The disarm is held by the text and not by a timer** —
+/// `Pane::stream` clears `generating_since`, so however long the rest of the
+/// answer takes, an exchange that has said a word can never earn the line.
+///
+/// The mutant: deleting that line from `Pane::stream`.
+#[test]
+fn an_exchange_that_has_said_a_word_is_never_called_quiet() {
+    let beats = beats_past_quiet();
+    let surface = quiet_race(beats, &[turn_started()], Some("the answer begins"));
+
+    assert_eq!(
+        first_quiet_frame(&surface),
+        None,
+        "an exchange that streamed text was told it had generated nothing"
+    );
+    // Not vacuous: the same staging without the delta paints it, which is the
+    // check above. Asserted here too so that a staging that silently stopped
+    // arming would redden rather than pass as a negative.
+    let armed = quiet_race(beats, &[turn_started()], None);
+    assert_eq!(
+        quiet_rows(&armed),
+        1,
+        "the staging paints no quiet line even with nothing streaming, so the \
+         negative above proves nothing"
+    );
+}
+
+/// A tool call in flight is not an exchange generating.
+///
+/// `Pane::armed_by` reads [ADR-0008] D3's events rather than the silence,
+/// because a pane is also silent while a `cmd.run` child runs — and what
+/// D5's line reports is the work the **model** is doing. A round of several
+/// calls needs no special case: the next `ToolRequested` disarms within
+/// milliseconds of the `ToolCompleted` that armed it.
+///
+/// The mutant: adding `ToolRequested` to `armed_by`.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+#[test]
+fn a_tool_call_in_flight_is_not_an_exchange_generating() {
+    let beats = beats_past_quiet();
+    let requested = zaru_core::tool_call::Event::ToolRequested {
+        round: 1,
+        call: 1,
+        name: "fs.list".to_owned(),
+    };
+    let surface = quiet_race(beats, &[turn_started(), requested], None);
+
+    assert_eq!(
+        first_quiet_frame(&surface),
+        None,
+        "a tool call in flight was narrated as an exchange generating nothing"
+    );
+}
+
+/// A tool call that returned arms the exchange that follows it.
+///
+/// The accepting sibling of the check above, and the half that makes the
+/// arming a rule rather than a refusal: the second exchange of a turn is
+/// exactly the one audit 2 measured holding the previous exchange's token
+/// count for 34 seconds.
+///
+/// The mutant: removing `ToolCompleted` from `armed_by`.
+#[test]
+fn a_tool_call_that_returned_arms_the_exchange_after_it() {
+    let beats = beats_past_quiet();
+    let requested = zaru_core::tool_call::Event::ToolRequested {
+        round: 1,
+        call: 1,
+        name: "fs.list".to_owned(),
+    };
+    let completed = zaru_core::tool_call::Event::ToolCompleted {
+        round: 1,
+        call: 1,
+        name: "fs.list".to_owned(),
+        failed: false,
+        content_bytes: 30,
+        elapsed: core::time::Duration::from_millis(10),
+    };
+    let surface = quiet_race(beats, &[turn_started(), requested, completed], None);
+
+    assert_eq!(
+        quiet_rows(&surface),
+        1,
+        "the exchange after a returned tool call was never narrated as quiet"
+    );
+}
+
 /// [ADR-0028] D5's meter advances across the beats of one turn.
 ///
 /// **This is the whole of what survey row 2 asked for**: "nothing moves" was
@@ -2734,7 +2992,7 @@ fn the_elapsed_figure_advances_across_the_beats_of_one_turn() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     let raced = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -2806,7 +3064,7 @@ fn the_token_count_changes_when_an_exchange_reports_one_and_not_before() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let _ = futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -2874,7 +3132,7 @@ fn the_context_figure_is_the_same_bytes_on_every_frame_of_one_turn() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let _ = futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -3071,7 +3329,7 @@ fn the_pane_repaints_while_a_turn_is_suspended() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     let raced = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -3153,7 +3411,7 @@ fn a_keystroke_during_a_turn_is_painted_and_enter_queues_it_as_the_next_task() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     let raced = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -3227,7 +3485,7 @@ fn a_second_enter_during_one_turn_replaces_the_queued_task() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     let raced = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -3268,7 +3526,7 @@ fn an_enter_on_an_empty_prompt_during_a_turn_queues_nothing() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let _ = futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -3333,7 +3591,7 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     let raced = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -3680,7 +3938,7 @@ fn an_out_of_tree_call_renders_distinctly_on_the_frame_at_yolo() {
         // ordinary one, unmixed with anything about wrapping.
         let mut surface = Recording::wide(Arc::clone(&restores), 200);
         {
-            let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+            let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
             let mut sink = PaneSink::over(&pane);
             zaru_core::tool_call::EventSink::emit(
                 &mut sink,
@@ -4057,7 +4315,7 @@ fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
     drop(sender);
 
     let raced = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         futures_lite_block_on(crate::terminal::driver::race(
             &pane,
             &source,
@@ -4215,7 +4473,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
     let trie = NotesTrie::nothing_cached(WORKSPACE);
 
     let raced = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         let confirm = PaneConfirm::over(&pane, &source, &pace);
         let mut polls = 0_usize;
         // The turn: one suspension, woken at once, then the tool call's
@@ -5186,7 +5444,7 @@ fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read()
     let mut shell = shell();
     let pace = Held::default();
     let answered = {
-        let pane = std::sync::Mutex::new(TurnPane::of(&mut shell, &mut surface));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
         PaneConfirm::over(&pane, &source, &pace)
             .confirm(&Question {
                 statement: "Allow fs.write /tmp/note.txt?".to_owned(),

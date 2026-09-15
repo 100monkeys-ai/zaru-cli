@@ -234,6 +234,16 @@ pub enum Door {
     ///
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     NarrativeRow,
+    /// `Pane::say_still_generating` — the pane, on the shell's beat.
+    ///
+    /// Distinct from [`Door::NarrativeRow`] because nothing emits it: it is
+    /// said by the beat when an armed exchange has put nothing on the screen
+    /// for [`crate::terminal::source::QUIET`], so it reaches a person through
+    /// the pane rather than through [ADR-0008] D3's event stream. That is
+    /// also why it is in no transcript — see [`Unprompted::StillGenerating`].
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    StillGeneratingRow,
 }
 
 impl Door {
@@ -241,7 +251,7 @@ impl Door {
     ///
     /// The length is annotated, so a twelfth fails to compile here as well as
     /// in every exhaustive match below.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::StandingStrip,
         Self::AbsenceStrip,
         Self::SessionNotice,
@@ -252,6 +262,7 @@ impl Door {
         Self::TokenSegment,
         Self::ElapsedSegment,
         Self::NarrativeRow,
+        Self::StillGeneratingRow,
     ];
 
     /// The text that opens this door, as it is written at a call site.
@@ -284,6 +295,10 @@ impl Door {
             Self::TokenSegment => ".set_token_usage(",
             Self::ElapsedSegment => ".set_elapsed(",
             Self::NarrativeRow => "Event::TurnStarted { n, of }",
+            // A call and not the sentence, by the same rule: the line's
+            // wording lives in `prose` and this names the one method that
+            // puts it on the shell.
+            Self::StillGeneratingRow => "self.say_still_generating()",
         }
     }
 
@@ -309,6 +324,7 @@ impl Door {
                 &["src/terminal/driver.rs"]
             }
             Self::NarrativeRow => &["src/terminal/vocabulary.rs"],
+            Self::StillGeneratingRow => &["src/terminal/driver.rs"],
         }
     }
 }
@@ -399,6 +415,36 @@ pub enum Unprompted {
     /// [ADR-0002's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output-updates
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     TurnCounter,
+    /// [ADR-0028] D5's line for an exchange that has generated nothing.
+    ///
+    /// # Why a line and not a number
+    ///
+    /// D5 asks for elapsed time, token counts and cost "as the work
+    /// proceeds", and on a reasoning turn there is no work to report:
+    /// measured 2026-09-15, the provider puts **no frame of any kind** on the
+    /// wire for 82 to 87 per cent of the request, so every number the row
+    /// could carry is either stale or absent. And at forty columns the row
+    /// carries neither number at all. A sentence is what is left, and
+    /// [`crate::compose::prose::STILL_GENERATING`] carries the measurements
+    /// behind it.
+    ///
+    /// # It is in no transcript, deliberately
+    ///
+    /// Every other narrative row is an [ADR-0008] D3 event and reaches
+    /// `transcript.jsonl` through the same emission. This one is said by the
+    /// pane's beat, and what it says — that nothing has come back **yet** —
+    /// is a fact about waiting. A person reading the turn back on `--resume`
+    /// is not waiting, and the answer is already there. So the line has no
+    /// producer to widen and no record to write, which is what keeps
+    /// `zaru-core` untouched.
+    ///
+    /// The precedent is [`Unprompted::Interrupted`], which reaches the pane
+    /// from the signal path rather than from a loop event, and the three
+    /// status segments, which reach no transcript either.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    StillGenerating,
 }
 
 impl Unprompted {
@@ -406,7 +452,7 @@ impl Unprompted {
     ///
     /// The length is annotated, so a seventeenth fails to compile here as well
     /// as in every exhaustive match below.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::NotASandbox,
         Self::MissingValidators,
         Self::DeclareOne,
@@ -422,6 +468,7 @@ impl Unprompted {
         Self::TokenUsage,
         Self::Elapsed,
         Self::TurnCounter,
+        Self::StillGenerating,
     ];
 
     /// Where this line's wording comes from — by reference, never retyped.
@@ -481,6 +528,10 @@ impl Unprompted {
             Self::TurnCounter => Wording::Composed {
                 by: "crate::terminal::vocabulary::line_for",
             },
+            Self::StillGenerating => Wording::Authored {
+                name: "STILL_GENERATING",
+                text: prose::STILL_GENERATING,
+            },
         }
     }
 
@@ -515,7 +566,8 @@ impl Unprompted {
             | Self::ContextUsage
             | Self::TokenUsage
             | Self::Elapsed
-            | Self::TurnCounter => Cause::TurnInProgress,
+            | Self::TurnCounter
+            | Self::StillGenerating => Cause::TurnInProgress,
         }
     }
 
@@ -536,7 +588,10 @@ impl Unprompted {
             | Self::LookingInNotes
             | Self::NotesUnreachable
             | Self::NotesFromCache => Subject::TheHarness,
-            Self::TokenUsage => Subject::TheModel,
+            // The model's, and emphatically not the user's: what is
+            // reported is what the provider is doing, never how long
+            // somebody has been waiting on it. D7 forbids the second.
+            Self::TokenUsage | Self::StillGenerating => Subject::TheModel,
             Self::Interrupted
             | Self::Compacted
             | Self::AttachmentDropped
@@ -563,6 +618,7 @@ impl Unprompted {
             Self::TokenUsage => Door::TokenSegment,
             Self::Elapsed => Door::ElapsedSegment,
             Self::TurnCounter => Door::NarrativeRow,
+            Self::StillGenerating => Door::StillGeneratingRow,
         }
     }
 
@@ -587,6 +643,7 @@ impl Unprompted {
             Self::TokenUsage => ("ADR-0012", "D7"),
             Self::Elapsed => ("ADR-0028", "D5"),
             Self::TurnCounter => ("ADR-0028", "D3"),
+            Self::StillGenerating => ("ADR-0028", "D5"),
         }
     }
 }
