@@ -123,6 +123,18 @@ pub struct Question {
     /// The whole sentence the prompt states, including ADR-0011 D4's
     /// out-of-tree marking and D6's annotation where they apply.
     pub statement: String,
+    /// What the question shows of the call, under the statement.
+    ///
+    /// The content an `fs.write` would write, the before and after of an
+    /// `fs.edit`, a `cmd.run`'s program and argument vector as the harness
+    /// split them — and **empty** for `web.fetch` and the three reading
+    /// tools, whose whole argument is already in the statement. Composed once
+    /// by [`preview::detail_for`](crate::tools::preview::detail_for) and
+    /// attached to the decision, for the reason the statement is composed
+    /// once: a renderer paints what it was handed and derives nothing.
+    ///
+    /// Already redacted. See that module for the asymmetry that buys.
+    pub detail: Vec<String>,
     /// Whether D6 matched, so a renderer can raise the prompt's prominence
     /// without re-deriving why.
     pub prominent: bool,

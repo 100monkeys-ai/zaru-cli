@@ -488,6 +488,15 @@ pub struct Decision {
     requirement: Requirement,
     entry: TranscriptEntry,
     prominent: bool,
+    /// What the question shows of the call, under the statement.
+    ///
+    /// Empty until [`Decision::showing`] attaches it, and empty forever for
+    /// the four tools whose whole argument is already in the statement. It is
+    /// **not** set by [`Decision::reach`], because composing it needs a
+    /// budget, a redactor and a look at the filesystem, and that function is
+    /// pure over the mode, the call and what the ports already said — which
+    /// is what lets D3's prompting rule be checked with no port at all.
+    detail: Vec<String>,
 }
 
 impl Decision {
@@ -536,7 +545,21 @@ impl Decision {
                 destructive: assessment.destructive,
             },
             prominent: assessment.destructive,
+            detail: Vec::new(),
         }
+    }
+
+    /// Attach what the question shows of the call.
+    ///
+    /// Composed once, by [`preview::detail_for`](crate::tools::preview), and
+    /// attached here — rather than composed where it is rendered — for the
+    /// reason the statement already is: what the user was told and what the
+    /// harness believes it asked cannot drift apart. A decision with nothing
+    /// attached asks the question this record asked before 2026-09-14.
+    #[must_use]
+    pub fn showing(mut self, detail: Vec<String>) -> Self {
+        self.detail = detail;
+        self
     }
 
     /// Ask the two ports, then apply the rule.
@@ -573,6 +596,7 @@ impl Decision {
             Requirement::Proceed => None,
             Requirement::Ask => Some(Question {
                 statement: format!("Allow {}?", self.entry.render()),
+                detail: self.detail.clone(),
                 prominent: self.prominent,
             }),
         }

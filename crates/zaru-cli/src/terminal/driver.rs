@@ -149,6 +149,15 @@ pub fn question_for_the_shell(question: &Question) -> Confirmation {
         crate::tools::prompt::SUFFIX.trim(),
         question.prominent,
     )
+    // **The detail crosses unchanged too**, for the statement's own reason.
+    // It is what the question is about -- the bytes an `fs.write` would
+    // write, the before and after of an `fs.edit`, a `cmd.run`'s argument
+    // vector as the harness split it -- composed once by
+    // `crate::tools::preview` and already redacted. A conversion that
+    // reworded, re-ordered or truncated it would be the drift D3's port
+    // exists to prevent, and truncation in particular is what the pane's own
+    // wrapping is there to make unnecessary.
+    .showing(question.detail.clone())
 }
 
 /// What the fall-through in [`dispatch`] says.
@@ -891,6 +900,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::credentials::port::Confirm
         // composed here.
         let question = Question {
             statement: apex_statement(alias, grants),
+            detail: Vec::new(),
             prominent: true,
         };
         crate::tools::port::Confirm::confirm(self, &question).unwrap_or(false)

@@ -772,6 +772,35 @@ pub fn process_ceiling() -> crate::process::ProcessCeiling {
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub const OUTPUT_BUDGET_BYTES: usize = 32 * (1 << 10);
 
+/// How much of a call's arguments [ADR-0011] D3's question formats.
+///
+/// **4 KiB, and the number's reason is the screen.** This is not
+/// [`OUTPUT_BUDGET_BYTES`] and the two answer different questions: that one
+/// bounds how much of a tool's *output* goes into a context window, and this
+/// one bounds how much of an *argument* is formatted for a person to read
+/// before they answer a question about it. What a person can read is bounded
+/// by the terminal — thirty rows of a hundred columns is three thousand cells
+/// and twenty-four of forty is nine hundred and sixty — so four kibibytes is
+/// more than the widest terminal this workspace measures can show, and small
+/// enough that a multi-megabyte write is never formatted at all.
+///
+/// Nothing is lost by the cut: D5's own elision marks what went, and the
+/// bytes themselves are what the act writes to disk whether or not the
+/// preview showed them.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+pub const PREVIEW_BUDGET_BYTES: usize = 4 * (1 << 10);
+
+/// [`PREVIEW_BUDGET_BYTES`] as the tool surface takes it.
+///
+/// # Panics
+///
+/// Never. [`PREVIEW_BUDGET_BYTES`] is not zero.
+#[must_use]
+pub fn preview_budget() -> crate::tools::OutputBudget {
+    crate::tools::OutputBudget::new(PREVIEW_BUDGET_BYTES).expect("4 KiB is not zero")
+}
+
 /// [`OUTPUT_BUDGET_BYTES`] as the tool surface takes it.
 ///
 /// # Panics

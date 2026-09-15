@@ -1172,6 +1172,7 @@ async fn ran(
         confirmer,
         verdicts: &verdicts,
         budget: layers::output_budget(),
+        preview_budget: layers::preview_budget(),
         search_ceiling: layers::search_ceiling(),
         overflow: &mut overflow,
         transcript: &mut transcript,

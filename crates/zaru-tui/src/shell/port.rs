@@ -631,6 +631,18 @@ pub trait TranscriptSource {
 pub struct Confirmation {
     /// The whole sentence the prompt states.
     pub statement: String,
+    /// What the question shows of the call, under the statement.
+    ///
+    /// The content a write would write, the before and after of an edit, a
+    /// command's argument vector as it was split — whatever `zaru-cli`
+    /// composed. **Empty is ordinary**: four of the seven built-ins have their
+    /// whole argument in the statement already.
+    ///
+    /// Handed across for [`Confirmation::answers`]' reason and the statement's:
+    /// this crate composes nothing a user reads and derives nothing from what
+    /// it was handed. It arrives already redacted, because whether a value is
+    /// a secret is not a thing a renderer can know.
+    pub detail: Vec<String>,
     /// What follows it: the answers, and which of them is the default.
     ///
     /// # Handed across, for the same reason the statement is
@@ -655,13 +667,24 @@ pub struct Confirmation {
 
 impl Confirmation {
     /// A question, its answers, and whether it is a loud one.
+    ///
+    /// No detail. [`Confirmation::showing`] adds it, so a caller that has
+    /// nothing to show writes nothing rather than an empty vector.
     #[must_use]
     pub fn new(statement: impl Into<String>, answers: impl Into<String>, prominent: bool) -> Self {
         Self {
             statement: statement.into(),
             answers: answers.into(),
+            detail: Vec::new(),
             prominent,
         }
+    }
+
+    /// The same question, showing these lines under its statement.
+    #[must_use]
+    pub fn showing(mut self, detail: Vec<String>) -> Self {
+        self.detail = detail;
+        self
     }
 }
 

@@ -274,6 +274,7 @@ async fn drive(scratch: &Scratch, mode: Mode, script: Vec<ModelResponse>) -> Run
             confirmer: Some(&confirmer),
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),
+            preview_budget: OutputBudget::new(4096).expect("a usable budget"),
             search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
             transcript: &mut transcript,

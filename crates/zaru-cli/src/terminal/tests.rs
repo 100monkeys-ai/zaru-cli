@@ -424,6 +424,7 @@ fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
         let answered = confirm
             .confirm(&Question {
                 statement: "run `rm -rf build` in /home/someone/project".to_owned(),
+                detail: Vec::new(),
                 prominent: true,
             })
             .expect("the pane answered");
@@ -453,6 +454,7 @@ fn a_pane_that_runs_out_of_keys_refuses_rather_than_declining() {
 
     let outcome = confirm.confirm(&Question {
         statement: "write build/out.txt".to_owned(),
+        detail: Vec::new(),
         prominent: false,
     });
     let failure = outcome.expect_err("a pane with no answer must not answer");
@@ -480,6 +482,7 @@ fn the_question_reaches_the_painted_frame_before_a_key_is_read() {
         confirm
             .confirm(&Question {
                 statement: STATEMENT.to_owned(),
+                detail: Vec::new(),
                 prominent: true,
             })
             .expect("the pane answered");
@@ -1653,11 +1656,17 @@ fn a_question_crosses_to_the_shell_with_its_statement_unchanged() {
     for prominent in [false, true] {
         let question = Question {
             statement: "run `rm -rf build` in /home/someone/project".to_owned(),
+            detail: vec!["runs, as split:".to_owned(), "  rm".to_owned()],
             prominent,
         };
         let crossed = question_for_the_shell(&question);
         assert_eq!(crossed.statement, question.statement);
         assert_eq!(crossed.prominent, question.prominent);
+        assert_eq!(
+            crossed.detail, question.detail,
+            "the detail is composed by the decision and handed across; a conversion that dropped \
+             or reworded it would be exactly the drift D3's port exists to prevent"
+        );
     }
 }
 
@@ -1672,6 +1681,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
     let mut shell = shell();
     shell.ask(question_for_the_shell(&Question {
         statement: "run `rm -rf build`".to_owned(),
+        detail: Vec::new(),
         prominent: true,
     }));
     let runner = crate::cli::Run {
@@ -1743,6 +1753,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     let mut accepting = shell();
     accepting.ask(question_for_the_shell(&Question {
         statement: "run `rm -rf build`".to_owned(),
+        detail: Vec::new(),
         prominent: false,
     }));
     let _ = accepting.key(
@@ -1761,6 +1772,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     let mut declining = shell();
     declining.ask(question_for_the_shell(&Question {
         statement: "run `rm -rf build`".to_owned(),
+        detail: Vec::new(),
         prominent: false,
     }));
     let _ = declining.key(
@@ -2366,6 +2378,7 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
         confirm
             .confirm(&Question {
                 statement: "write build/out.txt".to_owned(),
+                detail: Vec::new(),
                 prominent: false,
             })
             .expect("the pane answered")
@@ -4168,6 +4181,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
                 confirm
                     .confirm(&Question {
                         statement: "write build/out.txt".to_owned(),
+                        detail: Vec::new(),
                         prominent: false,
                     })
                     .map_err(|failure| format!("{failure}")),
@@ -5122,6 +5136,7 @@ fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read()
         PaneConfirm::over(&pane, &source, &pace)
             .confirm(&Question {
                 statement: "Allow fs.write /tmp/note.txt?".to_owned(),
+                detail: Vec::new(),
                 prominent: false,
             })
             .expect("the terminal answered")

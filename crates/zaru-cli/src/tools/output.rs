@@ -332,12 +332,20 @@ pub const ELISION_PREFIX: &str = "[... ";
 
 /// Keep the head and the tail of `text` and mark what was dropped.
 ///
+/// **`pub(crate)` since 2026-09-14, with a second caller.** D3's permission
+/// question shows the content an `fs.write` would write and the strings an
+/// `fs.edit` swaps, and those need cutting under a budget exactly as a
+/// capture does. Copying the rule would put [`ELISION_PREFIX`] and the
+/// sentence around it in two places, and a marker written twice is a marker
+/// that will one day read two ways — which is the reason that constant is
+/// named at all. See [`crate::tools::preview`].
+///
 /// Text that fits is returned byte-for-byte with no marker: an elision marker
 /// on text that was not elided is a lie a reader cannot tell from a
 /// truncation. When it does not fit, the kept head and tail together are at
 /// most `budget` bytes and the marker is additional, so the marker can always
 /// say how much went. Both cuts fall on character boundaries.
-fn excerpt(text: &str, budget: OutputBudget) -> Excerpt {
+pub(crate) fn excerpt(text: &str, budget: OutputBudget) -> Excerpt {
     let budget = budget.get();
     if text.len() <= budget {
         return Excerpt {

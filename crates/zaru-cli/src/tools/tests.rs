@@ -35,7 +35,6 @@ use crate::config::{
 use crate::tools::allowlist::{self, Allowed, AllowlistRefused, Entry};
 use crate::tools::decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
-    Subject,
 };
 use crate::tools::destructive::{Category, Shapes};
 use crate::tools::fixtures::{
@@ -2661,6 +2660,7 @@ fn n_is_the_default_and_only_a_yes_is_a_yes() {
 fn the_prompt_writes_its_line_and_reads_the_answer_back() {
     let question = crate::tools::port::Question {
         statement: format!("Allow {}", fixtures::nonce("statement")),
+        detail: Vec::new(),
         prominent: true,
     };
 
@@ -3065,5 +3065,249 @@ fn the_allowlist_matches_the_same_string_after_the_question_gained_rows() {
         allowed.approves(&other),
         "an allowlist entry is a tool and a target; making it depend on the content would be a \
          rule nobody wrote down"
+    );
+}
+
+// -------------------------------- ADR-0011 D3's question shows what it is about
+
+/// A redactor a check owns, which replaces one staged value with one marker.
+///
+/// **Deliberately not `HeldSecrets`.** What this file asserts is that
+/// `preview` *applies* the port it was handed; whether the product's
+/// implementation matches the right bytes is `redaction_from_outside`'s, over
+/// a real store. A check that built a store here would be testing two things
+/// and reporting one.
+#[derive(Debug)]
+struct StagedRedactor;
+
+impl StagedRedactor {
+    const VALUE: &'static str = "AIzaSy-A-STAGED-VALUE-NOBODY-HOLDS";
+    const MARKER: &'static str = "[redacted: staged]";
+}
+
+impl zaru_core::redaction::Redactor for StagedRedactor {
+    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if text.contains(Self::VALUE) {
+            std::borrow::Cow::Owned(text.replace(Self::VALUE, Self::MARKER))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
+    }
+}
+
+/// A budget big enough that nothing in these checks is elided.
+fn roomy() -> OutputBudget {
+    OutputBudget::new(4096).expect("4 KiB is not zero")
+}
+
+/// Each tool's question shows the argument it is about, and the four whose
+/// whole argument is already in the statement show nothing more.
+///
+/// # The measurement this closes
+///
+/// From the release binary at `a8eedf7` over a pseudo-terminal at `--mode
+/// ask`, an `fs.write` question named a path and nothing else, a create and
+/// an overwrite of the same path with different content were **byte
+/// identical**, and `fs.edit` showed neither the string it replaced nor its
+/// replacement. ADR-0016 D2's test — a message whose reader cannot act "is a
+/// stack trace with better grammar" — is what a question whose reader cannot
+/// see its subject fails.
+#[test]
+fn each_tools_question_shows_what_it_is_about() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let absent = working.classify("inside/not-there-yet.txt");
+    let present = working.classify("inside/already-here.txt");
+    std::fs::create_dir_all(present.resolved().parent().expect("a parent")).expect("the directory");
+    std::fs::write(present.resolved(), "what was there before").expect("the staged file");
+
+    let command = CommandLine::split("git commit -m 'a message with spaces'")
+        .expect("a quoted command line splits");
+    let url = crate::web::RequestedUrl::parse("https://example.test/thing").expect("a URL parses");
+
+    let none = HeldSecrets::none();
+    let detail =
+        |invocation: &Invocation<'_>| crate::tools::preview::detail_for(invocation, roomy(), &none);
+
+    // `fs.write`, a path that is not there yet.
+    let creating = Invocation::writing(&absent, "alpha\nbeta\ngamma");
+    assert_eq!(
+        detail(&creating),
+        vec![
+            crate::tools::preview::CREATES.to_owned(),
+            "  alpha".to_owned(),
+            "  beta".to_owned(),
+            "  gamma".to_owned(),
+        ],
+        "a write to a path that does not exist does not show what it would create"
+    );
+
+    // `fs.write`, a path that is. The heading differs and so does the content,
+    // which is exactly the pair that was byte-identical before 2026-09-14.
+    let replacing = Invocation::writing(&present, "alpha\nbeta\ngamma");
+    let replacing_detail = detail(&replacing);
+    assert_eq!(
+        replacing_detail.first().map(String::as_str),
+        Some(crate::tools::preview::REPLACES_THE_FILE),
+        "a write over an existing file reads as a creation: {replacing_detail:#?}"
+    );
+    assert_ne!(
+        detail(&creating),
+        replacing_detail,
+        "creating a file and replacing one produce the same question, which is the state the \
+         release binary was measured in"
+    );
+
+    // `fs.edit`: the before and the after, both.
+    let editing = Invocation::editing(&present, "what was there", "what will be there");
+    assert_eq!(
+        detail(&editing),
+        vec![
+            crate::tools::preview::REPLACES.to_owned(),
+            "  what was there".to_owned(),
+            crate::tools::preview::WITH.to_owned(),
+            "  what will be there".to_owned(),
+        ],
+        "an edit does not show the strings it swaps"
+    );
+
+    // `cmd.run`: the vector as split, so a quoted argument reads as one.
+    assert_eq!(
+        detail(&Invocation::running(&command)),
+        vec![
+            crate::tools::preview::AS_SPLIT.to_owned(),
+            "  git".to_owned(),
+            "  commit".to_owned(),
+            "  -m".to_owned(),
+            "  a message with spaces".to_owned(),
+        ],
+        "a command's argument vector is not shown as the harness split it"
+    );
+
+    // The four whose whole argument is already in the statement show nothing.
+    let quiet: Vec<(&str, Invocation<'_>)> = vec![
+        (
+            "fs.read",
+            Invocation::on_path(ToolName::FsRead, &present).expect("addresses a path"),
+        ),
+        (
+            "fs.list",
+            Invocation::on_path(ToolName::FsList, &present).expect("addresses a path"),
+        ),
+        ("fs.search", Invocation::searching(&present, "needle")),
+        ("web.fetch", Invocation::fetching(&url)),
+    ];
+    for (name, invocation) in &quiet {
+        assert!(
+            detail(invocation).is_empty(),
+            "{name}'s whole argument is already in its statement, and it gained a detail block"
+        );
+    }
+}
+
+/// A preview longer than the budget is cut by D5's own elision, and a short
+/// one is not marked at all.
+///
+/// The accepting sibling is in the same check on purpose: an elision marker on
+/// text that was not elided is a lie a reader cannot tell from a truncation,
+/// which is `excerpt`'s own sentence.
+#[test]
+fn corpus_a_preview_never_shows_more_than_the_budget() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let none = HeldSecrets::none();
+    let budget = OutputBudget::new(64).expect("a small budget");
+
+    let long = "x".repeat(4096);
+    let detail =
+        crate::tools::preview::detail_for(&Invocation::writing(&target, &long), budget, &none);
+    let shown: String = detail.join("\n");
+    assert!(
+        shown.contains(crate::tools::output::ELISION_PREFIX),
+        "a preview over the budget was not marked as elided: {shown:?}"
+    );
+    assert!(
+        !shown.contains(&"x".repeat(128)),
+        "a preview over the budget carried more than the budget's worth of it"
+    );
+
+    // The accepting sibling: what fits is shown whole, unmarked.
+    let short = "alpha\nbeta";
+    let detail =
+        crate::tools::preview::detail_for(&Invocation::writing(&target, short), budget, &none);
+    let shown: String = detail.join("\n");
+    assert!(
+        !shown.contains(crate::tools::output::ELISION_PREFIX),
+        "a preview that fits was marked as elided, which a reader cannot tell from a truncation: \
+         {shown:?}"
+    );
+    assert!(
+        shown.contains("alpha") && shown.contains("beta"),
+        "a preview that fits was cut anyway: {shown:?}"
+    );
+}
+
+/// A held secret in a write's content paints as the marker and never as the
+/// value.
+///
+/// # The asymmetry this admits
+///
+/// **The file receives the bytes and the pane receives the marker.** ADR-0008
+/// clause 6's port is applied where a capture becomes text a *model* is given,
+/// and a prompt runs the other way, so nothing already decided covers this
+/// direction; it is applied anyway on ADR-0007 D3's structural argument that
+/// no byte of a held secret reaches a frame. The cost is that the preview is
+/// not literally what will be written. The alternative puts a credential on a
+/// screen, in a capture and in terminal scrollback.
+///
+/// **The accepting sibling** is the same content through a redactor that holds
+/// nothing, where the value must survive byte for byte — without it, an
+/// implementation that erased the whole preview would satisfy the absence
+/// assertion on its own.
+#[test]
+fn corpus_a_held_secret_in_a_writes_content_paints_as_the_marker() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/config.toml");
+    let content = format!("token = \"{}\"\n", StagedRedactor::VALUE);
+
+    let redacted = crate::tools::preview::detail_for(
+        &Invocation::writing(&target, &content),
+        roomy(),
+        &StagedRedactor,
+    )
+    .join("\n");
+    assert!(
+        !redacted.contains(StagedRedactor::VALUE),
+        "a held value reached the question's own text: {redacted:?}"
+    );
+    assert!(
+        redacted.contains(StagedRedactor::MARKER),
+        "the preview shows neither the value nor a marker, so a reader cannot tell a redaction \
+         from an empty file: {redacted:?}"
+    );
+
+    // The accepting sibling: nothing held, so nothing is replaced.
+    let none = HeldSecrets::none();
+    let raw =
+        crate::tools::preview::detail_for(&Invocation::writing(&target, &content), roomy(), &none)
+            .join("\n");
+    assert!(
+        raw.contains(StagedRedactor::VALUE),
+        "with nothing held the content was altered anyway, so the absence above proves nothing: \
+         {raw:?}"
+    );
+
+    // And the same edit path, because an `fs.edit` carries two strings.
+    let edited = crate::tools::preview::detail_for(
+        &Invocation::editing(&target, &content, "token = \"\"\n"),
+        roomy(),
+        &StagedRedactor,
+    )
+    .join("\n");
+    assert!(
+        !edited.contains(StagedRedactor::VALUE),
+        "a held value reached an edit's before-and-after: {edited:?}"
     );
 }

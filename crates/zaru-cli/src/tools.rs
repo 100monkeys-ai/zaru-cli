@@ -92,6 +92,7 @@ pub mod name;
 pub mod notice;
 pub mod output;
 pub mod port;
+pub mod preview;
 pub mod prompt;
 pub mod seal;
 pub mod tree;

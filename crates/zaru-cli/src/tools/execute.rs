@@ -202,6 +202,13 @@ pub struct Executor<'a, C, F> {
     pub verdicts: &'a (dyn Verdicts + Sync),
     /// D5's budget, refused at zero by its own constructor.
     pub budget: OutputBudget,
+    /// How much of a call's arguments D3's question formats.
+    ///
+    /// A second budget rather than [`Executor::budget`] reused, because the
+    /// two bound different things for different readers — a model's context
+    /// window and a person's terminal. The binary's is
+    /// [`crate::cli::layers::preview_budget`].
+    pub preview_budget: OutputBudget,
     /// The largest file `fs.search` will read the contents of.
     ///
     /// Caller-passed and refused at zero, in the shape [`OutputBudget`] and
@@ -479,7 +486,15 @@ where
             }
         };
 
-        let decision = Decision::assess(self.mode, &invocation, self.allowlist, self.destructive);
+        // D3's question shows what it is about. The detail is composed once,
+        // here, from the same invocation the decision was reached about — so
+        // a question cannot describe one call and a decision another — and it
+        // arrives already redacted, because whether a value is a secret is
+        // not a thing a renderer can know. See `crate::tools::preview`.
+        let decision =
+            Decision::assess(self.mode, &invocation, self.allowlist, self.destructive).showing(
+                crate::tools::preview::detail_for(&invocation, self.preview_budget, self.redactor),
+            );
         let entry = decision.entry().clone();
 
         // ADR-0004 D2: at `contained` and above the membrane decides, and

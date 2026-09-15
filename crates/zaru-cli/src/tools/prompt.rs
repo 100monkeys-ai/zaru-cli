@@ -74,14 +74,26 @@ use std::sync::Mutex;
 /// cannot disagree about which way an empty answer goes.
 pub const SUFFIX: &str = " [y/N] ";
 
-/// The one line ADR-0011 D3's prompt writes.
+/// What ADR-0011 D3's prompt writes.
 ///
-/// The statement, then [`SUFFIX`]. **Nothing else**: no second sentence, no
-/// re-derived annotation, no separate prominence marker. See the module
-/// documentation for where D6's prominence actually lives.
+/// The statement, then each line of [`Question::detail`], then [`SUFFIX`].
+/// **Nothing else**: no second sentence, no re-derived annotation, no
+/// separate prominence marker, and nothing composed here — every line
+/// arrives from the decision. See the module documentation for where D6's
+/// prominence actually lives.
+///
+/// It was one line until 2026-09-14, when D3's question gained what it is
+/// about. The detail is empty for `web.fetch` and the three reading tools, so
+/// for those this is byte-for-byte the line it always wrote.
 #[must_use]
 pub fn line(question: &Question) -> String {
-    format!("{}{SUFFIX}", question.statement)
+    let mut written = question.statement.clone();
+    for row in &question.detail {
+        written.push('\n');
+        written.push_str(row);
+    }
+    written.push_str(SUFFIX);
+    written
 }
 
 /// What a typed line means.

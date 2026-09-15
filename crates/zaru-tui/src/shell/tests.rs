@@ -3904,3 +3904,175 @@ fn a_held_pane_is_not_split_by_a_streaming_answer() {
         );
     }
 }
+// ------------------------------------------- ADR-0011 D3's question, 2026-09-14
+
+/// A deep path, of the shape the frames at `a8eedf7` were taken under.
+///
+/// **A literal this file owns**, for `STAGED_ANSWERS`' reason: what a question
+/// says is `zaru-cli`'s, and a check that read the product's would compare it
+/// with itself.
+const DEEP_STATEMENT: &str = "Allow fs.write /tmp/claude-1000/-home-theaxiom-git-repos-100monkeys/8770bee5-4b78-4972-98af-345d6b5b7d15/scratchpad/permission-prompt/proj/note.txt?";
+
+/// The detail a `zaru-cli` would hand across for that write.
+fn staged_detail() -> Vec<String> {
+    vec![
+        "creates it, with:".to_owned(),
+        "  alpha".to_owned(),
+        "  beta".to_owned(),
+        "  gamma".to_owned(),
+    ]
+}
+
+fn asking_about_a_write() -> Shell {
+    let mut shell = shell();
+    shell.ask(Confirmation::new(DEEP_STATEMENT, STAGED_ANSWERS, false).showing(staged_detail()));
+    shell
+}
+
+/// Every row of a standing question is on the frame at every measured width.
+///
+/// # The defect this closes
+///
+/// Measured from the release binary at `a8eedf7` over a pseudo-terminal: at
+/// **100 columns** an `fs.write` question was clipped mid-path with the file's
+/// own name and the `?` off the frame; at **40 columns** it read `Allow
+/// fs.write /tmp/claude-1000/-home-th`. The composer's area painted a
+/// question through a `Paragraph` with no `Wrap`, so `ratatui` clipped it,
+/// while the pane two rows above had word-wrapped since `pane-text`.
+///
+/// The assertion is width-honest: it asks whether every row the line *becomes*
+/// at that width is on the frame, not whether the frame contains the line's
+/// own text, which is false for any line wider than the terminal.
+#[test]
+fn every_row_of_a_standing_question_is_on_the_frame() {
+    for (width, height) in MEASURED {
+        let shell = asking_about_a_write();
+        let (painted, _) = painted(&shell, width, height);
+        let painted: Vec<String> = painted
+            .iter()
+            .map(|row| row.trim_end().to_owned())
+            .collect();
+
+        let mut missing = Vec::new();
+        for wanted in shell.question_rows(width) {
+            let wanted = wanted.trim_end();
+            if !wanted.is_empty() && !painted.iter().any(|row| row == wanted) {
+                missing.push(wanted.to_owned());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "at {width}x{height} these rows of the standing question are not on the frame, so a \
+             person is answering a question they cannot read: {missing:#?}\nframe: {painted:#?}"
+        );
+    }
+}
+
+/// No row of a standing question is wider than the terminal.
+///
+/// The other half of the wrap: a row that fits is not a row that was clipped
+/// to fit. `Line::rows` breaks on word boundaries and loses nothing, so the
+/// two together say the question is whole *and* unclipped.
+#[test]
+fn no_row_of_a_standing_question_is_wider_than_the_terminal() {
+    for (width, _) in MEASURED {
+        let shell = asking_about_a_write();
+        let mut wide = Vec::new();
+        for row in shell.question_rows(width) {
+            let columns = crate::shell::wrap::columns(&row);
+            if columns > usize::from(width) {
+                wide.push(format!("{columns} columns: {row:?}"));
+            }
+        }
+        assert!(
+            wide.is_empty(),
+            "at {width} columns these question rows are wider than the terminal, so they are \
+             clipped rather than wrapped: {wide:#?}"
+        );
+    }
+}
+
+/// The answers row is always in the composer's area, whatever the width.
+///
+/// It is the last row of the question and the composer's area is filled from
+/// the bottom up, so the one row a person needs to answer at all is the one a
+/// narrow terminal can never lose.
+#[test]
+fn the_answers_row_is_in_the_composers_area_at_every_width() {
+    for (width, height) in MEASURED {
+        let shell = asking_about_a_write();
+        let (painted, _) = painted(&shell, width, height);
+        let composer = &painted[painted.len() - usize::from(COMPOSER_ROWS)..];
+        assert!(
+            composer.iter().any(|row| row.trim_end() == STAGED_ANSWERS),
+            "at {width}x{height} the answers row is not in the composer's area: {composer:#?}"
+        );
+    }
+}
+
+/// The input row does not move when a question gains a preview.
+///
+/// [ADR-0005] D2: "the input row sits at a position that is a function of the
+/// terminal's size and nothing else". The preview's rows come out of the
+/// **pane**, above the composer, exactly as a queued task's row does — so
+/// `COMPOSER_ROWS` does not move and that record is not amended. This is the
+/// same pinning `keys-in-session` asserted for the masked question.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+#[test]
+fn a_question_with_a_preview_leaves_the_composers_area_where_it_was() {
+    for (width, height) in MEASURED {
+        let bare = Shell::regions(ratatui::layout::Rect::new(0, 0, width, height));
+        let mut shell = shell();
+        shell
+            .ask(Confirmation::new(DEEP_STATEMENT, STAGED_ANSWERS, false).showing(staged_detail()));
+        let with_preview = Shell::regions(ratatui::layout::Rect::new(0, 0, width, height));
+        assert_eq!(
+            bare[2], with_preview[2],
+            "at {width}x{height} the composer's area moved when a question gained a preview"
+        );
+        assert_eq!(
+            COMPOSER_ROWS, 7,
+            "COMPOSER_ROWS moved, which is ADR-0005 D2's own number and not this arc's to change"
+        );
+    }
+}
+
+/// A question with nothing to show paints exactly what it painted before.
+///
+/// The accepting sibling of the three above, and the branch the renderer took
+/// before any of this existed: `web.fetch` and the three reading tools have
+/// their whole argument in the statement, so their detail is empty and the
+/// composer's area holds the statement and the answers and nothing else.
+#[test]
+fn a_question_with_no_detail_paints_the_statement_and_the_answers_alone() {
+    let mut shell = shell();
+    shell.ask(Confirmation::new(
+        "Allow web.fetch https://example.test/?",
+        STAGED_ANSWERS,
+        false,
+    ));
+    assert_eq!(
+        shell.prompt_lines(),
+        vec![
+            "Allow web.fetch https://example.test/?".to_owned(),
+            STAGED_ANSWERS.to_owned()
+        ],
+        "a question with no detail gained a row"
+    );
+}
+
+/// The detail is painted between the statement and the answers, in order.
+#[test]
+fn a_questions_detail_is_painted_between_its_statement_and_its_answers() {
+    let shell = asking_about_a_write();
+    let lines = shell.prompt_lines();
+    let mut expected = vec![DEEP_STATEMENT.to_owned()];
+    expected.extend(staged_detail());
+    expected.push(STAGED_ANSWERS.to_owned());
+    assert_eq!(
+        lines, expected,
+        "the detail is not between the statement and the answers, so a reader meets the way to \
+         answer before what they are answering about"
+    );
+}

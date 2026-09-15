@@ -230,6 +230,14 @@ impl Shell {
     /// The answers line is the one `zaru-cli`'s plain prompt writes, handed
     /// across rather than spelled again — see [`Confirmation::answers`].
     ///
+    /// **A confirmation's `detail` is not here**, and that is deliberate. It
+    /// is painted in a pinned region out of the *pane's* own area by
+    /// [`Shell::question_detail`], for the reason a queued task is: the
+    /// composer's area is seven rows at every terminal size, and at 40
+    /// columns a resolved absolute path wraps to three of them, so a preview
+    /// inside this area would be three rows of an elision — which tells a
+    /// reader less than the elision marker does.
+    ///
     /// [`Confirmation::answers`]: crate::shell::Confirmation::answers
     #[must_use]
     pub fn prompt_lines(&self) -> Vec<String> {
@@ -253,9 +261,103 @@ impl Shell {
                 } else {
                     question.statement.clone()
                 };
-                vec![statement, question.answers.clone()]
+                let mut lines = vec![statement];
+                // What the question is about, between what it asks and how to
+                // answer it. Painted exactly as it was handed across: this
+                // crate composes nothing a user reads, and the lines arrive
+                // already redacted, because whether a value is a secret is
+                // not a thing a renderer can know.
+                lines.extend(question.detail.iter().cloned());
+                lines.push(question.answers.clone());
+                lines
             }
         }
+    }
+
+    /// Every row a standing question paints, in reading order, already
+    /// wrapped to `width`.
+    ///
+    /// The statement, then what the question is about, then the answers —
+    /// each broken by [`wrap::rows`](crate::shell::wrap::rows), which is the
+    /// pane's own row-breaking, so the `unicode-width` measurement and the
+    /// loss-free property are the pane's and nothing is authored here.
+    ///
+    /// **The rows carry no marker column**, unlike a transcript line's. The
+    /// question is not a record of something that happened and the composer's
+    /// area has never had one; adding one would also take two columns from a
+    /// 40-column terminal, which is the width this whole change is for.
+    ///
+    /// # Why this is wrapped at all, measured rather than assumed
+    ///
+    /// Until 2026-09-14 the composer's area painted a question's lines
+    /// through a `Paragraph` with no `Wrap`, so `ratatui` clipped them at the
+    /// right edge. From the release binary at `a8eedf7` at **40 columns**,
+    /// the whole of an `fs.write` question read `Allow fs.write
+    /// /tmp/claude-1000/-home-th` — a person approving a write to a file
+    /// whose name was not on the screen — and an out-of-tree read read `Allow
+    /// fs.read /etc/hostname  [OUTSIDE th`, cutting [ADR-0011] D4's class
+    /// mid-word on the one row the clause is about. **In the same session two
+    /// beats later, the transcript row for that same call wrapped whole**,
+    /// because [`crate::shell::wrap`] has broken pane lines since `pane-text`.
+    /// The question was the surface that never got it.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    #[must_use]
+    pub fn question_rows(&self, width: u16) -> Vec<String> {
+        self.prompt_lines()
+            .into_iter()
+            .flat_map(|line| crate::shell::wrap::rows(&line, usize::from(width)))
+            .collect()
+    }
+
+    /// The pane's own area, and the region a standing question's overflow and
+    /// its detail are pinned to.
+    ///
+    /// # Why any of it leaves the composer's area
+    ///
+    /// The composer's area is [`COMPOSER_ROWS`] rows at every terminal size
+    /// and a standing question takes it whole. At 40 columns a resolved
+    /// absolute path wraps the statement alone to three of those seven, so a
+    /// content preview painted inside that area would be three rows of an
+    /// elision — which tells a reader less than the elision marker does.
+    /// **So the question's rows fill the composer's area from the bottom up,
+    /// and whatever does not fit is painted in a region pinned immediately
+    /// above it**, taken out of the pane exactly as
+    /// [`Shell::pane_and_queue`] takes the queued task's row.
+    ///
+    /// Reading order is unchanged by the split: the pinned region holds the
+    /// *earlier* rows and the composer's area the later ones, so a reader
+    /// goes top to bottom through statement, detail, answers as before. The
+    /// answers row is last, so it is always in the composer's area and is the
+    /// one row a narrow terminal can never lose.
+    ///
+    /// **`COMPOSER_ROWS` does not move and [ADR-0005] is not amended**: the
+    /// rows come out of the pane, above the composer, not out of the
+    /// composer. That is the same sentence [`Shell::pane_and_queue`] already
+    /// carries and the same one `keys-in-session` recorded for the masked
+    /// question.
+    ///
+    /// The region is capped at [`transcript_floor`] of the pane, the
+    /// half-share `pane-notices` already authored, so a long preview cannot
+    /// take the whole pane and hide the call it is about.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    fn pane_and_question(&self, pane: Rect, composer: Rect) -> (Rect, Option<Rect>) {
+        let rows = self.question_rows(composer.width).len();
+        let fits = usize::from(COMPOSER_ROWS);
+        if rows <= fits {
+            return (pane, None);
+        }
+        let overflow = rows - fits;
+        let height = u16::try_from(overflow)
+            .unwrap_or(u16::MAX)
+            .min(transcript_floor(pane.height));
+        if height == 0 {
+            return (pane, None);
+        }
+        let [above, pinned] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).areas(pane);
+        (above, Some(pinned))
     }
 
     /// The pane's own area, and the row a queued task is pinned to.
@@ -426,6 +528,10 @@ impl Shell {
         let [status, pane, composer] = Self::regions(area);
         let (pane, queued) = self.pane_and_queue(pane);
         let (pane, held) = self.pane_and_notice(pane);
+        // After the queued row and the held notice so both stay pinned at the
+        // pane's foot, and before the stream so an answer still arriving
+        // cannot push a standing question's own rows off the screen.
+        let (pane, question_overflow) = self.pane_and_question(pane, composer);
         let (pane, arriving) = self.pane_and_stream(pane);
 
         frame.render_widget(
@@ -519,14 +625,36 @@ impl Shell {
         // not usable while one stands -- ADR-0011 D3's prompt is not something
         // a user types past -- and painting both would offer a surface that
         // does nothing.
-        let question: Vec<TextLine<'_>> = self
-            .prompt_lines()
-            .into_iter()
-            .map(TextLine::from)
-            .collect();
-        if question.is_empty() {
+        //
+        // The rows are wrapped by the pane's own row-breaking rather than
+        // clipped by the widget, and they fill this area from the **bottom**
+        // up: whatever does not fit is painted in the region `pane_and_
+        // question` pinned immediately above, so the answers row -- which is
+        // last -- is the one row a narrow terminal can never lose. No `Wrap`
+        // on the paragraph, for the pane's reason: `question_rows` has
+        // already broken every row to this width.
+        let rows = self.question_rows(composer.width);
+        if rows.is_empty() {
             self.composer().render(frame, composer);
         } else {
+            let fits = usize::from(COMPOSER_ROWS);
+            let start = rows.len().saturating_sub(fits);
+            if let Some(area) = question_overflow {
+                let above: Vec<TextLine<'_>> = rows[..start]
+                    .iter()
+                    .rev()
+                    .take(usize::from(area.height))
+                    .rev()
+                    .map(|row| TextLine::from(row.clone()))
+                    .collect();
+                if !above.is_empty() {
+                    frame.render_widget(Paragraph::new(above), area);
+                }
+            }
+            let question: Vec<TextLine<'_>> = rows[start..]
+                .iter()
+                .map(|row| TextLine::from(row.clone()))
+                .collect();
             frame.render_widget(Paragraph::new(question), composer);
         }
     }
