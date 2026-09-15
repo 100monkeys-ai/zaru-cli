@@ -98,6 +98,7 @@
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 
 pub mod checkpoint;
+pub mod history;
 pub mod id;
 pub mod meta;
 pub mod record;
@@ -107,6 +108,7 @@ pub mod store;
 pub mod transcript;
 
 pub use checkpoint::{Checkpoint, CheckpointError, TEMPORARY_SUFFIX};
+pub use history::{Entry, HISTORY_FILE, HISTORY_LINES, History, HistoryError};
 pub use id::{
     ALPHABET, ID_LENGTH, Millis, MintFailure, SessionId, SessionIdRefused, SystemWallClock,
     WallClock,

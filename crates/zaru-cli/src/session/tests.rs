@@ -2256,3 +2256,157 @@ fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
         "a session with no pin recorded a workspace it was never given"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D1's sixth thing under `~/.zaru/`, and D5 read against it. `pane-navigation`,
+// 2026-09-15, under the coordinator ruling of 02:21:47Z.
+// ---------------------------------------------------------------------------
+
+/// D1's sixth thing: a line typed in one directory is that directory's, and
+/// reading it back is a filter on a recorded field — the comparison D4's
+/// `--continue` is written by.
+///
+/// The mutant: dropping the `directory` term from `lines_in`, which printed
+/// *"a history is one directory's: the other checkout's line must not be
+/// here"* with both lines listed.
+#[test]
+fn a_submitted_line_is_the_history_of_the_directory_it_was_typed_in() {
+    let scratch = ScratchRoot::new();
+    std::fs::create_dir_all(scratch.store_root()).expect("the root");
+    let history = crate::session::History::under(&scratch.store_root());
+    let here = scratch.base().join("here");
+    let there = scratch.base().join("there");
+
+    history.append(&here, "a task typed here").expect("append");
+    history
+        .append(&there, "a task typed there")
+        .expect("append");
+    history.append(&here, "/help").expect("append");
+
+    assert_eq!(
+        history.lines_in(&here).expect("read"),
+        ["a task typed here", "/help"],
+        "a history is one directory's: the other checkout's line must not be here"
+    );
+    assert_eq!(
+        history.lines_in(&there).expect("read"),
+        ["a task typed there"],
+        "and the other directory keeps its own"
+    );
+    assert_eq!(
+        history
+            .lines_in(&scratch.base().join("nowhere"))
+            .expect("read"),
+        [] as [String; 0],
+        "a directory nothing was typed in has no history"
+    );
+}
+
+/// D5: "the user can read every byte the harness stores about them with
+/// `cat`". One JSON object per line, the directory legible in the line.
+///
+/// The mutant: a `serde` rename that hid the directory, which reddens on the
+/// substring rather than on the parse.
+#[test]
+fn the_history_file_is_one_readable_line_per_submitted_task() {
+    let scratch = ScratchRoot::new();
+    std::fs::create_dir_all(scratch.store_root()).expect("the root");
+    let history = crate::session::History::under(&scratch.store_root());
+    let here = scratch.base().join("here");
+    history.append(&here, "a task typed here").expect("append");
+
+    let raw = std::fs::read_to_string(history.path()).expect("cat");
+    assert_eq!(raw.lines().count(), 1, "one submitted line is one line");
+    assert!(
+        raw.contains("\"line\":\"a task typed here\""),
+        "the typed line is legible in the file: {raw}"
+    );
+    assert!(
+        raw.contains(&format!("\"directory\":\"{}\"", here.display())),
+        "and so is the directory it was typed in: {raw}"
+    );
+    assert!(
+        raw.ends_with('\n'),
+        "every line is terminated, not separated"
+    );
+    let mode = std::fs::metadata(history.path())
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "the file carries the mode ADR-0004 D3 set");
+}
+
+/// A trailing fragment is the line that was in flight and is never counted —
+/// [`crate::session::transcript`]'s own rule, held here too.
+///
+/// The mutant: parsing `raw.lines()` rather than what precedes the last
+/// newline, which counts the fragment and fails the parse.
+#[test]
+fn a_trailing_fragment_in_the_history_is_never_counted_as_a_line() {
+    use std::io::Write as _;
+    let scratch = ScratchRoot::new();
+    std::fs::create_dir_all(scratch.store_root()).expect("the root");
+    let history = crate::session::History::under(&scratch.store_root());
+    let here = scratch.base().join("here");
+    history.append(&here, "a whole line").expect("append");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(history.path())
+        .expect("open")
+        .write_all(br#"{"directory":"/half"#)
+        .expect("plant the fragment");
+
+    assert_eq!(
+        history.lines_in(&here).expect("read"),
+        ["a whole line"],
+        "the fragment is what a power cut costs and is not a line"
+    );
+}
+
+/// The cap is per directory, so one busy checkout cannot evict another's.
+///
+/// The mutant: capping the file rather than the directory, which leaves the
+/// other directory's line missing.
+#[test]
+fn compaction_keeps_the_newest_lines_of_every_directory() {
+    let scratch = ScratchRoot::new();
+    std::fs::create_dir_all(scratch.store_root()).expect("the root");
+    let history = crate::session::History::under(&scratch.store_root());
+    let here = scratch.base().join("here");
+    let there = scratch.base().join("there");
+
+    history
+        .append(&there, "the other checkout")
+        .expect("append");
+    for at in 0..crate::session::HISTORY_LINES + 5 {
+        history
+            .append(&here, &format!("task {at}"))
+            .expect("append");
+    }
+    assert!(
+        history.compact().expect("compact"),
+        "there was something to drop"
+    );
+
+    let kept = history.lines_in(&here).expect("read");
+    assert_eq!(
+        kept.len(),
+        crate::session::HISTORY_LINES,
+        "the cap is the count"
+    );
+    assert_eq!(
+        kept.first().map(String::as_str),
+        Some("task 5"),
+        "and what is dropped is the oldest"
+    );
+    assert_eq!(
+        history.lines_in(&there).expect("read"),
+        ["the other checkout"],
+        "a quiet directory keeps its line whatever a busy one does"
+    );
+    assert!(
+        !history.compact().expect("compact"),
+        "and compacting a file already at the cap drops nothing"
+    );
+}
