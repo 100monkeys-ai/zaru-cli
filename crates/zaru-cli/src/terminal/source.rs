@@ -476,6 +476,20 @@ fn read_until_stopped(sender: &UnboundedSender<Struck>, stop: &AtomicBool) {
         }
         let struck = match read() {
             Ok(Event::Key(key)) => Struck::Key(translate(key)),
+            // Mouse capture makes wheel movement an event rather than the
+            // terminal's legacy Up/Down escape sequence. Those arrows walk
+            // prompt history; a wheel belongs to the transcript pane.
+            Ok(Event::Mouse(mouse)) => match mouse.kind {
+                ratatui::crossterm::event::MouseEventKind::ScrollUp => Struck::Key(Input {
+                    key: zaru_tui::shell::Key::PageUp,
+                    ..Input::default()
+                }),
+                ratatui::crossterm::event::MouseEventKind::ScrollDown => Struck::Key(Input {
+                    key: zaru_tui::shell::Key::PageDown,
+                    ..Input::default()
+                }),
+                _ => Struck::Key(Input::default()),
+            },
             // A block the terminal framed as a paste, which it does only
             // because `arm` pushed bracketed paste when the alternate screen
             // was entered. Its newlines are text of one prompt -- ADR-0005
