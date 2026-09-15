@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::cli::invocation::Request;
-use crate::failure::{Classified, Exit, Presentation, SessionEvidence};
+use crate::failure::{Classified, Exit, Line, Presentation, SessionEvidence};
 use crate::tools::WorkingDirectory;
 use std::ffi::OsString;
 
@@ -2682,4 +2682,77 @@ fn a_run_that_did_what_was_asked_writes_its_lines_to_standard_output_and_nothing
         err.len()
     );
     assert_eq!(exit.code(), 0, "a run that did what was asked exits 0");
+}
+
+/// [ADR-0016] D2 on the first refusal a person ever meets: the cold-start arm
+/// names **both** things a turn needs, in the order a person does them.
+///
+/// # Why the arm cannot say what this machine lacks
+///
+/// `compose::turn::prepare` refuses here **before** `CredentialStore::reading`
+/// is called, so it cannot know whether a key is held — measured 2026-09-15
+/// from the release binary at `793712c`, where a machine holding a `gemini`
+/// key and no `model.default` got this refusal byte for byte. So the two
+/// actions name what a turn *needs*, and neither asserts an absence.
+///
+/// # The mutant and the accepting sibling
+///
+/// Deleting the second action, which is the refusal as it stood until
+/// 2026-09-15: the reader fixes the alias and is refused again for a
+/// credential nobody mentioned. Watched red.
+///
+/// The sibling is [`Surface::unknown_provider_kind`], a neighbouring
+/// user-correctable refusal about the same alias that must **not** gain the
+/// key: a mutation appending the key remedy to every refusal reddens on it.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn the_cold_start_refusal_names_the_model_alias_and_then_the_provider_key() {
+    let shown = Presentation::of(&Surface::no_model_for_the_default_alias());
+    let rendered: Vec<String> = shown.lines.iter().map(Line::flattened).collect();
+    let whole = rendered.join("\n");
+
+    for needle in ["model.default", "ZARU_MODEL_DEFAULT", "providers keys add"] {
+        assert!(
+            whole.contains(needle),
+            "the cold-start refusal does not name {needle:?}, so a reader who fixes what it does \
+             name is refused again for something it never mentioned: {whole:?}"
+        );
+    }
+    let alias_at = whole
+        .find("model.default")
+        .expect("the alias is named, asserted above");
+    let key_at = whole
+        .find("providers keys add")
+        .expect("the key is named, asserted above");
+    assert!(
+        alias_at < key_at,
+        "the key remedy comes before the alias remedy, which is not the order a person does them: \
+         {whole:?}"
+    );
+
+    // Row 7 of the same audit, on this arc's own new sentence: a Rust literal
+    // joined across source lines is exactly how a remedy comes to carry the
+    // indentation it was written at.
+    assert!(
+        !whole.contains("  "),
+        "the cold-start refusal carries two consecutive spaces, which renders as a hole in the \
+         sentence through a pipe and wraps around it in the pane: {whole:?}"
+    );
+
+    let sibling = Presentation::of(&Surface::unknown_provider_kind(
+        crate::providers::ModelAlias::Default,
+        "nope",
+    ));
+    let sibling_whole: String = sibling
+        .lines
+        .iter()
+        .map(Line::flattened)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !sibling_whole.contains("providers keys add"),
+        "a neighbouring refusal gained the key remedy too, so this check would pass on a harness \
+         that appended it to everything: {sibling_whole:?}"
+    );
 }

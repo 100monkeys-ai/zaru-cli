@@ -98,6 +98,22 @@ fn run(sentence: &str, command: &str) -> Remedy {
     )
 }
 
+/// The kinds in a set that a turn needs a stored key for, in the set's order.
+///
+/// Two refusals name them and they must not disagree about which kinds those
+/// are: [`Surface::no_key_for`] lists them all, and
+/// [`Surface::no_model_for_the_default_alias`] names the first as the command
+/// a reader can paste. A second filter written at the second call site is how
+/// one of them would come to offer `providers keys add ollama`.
+fn kinds_needing_a_key(kinds: &[ProviderKind]) -> Vec<&'static str> {
+    use crate::providers::Requirement;
+    kinds
+        .iter()
+        .filter(|kind| Requirement::of(**kind) == Requirement::HeldKey)
+        .map(|kind| kind.as_str())
+        .collect()
+}
+
 /// Where to look when an alias answers to nothing.
 ///
 /// **It names both listings, since 2026-09-14.** This named `zaru notes
@@ -360,8 +376,31 @@ impl<'a> Surface<'a> {
     /// ADR-0014 D4 -- and `ZARU_ANTHROPIC_KEY`, which that record's transform
     /// cannot produce from `provider.anthropic.key`. Both are raised on
     /// ADR-0016's Status tracking for its author; neither is quoted here.
+    ///
+    /// # It names the key as well as the alias, and it cannot say the key is
+    /// missing
+    ///
+    /// Row 4 of [the second look-and-feel audit] measured the cost of the one
+    /// remedy this carried until 2026-09-15: a person from a cold start is
+    /// sent to fix a configuration key, fixes it, and is refused again by
+    /// [`Surface::no_key_for`] for a credential nobody mentioned. So the
+    /// remedy has a second action and the two are **the two things a turn
+    /// needs**, in the order a person does them.
+    ///
+    /// **Neither action asserts an absence, and that is measured rather than
+    /// cautious.** [`crate::compose::turn::prepare`] refuses here before
+    /// `CredentialStore::reading` is called, so this arm cannot know whether a
+    /// key is held -- a machine holding a `gemini` key and no `model.default`
+    /// gets this refusal byte for byte, measured from the release binary at
+    /// `793712c`. A sentence saying "and this machine holds no key" would be
+    /// false for that reader, and reading the store here would duplicate three
+    /// fallible calls and reorder `prepare`'s refusals, which that function's
+    /// own head comment forbids.
+    ///
+    /// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
     #[must_use]
     pub fn no_model_for_the_default_alias() -> Classified {
+        let keyed = kinds_needing_a_key(&crate::compose::KINDS_WITH_A_CLIENT);
         Classified::UserCorrectable {
             statement: Statement::sanitised(format!(
                 "no model is configured for the alias `{}`, so there is no provider to ask",
@@ -372,7 +411,21 @@ impl<'a> Surface<'a> {
                  <identifier>` for one run",
                 ModelAlias::Default.key(),
                 crate::config::environment::variable_name(&ModelAlias::Default.key())
-            )),
+            ))
+            .also(
+                Action::runnable(
+                    Statement::sanitised(
+                        "then a provider key, which a turn needs as well as a model, unless the \
+                         kind you set needs none"
+                            .to_owned(),
+                    ),
+                    format!(
+                        "providers keys add {}",
+                        keyed.first().copied().unwrap_or("gemini")
+                    ),
+                )
+                .expect("the commands this crate suggests carry no control character"),
+            ),
         }
     }
 
@@ -398,11 +451,7 @@ impl<'a> Surface<'a> {
     #[must_use]
     pub fn no_key_for(kinds: &[ProviderKind], model: &ModelId) -> Classified {
         use crate::providers::Requirement;
-        let keyed: Vec<&str> = kinds
-            .iter()
-            .filter(|kind| Requirement::of(**kind) == Requirement::HeldKey)
-            .map(|kind| kind.as_str())
-            .collect();
+        let keyed = kinds_needing_a_key(kinds);
         let keyless: Vec<&str> = kinds
             .iter()
             .filter(|kind| Requirement::of(**kind) == Requirement::ConfiguredEndpoint)
