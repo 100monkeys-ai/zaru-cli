@@ -57,7 +57,9 @@ pub use driver::{
     add_a_notes_token, after, apex_statement, ask_for_a_secret, notes_looking,
     question_for_the_shell, run, secret_for, secret_statement, switch_for,
 };
-pub use open::{Opening, resolve_in, restored_context, shell_for, take_over};
+pub use open::{
+    Opening, Populating, Refresh, refresh_from, resolve_in, restored_context, shell_for, take_over,
+};
 pub use source::{Beat, POLL, Pace, Source, TICK, Taken};
 pub use trie::{FROM_CACHE, LOOKING, NOTHING_CACHED, NotesTrie, UNREACHABLE};
 pub use vocabulary::{Transcript, Vocabulary};

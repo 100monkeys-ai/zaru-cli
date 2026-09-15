@@ -30,6 +30,7 @@ use crate::cli::invocation::{CommandLine, Overrides, Request};
 use crate::failure::{Exit, SessionEvidence};
 use crate::runtime::ResolvedTier;
 use crate::session::{MetaFile, Resumed, SessionId, SessionStore};
+use crate::terminal::corpus::CorpusCache;
 use crate::terminal::driver::{Crossterm, Guard, Turnable, Turns};
 use crate::terminal::source::{Beat, Source};
 use crate::terminal::trie::NotesTrie;
@@ -221,6 +222,7 @@ fn credential_store() -> Option<crate::credentials::CredentialStore> {
 fn composer_reader(
     store: &crate::credentials::CredentialStore,
     workspace: &str,
+    cache: CorpusCache,
 ) -> Option<Populating> {
     let (alias, host) = crate::credentials::composer_token(store)?;
     let keyring = crate::credentials::OsKeyring::for_store(store.root());
@@ -230,6 +232,7 @@ fn composer_reader(
         workspace: workspace.to_owned(),
         host,
         secret,
+        cache,
     })
 }
 
@@ -261,20 +264,126 @@ pub struct Populating {
     host: String,
     /// The stored bearer, sealed until `corpus_at` hands it to the endpoint.
     secret: crate::credentials::Secret,
+    /// [ADR-0005] D8's file, so the refresh can record what it fetched and
+    /// forget what the instance says this token may no longer read.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    cache: CorpusCache,
+}
+
+/// What one refresh did, in the three shapes the strip has words for.
+///
+/// Named `Refresh` and not `Refreshed` because
+/// [`credentials::Refreshed`](crate::credentials::Refreshed) is a refreshed
+/// tool scope and is a different thing entirely.
+///
+/// **Three and not a `Result<_, String>`**, which is what this was until
+/// 2026-09-15. A string cannot be branched on, and the branch is the whole of
+/// [ADR-0005] D8's eviction rule: an instance that never answered says nothing
+/// about whether this token may still read this workspace, while an instance
+/// that answered and refused has said exactly that. Flattening both into one
+/// sentence made the two indistinguishable at the only place that has to tell
+/// them apart.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+#[derive(Debug)]
+pub enum Refresh {
+    /// The listings came back, and the file now holds them.
+    Reached(Vec<zaru_notes::trie::CachedEntry>),
+    /// No transport: the instance said nothing, so the cache stands.
+    Unreachable(String),
+    /// The instance answered and refused, so the entry is gone from the file.
+    Refused(String),
 }
 
 impl Populating {
-    /// [ADR-0005] D3's corpus for the attached workspace, over the real server.
+    /// What this session's composer has cached for its own instance and
+    /// workspace, if anything, with the file left at one line per key.
+    ///
+    /// The compaction happens **here**, once as a session opens, for the
+    /// reason `session::History`'s does: a rewrite races an append, and doing
+    /// it at open leaves a window the width of one session's start rather than
+    /// one per refresh.
+    ///
+    /// A cache that will not read is no cache: the session starts cold, which
+    /// is exactly what every session did before this file existed. It is not
+    /// an error that can stop a shell opening, for `credential_store`'s own
+    /// reason — the hint strip must not be able to stop a session starting.
+    fn cached(&self) -> Option<crate::terminal::corpus::CachedCorpus> {
+        drop(self.cache.compact());
+        self.cache.read(&self.host, &self.workspace).ok().flatten()
+    }
+
+    /// [ADR-0005] D3's corpus for the attached workspace, over the real
+    /// server, and D8's file kept up with what it says.
     ///
     /// Three requests — an attach and two listings — measured at one to two
     /// seconds on 2026-09-14, which is the whole reason this is awaited off
     /// the shell's first frame rather than before it.
     ///
+    /// **A file that will not be written is not reported**, and that is a
+    /// decision rather than an omission: the corpus is in hand, the session is
+    /// unaffected, and the entire cost is that the next session starts cold —
+    /// which is the state every session was in before this arc. There is
+    /// nothing a person could do with the sentence and nowhere on the strip to
+    /// put it that would not displace the corpus it is about.
+    ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
-    async fn fetch(self) -> Result<Vec<zaru_notes::trie::CachedEntry>, String> {
-        crate::credentials::corpus_at(&self.host, &self.secret, &self.workspace)
-            .await
-            .map_err(|failure| failure.to_string())
+    async fn refresh(self) -> Refresh {
+        let answer = crate::credentials::corpus_at(&self.host, &self.secret, &self.workspace).await;
+        refresh_from(
+            answer,
+            &self.cache,
+            &self.host,
+            &self.workspace,
+            crate::terminal::corpus::now_in_millis(),
+        )
+    }
+}
+
+/// What one fetch's answer does to [ADR-0005] D8's file, and what the strip is
+/// then told.
+///
+/// **Separate from [`Populating::refresh`] because the decision is the whole
+/// of D8's freshness rule and the fetch is a socket.** A check cannot open an
+/// instance, and driving this with a staged answer exercises the same branch,
+/// the same writes and the same sentences the binary takes — see
+/// `tests/corpus_cache_from_outside.rs`, which drives all three arms.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+#[must_use]
+pub fn refresh_from(
+    answer: Result<Vec<zaru_notes::trie::CachedEntry>, crate::credentials::ReachFailure>,
+    cache: &CorpusCache,
+    host: &str,
+    workspace: &str,
+    fetched: u128,
+) -> Refresh {
+    match answer {
+        Ok(entries) => {
+            drop(cache.append(host, workspace, &entries, fetched));
+            Refresh::Reached(entries)
+        }
+        // The instance was never reached, so it has said nothing about this
+        // token's reach. Whatever is cached stays cached.
+        Err(failure @ crate::credentials::ReachFailure::Endpoint(_)) => {
+            Refresh::Unreachable(failure.to_string())
+        }
+        // The instance answered. Its answer is that this token cannot have
+        // this workspace's listings, so the harness stops holding them.
+        //
+        // **What this cannot tell apart is stated rather than hidden**: a rate
+        // limit or a 5xx arrives through this arm too and costs one cold
+        // session. The alternative -- evict on nothing -- leaves a revoked
+        // token serving its old view of a workspace indefinitely, and there is
+        // no third signal to read, because [ADR-0006] D7 is that the server
+        // does not reveal which gate tripped.
+        //
+        // [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+        Err(failure @ crate::credentials::ReachFailure::Session(_)) => {
+            drop(cache.evict(host, workspace));
+            Refresh::Refused(failure.to_string())
+        }
     }
 }
 
@@ -313,6 +422,11 @@ pub fn shell_for(
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
     let store = SessionStore::reading(root);
     let directory = store.sessions_directory().join(id.as_str());
+    // ADR-0005 D8's file, taken before `store` is shadowed by the credential
+    // store below. It sits beside `history.jsonl` under `~/.zaru/` rather than
+    // inside a session directory, which is the whole of what makes it survive
+    // a restart: a session directory is a new directory every time.
+    let cache = CorpusCache::under(store.root());
     let resumed = crate::session::resume(&directory, usize::MAX).map_err(|failure| {
         Box::new(Exit::Failed(
             classify.resume(&failure, SessionEvidence::NoSessionExists),
@@ -375,10 +489,18 @@ pub fn shell_for(
     let populating = store
         .as_ref()
         .filter(|_| !attached.is_empty())
-        .and_then(|store| composer_reader(store, &attached));
-    let trie = match &populating {
-        Some(_) => NotesTrie::awaiting(attached),
-        None => NotesTrie::nothing_cached(attached),
+        .and_then(|store| composer_reader(store, &attached, cache));
+    // **ADR-0005 D8, and the reason clause 10b existed.** A session that has a
+    // token and a pin asks the file first: where the last session left a
+    // corpus for this instance and this workspace, the strip completes from
+    // the first beat and the fetch below is a refresh behind it. Where it did
+    // not, this is byte for byte what the session did yesterday.
+    let trie = match populating.as_ref().and_then(Populating::cached) {
+        Some(cached) => NotesTrie::from_cache(cached.entries, attached, cached.fetched),
+        None => match &populating {
+            Some(_) => NotesTrie::awaiting(attached),
+            None => NotesTrie::nothing_cached(attached),
+        },
     };
     shell.composer_mut().set_absence(trie.absence());
 
@@ -659,9 +781,16 @@ fn one_session(
     if let Some(populating) = populating {
         let filling = std::sync::Arc::clone(&trie);
         runtime.spawn(async move {
-            match populating.fetch().await {
-                Ok(entries) => filling.reached(entries),
-                Err(detail) => filling.unreachable(detail),
+            match populating.refresh().await {
+                Refresh::Reached(entries) => filling.reached(entries),
+                // No transport. A session that opened from the file keeps what
+                // it opened with and says when it was taken; one that did not
+                // says the client's own sentence, exactly as before.
+                Refresh::Unreachable(detail) => filling.unreachable(detail),
+                // The instance answered and refused, so the strip stops
+                // serving what it refused — in memory here, and on disk in
+                // `refresh` itself.
+                Refresh::Refused(detail) => filling.refused(detail),
             }
         });
     }
