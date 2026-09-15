@@ -152,7 +152,11 @@ fn a_refresh_that_lands_replaces_the_corpus_and_the_file() {
     ));
 
     let trie = open_over(&cache, HOST, WORKSPACE);
-    assert_eq!(titles(&trie, "hom"), vec!["Home".to_owned()]);
+    assert_eq!(
+        titles(&trie, "hom"),
+        vec!["Home".to_owned()],
+        "the first fetch was never written, so nothing below is about a replacement"
+    );
 
     match refresh_from(
         Ok(corpus(WORKSPACE, &["Homestead", "Homily"])),
@@ -318,7 +322,11 @@ fn a_changed_pin_misses_the_cache() {
         titles(&moved, "hom").is_empty(),
         "a session pinned to `main` was served `docs`'s corpus"
     );
-    assert_eq!(moved.absence().as_deref(), Some(LOOKING));
+    assert_eq!(
+        moved.absence().as_deref(),
+        Some(LOOKING),
+        "and it was not told it is waiting for a corpus of its own"
+    );
 
     let unmoved = open_over(&cache, HOST, WORKSPACE);
     assert_eq!(
@@ -347,7 +355,11 @@ fn a_changed_composer_token_misses_the_cache() {
         titles(&elsewhere, "hom").is_empty(),
         "a slug that exists on two instances is not one corpus"
     );
-    assert_eq!(elsewhere.absence().as_deref(), Some(LOOKING));
+    assert_eq!(
+        elsewhere.absence().as_deref(),
+        Some(LOOKING),
+        "and it was not told it is waiting for a corpus of its own"
+    );
 
     let same = open_over(&cache, HOST, WORKSPACE);
     assert_eq!(
