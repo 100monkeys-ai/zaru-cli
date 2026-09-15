@@ -9,6 +9,7 @@
 //! it is not, and the states never contend.
 
 use crate::composer::entries::{Entry, EntryKind};
+use crate::composer::paths::PathEntry;
 use crate::composer::search::SearchState;
 use crate::shell::port::{Extension, Namespace};
 
@@ -24,22 +25,28 @@ pub enum StripMode {
     Typing,
 }
 
-/// Which picker the explicit grammar opened.
+/// Which picker over the Nuclear Notes corpus the explicit grammar opened.
 ///
-/// ADR-0005 D4 reuses Nuclear Notes' editor grammar unchanged, so muscle
-/// memory transfers between writing and building. `#` is not here: D4 has it
-/// scope the live search and attach nothing, so it opens no picker and changes
-/// no mode.
+/// ADR-0005 D4 reuses Nuclear Notes' editor grammar, so muscle memory
+/// transfers between writing and building. `#` is not here: D4 has it scope
+/// the live search and attach nothing, so it opens no picker and changes no
+/// mode.
+///
+/// # One variant, and the set is closed on purpose
+///
+/// D4 gave `@` a second picker over atoms and media. **`@` is the path
+/// corpus's sigil as of 2026-09-15** — see [`StripContent::Paths`] — and
+/// transclusion is `[[`'s alone until D5's attachment exists to distinguish
+/// the two, which it does not. Nothing was lost by the move: this picker
+/// already [`admits`](PickerKind::admits) every atom the `@` one offered, plus
+/// pages, and neither attached anything. The enum stays rather than
+/// collapsing into the variant that carries it, because D4's scope — "pages
+/// and atoms" — is the thing being stated, and a filter that happens to admit
+/// everything today is not the same statement as no filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
     /// `[[` — pages and atoms, attaching as a citation.
     PagesAndAtoms,
-    /// `@` — atoms, attaching as a transclusion.
-    ///
-    /// D4 says "atoms and media"; ADR-0006 D4's composer-token scope reaches
-    /// no `media.*` tool, so the media half is not built. Recorded on
-    /// ADR-0005 rather than settled here.
-    Atoms,
 }
 
 /// What the strip is showing.
@@ -137,8 +144,38 @@ pub enum StripContent {
         /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
         extensions: Vec<Extension>,
     },
-    /// `[[` or `@` entered: the explicit picker, filtered by what follows.
-    /// D1 row 6.
+    /// `@` entered: the **third corpus**, the working directory, filtered by
+    /// what follows. **Not one of D1's rows.**
+    ///
+    /// # Which record supplies this, and why D1's table is unchanged
+    ///
+    /// The same shape [`StripContent::Command`] already has, and for the same
+    /// reason. D1's table is keyed on prompt emptiness and its row 6 names an
+    /// "explicit picker" over the Nuclear Notes corpus D3 builds; the working
+    /// directory is [ADR-0011] D4's, is not in that corpus, and reaching a
+    /// path through the tiers D3 defines would be reading a decision into a
+    /// record that does not carry it.
+    ///
+    /// So the row is the amendment's, on [ADR-0005]'s amendments volume 2, and
+    /// the mode stays [`StripMode::Typing`] because the prompt is not empty.
+    ///
+    /// # What it offers, and what it does not
+    ///
+    /// Spellings inside [ADR-0011] D4's working directory and nothing else.
+    /// `Tab` completes the chosen one into the prompt as text; a directory
+    /// carries a trailing `/` and the next `Tab` descends into it. **The
+    /// composer reads no file** — it offers a name, and reading the thing
+    /// named is the model's `fs.read` under D3's permission model.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates-2
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    Paths {
+        /// What the user has typed after the `@`.
+        filter: String,
+        /// The corpus's matches for that filter, in its own order.
+        matches: Vec<PathEntry>,
+    },
+    /// `[[` entered: the explicit picker, filtered by what follows. D1 row 6.
     Picker {
         /// Which grammar opened it.
         kind: PickerKind,
@@ -155,7 +192,6 @@ impl PickerKind {
     pub const fn admits(self, kind: EntryKind) -> bool {
         match self {
             Self::PagesAndAtoms => matches!(kind, EntryKind::Page | EntryKind::Atom),
-            Self::Atoms => matches!(kind, EntryKind::Atom),
         }
     }
 }
@@ -169,6 +205,7 @@ impl StripContent {
             Self::Trie { .. }
             | Self::Merged { .. }
             | Self::Picker { .. }
+            | Self::Paths { .. }
             | Self::Command { .. } => StripMode::Typing,
         }
     }

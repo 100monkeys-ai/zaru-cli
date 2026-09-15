@@ -1159,6 +1159,13 @@ fn one_session(
     // pump owns neither.
     let transcript_path = session.transcript_path();
 
+    // The working directory as the strip's third corpus, built here because
+    // this is where `here` is and handed to the pump by reference. It is the
+    // same `WorkingDirectory` the opening line names and the same one every
+    // tool call is classified against -- one reading of "here" per session,
+    // which is `WorkingDirectory::of_this_process`'s own rule.
+    let paths = crate::terminal::ProjectPaths::under(here.clone());
+
     let runner = crate::cli::Run { version, report_at };
 
     // The guard is what restores, and it is the caller's: a switch keeps the
@@ -1177,6 +1184,9 @@ fn one_session(
             // and not for a smart pointer around it.
             trie.as_ref(),
             &Vocabulary,
+            // ADR-0005's third corpus. Nothing is walked until the first `@`,
+            // so a session that never names a file pays for none of it.
+            &paths,
             &mut turns,
             here.as_ref()
                 .map(|here| crate::terminal::driver::Recording {

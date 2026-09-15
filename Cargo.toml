@@ -400,6 +400,40 @@ boon = { version = "0.6.1", default-features = false }
 # may have guessed wrong. A fenced block is indented and left alone.
 pulldown-cmark = { version = "0.13.4", default-features = false }
 
+# ADR-0005's third strip corpus needs to know what `.gitignore` says, and this
+# is the crate that knows. A row in ADR-0003 D2's table, added 2026-09-15 under
+# a delegated coordinator ruling and open to Jeshua's veto.
+#
+# **The alternative was writing the glob semantics here, and it is refused in
+# `fs.search`'s own words**: "choosing a glob semantics -- whether `**` crosses
+# a symlink, whether a leading dot matches -- is authoring that vocabulary in
+# the place it is least visible". A `.gitignore` is a pattern language with a
+# specification, negations, anchoring and per-directory scope; a subset of it
+# written by hand would be a second, undocumented language a person's project
+# would silently disagree with.
+#
+# **Why it is not optional.** Measured on this machine: the harness's own tree
+# walks to **434 entries in 0.6 ms** with its `.gitignore` honoured and
+# **101,493 entries in 60 ms warm, 1.31 s cold** without it, because `target/`
+# is in there. A corpus built without the ignore rule is not a slower corpus,
+# it is a corpus of build artefacts.
+#
+# **Measured cost, both instruments the rows above use.** `grep -c
+# '^\[\[package\]\]' Cargo.lock`: **319 to 327, +8** -- `bstr`,
+# `crossbeam-deque`, `crossbeam-epoch`, `globset`, `ignore`, `same-file`,
+# `walkdir` and `winapi-util`, the last of which no Linux build compiles.
+# `cargo tree -p zaru-cli -e normal --prefix none`, deduplicated: **246 to
+# 253, +7**; `regex-automata` and `memchr` are already here for the `regex`
+# row above, which is most of what a glob engine would otherwise have cost.
+#
+# **`zaru-tui`'s closure is unchanged**, which is the number that matters for
+# ADR-0005 D3: the port is declared there and carries nothing, the walk is
+# here, and `scripts/check-crate-boundaries.py` still passes.
+#
+# Default features off: `simd-accel` is the only one and it is a nightly
+# feature.
+ignore = { version = "0.4.33", default-features = false }
+
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
 # turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-

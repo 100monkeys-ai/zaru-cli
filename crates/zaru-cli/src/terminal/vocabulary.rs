@@ -760,6 +760,7 @@ mod tests {
                 Duration::ZERO,
                 &NoNotes,
                 &Vocabulary,
+                &crate::terminal::ProjectPaths::under(None),
             );
         }
     }

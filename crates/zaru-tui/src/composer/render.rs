@@ -133,6 +133,39 @@ fn fitted<T>(
     lines
 }
 
+/// `lines`, or `absence` when there are none and a sentence was handed in.
+///
+/// # A blank strip is what this exists to stop
+///
+/// Before the fast tier had an implementation, a user typing into `zaru` saw
+/// nothing below the input and was told nothing about why — the largest
+/// missing piece of this surface, and the kind of silent degradation
+/// [Operating Principles]' "legibility beats smoothness" is written against. A
+/// user with no Nuclear Notes token has a reason to see nothing, and the
+/// reason is worth one line. A user whose working directory offers nothing has
+/// a different reason, and it is worth a different line.
+///
+/// It appends rather than replaces so that it cannot hide a match: it is
+/// reached only when there is nothing else to show.
+///
+/// # It takes the sentence rather than reading a field, since 2026-09-15
+///
+/// It was a method on [`Composer`] reading `self.absence`, which was right
+/// while one corpus could be absent. There are two — the cortex and the
+/// working directory — they fail independently, and a session with a cortex
+/// and an empty tree must be able to say the second thing without claiming the
+/// first. Passing the sentence is what makes each arm name the corpus it is
+/// about. See [`Composer::set_absence`] and [`Composer::set_path_absence`] for
+/// why either line is handed in rather than composed here.
+///
+/// [Operating Principles]: https://100monkeys-ai.cortex.page/zaru/p/operations/operating-principles
+fn or_absence(absence: Option<&String>, lines: Vec<String>) -> Vec<String> {
+    match (lines.is_empty(), absence) {
+        (true, Some(absence)) => vec![absence.clone()],
+        _ => lines,
+    }
+}
+
 impl Composer {
     /// The lines the strip is showing, top to bottom.
     ///
@@ -192,15 +225,41 @@ impl Composer {
                         .collect()
                 })
             }
-            // A picker never carries the absence line. An open picker with no
+            // **A picker carries the absence line, since 2026-09-15.** It did
+            // not until then, on the reasoning that "an open picker with no
             // matches is what a miss looks like, and the picker's own sigil is
-            // already on the screen saying what is being picked. It pages like
-            // every other corpus: an explicit picker over a large cortex is
-            // exactly where eight matches meet six rows.
-            StripContent::Picker { matches, .. } => fitted(matches, Vec::new(), rows, titles),
-            StripContent::Trie { matches } => {
-                self.or_absence(fitted(matches, Vec::new(), rows, titles))
-            }
+            // already on the screen saying what is being picked" — and that
+            // reasoning is about a **miss**, which this line is not. The
+            // absence is `Some` only where the host says the corpus holds
+            // nothing at all, and a `[[` over a session with no Nuclear Notes
+            // token painted six blank rows and said nothing about why:
+            // measured on the release binary at `3c1bf0a`, the same silence
+            // the trie arm has had a line for since 2026-09-05. A miss is
+            // still silent, because `or_absence` is reached only when there is
+            // nothing else to show and the host handed a sentence in.
+            //
+            // It pages like every other corpus: an explicit picker over a
+            // large cortex is exactly where eight matches meet six rows.
+            StripContent::Picker { matches, .. } => or_absence(
+                self.absence.as_ref(),
+                fitted(matches, Vec::new(), rows, titles),
+            ),
+            // The third corpus, paged by the same one pager and carrying its
+            // own absence line — the working directory and the cortex fail
+            // independently, so the sentence is a different one.
+            StripContent::Paths { matches, .. } => or_absence(
+                self.path_absence.as_ref(),
+                fitted(matches, Vec::new(), rows, |shown| {
+                    shown
+                        .into_iter()
+                        .map(|entry| entry.spelling().to_owned())
+                        .collect()
+                }),
+            ),
+            StripContent::Trie { matches } => or_absence(
+                self.absence.as_ref(),
+                fitted(matches, Vec::new(), rows, titles),
+            ),
             StripContent::Merged { entries, search } => {
                 // `keyword only` is a **trailer**: it is D8's statement about
                 // the ranking rather than a match, and paging it with the
@@ -213,31 +272,11 @@ impl Composer {
                 } else {
                     Vec::new()
                 };
-                self.or_absence(fitted(entries, trailers, rows, titles))
+                or_absence(
+                    self.absence.as_ref(),
+                    fitted(entries, trailers, rows, titles),
+                )
             }
-        }
-    }
-
-    /// `lines`, or the absence line when there are none and one was handed in.
-    ///
-    /// # A blank strip is what this exists to stop
-    ///
-    /// Before the fast tier had an implementation, a user typing into `zaru`
-    /// saw nothing below the input and was told nothing about why — the largest
-    /// missing piece of this surface, and the kind of silent degradation
-    /// [Operating Principles]' "legibility beats smoothness" is written
-    /// against. A user with no Nuclear Notes token has a reason to see nothing,
-    /// and the reason is worth one line.
-    ///
-    /// It appends rather than replaces so that it cannot hide a match: it is
-    /// reached only when there is nothing else to show. See
-    /// [`Composer::set_absence`] for why the line is handed in.
-    ///
-    /// [Operating Principles]: https://100monkeys-ai.cortex.page/zaru/p/operations/operating-principles
-    fn or_absence(&self, lines: Vec<String>) -> Vec<String> {
-        match (lines.is_empty(), &self.absence) {
-            (true, Some(absence)) => vec![absence.clone()],
-            _ => lines,
         }
     }
 
@@ -301,8 +340,8 @@ impl Composer {
 mod tests {
     use super::KEYWORD_ONLY;
     use crate::composer::fixtures::{
-        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, VocabularyOf, painted, press,
-        server_results, typing, typing_with,
+        CountingTrie, NoPaths, PathsOf, SERVER_NONCE, TRIE_NONCE, TrieOf, VocabularyOf, painted,
+        press, server_results, typing, typing_paths, typing_with,
     };
     use crate::composer::search::SearchResponse;
     use crate::composer::{Composer, NEWLINE};
@@ -339,7 +378,7 @@ mod tests {
         for entries in [0_usize, 1, 6] {
             let trie = TrieOf::new(entries);
             let mut composer = Composer::new();
-            composer.paste(prompt, Duration::ZERO, &trie, &StagedVocabulary);
+            composer.paste(prompt, Duration::ZERO, &trie, &StagedVocabulary, &NoPaths);
             let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
             assert_eq!(
                 rows.len() - 1,
@@ -625,7 +664,13 @@ mod tests {
     fn a_pasted_block_paints_its_newlines_as_one_marker_each_in_one_row() {
         let trie = TrieOf::new(0);
         let mut composer = Composer::new();
-        composer.paste("óne\ntwo\nthree", Duration::ZERO, &trie, &StagedVocabulary);
+        composer.paste(
+            "óne\ntwo\nthree",
+            Duration::ZERO,
+            &trie,
+            &StagedVocabulary,
+            &NoPaths,
+        );
 
         let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
         assert_eq!(
@@ -667,7 +712,13 @@ mod tests {
     fn a_pasted_marker_glyph_survives_as_itself_beside_a_pasted_newline() {
         let trie = TrieOf::new(0);
         let mut composer = Composer::new();
-        composer.paste("a\n\u{23ce}b", Duration::ZERO, &trie, &StagedVocabulary);
+        composer.paste(
+            "a\n\u{23ce}b",
+            Duration::ZERO,
+            &trie,
+            &StagedVocabulary,
+            &NoPaths,
+        );
 
         assert_eq!(
             composer.text(),
@@ -702,7 +753,7 @@ mod tests {
             .map(|n| format!("líne-{n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        composer.paste(&block, Duration::ZERO, &trie, &StagedVocabulary);
+        composer.paste(&block, Duration::ZERO, &trie, &StagedVocabulary, &NoPaths);
 
         // Six pieces of six columns each and five markers: 41 columns, one
         // past a 40-column frame, so two columns go to leave room for the caret.
@@ -1186,6 +1237,164 @@ mod tests {
                  caret"
             );
         }
+    }
+
+    /// ADR-0005 clause 5's **sixth** producer: the input row and its caret are
+    /// byte-identical whatever the path corpus shows.
+    ///
+    /// The first five are the strip's zero, one and six entries, the pasted
+    /// three-line block, the command picker's rows, the pane's window, and the
+    /// elided and overflowing strip. This is the same clause over the third
+    /// corpus, at the width an elision happens and the width it does not, and
+    /// across a corpus of nothing, of one row and of a full page — the only
+    /// variable that moves is how many rows the strip holds.
+    #[test]
+    fn the_input_row_is_byte_identical_whatever_the_path_corpus_shows() {
+        const TYPED: &str = "@sé";
+
+        for width in [40_u16, 150] {
+            let trie = TrieOf::new(0);
+
+            let mut bare = Composer::new();
+            typing_paths(
+                &mut bare,
+                TYPED,
+                Duration::ZERO,
+                &trie,
+                &PathsOf::new([] as [&str; 0]),
+            );
+            let (bare_rows, bare_cursor) = painted(&bare, width, crate::shell::COMPOSER_ROWS);
+
+            let one = PathsOf::new(["séance.txt"]);
+            let mut single = Composer::new();
+            typing_paths(&mut single, TYPED, Duration::ZERO, &trie, &one);
+            let (single_rows, single_cursor) = painted(&single, width, crate::shell::COMPOSER_ROWS);
+
+            let many = PathsOf::new(
+                (0..crate::composer::MATCH_LIMIT)
+                    .map(|i| format!("séance/dossier-{i}·✦.md"))
+                    .collect::<Vec<_>>(),
+            );
+            let mut paged = Composer::new();
+            typing_paths(&mut paged, TYPED, Duration::ZERO, &trie, &many);
+            let (paged_rows, paged_cursor) = painted(&paged, width, crate::shell::COMPOSER_ROWS);
+
+            assert_eq!(
+                (bare_rows[0].as_str(), bare_cursor),
+                (single_rows[0].as_str(), single_cursor),
+                "at {width} columns one path row moved the input row or its caret"
+            );
+            assert_eq!(
+                (bare_rows[0].as_str(), bare_cursor),
+                (paged_rows[0].as_str(), paged_cursor),
+                "at {width} columns a full page of path rows moved the input row or its caret"
+            );
+        }
+    }
+
+    /// The path corpus pages through the one pager, overflow row and all.
+    ///
+    /// The fixture answers more spellings than the strip has rows, so an arm
+    /// that paged on its own — or did not page at all, which is what every
+    /// corpus but the command picker did before 2026-09-15 — would paint rows
+    /// into no cell and say nothing about it.
+    #[test]
+    fn the_path_corpus_pages_through_the_one_pager() {
+        let trie = TrieOf::new(0);
+        let many = PathsOf::new(
+            (0..crate::composer::MATCH_LIMIT)
+                .map(|i| format!("séance/dossier-{i}.md"))
+                .collect::<Vec<_>>(),
+        );
+        let mut composer = Composer::new();
+        typing_paths(&mut composer, "@sé", Duration::ZERO, &trie, &many);
+
+        let lines = composer.strip_lines();
+        assert_eq!(
+            lines.len(),
+            usize::from(crate::shell::STRIP_ROWS),
+            "the strip paints the rows it has and no more: {lines:?}"
+        );
+        assert_eq!(
+            lines[lines.len() - 1],
+            super::continues(
+                crate::composer::MATCH_LIMIT - (usize::from(crate::shell::STRIP_ROWS) - 1)
+            ),
+            "the last row says how many were left out and what to do: {lines:?}"
+        );
+        assert!(
+            lines[0].starts_with("séance/dossier-0"),
+            "the rows are the corpus's spellings, in its own order: {lines:?}"
+        );
+    }
+
+    /// A path row wider than the frame is elided rather than clipped, because
+    /// the elision is at the paint site and every arm reaches it.
+    #[test]
+    fn a_path_row_wider_than_the_frame_is_elided() {
+        let trie = TrieOf::new(0);
+        let long = PathsOf::new(["séance/dossier/très-long-nom-de-fichier-évident.md"]);
+        let mut composer = Composer::new();
+        typing_paths(&mut composer, "@sé", Duration::ZERO, &trie, &long);
+
+        let (narrow, _) = painted(&composer, 20, crate::shell::COMPOSER_ROWS);
+        assert!(
+            narrow[1].trim_end().ends_with('…'),
+            "a path row wider than the frame was clipped rather than elided; it was {:?}",
+            narrow[1]
+        );
+        assert_eq!(
+            crate::shell::wrap::columns(narrow[1].trim_end()),
+            20,
+            "the elided path row does not fill the frame; it was {:?}",
+            narrow[1]
+        );
+    }
+
+    /// The path corpus says so when the working directory has nothing to
+    /// offer, on a painted frame rather than only in the model.
+    ///
+    /// The accepting sibling is the same corpus with a spelling in it: without
+    /// it, an implementation that painted the absence line unconditionally
+    /// would pass the first half.
+    #[test]
+    fn the_path_corpus_says_so_when_there_is_nothing_to_offer() {
+        const NOTHING: &str = "nothing here to offer · ✦";
+        let trie = TrieOf::new(0);
+
+        let mut bare = Composer::new();
+        bare.set_path_absence(Some(NOTHING.to_owned()));
+        typing_paths(
+            &mut bare,
+            "@sé",
+            Duration::ZERO,
+            &trie,
+            &PathsOf::new([] as [&str; 0]),
+        );
+        let (rows, _) = painted(&bare, 40, crate::shell::COMPOSER_ROWS);
+        assert_eq!(
+            rows[1].trim_end(),
+            NOTHING,
+            "a working directory with nothing to offer says so on the frame; the row was {:?}",
+            rows[1]
+        );
+
+        let mut offering = Composer::new();
+        offering.set_path_absence(Some(NOTHING.to_owned()));
+        typing_paths(
+            &mut offering,
+            "@sé",
+            Duration::ZERO,
+            &trie,
+            &PathsOf::new(["séance.txt"]),
+        );
+        let (rows, _) = painted(&offering, 40, crate::shell::COMPOSER_ROWS);
+        assert_eq!(
+            rows[1].trim_end(),
+            "séance.txt",
+            "a corpus with something in it paints the something; the row was {:?}",
+            rows[1]
+        );
     }
 
     /// The command picker's own rows are elided too, which is the half a fix
