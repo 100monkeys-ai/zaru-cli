@@ -19,6 +19,13 @@
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use crate::process::line::CommandLine;
+
+/// What a staged `fs.write` would write.
+///
+/// **A literal this file owns**, deliberately not one the product carries:
+/// what an `fs.write` puts on disk is whatever the model asked for, so a
+/// check that read a product constant would be comparing it with itself.
+const STAGED_CONTENTS: &str = "whatever the model asked for";
 use crate::redaction::HeldSecrets;
 // `tools::mode::Layer` below is a re-export of `config::layer::Layer`, so
 // there is one `Layer` in this file and not two.
@@ -28,6 +35,7 @@ use crate::config::{
 use crate::tools::allowlist::{self, Allowed, AllowlistRefused, Entry};
 use crate::tools::decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, Permission, RefusedBecause, Requirement,
+    Subject,
 };
 use crate::tools::destructive::{Category, Shapes};
 use crate::tools::fixtures::{
@@ -803,15 +811,18 @@ fn the_prompting_rule_is_the_records_at_every_mode() {
     let mut wrong = Vec::new();
     for (mode, tool, out_of_tree, allowlisted, expected, why) in &cases {
         let target = if *out_of_tree { &outside } else { &inside };
-        let invocation = if *tool == ToolName::CmdRun {
-            assert!(
-                !*out_of_tree,
-                "the case {why:?} asks for a command line out of tree, and a command line has no \
-                 placement against the working directory"
-            );
-            Invocation::running(&command)
-        } else {
-            Invocation::on_path(*tool, target).expect("these tools address paths")
+        let invocation = match *tool {
+            ToolName::CmdRun => {
+                assert!(
+                    !*out_of_tree,
+                    "the case {why:?} asks for a command line out of tree, and a command line has \
+                     no placement against the working directory"
+                );
+                Invocation::running(&command)
+            }
+            ToolName::FsWrite => Invocation::writing(target, "whatever the model asked for"),
+            ToolName::FsEdit => Invocation::editing(target, "before", "after"),
+            _ => Invocation::on_path(*tool, target).expect("these tools address paths"),
         };
         let assessment = if *allowlisted { allowed } else { not_allowed };
         let got = Decision::reach(*mode, &invocation, assessment).requirement();
@@ -864,8 +875,7 @@ fn a_call_that_needs_the_user_is_refused_when_there_is_nobody_to_ask() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
     let target = working.classify("inside/file");
-    let invocation =
-        Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+    let invocation = Invocation::writing(&target, STAGED_CONTENTS);
     let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
 
     assert_eq!(
@@ -1131,8 +1141,7 @@ fn the_prompt_states_what_the_transcript_will_record() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
     let outside = working.classify("../elsewhere/secret");
-    let invocation =
-        Invocation::on_path(ToolName::FsWrite, &outside).expect("fs.write addresses a path");
+    let invocation = Invocation::writing(&outside, STAGED_CONTENTS);
 
     let decision = Decision::assess(
         Mode::Ask,
@@ -1284,11 +1293,19 @@ fn two_built_ins_do_not_address_a_path_and_carry_no_placement() {
          holding a space or a quote cannot be read as part of the path: {rendered}"
     );
 
-    // The arm that discriminates: the four addressed BY a bare path still are.
+    // The arm that discriminates: the two addressed by a bare path and
+    // nothing else still are. `fs.write` and `fs.edit` are addressed by a
+    // path *and their arguments* as of 2026-09-14, so each has its own
+    // constructor and `on_path` refuses both -- the same shape `cmd.run`,
+    // `web.fetch` and `fs.search` already have.
     for tool in ToolName::ALL {
         if matches!(
             tool,
-            ToolName::WebFetch | ToolName::CmdRun | ToolName::FsSearch
+            ToolName::WebFetch
+                | ToolName::CmdRun
+                | ToolName::FsSearch
+                | ToolName::FsWrite
+                | ToolName::FsEdit
         ) {
             continue;
         }
@@ -1986,8 +2003,7 @@ fn an_approved_pair_approves_that_pair_and_nothing_else() {
         approved.resolved()
     );
 
-    let write_approved =
-        Invocation::on_path(ToolName::FsWrite, &approved).expect("fs.write addresses a path");
+    let write_approved = Invocation::writing(&approved, STAGED_CONTENTS);
     assert!(
         !allowed.approves(&write_approved),
         "a different tool was approved on the same target: approving a read of {:?} says nothing \
@@ -2149,8 +2165,7 @@ fn an_allowlist_entry_is_the_line_the_prompt_showed() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
     let target = working.classify("inside/file");
-    let invocation =
-        Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+    let invocation = Invocation::writing(&target, STAGED_CONTENTS);
 
     let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
     let question = decision
@@ -2386,7 +2401,7 @@ fn a_path_and_a_url_are_never_destructive() {
     // matcher reading the subject text rather than the command line annotates
     // this one.
     let target = working.classify("inside/rm -rf --force");
-    let write = Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+    let write = Invocation::writing(&target, STAGED_CONTENTS);
     assert!(
         !matcher.is_destructive(&write),
         "a filesystem path was annotated as a destructive command: {:?}",
@@ -2480,8 +2495,7 @@ fn an_ask_that_could_not_reach_the_user_is_not_a_decline() {
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
     let target = working.classify("inside/file");
-    let invocation =
-        Invocation::on_path(ToolName::FsWrite, &target).expect("fs.write addresses a path");
+    let invocation = Invocation::writing(&target, STAGED_CONTENTS);
     let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
 
     assert_eq!(
@@ -2705,8 +2719,7 @@ fn a_prompt_without_a_terminal_is_no_confirmer_at_all() {
     let target = tree.project().join("inside").join("file");
     let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
     let classified = working.classify(target.to_str().expect("a utf-8 path"));
-    let invocation =
-        Invocation::on_path(ToolName::FsWrite, &classified).expect("fs.write addresses a path");
+    let invocation = Invocation::writing(&classified, STAGED_CONTENTS);
     let decision = Decision::reach(Mode::Ask, &invocation, Assessment::default());
     assert_eq!(
         decision.requirement(),
@@ -2937,5 +2950,120 @@ fn this_harness_has_exactly_two_confirmers_and_the_masked_question_is_not_a_thir
     assert!(
         files.contains("src/tools/port.rs") && files.contains("src/credentials/port.rs"),
         "the two confirmers are not ADR-0011 D3's and ADR-0007 D8's: {confirmers:#?}"
+    );
+}
+
+// ---------------------------------------------- ADR-0011 D3, 2026-09-14
+
+/// D3's allowlist matches the same string it matched before the question
+/// gained rows.
+///
+/// # What this check is for
+///
+/// The `permission-prompt` arc of 2026-09-14 gave [`Subject`] two variants
+/// carrying the arguments of `fs.write` and `fs.edit`, so that D3's prompt
+/// can show what it is about. **D3's allowlist compares a tool and
+/// [`Invocation::subject_text`] byte for byte**, an entry is the line a user
+/// copied out of a prompt they read, and there is no glob, no prefix and no
+/// normalisation to absorb a change. An `fs.write` that started rendering its
+/// contents into `subject_text` would silently stop matching every entry
+/// anybody has ever written into `~/.zaru/config.toml`, with no error
+/// anywhere: the call would simply prompt again.
+///
+/// So the string is asserted directly, for all seven, against the shape it
+/// had before — the resolved path for the four filesystem tools addressed by
+/// one, the root and the quoted needle for `fs.search`, the rendered command
+/// line for `cmd.run`, and the URL for `web.fetch` — and a real `Allowed`
+/// built from a written-down entry is asserted to approve a write.
+#[test]
+fn the_allowlist_matches_the_same_string_after_the_question_gained_rows() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let resolved = target.resolved().display().to_string();
+    let command = CommandLine::split("ls -la").expect("a plain command line splits");
+    let url = crate::web::RequestedUrl::parse("https://example.test/thing").expect("a URL parses");
+
+    let cases: Vec<(ToolName, Invocation<'_>, String, &str)> = vec![
+        (
+            ToolName::FsRead,
+            Invocation::on_path(ToolName::FsRead, &target).expect("addresses a path"),
+            resolved.clone(),
+            "a read's subject is its resolved path",
+        ),
+        (
+            ToolName::FsList,
+            Invocation::on_path(ToolName::FsList, &target).expect("addresses a path"),
+            resolved.clone(),
+            "a listing's subject is its resolved path",
+        ),
+        (
+            ToolName::FsWrite,
+            Invocation::writing(&target, STAGED_CONTENTS),
+            resolved.clone(),
+            "a write's subject is its resolved path and NOT its contents",
+        ),
+        (
+            ToolName::FsEdit,
+            Invocation::editing(&target, "before", "after"),
+            resolved.clone(),
+            "an edit's subject is its resolved path and NOT the strings it swaps",
+        ),
+        (
+            ToolName::FsSearch,
+            Invocation::searching(&target, "needle"),
+            format!("{resolved} \"needle\""),
+            "a search's subject is its root and its quoted needle",
+        ),
+        (
+            ToolName::CmdRun,
+            Invocation::running(&command),
+            "ls -la".to_owned(),
+            "a command's subject is the command line as `split` accepts it back",
+        ),
+        (
+            ToolName::WebFetch,
+            Invocation::fetching(&url),
+            "https://example.test/thing".to_owned(),
+            "a fetch's subject is the URL",
+        ),
+    ];
+
+    let mut wrong = Vec::new();
+    for (tool, invocation, expected, why) in &cases {
+        let got = invocation.subject_text();
+        if got != *expected {
+            wrong.push(format!(
+                "{tool}: subject_text is {got:?}, expected {expected:?} ({why}). Every \
+                 `tools.allowlist` entry naming this tool has just stopped matching"
+            ));
+        }
+        if invocation.tool() != *tool {
+            wrong.push(format!(
+                "{tool}: the invocation reports {}",
+                invocation.tool()
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+
+    // The end-to-end half: a user writes down the line a prompt showed them,
+    // and the real `Allowed` approves the write it was written for.
+    let written_down = format!("fs.write {resolved}");
+    let allowed = Allowed::from_configuration(&allowlist_from(Layer::User, &[&written_down]))
+        .expect("the staged entry is well formed");
+    let write = Invocation::writing(&target, STAGED_CONTENTS);
+    assert!(
+        allowed.approves(&write),
+        "the line a user copied out of the prompt, {written_down:?}, no longer approves the write \
+         it was copied for"
+    );
+    // ... and the same entry says nothing about a *different* content at the
+    // same path, because the entry does not mention content at all.
+    let other = Invocation::writing(&target, "something else entirely");
+    assert!(
+        allowed.approves(&other),
+        "an allowlist entry is a tool and a target; making it depend on the content would be a \
+         rule nobody wrote down"
     );
 }

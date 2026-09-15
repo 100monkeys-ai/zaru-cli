@@ -479,8 +479,7 @@ async fn a_resumed_session_tells_the_model_once_and_re_executes_nothing() {
         let mut transcript =
             Transcript::append_to(scratch.session.transcript_path()).expect("opens");
         let target = working.classify("src/fresh.rs");
-        let invocation =
-            zaru_cli::tools::Invocation::on_path(ToolName::FsWrite, &target).expect("a path tool");
+        let invocation = zaru_cli::tools::Invocation::writing(&target, "fn main() {}\n");
         let decision =
             zaru_cli::tools::Decision::assess(Mode::Yolo, &invocation, &Nothing, &Nothing);
         transcript

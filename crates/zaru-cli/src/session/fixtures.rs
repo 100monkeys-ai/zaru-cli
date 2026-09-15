@@ -103,8 +103,7 @@ pub(crate) fn entry_for(
     destructive: bool,
 ) -> crate::tools::TranscriptEntry {
     let target = working.classify(candidate);
-    let invocation = crate::tools::Invocation::on_path(crate::tools::ToolName::FsWrite, &target)
-        .expect("fs.write addresses a path");
+    let invocation = crate::tools::Invocation::writing(&target, "whatever the model asked for");
     crate::tools::Decision::reach(
         crate::tools::Mode::Yolo,
         &invocation,

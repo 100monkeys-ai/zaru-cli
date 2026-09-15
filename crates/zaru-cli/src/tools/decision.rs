@@ -111,6 +111,41 @@ pub enum Subject<'a> {
     },
     /// A command line, already split into a program and its arguments.
     Command(&'a CommandLine),
+    /// An `fs.write`: where the bytes go, classified, and the bytes.
+    ///
+    /// A variant rather than a [`Subject::Path`] with the contents dropped,
+    /// for the reason [`Subject::Search`] is one: ADR-0011 D3's prompt asks
+    /// the user about an act, and a question naming a path a person cannot
+    /// read and withholding what would be put there is a question its reader
+    /// cannot answer — [ADR-0016] D2's "a stack trace with better grammar"
+    /// applied to a question rather than to an error.
+    ///
+    /// **It changes nothing about [`Invocation::subject_text`]**, which still
+    /// returns the resolved path exactly as it does for [`Subject::Path`].
+    /// The contents reach [`Decision::question`]'s detail and reach neither
+    /// the allowlist, nor [`TranscriptEntry::render`], nor the line a
+    /// transcript holds.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    Write {
+        /// Where the bytes go. Classified against D4 like any other path.
+        target: &'a Target,
+        /// What would be written.
+        contents: &'a str,
+    },
+    /// An `fs.edit`: where, classified, the exact string replaced, and its
+    /// replacement.
+    ///
+    /// The same shape and the same reason as [`Subject::Write`], and the same
+    /// promise about [`Invocation::subject_text`].
+    Edit {
+        /// Which file. Classified against D4 like any other path.
+        target: &'a Target,
+        /// The exact string being replaced.
+        old: &'a str,
+        /// What replaces it.
+        new: &'a str,
+    },
     /// A URL that parsed, carrying a scheme `web.fetch` retrieves.
     ///
     /// A [`RequestedUrl`] rather than a `&str` for
@@ -138,7 +173,9 @@ impl<'a> Invocation<'a> {
     /// [`Invocation::fetching`] and [`Invocation::running`], each taking the
     /// subject that tool actually addresses.
     pub fn on_path(tool: ToolName, target: &'a Target) -> Result<Self, InvocationRefused> {
-        if !matches!(tool.subject_kind(), crate::tools::name::SubjectKind::Path) {
+        if !matches!(tool.subject_kind(), crate::tools::name::SubjectKind::Path)
+            || matches!(tool, ToolName::FsWrite | ToolName::FsEdit)
+        {
             return Err(InvocationRefused { tool });
         }
         Ok(Self {
@@ -157,6 +194,32 @@ impl<'a> Invocation<'a> {
         Self {
             tool: ToolName::FsSearch,
             subject: Subject::Search { root, needle },
+        }
+    }
+
+    /// The one built-in that puts bytes somewhere.
+    ///
+    /// The tool is not a parameter, for the reason [`Invocation::searching`]'s
+    /// is not: there is exactly one, and this is the only constructor that
+    /// produces [`Subject::Write`], so an `fs.write` carrying no contents is
+    /// not a value this crate can build. [`Invocation::on_path`] refuses
+    /// `fs.write` for the same reason it refuses `cmd.run`.
+    #[must_use]
+    pub const fn writing(target: &'a Target, contents: &'a str) -> Self {
+        Self {
+            tool: ToolName::FsWrite,
+            subject: Subject::Write { target, contents },
+        }
+    }
+
+    /// The one built-in that replaces an exact string inside a file.
+    ///
+    /// The tool is not a parameter, for [`Invocation::writing`]'s reason.
+    #[must_use]
+    pub const fn editing(target: &'a Target, old: &'a str, new: &'a str) -> Self {
+        Self {
+            tool: ToolName::FsEdit,
+            subject: Subject::Edit { target, old, new },
         }
     }
 
@@ -209,9 +272,10 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub const fn placement(&self) -> Option<Placement> {
         match self.subject {
-            Subject::Path(target) | Subject::Search { root: target, .. } => {
-                Some(target.placement())
-            }
+            Subject::Path(target)
+            | Subject::Write { target, .. }
+            | Subject::Edit { target, .. }
+            | Subject::Search { root: target, .. } => Some(target.placement()),
             Subject::Command(_) | Subject::Url(_) => None,
         }
     }
@@ -231,7 +295,16 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub fn subject_text(&self) -> String {
         match self.subject {
-            Subject::Path(target) => target.resolved().display().to_string(),
+            // **The three path arms answer identically, and that is the
+            // point.** D3's allowlist compares this string byte for byte, an
+            // entry is the line a user copied out of a prompt they read, and
+            // an `fs.write` that started rendering its contents here would
+            // silently stop matching every entry anybody has written down.
+            // The arguments `Subject::Write` and `Subject::Edit` carry reach
+            // `Decision::question`'s detail and nothing else.
+            Subject::Path(target)
+            | Subject::Write { target, .. }
+            | Subject::Edit { target, .. } => target.resolved().display().to_string(),
             Subject::Search { root, needle } => {
                 format!("{} {needle:?}", root.resolved().display())
             }

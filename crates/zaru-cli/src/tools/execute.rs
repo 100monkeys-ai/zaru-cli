@@ -345,10 +345,10 @@ where
                 ToolName::FsList => files::list(target.resolved()),
                 _ => files::read(target.resolved()),
             }),
-            (Subject::Path(target), Call::Write { contents, .. }) => {
+            (Subject::Write { target, .. }, Call::Write { contents, .. }) => {
                 Ok(files::write(target.resolved(), contents))
             }
-            (Subject::Path(target), Call::Edit { old, new, .. }) => {
+            (Subject::Edit { target, .. }, Call::Edit { old, new, .. }) => {
                 Ok(files::edit(target.resolved(), old, new))
             }
             (Subject::Search { root, needle }, Call::Search { .. }) => {
@@ -455,7 +455,19 @@ where
                 classified = self.working_directory.classify(root);
                 Invocation::searching(&classified, needle)
             }
-            Call::OnPath { path, .. } | Call::Write { path, .. } | Call::Edit { path, .. } => {
+            Call::Write { path, contents } => {
+                // The contents travel with the invocation rather than being
+                // looked up again where the question is composed: D3's prompt
+                // and the act must be about the same bytes, and two reads of
+                // one argument is two things that can come to disagree.
+                classified = self.working_directory.classify(path);
+                Invocation::writing(&classified, contents)
+            }
+            Call::Edit { path, old, new } => {
+                classified = self.working_directory.classify(path);
+                Invocation::editing(&classified, old, new)
+            }
+            Call::OnPath { path, .. } => {
                 classified = self.working_directory.classify(path);
                 Invocation::on_path(call.tool(), &classified).map_err(|refused| {
                     // A tool that is not described by a bare path given a path
