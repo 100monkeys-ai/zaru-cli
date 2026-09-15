@@ -680,6 +680,35 @@ fn one_session(
         .existing(id)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
 
+    // ADR-0010 D1's sixth thing under `~/.zaru/`, read into the shell before
+    // the terminal is taken. **The directory is `WorkingDirectory`'s and not
+    // a second reading of the process**, which is the same rule `meta.toml`'s
+    // `directory` follows and why `--continue` and this file agree about what
+    // "here" is. A session on a machine with no resolvable home or working
+    // directory simply has no history: the walk is empty and nothing is
+    // recorded, which is what `Recording` being an `Option` says.
+    //
+    // **Compaction happens here and nowhere else.** A rewrite races an
+    // append, and doing it once as a session opens leaves a window the width
+    // of one session's start rather than one per line typed.
+    let here = crate::tools::WorkingDirectory::of_this_process().ok();
+    let history = crate::session::History::under(store.root());
+    if let Some(here) = &here {
+        match history
+            .compact()
+            .and_then(|_| history.lines_in(here.root()))
+        {
+            Ok(lines) => shell.recall(lines),
+            // The failure's own sentence, in the register ADR-0016 D1 gives
+            // an error, rather than a silence a person would read as "I have
+            // never typed anything here". Nothing is authored.
+            Err(failure) => shell.notice(zaru_tui::shell::Line::new(
+                zaru_tui::shell::Register::Failed,
+                failure.to_string(),
+            )),
+        }
+    }
+
     // ADR-0010 D3's checkpoint, read back into ADR-0013 D1's layer 6, before
     // the terminal is taken so a refusal reaches a terminal that still echoes.
     let context = restored_context(
@@ -768,6 +797,11 @@ fn one_session(
             trie.as_ref(),
             &Vocabulary,
             &mut turns,
+            here.as_ref()
+                .map(|here| crate::terminal::driver::Recording {
+                    history: &history,
+                    directory: here.root(),
+                }),
         ))
     };
 
