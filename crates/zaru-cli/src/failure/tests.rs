@@ -910,7 +910,7 @@ fn two_guarded_panics_each_report_their_own_defect() {
 fn every_mapped_refusal_lands_in_the_class_a_record_states() {
     let rows = every_mapped_refusal();
     assert!(
-        rows.len() >= 26,
+        rows.len() >= 27,
         "the mapped set has shrunk to {} rows; a variant was removed from the fixture rather \
          than from the mapping",
         rows.len()

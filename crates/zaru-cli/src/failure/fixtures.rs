@@ -322,6 +322,32 @@ pub(super) fn every_mapped_refusal() -> Vec<(&'static str, Classified, Class)> {
         .into(),
     );
 
+    // ADR-0013 D7's turn route -- the thirty-second, added 2026-09-15.
+    //
+    // **The only row here built by calling a classifier rather than by an
+    // `Into`**, and it has to be: the class of a turn that will not assemble
+    // is not a property of the error alone, it is the error together with the
+    // provider kind whose key sized the window, and `cli::classify::Surface`
+    // is where the two meet. A `From` impl could not name the key, which is
+    // the whole of what the reader can act on.
+    //
+    // It joins this fixture because ADR-0016 clause 3 enumerates *the class*
+    // and not *the `From` impls*: a user-correctable failure the enumeration
+    // cannot see is one clause 3 does not cover, and this arm replaced a
+    // defect report, which is exactly the shape that check exists to catch.
+    user(
+        "ToolCallError::ContextWindowExceeded",
+        crate::cli::classify::Surface::new("0.0.0", "https://example.invalid/report").turn(
+            &zaru_core::tool_call::ToolCallError::ContextWindowExceeded {
+                needed: 2413,
+                window: 2000,
+            },
+            None,
+            crate::providers::ProviderKind::Ollama,
+            crate::failure::SessionEvidence::NoSessionExists,
+        ),
+    );
+
     // Ours, all three.
     rows.push((
         "ConfigRefused::DuplicateLayer",
