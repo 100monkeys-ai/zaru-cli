@@ -208,8 +208,13 @@ byte for byte and never by glob, and refused to a cloned repository; the
 destructive-command categories the record names are recognised for the two of
 the four whose shape its own words determine, with the two that name no
 program matching nothing rather than a list nobody chose; and the prompt
-itself is one line over the terminal, `y/N` with `N` the default, which
-refuses the call rather than defaulting it when there is no terminal to ask.
+**shows what it is about** — the bytes an `fs.write` would write and whether
+the path is there yet, the before and after of an `fs.edit`, a `cmd.run`'s
+argument vector as the harness split it — wrapped to the terminal rather than
+clipped, with `N` the default and a third answer, `a`, that allows that exact
+line for the rest of the session and is never written to your configuration.
+It refuses the call rather than defaulting it when there is no terminal to
+ask.
 **All of it is reachable**: `zaru "<task>"` runs the tools a model asks for
 under that model, and inside a session the same question is put in the
 transcript pane instead of on a line, through the same port and with the same
