@@ -40,7 +40,7 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 /// One row of [ADR-0015] D2's namespace table, as the shell needs it.
 ///
@@ -375,15 +375,89 @@ pub struct Line {
     pub text: String,
     /// Which register it was written in.
     pub register: Register,
+    /// How [`Self::text`] is read when it is laid out.
+    pub prose: Prose,
+}
+
+/// How a line's text is read when the pane lays it out.
+///
+/// # Why this is a property of the line and not of the register
+///
+/// [`Register::Plain`]'s own documentation reads "Ordinary narration: a user
+/// message, an iteration starting, a candidate" — so `Plain` is the register
+/// of *everything* the harness narrates, and an answer is one of its members
+/// rather than its meaning. Dispatching a parser on `Plain` would parse
+/// [ADR-0011] D2's not-a-sandbox notice, [ADR-0016] D2's remedy lines and
+/// their back-ticks, `config explain`'s layer rows and [ADR-0012] D7's usage
+/// line, each of which carries CommonMark delimiters as ordinary characters.
+/// That is the mutant `only_an_answer_is_parsed_as_commonmark` is written
+/// against, and it is why this is a second axis rather than a reading of the
+/// first.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Prose {
+    /// Every character of the text is a character, and the pane paints it.
+    ///
+    /// The default, and what every producer but an answer yields.
+    Verbatim,
+    /// The text from this byte offset on is a model's answer and is parsed as
+    /// CommonMark; anything before it is a label the harness wrote.
+    ///
+    /// The offset exists for exactly one caller — the replayed
+    /// [`Record::Conversation`] line, which reads `zaru: <answer>`. Parsing
+    /// that whole string would make `zaru: ## Greetings` a paragraph rather
+    /// than a heading, so a session read back would render differently from
+    /// the session that produced it, which is the one thing [ADR-0010] D2's
+    /// "re-rendering it reproduces what the user saw" forbids by name. Both
+    /// other producers pass `0`.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// [`Record::Conversation`]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    CommonMark {
+        /// Where the answer starts inside [`Line::text`].
+        from: usize,
+    },
 }
 
 impl Line {
-    /// A line in a register.
+    /// A line in a register, whose text is characters and nothing else.
     #[must_use]
     pub fn new(register: Register, text: impl Into<String>) -> Self {
         Self {
             register,
             text: text.into(),
+            prose: Prose::Verbatim,
+        }
+    }
+
+    /// A model's answer, parsed as CommonMark when the pane paints it.
+    ///
+    /// **The only constructor of [`Prose::CommonMark`] anywhere**, which is
+    /// what `corpus_one_place_constructs_prose_commonmark` asserts by walking
+    /// the source rather than by trusting this sentence. `lead` is prepended
+    /// verbatim and is never parsed; it is empty for the two live producers
+    /// and is `"zaru: "` for the replayed one.
+    ///
+    /// # What this changes about the pane, stated rather than implied
+    ///
+    /// The delimiters that carried the answer's markup stop reaching the
+    /// buffer, and [ADR-0010] D2's "the terminal's transcript pane shows what
+    /// the file holds, unaltered" is amended for exactly that on 2026-09-15:
+    /// *no datum the file holds is lost from the screen, and a markup
+    /// delimiter whose presentation is painted is not a datum.* **The file is
+    /// untouched** — `cat transcript.jsonl` still shows every one of them —
+    /// so D5's "every byte" is unaffected.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    #[must_use]
+    pub fn answer(register: Register, lead: &str, answer: &str) -> Self {
+        Self {
+            register,
+            text: format!("{lead}{answer}"),
+            prose: Prose::CommonMark { from: lead.len() },
         }
     }
 
@@ -436,6 +510,25 @@ impl Line {
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     #[must_use]
     pub fn rows(&self, width: u16) -> Vec<Row> {
+        match self.prose {
+            Prose::Verbatim => self.verbatim_rows(width),
+            // The lead and the answer are split here rather than inside the
+            // renderer so that the public entry point is the one the ruling
+            // names -- `rows(answer, register, width)` -- and the label is
+            // this type's business rather than the parser's.
+            Prose::CommonMark { from } => {
+                let (lead, answer) = self.text.split_at(from);
+                crate::shell::markdown::rows_after(lead, answer, self.register, width)
+            }
+        }
+    }
+
+    /// The rows of a line whose every character is a character.
+    ///
+    /// The body [`Self::rows`] carried before an answer could be parsed, moved
+    /// behind the dispatch unchanged so that a verbatim line's rows are the
+    /// same rows by construction rather than by comparison.
+    fn verbatim_rows(&self, width: u16) -> Vec<Row> {
         let indent = self.indent();
         let budget = usize::from(width).saturating_sub(indent);
         let mut wrapped = crate::shell::wrap::rows(&self.text, budget).into_iter();
@@ -444,11 +537,13 @@ impl Line {
             register: self.register,
             lead: format!("{} ", self.register.glyph()),
             text: first,
+            emphasis: Vec::new(),
         }];
         painted.extend(wrapped.map(|text| Row {
             register: self.register,
             lead: " ".repeat(indent),
             text,
+            emphasis: Vec::new(),
         }));
         painted
     }
@@ -483,6 +578,25 @@ pub struct Row {
     pub lead: String,
     /// What this row carries, already wrapped to fit beside `lead`.
     pub text: String,
+    /// Where a text modifier applies inside `text`, as byte ranges.
+    ///
+    /// **Empty on every row a verbatim line produces**, which is what keeps
+    /// [`Self::joined`] and every check written against `text` byte-identical
+    /// to what they were before a modifier existed. A renderer with an empty
+    /// vector paints exactly the one [`ratatui::text::Span::raw`] it painted
+    /// before.
+    ///
+    /// Ranges are non-overlapping and in ascending order, and every one of
+    /// them is a character boundary of `text` — the renderer slices on them.
+    ///
+    /// # Why ranges rather than a vector of styled pieces
+    ///
+    /// `text` stays the whole row, so the wrap, the width measurement,
+    /// [`Self::joined`] and every assertion about what reaches the buffer keep
+    /// one subject. Carrying pieces instead would make "what this row says" a
+    /// thing a reader has to reassemble, and two ways to ask it are two things
+    /// that can come to disagree.
+    pub emphasis: Vec<(core::ops::Range<usize>, Modifier)>,
 }
 
 impl Row {

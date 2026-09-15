@@ -54,6 +54,7 @@
 use crate::shell::{COMPOSER_ROWS, Line, Palette, Row, Shell, transcript_floor};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::Line as TextLine;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
@@ -111,6 +112,56 @@ fn tail(lines: &[Line], height: u16, width: u16) -> Vec<Row> {
 /// [the look-and-feel survey]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
 /// [`SecretRequest`]: crate::shell::SecretRequest
 pub const MASK: &str = "\u{2022}";
+
+/// One painted row as the spans that reach the buffer.
+///
+/// # Why one function rather than the two span lists it replaces
+///
+/// The pane and the region a streamed answer gets when the two do not fit
+/// paint the same rows through the same [`tail`], and they built the same span
+/// list twice. A third caller — or a modifier reaching one of them and not the
+/// other — is the shape this crate keeps replacing, so the composition is
+/// named once.
+///
+/// **The marker column carries the register's colour and the text carries
+/// none of it.** That is [ADR-0028] D2's "coloured" read against
+/// [`crate::shell::port::Line`]'s own seam: the shell "chooses the glyph and
+/// nothing else", so a colour on a producer's words would be the shell
+/// choosing something about them — and `palette` is not consulted for the text
+/// at all, which is a stronger property than a rule saying it must not be.
+///
+/// **A modifier is the answer's own and never the register's.** A row whose
+/// `emphasis` is empty yields exactly the one [`Span::raw`] this painted
+/// before a modifier existed, byte for byte, which is every row a verbatim
+/// line produces. Where it is not empty the text is split on the ranges the
+/// CommonMark renderer recorded, and the pieces between them are raw — so
+/// what a modifier can reach is bounded by what the answer's own markup asked
+/// for. The amendment that licenses it is on [ADR-0028's amendments page].
+///
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+/// [ADR-0028's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative-updates
+fn spans_of(row: Row, palette: Palette) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(row.lead, palette.marker(row.register))];
+    if row.emphasis.is_empty() {
+        spans.push(Span::raw(row.text));
+        return spans;
+    }
+    let mut at = 0_usize;
+    for (span, modifier) in &row.emphasis {
+        if span.start > at {
+            spans.push(Span::raw(row.text[at..span.start].to_owned()));
+        }
+        spans.push(Span::styled(
+            row.text[span.start..span.end].to_owned(),
+            Style::default().add_modifier(*modifier),
+        ));
+        at = span.end;
+    }
+    if at < row.text.len() {
+        spans.push(Span::raw(row.text[at..].to_owned()));
+    }
+    spans
+}
 
 impl Shell {
     /// The three regions, top to bottom.
@@ -337,12 +388,7 @@ impl Shell {
             // It is also what lets `a_rows_joined_form_is_what_the_pane_\
             // painted_before` compare `Row::joined` against the buffer
             // without both arms travelling through the same function.
-            .map(|row| {
-                TextLine::from(vec![
-                    Span::styled(row.lead, palette.marker(row.register)),
-                    Span::raw(row.text),
-                ])
-            })
+            .map(|row| TextLine::from(spans_of(row, palette)))
             .collect();
         if !visible.is_empty() {
             frame.render_widget(Paragraph::new(visible), pane);
@@ -355,12 +401,7 @@ impl Shell {
         if let (Some(area), Some(streamed)) = (arriving, self.streamed_line()) {
             let streaming: Vec<TextLine<'_>> = tail(&[streamed], area.height, area.width)
                 .into_iter()
-                .map(|row| {
-                    TextLine::from(vec![
-                        Span::styled(row.lead, palette.marker(row.register)),
-                        Span::raw(row.text),
-                    ])
-                })
+                .map(|row| TextLine::from(spans_of(row, palette)))
                 .collect();
             if !streaming.is_empty() {
                 frame.render_widget(Paragraph::new(streaming), area);

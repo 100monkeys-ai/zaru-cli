@@ -204,6 +204,37 @@ pub(crate) fn painted_in(
 /// `ratatui`'s crossterm backend is behind a feature this crate deliberately
 /// does not take, so the byte-level count lives in `zaru-cli`, where
 /// `a_monochrome_frame_writes_no_colour_sequence` takes it.
+/// Paint a shell and read every cell back as its symbol, its foreground
+/// colour **and its modifier**.
+///
+/// The third of the three properties a cell can carry that this workspace
+/// asserts about. It is separate from [`cells`] rather than replacing it
+/// because every check written before 2026-09-15 reads two, and widening the
+/// tuple they destructure would be an edit to a hundred checks that are not
+/// about a modifier.
+pub(crate) fn styled_cells(
+    shell: &crate::shell::Shell,
+    width: u16,
+    height: u16,
+    palette: Palette,
+) -> Vec<Vec<(String, Color, ratatui::style::Modifier)>> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal
+        .draw(|frame| shell.render(frame, frame.area(), palette))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| {
+                    let cell = &buffer[(x, y)];
+                    (cell.symbol().to_owned(), cell.fg, cell.modifier)
+                })
+                .collect()
+        })
+        .collect()
+}
+
 pub(crate) fn cells(
     shell: &crate::shell::Shell,
     width: u16,

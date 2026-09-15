@@ -60,13 +60,14 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 pub mod command;
+pub mod markdown;
 pub mod port;
 pub mod render;
 pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{
-    CommandVocabulary, Confirmation, Line, Namespace, Palette, Register, Row, SecretAnswer,
+    CommandVocabulary, Confirmation, Line, Namespace, Palette, Prose, Register, Row, SecretAnswer,
     SecretRequest, TranscriptSource,
 };
 
@@ -1022,9 +1023,21 @@ impl Shell {
     /// and every turn whose model asked for a tool and said nothing.
     #[must_use]
     pub fn streamed_line(&self) -> Option<Line> {
+        // **An answer, so it is parsed as it arrives.** A CommonMark parse of
+        // a prefix of a document is not a prefix of the parse of the document,
+        // so what this yields on each beat is a parse of the accumulator *as
+        // it stands*, which is what the reader is looking at. Parsing only on
+        // completion would paint literal delimiters for the length of the turn
+        // and flip when it ended, and the frame at the end of a turn would
+        // then differ from the frame a resumed session paints of the same
+        // answer -- the drift ADR-0010 D2's "re-rendering it reproduces what
+        // the user saw" forbids, and what
+        // `a_streamed_answer_paints_the_same_rows_when_it_completes_as_a_\
+        // whole_answer_would` and `an_unclosed_fence_paints_as_a_block_while_\
+        // it_streams` hold between them.
         self.streaming
             .as_ref()
-            .map(|streaming| Line::new(Register::Plain, streaming.clone()))
+            .map(|streaming| Line::answer(Register::Plain, "", streaming))
     }
 
     /// Everything the pane would show, oldest first: the transcript, then this
