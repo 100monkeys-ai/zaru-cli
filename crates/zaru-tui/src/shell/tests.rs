@@ -4132,3 +4132,67 @@ fn a_questions_detail_is_painted_between_its_statement_and_its_answers() {
          answer before what they are answering about"
     );
 }
+
+/// [`elided`](crate::shell::wrap::elided) never returns more columns than its
+/// budget, and never cuts a wide character in half.
+///
+/// **The mutant**: count `char`s instead of [`columns`](crate::shell::wrap::columns).
+/// A row of CJK at an odd budget is where the two disagree — the naive
+/// implementation keeps one character too many and the row runs one column
+/// past the frame, which on a strip painted by a widget with no `Wrap` is the
+/// defect this function exists to remove reappearing by a different route.
+///
+/// The accepting half is in the same check: a string that fits comes back byte
+/// for byte, so an implementation that always elided would not pass.
+#[test]
+fn an_elided_row_never_exceeds_its_budget_or_splits_a_wide_character() {
+    use crate::shell::wrap::{columns, elided};
+
+    const WIDE: &str = "広い行広い行広い行広い行";
+    const NARROW: &str = "a narrow row";
+
+    for budget in 1..=24_usize {
+        let row = elided(WIDE, budget);
+        assert!(
+            columns(&row) <= budget,
+            "at a budget of {budget} `elided` returned {} columns: {row:?}",
+            columns(&row)
+        );
+        if columns(WIDE) > budget {
+            assert!(
+                row.ends_with('\u{2026}'),
+                "at a budget of {budget} a row that did not fit came back with nothing saying so: \
+                 {row:?}"
+            );
+            // Every kept character is whole: dropping the marker and
+            // re-measuring must give a prefix of the original.
+            let kept: String = row.chars().take(row.chars().count() - 1).collect();
+            assert!(
+                WIDE.starts_with(&kept),
+                "at a budget of {budget} the kept text is not a prefix of the original, so a \
+                 character was cut: {kept:?}"
+            );
+        }
+    }
+
+    assert_eq!(
+        elided(NARROW, 40),
+        NARROW,
+        "a row that fits must come back byte for byte"
+    );
+    assert_eq!(
+        elided(NARROW, columns(NARROW)),
+        NARROW,
+        "a row exactly as wide as its budget fits and must not be elided"
+    );
+    assert_eq!(
+        elided(WIDE, 0),
+        "",
+        "a budget of zero has no column to put the marker in"
+    );
+    assert_eq!(
+        elided(WIDE, 1),
+        "\u{2026}",
+        "a budget of one is the marker alone"
+    );
+}

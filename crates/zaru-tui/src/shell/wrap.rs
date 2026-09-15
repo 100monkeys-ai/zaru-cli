@@ -59,6 +59,83 @@ fn char_columns(character: char) -> usize {
     columns(character.encode_utf8(&mut buffer))
 }
 
+/// What a row that did not fit ends with. U+2026, HORIZONTAL ELLIPSIS.
+///
+/// **Not a new authored glyph and nothing to batch.** It is already this
+/// tree's elision marker in two places a person reads —
+/// `composer::continues`' `… N more · type to narrow` and `shell::below`'s
+/// `… N more below · End` — so naming it here records a convention rather
+/// than inventing one. One column wide: its East Asian Width is Neutral, and
+/// [`elided`] measures it through [`columns`] rather than assuming, so a font
+/// substitution cannot silently make a row one column too wide.
+const ELISION: char = '\u{2026}';
+
+/// `text`, or as much of it as fits in `budget` display columns with the
+/// elision marker as the last one.
+///
+/// # Why a strip row is truncated where a pane row wraps
+///
+/// The pane wraps, by [`rows`] above, because a pane row that was clipped
+/// "silently loses whatever the producer put last" — the `pane-text` arc's
+/// own words on 2026-09-06. The strip was never given the same treatment, so
+/// the honest no-corpus sentence `notes unreachable · the server refused
+/// pages.list: You are not a member of that workspace. (code -32002)` is one
+/// hundred and four columns and lost its error code at a hundred, measured
+/// from the release binary over a pseudo-terminal by `pane-navigation` and
+/// again here.
+///
+/// **It is truncated and not wrapped, and the reason is the row budget.** The
+/// strip paints [`STRIP_ROWS`] rows and `composer::render::fitted` pages every
+/// corpus against that number; a row allowed to become two would eat the row a
+/// later match was going to use, and the overflow row's count would then have
+/// to be of *rows* rather than of matches — a number that changes with the
+/// terminal's width. The reason it is **not** is worth recording because it
+/// was believed: wrapping here would not move the input row. `Shell::render`
+/// gives the composer `Constraint::Length(COMPOSER_ROWS)` at every terminal
+/// size and `Composer::render` anchors the input to the top of it, so the
+/// input row is a function of the area alone; `Composer::height` exists and no
+/// shell code calls it.
+///
+/// # Only the painted row is cut
+///
+/// This is applied in `Composer::render`, at the paint site, and never in
+/// `Composer::strip_lines`. So the sentence the row carries survives whole for
+/// anything that reads it — which is what keeps a truncation a property of the
+/// frame rather than of the text, the same separation `rows` above keeps for
+/// the pane.
+///
+/// A `budget` of zero returns nothing, because there is no column to put the
+/// marker in. A budget of one returns the marker alone.
+///
+/// [`STRIP_ROWS`]: crate::shell::STRIP_ROWS
+/// [`COMPOSER_ROWS`]: crate::shell::COMPOSER_ROWS
+#[must_use]
+pub fn elided(text: &str, budget: usize) -> String {
+    if columns(text) <= budget {
+        return text.to_owned();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    // One column is the marker's. Characters are taken through `columns`, the
+    // measurement the buffer itself paints with, so a wide character that
+    // would straddle the last kept column is left out rather than cut in half
+    // -- which would put the row one column past the frame.
+    let room = budget - 1;
+    let mut kept = String::new();
+    let mut width = 0_usize;
+    for character in text.chars() {
+        let character_width = char_columns(character);
+        if width + character_width > room {
+            break;
+        }
+        kept.push(character);
+        width += character_width;
+    }
+    kept.push(ELISION);
+    kept
+}
+
 /// Break `text` into rows no wider than `budget` display columns.
 ///
 /// `text`'s own newlines are honoured first — a newline in an answer is the

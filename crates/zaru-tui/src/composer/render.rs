@@ -277,7 +277,20 @@ impl Composer {
         frame.render_widget(Paragraph::new(Line::from(row)), input);
         frame.set_cursor_position(Position::new(input.x.saturating_add(column), input.y));
 
-        let lines: Vec<Line<'_>> = self.strip_lines().into_iter().map(Line::from).collect();
+        // **The elision is here and never in `strip_lines`.** A row wider than
+        // the frame was clipped by the widget, so the honest no-corpus
+        // sentence lost its error code at a hundred columns and almost all of
+        // itself at forty, where a pane row wraps. `wrap::elided` ends it with
+        // the tree's own marker instead, measured in the columns the buffer
+        // paints with; truncating at the paint site rather than in the
+        // sentence keeps the whole of it available to anything that reads
+        // `strip_lines`. It is not wrapped, for the row budget's sake --
+        // `wrap::elided` carries the whole of why.
+        let lines: Vec<Line<'_>> = self
+            .strip_lines()
+            .into_iter()
+            .map(|line| Line::from(crate::shell::wrap::elided(&line, usize::from(strip.width))))
+            .collect();
         if !lines.is_empty() {
             frame.render_widget(Paragraph::new(lines), strip);
         }
@@ -990,6 +1003,224 @@ mod tests {
              say that anything was left out",
             crate::composer::MATCH_LIMIT,
             crate::shell::STRIP_ROWS
+        );
+    }
+
+    /// The register's own sentence, at the three widths it was measured at.
+    ///
+    /// `notes unreachable · the server refused pages.list: You are not a
+    /// member of that workspace. (code -32002)` is one hundred and four
+    /// columns. At 150 it is whole and its error code is readable; at 100 and
+    /// at 40 it is cut, and after this change the cut says so. **The accepting
+    /// sibling is inside the check**, because the three widths this arc was
+    /// given bracket the defect rather than all exhibiting it — a check that
+    /// only asserted the marker would pass against a composer that elided
+    /// every row.
+    #[test]
+    fn a_row_wider_than_the_frame_ends_with_the_elision_glyph() {
+        const SENTENCE: &str = "notes unreachable · the server refused pages.list: You are not a \
+                                member of that workspace. (code -32002)";
+        let empty = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.set_absence(Some(SENTENCE.to_owned()));
+        typing(&mut composer, "édit", Duration::ZERO, &empty);
+
+        for width in [40_u16, 100] {
+            let (rows, _) = painted(&composer, width, crate::shell::COMPOSER_ROWS);
+            let row = &rows[1];
+            assert_eq!(
+                crate::shell::wrap::columns(row.trim_end()),
+                usize::from(width),
+                "at {width} columns the strip's row is not filling the frame; it was {row:?}"
+            );
+            assert!(
+                row.trim_end().ends_with('…'),
+                "at {width} columns the row was cut with nothing saying so, which is what a \
+                 person reading it cannot see; it was {row:?}"
+            );
+        }
+
+        let (rows, _) = painted(&composer, 150, crate::shell::COMPOSER_ROWS);
+        assert_eq!(
+            rows[1].trim_end(),
+            SENTENCE,
+            "at 150 columns the sentence fits and must be painted byte for byte, error code and \
+             all; it was {:?}",
+            rows[1]
+        );
+    }
+
+    /// The sentence the row carries is not truncated — only the painted row
+    /// is.
+    ///
+    /// The elision is a property of the frame and never of the text, so
+    /// `strip_lines` answers the whole sentence at every width. That is what
+    /// keeps the truncation out of anything that later reads the strip's rows,
+    /// and it is the half a check on the buffer alone cannot see.
+    #[test]
+    fn the_sentence_the_row_carries_is_not_truncated() {
+        const SENTENCE: &str = "notes unreachable · the server refused pages.list: You are not a \
+                                member of that workspace. (code -32002)";
+        let empty = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.set_absence(Some(SENTENCE.to_owned()));
+        typing(&mut composer, "édit", Duration::ZERO, &empty);
+
+        for width in [40_u16, 100, 150] {
+            let (_, _) = painted(&composer, width, crate::shell::COMPOSER_ROWS);
+            assert_eq!(
+                composer.strip_lines(),
+                vec![SENTENCE.to_owned()],
+                "painting at {width} columns changed what the strip says it holds; the elision \
+                 belongs to the frame and not to the sentence"
+            );
+        }
+    }
+
+    /// An elided row never cuts a wide character in half, and never overflows
+    /// the frame by the column such a cut would cost.
+    ///
+    /// The tempting implementation counts `char`s. A row of CJK at an odd
+    /// budget is where that and the buffer's own `unicode-width` measurement
+    /// disagree, and disagreeing by one column on the last cell is exactly the
+    /// bug the elision exists to remove.
+    #[test]
+    fn an_elided_row_never_cuts_a_wide_character_in_half() {
+        const WIDE: &str = "広い行広い行広い行広い行広い行広い行広い行広い行";
+        let empty = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.set_absence(Some(WIDE.to_owned()));
+        typing(&mut composer, "édit", Duration::ZERO, &empty);
+
+        for width in [11_u16, 21, 31] {
+            // The buffer is read cell by cell and a wide character occupies
+            // two, so the reconstructed string is not the row's own text and
+            // is not measured as if it were. What the frame can say is that
+            // the marker reached the last cell that was written; that the
+            // *text* never exceeds the budget is `elided`'s own property and
+            // is asserted on the function, in `shell::tests`, at the odd
+            // budgets where a character count and a column count disagree.
+            let (rows, _) = painted(&composer, width, crate::shell::COMPOSER_ROWS);
+            let row = rows[1].trim_end();
+            assert!(
+                row.ends_with('…'),
+                "at {width} columns a row of wide characters was cut with nothing saying so; it \
+                 was {row:?}"
+            );
+            let text = crate::shell::wrap::elided(WIDE, usize::from(width));
+            assert!(
+                crate::shell::wrap::columns(&text) <= usize::from(width),
+                "at {width} columns the row this frame was painted from measures {} and would \
+                 run past the frame; it was {text:?}",
+                crate::shell::wrap::columns(&text)
+            );
+        }
+    }
+
+    /// The accepting sibling: a row that fits is painted byte for byte.
+    ///
+    /// Without it, appending the marker unconditionally would satisfy every
+    /// check above while putting an ellipsis on the end of every short row on
+    /// the surface.
+    #[test]
+    fn a_row_that_fits_is_painted_byte_for_byte() {
+        const SHORT: &str = "nothing cached · ✦";
+        let empty = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.set_absence(Some(SHORT.to_owned()));
+        typing(&mut composer, "édit", Duration::ZERO, &empty);
+
+        let (rows, _) = painted(&composer, 40, crate::shell::COMPOSER_ROWS);
+        assert_eq!(
+            rows[1].trim_end(),
+            SHORT,
+            "a row that fits was altered on the way to the frame"
+        );
+        assert!(
+            !rows[1].contains('…'),
+            "a row that fits was given an elision marker; it was {:?}",
+            rows[1]
+        );
+    }
+
+    /// ADR-0005 clause 5's fifth producer: the input row and its caret are
+    /// byte-identical whether the strip's rows are elided, whole, or carrying
+    /// the overflow row.
+    ///
+    /// The first four are the strip's zero, one and six entries, the pasted
+    /// three-line block, the picker's rows, and the pane's window. This is the
+    /// same clause over the two states this arc adds, at the width where an
+    /// elision happens and the width where it does not.
+    #[test]
+    fn the_input_row_is_byte_identical_whether_the_strip_is_elided_or_not() {
+        const LONG: &str = "notes unreachable · the server refused pages.list: You are not a \
+                            member of that workspace. (code -32002)";
+        const TYPED: &str = "édit";
+
+        for width in [40_u16, 150] {
+            let empty = TrieOf::new(0);
+            let mut whole = Composer::new();
+            whole.set_absence(Some("short · ✦".to_owned()));
+            typing(&mut whole, TYPED, Duration::ZERO, &empty);
+            let (whole_rows, whole_cursor) = painted(&whole, width, crate::shell::COMPOSER_ROWS);
+
+            let mut cut = Composer::new();
+            cut.set_absence(Some(LONG.to_owned()));
+            typing(&mut cut, TYPED, Duration::ZERO, &empty);
+            let (cut_rows, cut_cursor) = painted(&cut, width, crate::shell::COMPOSER_ROWS);
+
+            let full = TrieOf::new(crate::composer::MATCH_LIMIT);
+            let mut paged = Composer::new();
+            typing(&mut paged, TYPED, Duration::ZERO, &full);
+            let (paged_rows, paged_cursor) = painted(&paged, width, crate::shell::COMPOSER_ROWS);
+
+            assert_eq!(
+                (whole_rows[0].as_str(), whole_cursor),
+                (cut_rows[0].as_str(), cut_cursor),
+                "at {width} columns an elided strip row moved the input row or its caret"
+            );
+            assert_eq!(
+                (whole_rows[0].as_str(), whole_cursor),
+                (paged_rows[0].as_str(), paged_cursor),
+                "at {width} columns a strip carrying the overflow row moved the input row or its \
+                 caret"
+            );
+        }
+    }
+
+    /// The command picker's own rows are elided too, which is the half a fix
+    /// inside any one content arm would have missed.
+    ///
+    /// Measured at `c915001` from the release binary at 40 columns: the strip
+    /// painted `/stack    AEGIS component fetch and stat` — the picker's own
+    /// row, clipped at the frame with nothing saying so. The elision sits at
+    /// the paint site, so every arm gets it in one place.
+    #[test]
+    fn the_command_pickers_own_rows_are_elided_at_forty_columns() {
+        let vocabulary = VocabularyOf::new(2);
+        let trie = TrieOf::new(0);
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sé", Duration::ZERO, &trie, &vocabulary);
+
+        let (narrow, _) = painted(&composer, 20, crate::shell::COMPOSER_ROWS);
+        assert!(
+            narrow[1].trim_end().ends_with('…'),
+            "a picker row wider than the frame was clipped rather than elided; it was {:?}",
+            narrow[1]
+        );
+        assert_eq!(
+            crate::shell::wrap::columns(narrow[1].trim_end()),
+            20,
+            "the elided picker row does not fill the frame; it was {:?}",
+            narrow[1]
+        );
+
+        let (wide, _) = painted(&composer, 60, crate::shell::COMPOSER_ROWS);
+        assert_eq!(
+            wide[1].trim_end(),
+            "/séance  a staged namespace",
+            "a picker row that fits was altered; it was {:?}",
+            wide[1]
         );
     }
 }
