@@ -333,11 +333,27 @@ fn an_endpoint_a_listing_cannot_render_is_refused_for_its_own_reason() {
     );
 
     match ProviderEndpoint::new("http://localhost\u{7}:11434") {
-        Err(EndpointRefused::Control { offered }) => assert!(
-            offered.contains("\\u{7}"),
-            "the refusal escapes the control character rather than carrying it into a terminal: \
-             {offered:?}"
-        ),
+        // The escape is the render's and the field carries what was offered:
+        // one escape reaches the reader, where a field escaped here as well
+        // would show them a backslash they never typed. Both halves are
+        // asserted, because the field alone says nothing about the terminal
+        // and the sentence alone says nothing about where the escape came
+        // from.
+        Err(EndpointRefused::Control { offered }) => {
+            assert_eq!(
+                offered, "http://localhost\u{7}:11434",
+                "the refusal carries the endpoint as offered: {offered:?}"
+            );
+            let said = EndpointRefused::Control {
+                offered: offered.clone(),
+            }
+            .to_string();
+            assert!(
+                said.contains("\\u{7}") && !said.contains('\u{7}'),
+                "the sentence escapes the control character exactly once rather than carrying \
+                 it into a terminal: {said:?}"
+            );
+        }
         other => panic!("a control character must be refused as Control, and was {other:?}"),
     }
 
@@ -1114,10 +1130,22 @@ fn a_cost_with_no_usable_unit_is_refused() {
         "a bare number is one the reader has to guess the currency of"
     );
     match Cost::reported(1, "US\u{7}D") {
-        Err(CostRefused::UnitControl { offered }) => assert!(
-            offered.contains("\\u{7}"),
-            "the refusal escapes the control character: {offered:?}"
-        ),
+        // As for the endpoint above: the field carries the unit as offered and
+        // the one escape the reader sees is the render's.
+        Err(CostRefused::UnitControl { offered }) => {
+            assert_eq!(
+                offered, "US\u{7}D",
+                "the refusal carries the unit as offered: {offered:?}"
+            );
+            let said = CostRefused::UnitControl {
+                offered: offered.clone(),
+            }
+            .to_string();
+            assert!(
+                said.contains("\\u{7}") && !said.contains('\u{7}'),
+                "the sentence escapes the control character exactly once: {said:?}"
+            );
+        }
         other => panic!("a control character in a unit must be refused, and was {other:?}"),
     }
     assert!(
