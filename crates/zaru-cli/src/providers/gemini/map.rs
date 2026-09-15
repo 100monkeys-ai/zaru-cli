@@ -397,6 +397,29 @@ pub fn response_from(
     })
 }
 
+/// What one streamed frame reports, or `None` when it reports nothing.
+///
+/// # Why this is `Option` where [`usage_from`] is not
+///
+/// `usage_from` answers about a **folded** response, where a missing
+/// `usageMetadata` means the provider reported none for the whole exchange
+/// and zero is the honest reading. This answers about **one frame**, where a
+/// missing `usageMetadata` means only that this frame did not repeat what an
+/// earlier one already said — so a zero here would overwrite a real count
+/// with an invented one. The caller is `GeminiClient::record_usage`, which
+/// leaves its slot alone on `None`.
+///
+/// Measured 2026-09-15 against the live API: every frame of both recorded
+/// streams carries `usageMetadata`, so this is a guard against a shape the
+/// API does not document rather than one observed. `turn-liveness`'
+/// accepting sibling feeds a frame without one and asserts the slot is
+/// unchanged.
+pub(super) fn usage_of(frame: &wire::Response) -> Option<TokenUsage> {
+    frame
+        .usage_metadata
+        .map(|metadata| usage_from(Some(metadata)))
+}
+
 /// ADR-0012 D7's two quantities, or zero when the provider reported none.
 ///
 /// A response with no `usageMetadata` reports zeroes rather than refusing.
@@ -406,7 +429,7 @@ pub fn response_from(
 /// client -- which is a stop. `Provider::usage` answers `None` before the
 /// first exchange, which is where "nothing has been reported" is expressible,
 /// and the gap is raised on ADR-0012 rather than closed here.
-fn usage_from(metadata: Option<wire::UsageMetadata>) -> TokenUsage {
+pub(super) fn usage_from(metadata: Option<wire::UsageMetadata>) -> TokenUsage {
     let metadata = metadata.unwrap_or_default();
     TokenUsage {
         prompt: metadata.prompt_token_count,

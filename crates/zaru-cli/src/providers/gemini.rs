@@ -224,7 +224,14 @@ pub struct GeminiClient {
     /// the receiver drains it on every beat.
     deltas: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
 
-    /// What the last exchange cost, for [`Provider::usage`].
+    /// What the most recently learned usage was, for [`Provider::usage`].
+    ///
+    /// **The exchange in flight while one is, and the last completed one
+    /// otherwise.** [`Self::record_usage`] writes it from every streamed
+    /// frame that reports anything, and [`Self::exchange`] writes the folded
+    /// value again when the stream ends. See `record_usage` for the ruling
+    /// that made this the in-flight exchange's rather than the previous
+    /// one's, and for what the change does not buy.
     ///
     /// Interior mutability because [`Provider::usage`] takes `&self` — the
     /// trait's signature, and rightly so: asking what something cost is a
@@ -387,6 +394,10 @@ impl GeminiClient {
             // difference a stream makes to a person waiting. Everything after
             // the read loop happens once the model has finished.
             self.hand_on(&frame);
+            // The frame's other half. Two per-frame acts in one loop, so a
+            // frame cannot reach the reader with its text and without its
+            // cost -- see `Self::record_usage`.
+            self.record_usage(&frame);
             received.push(frame);
         }
         Ok(())
@@ -407,6 +418,7 @@ impl GeminiClient {
         if let Some(payload) = frames.finish() {
             let frame = parse_frame(&payload, bytes)?;
             self.hand_on(&frame);
+            self.record_usage(&frame);
             received.push(frame);
         }
         Ok(())
@@ -450,6 +462,62 @@ impl GeminiClient {
         };
         if let Some(sender) = slot.as_ref() {
             drop(sender.send(text));
+        }
+    }
+
+    /// Publish one frame's token counts, so the row can name the exchange in
+    /// flight rather than the one before it.
+    ///
+    /// # Why this exists, and what reversing a refusal bought
+    ///
+    /// Until 2026-09-15 [`Self::last`] was written **once**, after the read
+    /// loop and after [`map::fold`], so [`Provider::usage`] answered about
+    /// the last *completed* exchange for the whole of the next one. The
+    /// status row polls that function on the shell's beat, so a person
+    /// watching a turn read the previous exchange's count throughout —
+    /// [operations/harness-look-and-feel-audit-2] row 2, which measured the
+    /// row holding `813 tokens` for 34 of a 40.8-second turn.
+    ///
+    /// **This is the per-frame variant [ADR-0012]'s `live-status` amendment
+    /// of 2026-09-06 named and refused**, on the ground that choosing it
+    /// "would decide by implementation the question this section reserves
+    /// for a person". It is taken now because a person's delegate decided it
+    /// on the record first: the coordinator's ruling of 2026-09-15 under
+    /// directive 35, open to Jeshua's veto, on [ADR-0012's amendments page].
+    /// `Provider::usage` now means **the usage most recently learned**,
+    /// which is the in-flight exchange's from its first frame.
+    ///
+    /// # What it does not buy, measured rather than assumed
+    ///
+    /// **Nothing during the thinking span.** Two probes of
+    /// `streamGenerateContent?alt=sse` on 2026-09-15 timestamped every line:
+    /// the first SSE byte arrived at 46.0 s of a 55.8-second request and at
+    /// 92.7 s of a 106.4-second one — 82% and 87% of the work with **no
+    /// frame of any kind** on the wire, not a usage frame and not a
+    /// keep-alive. So this makes the number honest from the moment the
+    /// provider says anything, and the span before that is
+    /// [`crate::terminal::driver::Pane`]'s to narrate.
+    ///
+    /// # A frame reporting nothing leaves the slot alone
+    ///
+    /// [`map::usage_of`] answers `None` rather than zero, and this returns
+    /// without writing. Overwriting a real count with an invented zero is
+    /// exactly what `usage.rs` refuses to do for cost.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    /// [ADR-0012's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction-updates
+    /// [operations/harness-look-and-feel-audit-2]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+    fn record_usage(&self, frame: &wire::Response) {
+        let Some(reported) = map::usage_of(frame) else {
+            return;
+        };
+        let counted = (reported.prompt, reported.completion);
+        // A poisoned lock means a previous holder panicked while writing two
+        // integers, which cannot happen; the value is replaced either way
+        // rather than propagating a panic out of a stream that is arriving.
+        match self.last.lock() {
+            Ok(mut slot) => *slot = Some(counted),
+            Err(poisoned) => *poisoned.into_inner() = Some(counted),
         }
     }
 
@@ -584,6 +652,15 @@ impl GeminiClient {
         // that makes folding load-bearing rather than tidy.
         let answer = map::fold(&received);
         let mapped = map::response_from(&answer, bytes)?;
+        // Written again at the end, **kept** beside the per-frame writes
+        // rather than replaced by them: `map::fold` keeps the last frame's
+        // `usageMetadata`, so this value and the last thing
+        // `Self::record_usage` wrote are the same two integers -- which
+        // `the_folded_usage_and_the_last_frames_usage_agree` pins over both
+        // recorded streams. It stays because it is the value the *mapped*
+        // response reports, so a future fold that stopped agreeing would be
+        // caught by that check rather than by a user.
+        //
         // A poisoned lock means a previous holder panicked while writing two
         // integers, which cannot happen; the value is replaced either way
         // rather than propagating a panic out of an exchange that succeeded.
@@ -703,7 +780,15 @@ impl Provider for GeminiClient {
     }
 
     fn usage(&self) -> Option<TokenUsage> {
-        // `None` before the first exchange, `Some` after one. The pairing
+        // **The usage most recently learned**, which is the exchange in
+        // flight from its first frame and the last completed one between
+        // exchanges -- the coordinator's ruling of 2026-09-15 under
+        // directive 35, on ADR-0012's amendments page, reversing that
+        // record's own refusal of 2026-09-06 by name. `Self::record_usage`
+        // carries the reasoning and the measurement.
+        //
+        // `None` before the first frame of the first exchange, `Some` after
+        // one. The pairing
         // `providers::port` states -- "a provider whose descriptor says it
         // does not account must answer `None` here, and one that says it does
         // must answer `Some`" -- is about a provider that *has answered*: a

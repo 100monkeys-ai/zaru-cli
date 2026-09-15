@@ -1371,6 +1371,160 @@ fn offline_client() -> super::GeminiClient {
     .expect("an HTTP client builds without touching the network")
 }
 
+// ADR-0012 D7's number names the exchange **in flight**, from its first
+// frame, which is what row 2 of the second look-and-feel audit asked for.
+//
+// Audit 2 measured the status row holding `813 tokens` -- the *previous*
+// exchange's count -- for the whole of the next one. `Provider::usage` used
+// to be written once, after the fold; `GeminiClient::record_usage` writes it
+// from every frame that reports anything, so the row stops naming the
+// exchange before it the moment the current one says a word.
+//
+// **The mutant is deleting the `record_usage` call from `absorb`**, which
+// leaves `usage()` answering `None` until `exchange` ends -- exactly the
+// behaviour this reverses -- and which no other check here would notice,
+// because every other one reads the folded response.
+//
+// Driven over the recorded bytes through the client's own read path, because
+// [Testing] forbids a check calling a provider.
+//
+// [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
+#[test]
+fn an_exchange_reports_its_usage_from_its_first_frame() {
+    use crate::providers::Provider as _;
+
+    let client = offline_client();
+    assert_eq!(
+        client.usage(),
+        None,
+        "a client that has read no frame reported a count it could not have"
+    );
+
+    let mut frames = stream::Frames::new();
+    let mut received = Vec::new();
+    let body = RECORDED_STREAM_TEXT.as_bytes();
+    let mut after_each: Vec<Option<(u64, u64)>> = Vec::new();
+    // One frame at a time, so the reading between two frames is a reading and
+    // not an artefact of where a chunk boundary fell.
+    for (at, payload) in body.split_inclusive(|byte| *byte == b'\n').enumerate() {
+        client
+            .absorb(&mut frames, payload, at + 1, &mut received)
+            .expect("every recorded frame parses");
+        if received.len() > after_each.len() {
+            after_each.push(
+                client
+                    .usage()
+                    .map(|spent| (spent.prompt_tokens(), spent.completion_tokens())),
+            );
+        }
+    }
+    client
+        .absorb_last(&mut frames, body.len(), &mut received)
+        .expect("the recorded stream ends cleanly");
+
+    // The recorded stream's own numbers. `thoughtsTokenCount` is 183 on every
+    // frame -- the thinking is finished by the time any byte is on the wire,
+    // measured against the live API on 2026-09-15 -- and the candidates count
+    // is what rises as the text arrives.
+    // Three frames, and the third is the one carrying `finishReason` beside
+    // an empty text part -- so the count it reports is the one the fold will
+    // report too, which is the next check's subject.
+    assert_eq!(
+        after_each,
+        vec![
+            Some((13, 13 + 183)),
+            Some((13, 15 + 183)),
+            Some((13, 15 + 183)),
+        ],
+        "the count did not follow the frames as they arrived"
+    );
+}
+
+// A frame that reports nothing leaves the count alone rather than zeroing it.
+//
+// The accepting sibling of the check above: `map::usage_of` answers `None`
+// rather than a zero, so a shape the API does not document cannot overwrite a
+// real count with an invented one -- which is what `usage.rs` already refuses
+// to do for cost.
+//
+// **The mutant is `usage_of` returning `Some(TokenUsage::counted(0, 0))`**
+// for a frame with no `usageMetadata`.
+#[test]
+fn a_frame_that_reports_nothing_leaves_the_count_alone() {
+    use crate::providers::Provider as _;
+
+    let client = offline_client();
+    let mut frames = stream::Frames::new();
+    let mut received = Vec::new();
+    // The first whole **frame**, terminator included: an SSE frame ends at a
+    // blank line, so feeding the `data:` line alone would emit nothing and
+    // this check would assert about an empty client.
+    let end = RECORDED_STREAM_TEXT
+        .find("\n\n")
+        .expect("the recorded stream has a frame terminator")
+        + 2;
+    let first = &RECORDED_STREAM_TEXT[..end];
+    client
+        .absorb(&mut frames, first.as_bytes(), first.len(), &mut received)
+        .expect("the recorded frame parses");
+    let learned = client.usage().expect("the first frame reports a count");
+
+    // A frame of the documented shape with its `usageMetadata` left out.
+    let silent = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" more\"}],\
+                  \"role\":\"model\"}}]}\n\n";
+    client
+        .absorb(
+            &mut frames,
+            silent.as_bytes(),
+            first.len() + silent.len(),
+            &mut received,
+        )
+        .expect("a frame without usageMetadata parses");
+
+    assert_eq!(
+        client.usage(),
+        Some(learned),
+        "a frame reporting nothing overwrote a real count"
+    );
+}
+
+// The per-frame writes and the post-fold write agree, which is what lets both
+// stay.
+//
+// `map::fold` keeps the **last** frame's `usageMetadata`, so the value
+// `exchange` writes when the stream ends is the same two integers
+// `record_usage` wrote on that frame. Pinned over both recorded streams, so a
+// future fold that stopped agreeing reddens here rather than at a user's row.
+#[test]
+fn the_folded_usage_and_the_last_frames_usage_agree() {
+    for (name, recorded) in [
+        ("stream-text.sse", RECORDED_STREAM_TEXT),
+        ("stream-calls.sse", RECORDED_STREAM_CALLS),
+    ] {
+        let mut frames = stream::Frames::new();
+        let mut received = Vec::new();
+        let client = offline_client();
+        let body = recorded.as_bytes();
+        client
+            .absorb(&mut frames, body, body.len(), &mut received)
+            .expect("every recorded frame parses");
+        client
+            .absorb_last(&mut frames, body.len(), &mut received)
+            .expect("the recorded stream ends cleanly");
+
+        let per_frame =
+            crate::providers::Provider::usage(&client).expect("the recorded frames report a count");
+        let folded = map::response_from(&map::fold(&received), body.len())
+            .expect("the recorded stream maps");
+        assert_eq!(
+            (per_frame.prompt_tokens(), per_frame.completion_tokens()),
+            (folded.tokens().prompt, folded.tokens().completion),
+            "{name}: the last frame's count and the folded count disagree, so \
+             the row and the session-exit line would disagree too"
+        );
+    }
+}
+
 // The answer reaches a watcher frame by frame, which is the whole difference
 // a stream makes to a person waiting. Driven over the recorded frames rather
 // than a socket: [Testing] forbids a check calling a provider.
