@@ -71,9 +71,23 @@
 //! the one line the prefix says instead. **No sentence of persona is invented
 //! here.**
 //!
+//! **Dated 2026-09-15, beside the paragraph above rather than in it: "a prompt
+//! server this build reaches at no tier" stopped being true on this day.**
+//! [`persona`] reads one page out of the workspace [ADR-0006] D5's pin names,
+//! at a path the user sets, over the surface the harness already reads with,
+//! and assembles it into layer 1 in place of that line when it is there. **The
+//! sentence still standing unchanged is the last one**: no sentence of persona
+//! is invented here, and `prose`'s line is kept for the absence, which is
+//! byte-identical to what it was — no page, no token, no pin, or a refusal all
+//! leave it exactly where it was. What is **not** built is ADR-0027 D1 as
+//! written: there is no init call, no mode call, no tool names and no version,
+//! so what this harness consumes is a page rather than a served prompt, and
+//! that record's amendments page says so.
+//!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 //! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+//! [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 //! [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
@@ -85,6 +99,7 @@ pub mod count;
 pub mod emission;
 pub mod iterate;
 pub mod model;
+pub mod persona;
 pub mod prose;
 pub mod shared;
 pub mod sink;
@@ -98,6 +113,7 @@ pub use count::ByteCounter;
 pub use emission::{Cause, Door, Subject, Unprompted, Wording};
 pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrated, Narrator};
 pub use model::Classifying;
+pub use persona::{CachedPersona, Fetched, PersonaCache};
 pub use shared::Shared;
 pub use sink::{Records, ToolLines};
 pub use summarise::ModelSummariser;

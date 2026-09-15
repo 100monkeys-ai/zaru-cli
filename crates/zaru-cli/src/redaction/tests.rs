@@ -460,14 +460,21 @@ fn adr_0010_d2s_conversation_records_are_built_through_the_port() {
 /// what the assertion below demands in its own words. It reddened on the first
 /// compile of `compose/summarise.rs`, which is the whole purpose of
 /// enumerating rather than counting.
-const PATHS: [(&str, &str); 8] = [
+const PATHS: [(&str, &str); 9] = [
     (
         "zaru-core/src/iteration/refinement.rs",
         "the refinement prompt's four variable-length parts (ADR-0008 D4)",
     ),
     (
         "zaru-core/src/context/assembly.rs",
-        "the assembled context, covering layers 6 and 7 (ADR-0013 D5 and D1)",
+        "the assembled context (ADR-0013 D1 and D5). **Its own description \
+         said \"covering layers 6 and 7\" until 2026-09-15, and that was \
+         narrower than what the call does**: `Context::render` begins with the \
+         stable prefix and `Redacted::by` takes the whole render, so layers 1 \
+         to 4 pass the port too -- which is what lets ADR-0027's served page \
+         carry a held bearer without one reaching a model. Measured from the \
+         release binary at `15d31f1`, where a persona planted with a stored \
+         bearer in it assembled with the marker in its place",
     ),
     (
         "zaru-core/src/tool_call/port.rs",
@@ -496,6 +503,10 @@ const PATHS: [(&str, &str); 8] = [
     (
         "zaru-cli/src/compose/summarise.rs",
         "the span a compaction sends to a model as its own request (ADR-0013 D2)",
+    ),
+    (
+        "zaru-cli/src/compose/persona.rs",
+        "ADR-0027 D1's served page, becoming ADR-0013 D1's layer 1 **and** the          line `~/.zaru/persona.jsonl` holds. **The ninth row is the first that          is not a prompt**, and it is deliberate: the prompt seam alone would          have covered the model and not a person reading the cache with `cat`,          which ADR-0010 D5 invites them to do, so the body is redacted once on          the way into the file and the same redaction is what layer 1 takes.          Ruled 2026-09-15 under directive 20, open to Jeshua's veto",
     ),
 ];
 

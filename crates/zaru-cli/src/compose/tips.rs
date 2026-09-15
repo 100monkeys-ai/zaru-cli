@@ -103,7 +103,11 @@ use std::path::{Path, PathBuf};
 /// `credentials.json`,
 /// [ADR-0015](https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility)
 /// D3's `commands/`, [ADR-0010] D1's `history.jsonl`, ADR-0015 D4's
-/// `admissions.jsonl` and [ADR-0005] D3's `corpus.jsonl`. Accepted 2026-09-15
+/// `admissions.jsonl` and [ADR-0005] D3's `corpus.jsonl`. **A tenth joined
+/// them on 2026-09-15**, [ADR-0027](https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract)
+/// D1's `persona.jsonl`; this constant's own count is unchanged, because it
+/// says where this file sits in the order rather than how many there are.
+/// Accepted 2026-09-15
 /// under directives 20, 25, 31 and 35 as a delegated coordinator ruling, open
 /// to Jeshua's veto, and written on [ADR-0010's amendments volume 3].
 ///
