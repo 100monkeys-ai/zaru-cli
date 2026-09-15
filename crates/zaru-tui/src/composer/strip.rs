@@ -10,6 +10,7 @@
 
 use crate::composer::entries::{Entry, EntryKind};
 use crate::composer::search::SearchState;
+use crate::shell::port::Namespace;
 
 /// Which of D1's two modes the strip is in.
 ///
@@ -81,8 +82,8 @@ pub enum StripContent {
         /// Where the slow tier has got to.
         search: SearchState,
     },
-    /// The line is a command, so the strip says nothing. **Not one of D1's
-    /// rows.**
+    /// The line is a command, so the strip shows the command namespaces.
+    /// **Not one of D1's rows.**
     ///
     /// # Which record supplies this, and why D1's table is unchanged
     ///
@@ -93,13 +94,39 @@ pub enum StripContent {
     /// not a search at all — and inventing one there would be reading a
     /// decision into a record that does not carry it.
     ///
-    /// So the row is **ADR-0015 D2's**, and what it renders is nothing. The
-    /// mode stays [`StripMode::Typing`], because the prompt is not empty and
-    /// D1's two modes are keyed on exactly that; a command line reported as the
-    /// empty mode would say the user had typed nothing.
+    /// So the row is **ADR-0015 D2's**, and the mode stays
+    /// [`StripMode::Typing`], because the prompt is not empty and D1's two
+    /// modes are keyed on exactly that; a command line reported as the empty
+    /// mode would say the user had typed nothing.
     ///
+    /// # What it renders, since 2026-09-15
+    ///
+    /// It rendered **nothing** until then, which is what the look-and-feel
+    /// survey's row 6 is about: a person typing `/` met six blank rows and no
+    /// way to find out what the session could do. [ADR-0005]'s amendments page
+    /// narrows the 2026-09-05 Update's last clause alone — the row D2 supplies
+    /// carries a **second corpus**, shown in place of the hint strip while the
+    /// line begins with `/` and gone the moment it does not. The hint tiers
+    /// themselves stay closed to `/`: no keystroke of a command line reaches
+    /// the trie and none emits a search request.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-    Command,
+    Command {
+        /// The namespaces whose slash spelling begins with the word being
+        /// typed, in D2's own table order, capped at the rows the strip can
+        /// paint. Empty when the word matches none, which is what a miss looks
+        /// like everywhere else in this composer, and empty once the line
+        /// carries a space, because the namespace has then been named.
+        matches: Vec<Namespace>,
+        /// How many further namespaces matched and are not in `matches`.
+        ///
+        /// Zero when they all fit. When it is not, the last row is
+        /// [`continues`](crate::composer::render::continues) rather than a
+        /// sixth namespace, so the strip never drops a match without saying
+        /// so.
+        beyond: usize,
+    },
     /// `[[` or `@` entered: the explicit picker, filtered by what follows.
     /// D1 row 6.
     Picker {
@@ -129,9 +156,10 @@ impl StripContent {
     pub const fn mode(&self) -> StripMode {
         match self {
             Self::Deposits { .. } | Self::Tip { .. } | Self::Collapsed => StripMode::Empty,
-            Self::Trie { .. } | Self::Merged { .. } | Self::Picker { .. } | Self::Command => {
-                StripMode::Typing
-            }
+            Self::Trie { .. }
+            | Self::Merged { .. }
+            | Self::Picker { .. }
+            | Self::Command { .. } => StripMode::Typing,
         }
     }
 }

@@ -24,6 +24,7 @@
 
 use crate::composer::Composer;
 use crate::composer::entries::{Entries, Entry, EntryKind};
+use crate::shell::fixtures::StagedVocabulary;
 use core::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, TestBackend};
@@ -114,8 +115,25 @@ pub(crate) fn typing(composer: &mut Composer, text: &str, now: Duration, entries
             },
             now,
             entries,
+            &StagedVocabulary,
         );
     }
+}
+
+/// Press `key` once, for a check that moves the caret or completes rather than
+/// types.
+pub(crate) fn press(composer: &mut Composer, key: Key, entries: &dyn Entries) {
+    composer.key(
+        Input {
+            key,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        },
+        Duration::ZERO,
+        entries,
+        &StagedVocabulary,
+    );
 }
 
 /// A trie that returns exactly `count` entries, so a check can stage a strip

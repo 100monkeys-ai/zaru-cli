@@ -28,6 +28,7 @@ use tui_textarea::{Input, Key};
 use zaru_tui::composer::{
     Composer, Entries, Entry, EntryKind, KEYWORD_ONLY, Scope, SearchResponse,
 };
+use zaru_tui::shell::{CommandVocabulary, Namespace};
 
 /// A trie a stranger could write, holding two entities.
 struct Notes;
@@ -50,6 +51,42 @@ impl Entries for Notes {
     }
 }
 
+/// A vocabulary a stranger could write, holding two namespaces that share a
+/// prefix and one that shares none.
+///
+/// Two sharing a prefix is the only shape that can tell "completes a unique
+/// prefix" from "completes the first match", and it is why this is not a
+/// one-row fixture.
+struct Commands;
+
+const STRANGER: [(&str, &str); 3] = [
+    ("/session", "resume, list, remove"),
+    ("/settings", "nothing this harness has"),
+    ("/runtime", "tier and membrane"),
+];
+
+impl CommandVocabulary for Commands {
+    fn namespaces(&self) -> Vec<Namespace> {
+        STRANGER
+            .into_iter()
+            .map(|(slash, governs)| Namespace {
+                slash,
+                governs,
+                built: true,
+                verbs: &[],
+            })
+            .collect()
+    }
+
+    fn nearest(&self, _offered: &str) -> Option<&'static str> {
+        None
+    }
+
+    fn nearest_verb(&self, _slash: &str, _offered: &str) -> Option<&'static str> {
+        None
+    }
+}
+
 #[test]
 fn a_caller_outside_this_crate_can_drive_the_composer_to_a_frame() {
     let notes = Notes;
@@ -69,6 +106,7 @@ fn a_caller_outside_this_crate_can_drive_the_composer_to_a_frame() {
             },
             typed_at,
             &notes,
+            &Commands,
         );
     }
 

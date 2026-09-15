@@ -1297,7 +1297,12 @@ fn a_standing_question_absorbs_a_paste_and_the_composer_receives_none() {
         STAGED_ANSWERS,
         false,
     ));
-    shell.pasted("y\ny\ny", Duration::ZERO, &TrieOf::new(0));
+    shell.pasted(
+        "y\ny\ny",
+        Duration::ZERO,
+        &TrieOf::new(0),
+        &StagedVocabulary,
+    );
     assert_eq!(
         shell.composer().text(),
         "",
@@ -1315,7 +1320,12 @@ fn a_standing_question_absorbs_a_paste_and_the_composer_receives_none() {
 #[test]
 fn a_paste_reaches_the_composer_whole_when_no_question_stands() {
     let mut shell = shell();
-    shell.pasted("y\ny\ny", Duration::ZERO, &TrieOf::new(0));
+    shell.pasted(
+        "y\ny\ny",
+        Duration::ZERO,
+        &TrieOf::new(0),
+        &StagedVocabulary,
+    );
     assert_eq!(
         shell.composer().text(),
         "y\ny\ny",
@@ -2392,7 +2402,7 @@ fn corpus_a_pasted_block_cannot_forge_a_field_on_the_status_row() {
 
     let mut shell = shell();
     let before = shell.status().painted(WIDTH);
-    shell.pasted(&forgery, Duration::ZERO, &TrieOf::new(0));
+    shell.pasted(&forgery, Duration::ZERO, &TrieOf::new(0), &StagedVocabulary);
     let after = shell.status().painted(WIDTH);
     assert_eq!(
         before, after,
@@ -2445,7 +2455,7 @@ fn corpus_a_block_wider_than_the_frame_is_submitted_whole() {
     assert_eq!(block.chars().count(), 500);
 
     let mut shell = shell();
-    shell.pasted(&block, Duration::ZERO, &trie);
+    shell.pasted(&block, Duration::ZERO, &trie, &StagedVocabulary);
     let (row, caret) = shell.composer().input_row(WIDTH);
     // One column short of the frame, because the caret sits at the right edge
     // and needs a cell — the same arithmetic `tui-textarea`'s own viewport
@@ -2474,7 +2484,7 @@ fn corpus_a_block_wider_than_the_frame_is_submitted_whole() {
     // The sibling: a block that fits is submitted whole too, so the assertion
     // above is not satisfied by an implementation that submits the row.
     let mut short = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
-    short.pasted("a short one", Duration::ZERO, &trie);
+    short.pasted("a short one", Duration::ZERO, &trie, &StagedVocabulary);
     let (row, _) = short.composer().input_row(WIDTH);
     assert_eq!(row.trim_end(), "a short one");
     assert_eq!(
@@ -3229,7 +3239,7 @@ fn a_typed_line_still_reaches_the_composer_once_the_question_is_gone() {
 #[test]
 fn corpus_a_pasted_secret_reaches_no_cell_and_is_what_take_secret_yields() {
     let mut shell = asking_for_a_secret();
-    shell.pasted(TYPED_SECRET, NOW, &TrieOf::new(0));
+    shell.pasted(TYPED_SECRET, NOW, &TrieOf::new(0), &StagedVocabulary);
 
     let (rows, _) = painted(&shell, WIDTH, HEIGHT);
     assert!(
@@ -3266,7 +3276,7 @@ fn corpus_a_pasted_secret_reaches_no_cell_and_is_what_take_secret_yields() {
 fn a_confirmation_still_absorbs_a_paste() {
     let mut shell = shell();
     shell.ask(Confirmation::new("about to write", STAGED_ANSWERS, false));
-    shell.pasted("y\n", NOW, &TrieOf::new(0));
+    shell.pasted("y\n", NOW, &TrieOf::new(0), &StagedVocabulary);
     assert!(
         shell.asking().is_some(),
         "the confirmation was answered by a paste"

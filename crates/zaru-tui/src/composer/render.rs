@@ -34,6 +34,44 @@ use ratatui::widgets::Paragraph;
 /// the record's and are spelled here exactly once.
 pub const KEYWORD_ONLY: &str = "keyword only";
 
+/// The row a command picker gives to the namespaces its rows cannot hold.
+///
+/// **The one authored string in the command picker, drafted under a delegated
+/// coordinator ruling of 2026-09-14 23:48:04Z and 2026-09-15 00:12:17Z and
+/// open to Jeshua's veto**, in the same shape as the six register glyphs,
+/// `STRIP_ROWS` and [`crate::composer::NEWLINE`]: no record supplies a line
+/// and one is needed, so it is named once here with its reasoning rather than
+/// typed at a call site. It is recorded on [ADR-0005's amendments page] with
+/// the two alternatives that were rejected.
+///
+/// # Why there is a line at all
+///
+/// [ADR-0015] D2 names twelve namespaces and the strip paints six rows, so a
+/// bare `/` cannot show them all. The tempting option is to paint the first
+/// six and say nothing, and **the strip already does exactly that** on the
+/// other corpus — the trie's budget is eight matches against six painted rows,
+/// with no wrapping, so two of eight reach a person nowhere and nothing tells
+/// them. Reproducing that in a new surface is the silent degradation
+/// [Operating Principles]' "legibility beats smoothness" is written against.
+/// The other option was a scrolling list with a selection cursor, refused
+/// because it gives `Up` and `Down` a second meaning inside the composer.
+///
+/// # Why it says what to do rather than only how many
+///
+/// [ADR-0016] D2: a message whose reader cannot act "is a stack trace with
+/// better grammar". Typing is what narrows the list, so that is what the line
+/// says. It is twenty-five columns at the counts this vocabulary can produce,
+/// which fits the forty-column frame the absence lines are short for.
+///
+/// [ADR-0005's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+/// [Operating Principles]: https://100monkeys-ai.cortex.page/zaru/p/operations/operating-principles
+#[must_use]
+pub fn continues(beyond: usize) -> String {
+    format!("… {beyond} more · type to narrow")
+}
+
 impl Composer {
     /// The lines the strip is showing, top to bottom.
     ///
@@ -47,9 +85,33 @@ impl Composer {
                 vec![format!("{count} pending · /inbox")]
             }
             StripContent::Tip { text } => vec![text],
-            // ADR-0015 D2's row: a command line is not a search, so the strip
-            // says nothing and reclaims its rows exactly as a collapse does.
-            StripContent::Command => Vec::new(),
+            // ADR-0015 D2's row: a command line is not a search, so what the
+            // strip shows is the command namespaces rather than the hint
+            // tiers' matches — and it carries no absence line, because the
+            // absence line is about a corpus this row is not showing.
+            StripContent::Command { matches, beyond } => {
+                // The spellings are padded to the widest row shown, the way
+                // `--help` pads its own, so the descriptions line up. Padding
+                // to the widest in the *vocabulary* instead would indent every
+                // narrowed list by the width of `/providers`, which is a
+                // column of blanks a person has no use for.
+                let width = matches
+                    .iter()
+                    .map(|namespace| namespace.slash.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                let mut lines: Vec<String> = matches
+                    .into_iter()
+                    .map(|namespace| {
+                        let slash = namespace.slash;
+                        format!("{slash:width$}  {}", namespace.governs)
+                    })
+                    .collect();
+                if beyond > 0 {
+                    lines.push(continues(beyond));
+                }
+                lines
+            }
             // A picker never carries the absence line. An open picker with no
             // matches is what a miss looks like, and the picker's own sigil is
             // already on the screen saying what is being picked.
@@ -143,12 +205,13 @@ impl Composer {
 mod tests {
     use super::KEYWORD_ONLY;
     use crate::composer::fixtures::{
-        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, painted, server_results, typing,
+        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, painted, press, server_results, typing,
     };
     use crate::composer::search::SearchResponse;
     use crate::composer::{Composer, NEWLINE};
+    use crate::shell::fixtures::StagedVocabulary;
     use core::time::Duration;
-    use tui_textarea::{Input, Key};
+    use tui_textarea::Key;
 
     const WIDTH: u16 = 40;
     const HEIGHT: u16 = 10;
@@ -179,7 +242,7 @@ mod tests {
         for entries in [0_usize, 1, 6] {
             let trie = TrieOf::new(entries);
             let mut composer = Composer::new();
-            composer.paste(prompt, Duration::ZERO, &trie);
+            composer.paste(prompt, Duration::ZERO, &trie, &StagedVocabulary);
             let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
             assert_eq!(
                 rows.len() - 1,
@@ -375,20 +438,6 @@ mod tests {
             );
         }
     }
-    /// One press of `key`, for a check that moves the caret rather than types.
-    fn press(composer: &mut Composer, key: Key, entries: &dyn crate::composer::Entries) {
-        composer.key(
-            Input {
-                key,
-                ctrl: false,
-                alt: false,
-                shift: false,
-            },
-            Duration::ZERO,
-            entries,
-        );
-    }
-
     /// The premise every measurement of the composed row rests on.
     ///
     /// `Line::indent` asserts the same thing about the six register glyphs and
@@ -417,7 +466,7 @@ mod tests {
     fn a_pasted_block_paints_its_newlines_as_one_marker_each_in_one_row() {
         let trie = TrieOf::new(0);
         let mut composer = Composer::new();
-        composer.paste("óne\ntwo\nthree", Duration::ZERO, &trie);
+        composer.paste("óne\ntwo\nthree", Duration::ZERO, &trie, &StagedVocabulary);
 
         let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
         assert_eq!(
@@ -459,7 +508,7 @@ mod tests {
     fn a_pasted_marker_glyph_survives_as_itself_beside_a_pasted_newline() {
         let trie = TrieOf::new(0);
         let mut composer = Composer::new();
-        composer.paste("a\n\u{23ce}b", Duration::ZERO, &trie);
+        composer.paste("a\n\u{23ce}b", Duration::ZERO, &trie, &StagedVocabulary);
 
         assert_eq!(
             composer.text(),
@@ -494,7 +543,7 @@ mod tests {
             .map(|n| format!("líne-{n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        composer.paste(&block, Duration::ZERO, &trie);
+        composer.paste(&block, Duration::ZERO, &trie, &StagedVocabulary);
 
         // Six pieces of six columns each and five markers: 41 columns, one
         // past a 40-column frame, so two columns go to leave room for the caret.

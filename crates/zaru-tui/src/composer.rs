@@ -40,15 +40,16 @@ pub mod search;
 pub mod strip;
 
 pub use entries::{Entries, Entry, EntryKind};
-pub use render::KEYWORD_ONLY;
+pub use render::{KEYWORD_ONLY, continues};
 pub use search::{
     DEBOUNCE, MIN_QUERY_CHARS, RequestRefused, Scope, SearchRequest, SearchResponse, SearchState,
 };
 pub use strip::{PickerKind, StripContent, StripMode};
 
+use crate::shell::port::{CommandVocabulary, Namespace};
 use core::cell::Cell;
 use core::time::Duration;
-use tui_textarea::{Input, TextArea};
+use tui_textarea::{Input, Key, TextArea};
 
 /// How many entries the strip will carry.
 ///
@@ -105,8 +106,17 @@ enum Intent {
     Empty,
     /// The line is a command, per [ADR-0015] D2. Not one of D1's rows.
     ///
+    /// `picking` carries the namespace word being typed — the first word of
+    /// the line, its `/` included — while the line is still that word alone.
+    /// **Once the line carries any whitespace the picker closes**: the
+    /// namespace has been named, and a picker over a namespace's verbs is a
+    /// decision no record makes.
+    ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-    Command,
+    Command {
+        /// The word being typed, or `None` once the line carries whitespace.
+        picking: Option<String>,
+    },
     /// The cursor sits inside an explicit picker's token. D1 row 6.
     Picker { kind: PickerKind, filter: String },
     /// Ordinary text. D1 rows 4 and 5, split on the character floor.
@@ -125,6 +135,18 @@ pub struct Composer {
     tip: Option<String>,
     /// The trie's matches for whatever the input currently asks for.
     matches: Vec<Entry>,
+    /// The command namespaces the word being typed reaches, in [ADR-0015] D2's
+    /// table order, or empty when the line is not a command line being typed.
+    ///
+    /// Cached here on the keystroke exactly as [`Composer::matches`] is, so
+    /// that [`Composer::strip`] stays a pure function of composer state, which
+    /// is ADR-0005 D1's own clause. **It is a narrowing of what the vocabulary
+    /// answered on this keystroke and never a copy of the vocabulary**, so it
+    /// cannot go stale against the table the same line's `Enter` dispatches
+    /// against.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    commands: Vec<Namespace>,
     /// The server's results, once a response has been delivered for the query
     /// now in the input. `None` until then, so "no results yet" and "a
     /// response carrying no results" stay different states.
@@ -175,6 +197,7 @@ impl Composer {
             deposits: 0,
             tip: None,
             matches: Vec::new(),
+            commands: Vec::new(),
             server: None,
             search: SearchState::Idle,
             absence: None,
@@ -317,14 +340,78 @@ impl Composer {
         self.absence = absence;
     }
 
-    /// Apply one keystroke at `now`, and refresh the fast tier.
+    /// Apply one keystroke at `now`, and refresh both corpora.
     ///
     /// The trie is consulted here, on every keystroke that leaves something to
     /// match — D3's tier one is "instant" and is not behind the debounce. The
-    /// slow tier is not consulted here at all.
-    pub fn key(&mut self, input: Input, now: Duration, entries: &dyn Entries) {
+    /// slow tier is not consulted here at all. The vocabulary is consulted
+    /// here for the same reason the trie is, and on a command line **instead**
+    /// of it.
+    ///
+    /// # `Tab` on a command line is absorbed, and that is the whole rule
+    ///
+    /// [ADR-0005]'s amendment of 2026-09-15: where the word being typed
+    /// reaches exactly one namespace and is not already its whole spelling,
+    /// `Tab` replaces the word with **the vocabulary's own spelling**; where it
+    /// reaches none, reaches several, or is a bare `/`, `Tab` does nothing at
+    /// all. Either way the key never reaches the text area, which is what
+    /// makes "does nothing" true rather than nearly true: `tui-textarea`'s own
+    /// `Key::Tab` arm calls `insert_tab`, so a fall-through would advance the
+    /// caret to the next tab stop — three spaces after a bare `/`, measured on
+    /// the release binary at `a8eedf7`. Outside a command line the key falls
+    /// through unchanged and still inserts those spaces, which is today's
+    /// behaviour and which no record names.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
+    pub fn key(
+        &mut self,
+        input: Input,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) {
+        if input.key == Key::Tab
+            && !input.ctrl
+            && !input.alt
+            && let Intent::Command {
+                picking: Some(filter),
+            } = self.intent()
+        {
+            self.complete(&filter);
+            self.refreshed(now, entries, vocabulary);
+            return;
+        }
         self.input.input(input);
-        self.refreshed(now, entries);
+        self.refreshed(now, entries, vocabulary);
+    }
+
+    /// Replace the word being typed with the one namespace it reaches.
+    ///
+    /// Does nothing unless [`Composer::commands`] holds exactly one namespace
+    /// and that namespace's spelling is not already what was typed — the slice
+    /// pattern is the uniqueness rule, so "several matched" and "none matched"
+    /// cannot be told apart from inside this function and do not need to be.
+    ///
+    /// Any whitespace before the word is kept, because `picking` is `Some`
+    /// only while the trimmed line holds none of its own, so the prompt is
+    /// that leading run followed by the word and nothing else.
+    fn complete(&mut self, filter: &str) {
+        let [namespace] = self.commands.as_slice() else {
+            return;
+        };
+        if namespace.slash == filter {
+            return;
+        }
+        let spelling = namespace.slash;
+        let text = self.text();
+        let leading: String = text.chars().take_while(|c| c.is_whitespace()).collect();
+        let mut input = TextArea::default();
+        input.insert_str(format!("{leading}{spelling}"));
+        self.input = input;
+        // The window is sticky by design (see the field), and the text under
+        // it has just been replaced wholesale, so the only honest starting
+        // point is the left edge.
+        self.window.set(0);
     }
 
     /// Insert a pasted block at `now`, newlines and all, and refresh the same
@@ -347,9 +434,15 @@ impl Composer {
     ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-    pub fn paste(&mut self, text: &str, now: Duration, entries: &dyn Entries) {
+    pub fn paste(
+        &mut self,
+        text: &str,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) {
         self.input.insert_str(text);
-        self.refreshed(now, entries);
+        self.refreshed(now, entries, vocabulary);
     }
 
     /// Mark the text edited at `now` and re-ask the fast tier.
@@ -358,14 +451,36 @@ impl Composer {
     /// tail until a paste needed it, and it is extracted rather than copied
     /// for the reason this workspace keeps giving: a rule spelled at two call
     /// sites is a rule nothing keeps agreeing.
-    fn refreshed(&mut self, now: Duration, entries: &dyn Entries) {
+    fn refreshed(
+        &mut self,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) {
         self.last_edit = now;
 
         let intent = self.intent();
+        // The second corpus, and it is filled on exactly the keystrokes the
+        // first one is not. A command line narrows the vocabulary by prefix —
+        // never by nearest, which is the refusal's job — and everything else
+        // leaves it empty.
+        self.commands = match &intent {
+            Intent::Command {
+                picking: Some(filter),
+            } => vocabulary
+                .namespaces()
+                .into_iter()
+                .filter(|namespace| namespace.slash.starts_with(filter.as_str()))
+                .collect(),
+            Intent::Command { picking: None }
+            | Intent::Empty
+            | Intent::Picker { .. }
+            | Intent::Query { .. } => Vec::new(),
+        };
         match &intent {
             // ADR-0015 D2 decides this before the strip sees the keystroke: a
             // leading `/` is a command, and a command is not a search.
-            Intent::Empty | Intent::Command => self.matches.clear(),
+            Intent::Empty | Intent::Command { .. } => self.matches.clear(),
             Intent::Picker { kind, filter } => {
                 self.matches = entries
                     .matches(filter, MATCH_LIMIT)
@@ -382,7 +497,7 @@ impl Composer {
         // old one, and re-arms the debounce for the new one.
         let asking_for = match &intent {
             Intent::Query { query, .. } => Some(query.as_str()),
-            Intent::Empty | Intent::Command | Intent::Picker { .. } => None,
+            Intent::Empty | Intent::Command { .. } | Intent::Picker { .. } => None,
         };
         if self.requested.as_deref() != asking_for {
             self.requested = None;
@@ -447,7 +562,28 @@ impl Composer {
                     StripContent::Collapsed
                 }
             }
-            Intent::Command => StripContent::Command,
+            // The picker's rows page by prefix rather than scroll: where the
+            // narrowed set does not fit the strip's rows, the last row says how
+            // many are not shown rather than dropping them silently. The
+            // budget is the shell's own `STRIP_ROWS` read here rather than a
+            // second number, so the strip cannot be handed more rows than it
+            // paints — which is the defect this surface is deliberately not
+            // reproducing.
+            Intent::Command { .. } => {
+                let rows = usize::from(crate::shell::STRIP_ROWS);
+                if self.commands.len() <= rows {
+                    StripContent::Command {
+                        matches: self.commands.clone(),
+                        beyond: 0,
+                    }
+                } else {
+                    let shown = rows.saturating_sub(1);
+                    StripContent::Command {
+                        matches: self.commands[..shown].to_vec(),
+                        beyond: self.commands.len() - shown,
+                    }
+                }
+            }
             Intent::Picker { kind, filter } => StripContent::Picker {
                 kind,
                 filter,
@@ -485,8 +621,14 @@ impl Composer {
         // everything else is the task". The grammar decides before anything
         // else looks at the text, so a picker sigil inside a command line opens
         // nothing either — the line is not a search and no part of it is.
-        if text.trim_start().starts_with('/') {
-            return Intent::Command;
+        let leading = text.trim_start();
+        if leading.starts_with('/') {
+            // The picker is open only while the line is the namespace word and
+            // nothing else. A trailing space closes it as surely as a verb
+            // does, and a pasted newline counts as whitespace for the same
+            // reason: the word has been finished either way.
+            let picking = (!leading.contains(char::is_whitespace)).then(|| leading.to_owned());
+            return Intent::Command { picking };
         }
 
         let (row, col) = self.input.cursor();
@@ -909,19 +1051,21 @@ mod tests {
             "`/runtime` is a command and eight keystrokes of it reached the trie {} time(s);              ADR-0015 D2's grammar decides before the strip sees a keystroke",
             commanded.calls()
         );
-        assert_eq!(
-            composer.strip(),
-            StripContent::Command,
-            "a command line renders nothing, and the state says so rather than pretending the              trie returned no matches"
+        assert!(
+            matches!(composer.strip(), StripContent::Command { .. }),
+            "and the state says the line is a command rather than pretending the trie returned \
+             no matches; it was {:?}",
+            composer.strip()
         );
         assert_eq!(
             composer.strip().mode(),
             StripMode::Typing,
             "the prompt is not empty, and D1's two modes are keyed on exactly that"
         );
-        assert!(
-            composer.strip_lines().is_empty(),
-            "and it paints no rows: {:?}",
+        assert_eq!(
+            composer.strip_lines(),
+            vec!["/runtime  tier and membrane".to_owned()],
+            "the rows it paints are the second corpus and not the trie's; they were {:?}",
             composer.strip_lines()
         );
 
@@ -954,9 +1098,8 @@ mod tests {
             let mut composer = Composer::new();
             typing(&mut composer, line, Duration::ZERO, &trie);
 
-            assert_eq!(
-                composer.strip(),
-                StripContent::Command,
+            assert!(
+                matches!(composer.strip(), StripContent::Command { .. }),
                 "{line:?} begins with `/`, so ADR-0015 D2 has already decided it is a command \
                  and no part of it is a search; the strip was {:?}",
                 composer.strip()

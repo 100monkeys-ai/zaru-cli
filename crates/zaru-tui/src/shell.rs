@@ -1220,7 +1220,7 @@ impl Shell {
         }
 
         if input.key != Key::Enter {
-            self.composer.key(input, now, entries);
+            self.composer.key(input, now, entries, vocabulary);
             return Action::Idle;
         }
 
@@ -1243,7 +1243,7 @@ impl Shell {
         match struck {
             Struck::Key(input) => self.key(input, now, entries, vocabulary),
             Struck::Pasted(text) => {
-                self.pasted(&text, now, entries);
+                self.pasted(&text, now, entries, vocabulary);
                 Action::Idle
             }
         }
@@ -1262,7 +1262,13 @@ impl Shell {
     ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-    pub fn pasted(&mut self, text: &str, now: Duration, entries: &dyn Entries) {
+    pub fn pasted(
+        &mut self,
+        text: &str,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) {
         // **A secret question takes it**, where a confirmation absorbs it, and
         // the two rules are consistent rather than in tension. The failure a
         // confirmation guards against is a `[y/N]` answered by a block of text
@@ -1275,7 +1281,7 @@ impl Shell {
         if self.questioned() {
             return;
         }
-        self.composer.paste(text, now, entries);
+        self.composer.paste(text, now, entries, vocabulary);
     }
 
     /// Read one composed line as [ADR-0015] D2's grammar reads it.
