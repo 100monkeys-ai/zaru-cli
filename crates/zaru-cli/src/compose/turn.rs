@@ -197,6 +197,27 @@ impl Ran {
 /// here. Recorded on that record as a delegated coordinator ruling of
 /// 2026-09-05, open to Jeshua's veto.
 ///
+/// **Dated 2026-09-15, beside the two paragraphs above rather than inside
+/// them: that day came and went, and they are the argument for their own
+/// change.** "Exactly one kind has a client" was true until 2026-09-14, when
+/// `ollama-client` landed the second and `openai-compatible` the third; this
+/// array has had three entries since, and the question those paragraphs said
+/// would become real **is** real. It was not answered by inventing the
+/// configuration key they refuse. It is answered by the section below: part 2
+/// of [`crate::providers::select`] takes the first kind whose requirement
+/// holds, so a machine with a Gemini key resolves `gemini`, a machine with
+/// only an `ollama` endpoint resolves `ollama`, and the order of this array is
+/// the tie-break where both hold. ADR-0012's gap is still ADR-0012's, and
+/// nothing here has settled it -- what has changed is that the composition no
+/// longer needs it settled in order to pick.
+///
+/// **The sentence this correction exists to stop is on another surface.**
+/// `--help`'s closing paragraph named the kinds with a client by hand and said
+/// "any provider kind but `gemini`" for a day after the third one landed;
+/// `cli::help` walks this array now, which is row 3 of the second look-and-feel
+/// audit, and this paragraph is the same habit caught in a doc comment. A
+/// count in prose beside an array is a count that drifts.
+///
 /// # The order is landing order, and appending is what keeps it harmless
 ///
 /// **Not [`ProviderKind::ALL`]'s order**, which puts `ollama` before `gemini`.
@@ -1996,7 +2017,8 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
-    reason = "    it takes exactly what the turn it wraps takes, and a struct here would be     a second name for that list"
+    reason = "it takes exactly what the turn it wraps takes, and a struct here would be a \
+              second name for that list"
 )]
 pub async fn run_one(
     version: &str,
