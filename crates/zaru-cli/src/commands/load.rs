@@ -53,6 +53,7 @@ use crate::commands::document::{
 use crate::commands::{front_matter, placeholder};
 use crate::config::file::{text, SizeCeiling, TomlFile};
 use crate::config::{Table, Value};
+use crate::tools::WorkingDirectory;
 use std::path::{Path, PathBuf};
 
 /// The two keys a command file's front matter may carry.
@@ -168,14 +169,25 @@ pub fn load_from(
             &home.join(COMMANDS_DIRECTORY),
             Source::User,
             ceiling,
+            None,
             &mut refusals,
         )
     });
+    // **The project's location is measured against [ADR-0011] D4's boundary
+    // and the user's is not.** A command file under `~/.zaru/commands/` is
+    // the user's own and there is no tree for it to leave; one under
+    // `./.zaru/commands/` came with a repository, and a symlink there is how
+    // a cloned project reads a file the person never offered it — into the
+    // picker, into the admissions record, and into a model prompt. The
+    // containment is `WorkingDirectory`'s and is not restated here, which is
+    // the rule `manifest::file` already follows for `zaru.toml`.
     let project = here.map_or_else(Vec::new, |here| {
+        let boundary = WorkingDirectory::at(here).ok();
         read_directory(
             &here.join(".zaru").join(COMMANDS_DIRECTORY),
             Source::Project,
             ceiling,
+            boundary.as_ref(),
             &mut refusals,
         )
     });
@@ -225,6 +237,7 @@ fn read_directory(
     directory: &Path,
     source: Source,
     ceiling: SizeCeiling,
+    boundary: Option<&WorkingDirectory>,
     refusals: &mut Vec<CommandRefused>,
 ) -> Vec<Command> {
     let listing = match std::fs::read_dir(directory) {
@@ -263,7 +276,7 @@ fn read_directory(
 
     let mut commands = Vec::new();
     for path in paths {
-        match read_file(&path, source, ceiling) {
+        match read_file(&path, source, ceiling, boundary) {
             Ok(command) => commands.push(command),
             Err(refused) => refusals.push(refused),
         }
@@ -276,6 +289,7 @@ fn read_file(
     path: &Path,
     source: Source,
     ceiling: SizeCeiling,
+    boundary: Option<&WorkingDirectory>,
 ) -> Result<Command, CommandRefused> {
     let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
         // A name that is not UTF-8 cannot be typed at the composer, which
@@ -297,6 +311,16 @@ fn read_file(
             path: path.to_path_buf(),
             name: stem,
             spelling,
+        });
+    }
+
+    // Before the file is opened, so a link out of the tree is refused unread
+    // rather than read and then judged.
+    if let Some(boundary) = boundary
+        && boundary.classify(path).placement().is_out_of_tree()
+    {
+        return Err(CommandRefused::OutsideTheWorkingDirectory {
+            path: path.to_path_buf(),
         });
     }
 

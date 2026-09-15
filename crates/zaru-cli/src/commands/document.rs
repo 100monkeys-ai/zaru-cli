@@ -304,6 +304,19 @@ pub enum CommandRefused {
         /// The spelling, including the `$`. Never the line it sat on.
         spelling: String,
     },
+    /// The file resolves outside the working directory.
+    ///
+    /// A symlink in a cloned project's `.zaru/commands/` is how that project
+    /// reads a file the person never offered it — into the picker, into the
+    /// admissions record, and into a model prompt. Refused **unread**, which
+    /// is [ADR-0011] D4's boundary applied where `manifest::file` already
+    /// applies it.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    OutsideTheWorkingDirectory {
+        /// The file, as it was named. Never what it resolved to.
+        path: PathBuf,
+    },
     /// The name is one of [ADR-0015] D2's namespaces, or the shell's own
     /// leave word.
     ///
@@ -330,6 +343,7 @@ impl CommandRefused {
             | Self::UnknownKey { path, .. }
             | Self::NotAString { path, .. }
             | Self::UnknownPlaceholder { path, .. }
+            | Self::OutsideTheWorkingDirectory { path }
             | Self::Shadows { path, .. } => path,
         }
     }
@@ -377,6 +391,12 @@ impl fmt::Display for CommandRefused {
                  `$ARGUMENTS` or `$1` to `$9`",
                 path.display()
             ),
+            Self::OutsideTheWorkingDirectory { path } => write!(
+                f,
+                "{} resolves outside the working directory; a project's command file may not \
+                 link out of the tree it came with",
+                path.display()
+            ),
             Self::Shadows {
                 path,
                 name,
@@ -401,6 +421,7 @@ impl std::error::Error for CommandRefused {
             | Self::UnknownKey { .. }
             | Self::NotAString { .. }
             | Self::UnknownPlaceholder { .. }
+            | Self::OutsideTheWorkingDirectory { .. }
             | Self::Shadows { .. } => None,
         }
     }
