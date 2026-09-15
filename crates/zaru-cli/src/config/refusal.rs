@@ -323,7 +323,10 @@ impl fmt::Display for ConfigRefused {
             ),
             Self::ReservedEnvironmentName { variable, key } => write!(
                 f,
-                "the key `{key}` maps to the environment variable {variable}, which is reserved:                  it holds the sealing key on a machine with no OS keyring, and it is                  deliberately not a configuration key, because credentials are kept out                  of configuration. No key may be declared that produces it",
+                "the key `{key}` maps to the environment variable {variable}, which is reserved: \
+                 it holds the sealing key on a machine with no OS keyring, and it is deliberately \
+                 not a configuration key, because credentials are kept out of configuration. No \
+                 key may be declared that produces it",
             ),
         }
     }

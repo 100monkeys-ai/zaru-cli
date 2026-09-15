@@ -1000,6 +1000,137 @@ fn every_user_correctable_mapping_carries_a_remedy_that_reaches_the_reader() {
     );
 }
 
+/// Every mapped refusal says a sentence rather than a laid-out line.
+///
+/// Row 7 of [the second look-and-feel audit]. `zaru providers keys add gemini`
+/// with a malformed `ZARU_CREDENTIAL_KEY` -- the first error a person on a
+/// headless machine meets, because that machine has no keyring -- printed a
+/// remedy with two twenty-two-space holes in it, because the literal was one
+/// source line carrying the indentation of the source lines it had been
+/// joined from. Six more literals in `cli::classify` and `config::refusal`
+/// carried twelve such runs between them.
+///
+/// # The unit is a sentence, and that is what makes the rule statable
+///
+/// Two consecutive spaces are not wrong everywhere: this tree has forty-odd
+/// literals that carry them on purpose, and every one is **layout** rather
+/// than prose -- a column gutter composed with `{:width$}`, a hand-aligned
+/// two-column block, a leading indent on a continuation line. A check over
+/// rendered *lines* would have to exempt all of them by name, which is a list
+/// that goes stale exactly the way the sentence this closes went stale.
+///
+/// So this walks the parts instead: the headline, each lead and each text,
+/// never a line composed from them. A gutter the writer adds is out of reach
+/// **by construction** rather than by a rule anybody keeps, and the one
+/// user-facing string that is a document rather than a sentence --
+/// `manifest::TEMPLATE`, whose `name` and `run` keys are deliberately aligned
+/// -- is reached by no arm here and is asserted to still hold its alignment
+/// by `a_document_the_harness_writes_keeps_its_alignment` in
+/// `tests/sentence_spacing_from_outside.rs`.
+///
+/// # This is the arm with teeth
+///
+/// The from-outside file drives the surfaces a reader is on, which is where
+/// the defect was measured. This one walks [`every_mapped_refusal`], and each
+/// mapping is a wildcard-free `match`, so a `SealingError` variant added
+/// tomorrow and written the same broken way cannot arrive unseen.
+///
+/// The mutant: any of the seven literals re-spelled as it was.
+///
+/// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+#[test]
+fn every_mapped_refusal_says_a_sentence_rather_than_a_laid_out_line() {
+    let rows = every_mapped_refusal();
+    assert!(
+        rows.len() >= 27,
+        "the mapped set has shrunk to {} rows; a variant was removed from the fixture rather \
+         than from the mapping",
+        rows.len()
+    );
+
+    let mut holed = Vec::new();
+    for (name, classified, _) in &rows {
+        let shown = Presentation::of(classified);
+        let mut parts: Vec<(&str, &str)> = vec![("headline", shown.headline.as_str())];
+        for line in &shown.lines {
+            if let Some(lead) = &line.lead {
+                parts.push(("lead", lead.as_str()));
+            }
+            parts.push(("text", line.text.as_str()));
+        }
+        for (part, text) in parts {
+            if let Some(run) = longest_run_of_spaces(text) {
+                holed.push(format!(
+                    "{name}'s {part} carries a run of {run} spaces, so the sentence renders with \
+                     a hole in it: {text}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        holed.is_empty(),
+        "ADR-0016 D2's worked example is a sentence. {} of the {} mapped refusals say something \
+         that is not one: {holed:?}",
+        holed.len(),
+        rows.len()
+    );
+}
+
+/// The length of the longest run of two or more spaces in `text`, if any.
+///
+/// Two rather than three, because two is what a joined line leaves when the
+/// lines it was joined from were indented by one column -- and because a
+/// sentence never wants two.
+fn longest_run_of_spaces(text: &str) -> Option<usize> {
+    text.as_bytes()
+        .split(|byte| *byte != b' ')
+        .map(<[u8]>::len)
+        .filter(|run| *run >= 2)
+        .max()
+}
+
+/// The accepting sibling for the predicate above.
+///
+/// Without it `every_mapped_refusal_says_a_sentence_rather_than_a_laid_out_line`
+/// is satisfied by a predicate answering `None` for everything, which is the
+/// vacuous green [Verification lessons] §4 names. The three strings here are
+/// the three shapes that legitimately carry a run and are deliberately out of
+/// that check's reach: a column gutter, a hand-aligned block, and the sentence
+/// as it was before this arc.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn the_run_predicate_sees_a_run_that_is_there() {
+    let laid_out = [
+        ("a gutter", "  runtime                  print the tier", 18),
+        ("an aligned block", "  completed:      step", 6),
+        (
+            "the sentence row 7 measured",
+            "set ZARU_CREDENTIAL_KEY to exactly 64 lower-case hexadecimal                      \
+             characters",
+            22,
+        ),
+    ];
+    for (what, text, expected) in laid_out {
+        let found = longest_run_of_spaces(text);
+        println!("{what}: {found:?}");
+        assert_eq!(
+            found,
+            Some(expected),
+            "the predicate every assertion beside this one depends on cannot see {what}'s run of \
+             {expected}, so every green above it is vacuous: {text:?}"
+        );
+    }
+
+    assert_eq!(
+        longest_run_of_spaces("an ordinary sentence, spaced once"),
+        None,
+        "the predicate answers for a sentence with no run, so it would redden on every string \
+         in the tree"
+    );
+}
+
 /// **No mapping invents a command.**
 ///
 /// ADR-0015 owns the command surface and it does not exist, and ADR-0016 D2's

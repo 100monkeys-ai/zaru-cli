@@ -588,7 +588,8 @@ impl<'a> Surface<'a> {
             // from a pipe, and a pipe that closed mid-read does not reopen
             // by being waited on.
             wait: Wait::NoWaitWillHelp(Statement::sanitised(
-                "standard input has already been consumed; run the command again with the key                  on its input"
+                "standard input has already been consumed; run the command again with the key on \
+                 its input"
                     .to_owned(),
             )),
         }
@@ -1090,7 +1091,9 @@ impl<'a> Surface<'a> {
             SealingError::NoKey => correctable(
                 failure,
                 act(format!(
-                    "set {CREDENTIAL_KEY_VARIABLE} to {} lower-case hexadecimal characters, or                      run where an OS keyring is reachable; that variable holds the key and never                      a credential",
+                    "set {CREDENTIAL_KEY_VARIABLE} to {} lower-case hexadecimal characters, or run \
+                     where an OS keyring is reachable; that variable holds the key and never a \
+                     credential",
                     SealingKey::HEX_CHARACTERS
                 )),
             ),
@@ -1099,7 +1102,9 @@ impl<'a> Surface<'a> {
             SealingError::KeyNotHex => correctable(
                 failure,
                 act(format!(
-                    "set {CREDENTIAL_KEY_VARIABLE} to exactly {} lower-case hexadecimal                      characters; its current value is not, and neither it nor its length is                      quoted anywhere",
+                    "set {CREDENTIAL_KEY_VARIABLE} to exactly {} lower-case hexadecimal \
+                     characters; its current value is not, and neither it nor its length is quoted \
+                     anywhere",
                     SealingKey::HEX_CHARACTERS
                 )),
             ),
@@ -1107,7 +1112,9 @@ impl<'a> Surface<'a> {
             SealingError::WillNotOpen => correctable(
                 failure,
                 act(
-                    "restore the OS keyring entry this store's key was in, or set                      ZARU_CREDENTIAL_KEY back to the key these credentials were sealed under; if                      neither is recoverable, remove the store and add the tokens again"
+                    "restore the OS keyring entry this store's key was in, or set \
+                     ZARU_CREDENTIAL_KEY back to the key these credentials were sealed under; if \
+                     neither is recoverable, remove the store and add the tokens again"
                         .to_owned(),
                 ),
             ),
@@ -1115,7 +1122,8 @@ impl<'a> Surface<'a> {
             SealingError::TooShort { .. } | SealingError::NotHex => correctable(
                 failure,
                 act(
-                    "the only writer of the credential store is this harness; if it was edited                      by hand, restore it from a backup or remove it and add the tokens again"
+                    "the only writer of the credential store is this harness; if it was edited by \
+                     hand, restore it from a backup or remove it and add the tokens again"
                         .to_owned(),
                 ),
             ),
@@ -1126,7 +1134,8 @@ impl<'a> Surface<'a> {
             SealingError::KeyringFailed { .. } => Classified::Environmental {
                 statement: Statement::sanitised(failure.to_string()),
                 wait: Wait::NoWaitWillHelp(Statement::sanitised(
-                    "a keyring that refuses does not begin answering on its own; unlock it, or                      start the session's secret service, and run this again"
+                    "a keyring that refuses does not begin answering on its own; unlock it, or \
+                     start the session's secret service, and run this again"
                         .to_owned(),
                 )),
             },

@@ -168,7 +168,7 @@ pub fn lines(version: &str) -> Vec<String> {
     let mut lines = vec![
         format!("zaru {version}"),
         String::new(),
-        "usage:  zaru [flags] [<command>]".to_owned(),
+        "usage: zaru [flags] [<command>]".to_owned(),
         String::new(),
         "commands:".to_owned(),
     ];
