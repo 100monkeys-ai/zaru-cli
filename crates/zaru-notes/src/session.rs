@@ -47,6 +47,7 @@ pub mod error;
 pub mod found;
 pub mod invalidation;
 pub mod listing;
+pub mod persona;
 pub mod transport;
 
 pub use address::{Instance, WorkspaceId, WorkspaceSlug};
@@ -61,6 +62,7 @@ pub use error::{CallRefused, NotesError};
 pub use found::Found;
 pub use invalidation::Invalidation;
 pub use listing::Listed;
+pub use persona::Persona;
 pub use transport::{HttpEndpoint, MCP_PATH};
 
 #[cfg(test)]
