@@ -195,7 +195,7 @@ impl Call {
         {
             return Err(ArgumentsRefused::UnexpectedField {
                 tool,
-                field: extra.escape_debug().to_string(),
+                field: extra.to_string(),
             });
         }
 
@@ -282,7 +282,7 @@ pub enum ArgumentsRefused {
     UnexpectedField {
         /// Which built-in was asked for.
         tool: ToolName,
-        /// The field's name, escaped. Never its value.
+        /// The field's name. Never its value.
         field: String,
     },
 }

@@ -35,7 +35,7 @@ pub enum NameRefused {
     Empty,
     /// The name carried a control character.
     Control {
-        /// The name as it was offered, escaped.
+        /// The name as it was offered.
         offered: String,
     },
     /// The name began or ended with whitespace.
@@ -138,7 +138,7 @@ impl Name {
         }
         if offered.chars().any(char::is_control) {
             return Err(NameRefused::Control {
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             });
         }
         if offered.trim() != offered {

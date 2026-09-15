@@ -301,7 +301,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             ("list", None, _) => Ok(Request::SessionsList),
             ("list", Some(extra), command) => Err(CommandRefused::UnexpectedWord {
                 command,
-                offered: extra.escape_debug().to_string(),
+                offered: extra.to_string(),
             }),
             ("rm", argument, command) => {
                 let id = argument.ok_or(CommandRefused::ArgumentMissing {
@@ -336,7 +336,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             }),
             [verb, _, extra, ..] if verb == USE => Err(CommandRefused::UnexpectedWord {
                 command: format!("{namespace} {USE}"),
-                offered: extra.escape_debug().to_string(),
+                offered: extra.to_string(),
             }),
             [tokens, add] if tokens == TOKENS && add == ADD => {
                 Err(CommandRefused::ArgumentMissing {
@@ -370,7 +370,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             [tokens, add, _, _, extra, ..] if tokens == TOKENS && add == ADD => {
                 Err(CommandRefused::UnexpectedWord {
                     command: format!("{namespace} {TOKENS} {ADD}"),
-                    offered: extra.escape_debug().to_string(),
+                    offered: extra.to_string(),
                 })
             }
             // ADR-0007 D7's `describe`. **The one command on this surface
@@ -409,7 +409,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             [tokens, rm, _, extra, ..] if tokens == TOKENS && rm == RM => {
                 Err(CommandRefused::UnexpectedWord {
                     command: format!("{namespace} {TOKENS} {RM}"),
-                    offered: extra.escape_debug().to_string(),
+                    offered: extra.to_string(),
                 })
             }
             [tokens, extra, ..] if tokens == TOKENS => Err(CommandRefused::UnknownVerb {
@@ -446,7 +446,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             [keys, add, _, extra, ..] if keys == KEYS && add == ADD => {
                 Err(CommandRefused::UnexpectedWord {
                     command: format!("{namespace} {KEYS} {ADD}"),
-                    offered: extra.escape_debug().to_string(),
+                    offered: extra.to_string(),
                 })
             }
             // The provider half of ADR-0007 D7's `rm`, riding the same store
@@ -471,7 +471,7 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             [keys, rm, _, extra, ..] if keys == KEYS && rm == RM => {
                 Err(CommandRefused::UnexpectedWord {
                     command: format!("{namespace} {KEYS} {RM}"),
-                    offered: extra.escape_debug().to_string(),
+                    offered: extra.to_string(),
                 })
             }
             // **Open-ended, and it was `[keys, extra]` -- exactly two words --
@@ -518,7 +518,7 @@ fn whole(
         None => Ok(request),
         Some(extra) => Err(CommandRefused::UnexpectedWord {
             command: namespace.subcommand().to_owned(),
-            offered: extra.escape_debug().to_string(),
+            offered: extra.to_string(),
         }),
     }
 }
@@ -546,7 +546,7 @@ fn verb(
     if let Some(extra) = rest.get(2) {
         return Err(CommandRefused::UnexpectedWord {
             command,
-            offered: extra.escape_debug().to_string(),
+            offered: extra.to_string(),
         });
     }
     Ok((offered.as_str(), rest.get(1), command))

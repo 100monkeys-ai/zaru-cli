@@ -215,7 +215,7 @@ pub enum TierRefused {
     NoSuchTier {
         /// The key.
         key: Key,
-        /// The value offered, escaped.
+        /// The value offered.
         offered: String,
         /// Which layer offered it, so the reader knows which file to edit.
         layer: Layer,
@@ -312,7 +312,7 @@ impl ResolvedTier {
         let Some(tier) = Tier::named(text) else {
             return Err(TierRefused::NoSuchTier {
                 key,
-                offered: text.escape_debug().to_string(),
+                offered: text.to_string(),
                 layer: supplied_by,
             });
         };

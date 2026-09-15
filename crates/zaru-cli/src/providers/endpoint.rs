@@ -73,7 +73,7 @@ pub enum EndpointRefused {
     /// same argument [`AliasRefused::Control`](crate::credentials::AliasRefused::Control)
     /// makes for ADR-0007 D7's listing.
     Control {
-        /// The endpoint as it was offered, escaped.
+        /// The endpoint as it was offered.
         offered: String,
     },
     /// The endpoint began or ended with whitespace.
@@ -134,7 +134,7 @@ impl ProviderEndpoint {
         }
         if offered.chars().any(char::is_control) {
             return Err(EndpointRefused::Control {
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             });
         }
         if offered.trim() != offered {

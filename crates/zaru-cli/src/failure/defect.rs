@@ -67,7 +67,7 @@ pub enum SessionIdRefused {
     /// [`AliasRefused::Control`](crate::credentials::AliasRefused::Control)
     /// makes about ADR-0007 D7's listing.
     Control {
-        /// The id as it was offered, escaped.
+        /// The id as it was offered.
         offered: String,
     },
 }
@@ -114,7 +114,7 @@ impl SessionId {
         }
         if id.chars().any(char::is_control) {
             return Err(SessionIdRefused::Control {
-                offered: id.escape_debug().to_string(),
+                offered: id.to_string(),
             });
         }
         Ok(Self(id))

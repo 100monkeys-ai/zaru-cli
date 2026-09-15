@@ -63,7 +63,7 @@ pub enum StatementRefused {
     /// [`AliasRefused::Control`](crate::credentials::AliasRefused::Control)
     /// and [`KeyRefused::Control`](crate::config::KeyRefused::Control) make.
     Control {
-        /// The sentence as it was offered, escaped.
+        /// The sentence as it was offered.
         offered: String,
     },
 }
@@ -145,7 +145,7 @@ impl Statement {
         }
         if text.chars().any(char::is_control) {
             return Err(StatementRefused::Control {
-                offered: text.escape_debug().to_string(),
+                offered: text.to_string(),
             });
         }
         Ok(Self(text))
