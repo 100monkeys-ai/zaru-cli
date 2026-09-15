@@ -59,7 +59,7 @@ pub use driver::{
 };
 pub use open::{Opening, resolve_in, restored_context, shell_for, take_over};
 pub use source::{Beat, POLL, Pace, Source, TICK, Taken};
-pub use trie::{NOTHING_CACHED, NotesTrie};
+pub use trie::{FROM_CACHE, LOOKING, NOTHING_CACHED, NotesTrie, UNREACHABLE};
 pub use vocabulary::{Transcript, Vocabulary};
 
 #[cfg(test)]

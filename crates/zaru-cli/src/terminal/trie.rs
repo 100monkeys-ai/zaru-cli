@@ -43,6 +43,7 @@
 //! [`Confirm`]: crate::tools::port::Confirm
 //! [`TranscriptSource`]: zaru_tui::shell::TranscriptSource
 
+use crate::terminal::corpus::stamp;
 use std::collections::BTreeMap;
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind, Trie};
 use zaru_tui::composer::{Entries, Entry, EntryKind, MATCH_LIMIT};
@@ -126,12 +127,48 @@ pub const LOOKING: &str = "looking in your notes…";
 /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
 pub const UNREACHABLE: &str = "notes unreachable";
 
+/// What the strip says when it is serving a corpus the last session cached.
+///
+/// **Authored 2026-09-15 under a delegated coordinator ruling, open to
+/// Jeshua's veto**, and named on [ADR-0005]'s live amendments volume with the
+/// three above it.
+///
+/// It exists because of what [`UNREACHABLE`] would otherwise say. Once
+/// [ADR-0005] D8's corpus survives a restart, an unreachable instance no
+/// longer means the strip has nothing — it means the strip has *yesterday's*
+/// answer, and a person completing against a cortex they cannot reach is owed
+/// the difference. D8's own heading is "degrade honestly", and the dishonest
+/// option here is the comfortable one: serving the cache silently, so a page
+/// created this morning is missing from a strip that looks exactly like a
+/// working one.
+///
+/// **It carries a time and not a duration**, because the time is a fact the
+/// file holds and a duration is arithmetic over a clock that may have moved.
+/// [`stamp`](crate::terminal::corpus::stamp) renders it and this is the lead,
+/// joined the way [`NOTHING_CACHED`] joins its own halves.
+///
+/// One line and short, for the reason every line in this module is short: the
+/// composer's frame is as narrow as forty columns and a longer sentence is
+/// clipped rather than wrapped. With a stamp on the end it reaches forty-six
+/// characters, which is shorter than [`NOTHING_CACHED`] has been since it was
+/// written.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+pub const FROM_CACHE: &str = "notes unreachable · cached";
+
 /// How far the fast tier has got with the corpus it was asked for.
 ///
-/// **Four states and not a `bool` with a `String` beside it**, because three
-/// of the four need different words in front of a person and a pair of fields
+/// **Five states and not a `bool` with a `String` beside it**, because four
+/// of the five need different words in front of a person and a pair of fields
 /// can hold combinations none of them describe — "reached, and also carrying a
 /// refusal" being the one that would render as both.
+///
+/// The fifth arrived on 2026-09-15 with [ADR-0005] D8's on-disk corpus, and it
+/// is a real state rather than a shade of [`Population::Unreachable`]: the
+/// strip has entries to serve and the instance did not answer, which is
+/// exactly the pair the four could not express.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 #[derive(Debug)]
 enum Population {
     /// No token was selected, so nothing was asked for. Today's line.
@@ -144,6 +181,12 @@ enum Population {
     /// The instance refused or could not be reached, carrying **its own**
     /// sentence. See [`UNREACHABLE`].
     Unreachable(String),
+    /// A cached corpus is being served because the refresh behind it did not
+    /// land, carrying when the listings were taken. See [`FROM_CACHE`].
+    Stale {
+        /// Milliseconds since the Unix epoch, as `corpus.jsonl` holds it.
+        fetched: u128,
+    },
 }
 
 /// The composer's fast tier, over the trie `zaru-notes` owns.
@@ -192,6 +235,16 @@ pub struct NotesTrie {
     ///
     /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
     attached: String,
+    /// When the corpus this session **opened** with was fetched, where it came
+    /// off disk rather than off the wire.
+    ///
+    /// Held here rather than passed to [`Self::unreachable`] because the
+    /// decision it feeds — whether a failed refresh leaves the person with
+    /// yesterday's notes or with nothing — belongs to one place. The task the
+    /// shell spawns knows only that its fetch failed; what a failure *means*
+    /// depends on what this value already holds, and threading it back through
+    /// the task would be the same fact in two hands.
+    cached_at: Option<u128>,
 }
 
 impl NotesTrie {
@@ -219,6 +272,7 @@ impl NotesTrie {
         per_workspace: BTreeMap<String, Trie>,
         population: Population,
         attached: String,
+        cached_at: Option<u128>,
     ) -> Self {
         Self {
             corpus: std::sync::RwLock::new(Corpus {
@@ -226,6 +280,7 @@ impl NotesTrie {
                 population,
             }),
             attached,
+            cached_at,
         }
     }
 
@@ -233,7 +288,36 @@ impl NotesTrie {
     /// workspace.
     #[must_use]
     pub fn attached_to(entries: Vec<CachedEntry>, attached: impl Into<String>) -> Self {
-        Self::with(Self::grouped(entries), Population::Reached, attached.into())
+        Self::with(
+            Self::grouped(entries),
+            Population::Reached,
+            attached.into(),
+            None,
+        )
+    }
+
+    /// A fast tier over the corpus `corpus.jsonl` was holding, serving from
+    /// the first beat while a refresh runs behind it.
+    ///
+    /// [ADR-0005] D8's whole point, and the state is [`Population::Reached`]
+    /// rather than a sixth one: what the strip has is a corpus, and a person
+    /// completing against it is not waiting for anything. `fetched` is
+    /// remembered so that a refresh which never lands can say when this was
+    /// taken — see [`Self::unreachable`].
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    #[must_use]
+    pub fn from_cache(
+        entries: Vec<CachedEntry>,
+        attached: impl Into<String>,
+        fetched: u128,
+    ) -> Self {
+        Self::with(
+            Self::grouped(entries),
+            Population::Reached,
+            attached.into(),
+            Some(fetched),
+        )
     }
 
     /// A fast tier with nothing in it, because there is no token to fill it.
@@ -245,7 +329,7 @@ impl NotesTrie {
     /// they just added is an instruction they cannot act on.
     #[must_use]
     pub fn nothing_cached(attached: impl Into<String>) -> Self {
-        Self::with(BTreeMap::new(), Population::NoToken, attached.into())
+        Self::with(BTreeMap::new(), Population::NoToken, attached.into(), None)
     }
 
     /// A fast tier whose corpus is on its way.
@@ -254,7 +338,7 @@ impl NotesTrie {
     /// type's own documentation for why the shell does not wait.
     #[must_use]
     pub fn awaiting(attached: impl Into<String>) -> Self {
-        Self::with(BTreeMap::new(), Population::InFlight, attached.into())
+        Self::with(BTreeMap::new(), Population::InFlight, attached.into(), None)
     }
 
     /// Take the corpus a population fetched.
@@ -273,8 +357,50 @@ impl NotesTrie {
     ///
     /// `detail` is the sentence the client produced and must not be
     /// paraphrased on the way in; see [`UNREACHABLE`].
+    ///
+    /// **A session that opened from the cache keeps what it opened with**, and
+    /// says when it was taken rather than that nothing is there. That is the
+    /// whole difference [ADR-0005] D8's on-disk corpus makes to this arm: a
+    /// person on a train still completes against their notes, and is told the
+    /// strip is not current. A session with no cache behind it is unchanged
+    /// and still gets [`UNREACHABLE`] with the client's own sentence.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     pub fn unreachable(&self, detail: impl Into<String>) {
-        self.write().population = Population::Unreachable(detail.into());
+        let mut corpus = self.write();
+        corpus.population = match self.cached_at {
+            Some(fetched)
+                if corpus
+                    .per_workspace
+                    .get(&self.attached)
+                    .is_some_and(|trie| !trie.is_empty()) =>
+            {
+                Population::Stale { fetched }
+            }
+            _ => Population::Unreachable(detail.into()),
+        };
+    }
+
+    /// Record that the instance **answered and refused**, and drop what it
+    /// refused.
+    ///
+    /// The distinction from [`Self::unreachable`] is the one that keeps a
+    /// revoked token honest. A transport that never arrived says nothing about
+    /// whether this token may still read this workspace, so the cache stands;
+    /// an answer that says no is the instance telling the harness that it may
+    /// not, and continuing to serve the old view would be the composer showing
+    /// a person the titles of notes they have lost access to. So the corpus
+    /// goes here as well as on disk, in the same act.
+    ///
+    /// `detail` is the server's own sentence and is not paraphrased —
+    /// [ADR-0006] D7, which is that the server does not reveal which gate
+    /// tripped, so the harness reports what it was told.
+    ///
+    /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+    pub fn refused(&self, detail: impl Into<String>) {
+        let mut corpus = self.write();
+        corpus.per_workspace = BTreeMap::new();
+        corpus.population = Population::Unreachable(detail.into());
     }
 
     /// What the strip should say when there is nothing to search, if anything.
@@ -288,9 +414,17 @@ impl NotesTrie {
     /// which holds nothing under the attached workspace is not a failure, and
     /// a line claiming otherwise would be the harness reporting the user's own
     /// empty workspace as a fault.
+    /// **A stale corpus says its age even though it has entries**, and it is
+    /// the one state that is read before the emptiness test above. The test is
+    /// "is there anything to search"; this line answers a different question —
+    /// "is what you are searching current" — and a person completing happily
+    /// against six-day-old titles is exactly who needs to be told.
     #[must_use]
     pub fn absence(&self) -> Option<String> {
         let corpus = self.read();
+        if let Population::Stale { fetched } = corpus.population {
+            return Some(format!("{FROM_CACHE} {}", stamp(fetched)));
+        }
         if corpus
             .per_workspace
             .get(&self.attached)
@@ -302,7 +436,7 @@ impl NotesTrie {
             Population::NoToken => Some(NOTHING_CACHED.to_owned()),
             Population::InFlight => Some(LOOKING.to_owned()),
             Population::Unreachable(detail) => Some(format!("{UNREACHABLE} · {detail}")),
-            Population::Reached => None,
+            Population::Reached | Population::Stale { .. } => None,
         }
     }
 
