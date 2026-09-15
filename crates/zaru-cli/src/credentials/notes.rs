@@ -70,7 +70,7 @@ use core::time::Duration;
 use zaru_core::iteration::Clock;
 use zaru_notes::session::{
     Bearer, CallRefused, Corpus, HttpEndpoint, Instance as NotesInstance, Invalidation, Listed,
-    NotesError, Session, WorkspaceId as NotesWorkspaceId,
+    NotesError, Persona, Session, WorkspaceId as NotesWorkspaceId,
 };
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 
@@ -523,6 +523,103 @@ pub async fn corpus_at(
     .await
     .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
     corpus_from(&session, workspace).await
+}
+
+/// [ADR-0027] D1's persona page, over the narrow port.
+///
+/// # Why this takes the port and not a [`Session`]
+///
+/// The same argument [`corpus_from`] makes, one method narrower.
+/// [`Persona`] offers one read and there is no second — see
+/// `zaru_notes::session::persona` for why a *second* port exists rather than a
+/// third method on [`Corpus`], which would have deleted that port's landed
+/// two-method guarantee. This function is the whole consumer of the persona
+/// port, so it is the one place the narrowing has to hold, and it holds by
+/// signature rather than by discipline.
+///
+/// # The body is returned unparsed, and that is [ADR-0031] riding this path
+///
+/// Nothing here reads a section out of the page. [ADR-0031] D3 appends the
+/// relationship memory to the served prompt **before it is returned**, and
+/// that record's Status tracking forbids the harness a second fetch — "a
+/// second fetch path is a second thing that can disagree". Because this
+/// function returns one whole body it did not inspect, the day the memory is
+/// appended to that page it arrives with the persona and **the harness's fetch
+/// count is still one**. Nothing is built for it and nothing needs to be.
+///
+/// # Errors
+///
+/// [`ReachFailure::Refused`] carrying the server's own sentence where the
+/// instance answered and refused, and [`ReachFailure::Session`] where it said
+/// nothing — never the token.
+///
+/// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
+/// [ADR-0031]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0031-relationship-memory
+pub async fn persona_from(
+    source: &impl Persona,
+    path: &str,
+    workspace: &str,
+) -> Result<String, ReachFailure> {
+    let id = NotesWorkspaceId::new(workspace);
+    source.read_page(path, &id).await.map_err(reach_failure)
+}
+
+/// The same, opening a session against a real instance first.
+///
+/// The session is closed as soon as the page is read, for the reason
+/// [`corpus_at`]'s is: nothing in this harness holds a Nuclear Notes session
+/// open between calls, and a persona is read once per session.
+///
+/// **There is no timeout here beyond `reqwest`'s own**, which is the absence
+/// [`corpus_at`] already has. A number nobody chose would be a constant this
+/// harness authored for a wait no record describes; ruled 2026-09-15 under
+/// directive 20, open to Jeshua's veto.
+///
+/// # Errors
+///
+/// [`ReachFailure::Endpoint`] when no HTTP client can be built, and as
+/// [`persona_from`] otherwise.
+pub async fn persona_at(
+    host: &str,
+    secret: &Secret,
+    path: &str,
+    workspace: &str,
+) -> Result<String, ReachFailure> {
+    let endpoint =
+        HttpEndpoint::new().map_err(|failure| ReachFailure::Endpoint(failure.to_string()))?;
+    let session = Session::attach(
+        &endpoint,
+        NotesInstance::new(host),
+        bearer_for_dispatch(secret),
+    )
+    .await
+    .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
+    persona_from(&session, path, workspace).await
+}
+
+/// The composer's credential, opened: which token, which instance, and the
+/// sealed value itself.
+///
+/// **One function, two readers**, in the shape `cached` already has for the
+/// other direction. The composer's corpus and [ADR-0027]'s persona are read
+/// with the same token against the same instance, and resolving that twice
+/// would be two answers to one question — the failure `credential_store`'s own
+/// comment names for opening the store twice.
+///
+/// `None` is a machine with no store entry the composer can read with, which
+/// is every machine before the first `notes tokens add`. It is deliberately
+/// not an error: [ADR-0005] D8's strip and [ADR-0027]'s absence are both
+/// states this harness has a correct answer for.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+/// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
+#[must_use]
+pub fn composer_secret(store: &CredentialStore) -> Option<(Alias, String, Secret)> {
+    let (alias, host) = composer_token(store)?;
+    let keyring = crate::credentials::OsKeyring::for_store(store.root());
+    let keys = crate::credentials::HarnessKeys::from_process(&keyring);
+    let secret = store.secret(&alias, &keys).ok()?;
+    Some((alias, host, secret))
 }
 
 /// Which stored token the composer reads with, and the host it reaches.

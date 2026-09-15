@@ -1257,3 +1257,64 @@ fn granted_for(
 
 static NOTHING: std::sync::LazyLock<zaru_cli::credentials::Granted> =
     std::sync::LazyLock::new(zaru_cli::credentials::Granted::nothing);
+
+/// [ADR-0027] D1's persona, read over real protocol bytes through the narrow
+/// port.
+///
+/// **The whole point of this check is the wire.** `persona_from` takes
+/// `&impl Persona`, and a staged implementation of that trait proves the
+/// signature and nothing about what a Nuclear Notes instance is asked. This
+/// drives it over `rmcp` and `tokio::io::duplex` against the same fixture
+/// every other check in this file uses, and reads the frames back: exactly one
+/// `pages.read`, with the workspace named on the call, and **no `pages.list`,
+/// no `atoms.list` and no `me.set_current_workspace`** — so the persona's port
+/// is a second reader of [ADR-0006] D4's set rather than a wider one, and
+/// [ADR-0006] D2's "the composer's pointer moves only by user action" is
+/// untouched by it.
+///
+/// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+/// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
+#[tokio::test]
+async fn adr_0027s_persona_is_one_pages_read_over_the_wire_and_moves_no_pointer() {
+    let wired = wire().await;
+    let before = wired.wire_text();
+
+    let body = zaru_cli::credentials::persona_from(&wired.session, "zaru/persona", WORKSPACE)
+        .await
+        .expect("the fixture serves the page");
+
+    assert_eq!(
+        body,
+        format!("zaru/persona as read from {WORKSPACE}"),
+        "the body did not come back as the tool gave it, so something between the server and \
+         layer 1 is paraphrasing a page this harness does not own"
+    );
+
+    let after = wired.wire_text();
+    let sent = after
+        .strip_prefix(&before)
+        .expect("the transcript only grows")
+        .to_owned();
+
+    assert_eq!(
+        sent.matches("\"pages.read\"").count(),
+        1,
+        "a persona is one read; the frames say otherwise: {sent}"
+    );
+    assert!(
+        sent.contains(WORKSPACE),
+        "the workspace was not named on the call, so the read would have resolved against the \
+         token's pointer instead: {sent}"
+    );
+    for forbidden in [
+        "pages.list",
+        "atoms.list",
+        "me.set_current_workspace",
+        "apply_patch",
+    ] {
+        assert!(
+            !sent.contains(forbidden),
+            "the persona's read reached `{forbidden}`, which is not what its port is for: {sent}"
+        );
+    }
+}
