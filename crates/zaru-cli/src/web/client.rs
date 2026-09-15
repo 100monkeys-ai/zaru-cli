@@ -137,7 +137,7 @@ enum HopRefused {
     },
     /// The next hop carries a scheme this surface does not retrieve.
     Scheme {
-        /// The scheme, escaped.
+        /// The scheme.
         scheme: String,
     },
     /// The next hop is a destination this surface does not reach.
@@ -183,7 +183,7 @@ fn refuse_hop(
 ) -> Option<HopRefused> {
     if !RETRIEVABLE_SCHEMES.contains(&next.scheme()) {
         return Some(HopRefused::Scheme {
-            scheme: next.scheme().escape_debug().to_string(),
+            scheme: next.scheme().to_string(),
         });
     }
     if let Some(refused) = destinations.refuses(next) {

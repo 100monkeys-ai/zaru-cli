@@ -77,7 +77,7 @@ pub enum UrlRefused {
     },
     /// The URL parsed and its scheme is not one this surface retrieves.
     SchemeNotRetrievable {
-        /// The scheme, escaped. Never the rest of the URL.
+        /// The scheme. Never the rest of the URL.
         scheme: String,
     },
     /// The URL parsed, carries a retrievable scheme, and names no host.
@@ -134,7 +134,7 @@ impl RequestedUrl {
         })?;
         if !RETRIEVABLE_SCHEMES.contains(&inner.scheme()) {
             return Err(UrlRefused::SchemeNotRetrievable {
-                scheme: inner.scheme().escape_debug().to_string(),
+                scheme: inner.scheme().to_string(),
             });
         }
         if inner.host_str().is_none() {
