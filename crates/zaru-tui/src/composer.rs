@@ -1320,6 +1320,21 @@ mod tests {
             "the absence line is about a corpus the picker is not showing: {:?}",
             composer.strip_lines()
         );
+
+        // A command line whose picker matched NOTHING, which is the only
+        // staging that separates "the picker never carries the absence line"
+        // from "the picker happened to have a row". `or_absence` substitutes
+        // only into an empty list, so with `/se` above there was nothing for
+        // it to substitute into and a mutant that called it survived.
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        typing(&mut composer, "/xyz", Duration::ZERO, &empty);
+        assert!(
+            composer.strip_lines().is_empty(),
+            "a command word that names no namespace is a miss, and a miss in one corpus must not \
+             borrow the other corpus's sentence: {:?}",
+            composer.strip_lines()
+        );
         for _ in 0..3 {
             press(&mut composer, Key::Backspace, &empty);
         }
