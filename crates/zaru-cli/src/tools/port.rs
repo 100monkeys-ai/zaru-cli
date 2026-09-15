@@ -158,8 +158,16 @@ pub struct Question {
     /// harness believes it asked cannot drift apart — true of the answers as
     /// well as of the statement.
     ///
+    /// # It carried the words alone for one day, and that was the defect
+    ///
+    /// Both readers kept their own table of which keys answer, so the pane's
+    /// took `a` at a door whose line does not offer it. It is
+    /// [`Answers`](crate::tools::prompt::Answers) rather than a string from
+    /// 2026-09-15: the words and the keys are one value, so a reader asks the
+    /// question which keys answer instead of deciding for itself.
+    ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-    pub answers: &'static str,
+    pub answers: crate::tools::prompt::Answers,
 }
 
 /// Why an ask did not reach the user.

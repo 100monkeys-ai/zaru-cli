@@ -116,7 +116,7 @@ pub use id::{
 pub use meta::file::MetaFile;
 pub use meta::{Meta, MetaFailure, MetaStore};
 pub use record::{
-    Attribution, FailureLine, Phase, Record, Said, SaidOnce, ToolCall, Utterance, Voice,
+    Admitted, Attribution, FailureLine, Phase, Record, Said, SaidOnce, ToolCall, Utterance, Voice,
 };
 pub use resume::{AlreadySaid, Interrupted, ResumeFailure, Resumed, resume};
 pub use retention::{PruneFailure, Pruned, RetentionWindow, WindowRefused, prune, remove};

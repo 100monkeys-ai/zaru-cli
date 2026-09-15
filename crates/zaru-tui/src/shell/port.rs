@@ -696,6 +696,17 @@ pub struct Confirmation {
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     pub answers: String,
+    /// Which keys answer it, beside the words that say so.
+    ///
+    /// **The words and the table cross together**, because for one day they
+    /// did not: this shell's reader took `a` at [ADR-0015] D4's admission,
+    /// whose line offers `y`, `N` and `Esc` and nothing else, so a person
+    /// typing an ordinary sentence answered a question they had not read. A
+    /// renderer may paint a line it was handed; a reader may not invent an
+    /// answer the line does not name.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub answered_by: Answers,
     /// Whether [ADR-0011] D6 matched, so the prompt can be raised without
     /// re-deriving why.
     ///
@@ -709,10 +720,16 @@ impl Confirmation {
     /// No detail. [`Confirmation::showing`] adds it, so a caller that has
     /// nothing to show writes nothing rather than an empty vector.
     #[must_use]
-    pub fn new(statement: impl Into<String>, answers: impl Into<String>, prominent: bool) -> Self {
+    pub fn new(
+        statement: impl Into<String>,
+        answers: impl Into<String>,
+        answered_by: Answers,
+        prominent: bool,
+    ) -> Self {
         Self {
             statement: statement.into(),
             answers: answers.into(),
+            answered_by,
             detail: Vec::new(),
             prominent,
         }
@@ -723,6 +740,57 @@ impl Confirmation {
     pub fn showing(mut self, detail: Vec<String>) -> Self {
         self.detail = detail;
         self
+    }
+}
+
+/// Which keys answer a [`Confirmation`].
+///
+/// Mirrors the two kinds of question `zaru-cli` puts on this one port, for
+/// [`Answered`]'s own boundary reason — this crate carries what a keystroke
+/// means and never that crate's types. The words a user reads still cross as
+/// [`Confirmation::answers`], because they landed in `zaru-cli` first and this
+/// crate holds no constant a user reads.
+///
+/// **Two kinds and no default.** A third cannot arrive without a line and a
+/// table being chosen for it together, which is the whole of why this is a
+/// field rather than a rule inside [`Shell::key`](crate::shell::Shell::key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answers {
+    /// [ADR-0011] D3's tool call: `y`, `a`, `n`, `Esc` and `Enter`, and every
+    /// other key ignored with the question standing.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    ToolCall,
+    /// [ADR-0015] D4's admission: `y`, `n`, `Esc` and `Enter`, and **not**
+    /// `a` — an admission is recorded on disk and outlives every session, so
+    /// a grant for the rest of this one has nothing to add. Every other
+    /// printable input reaches the composer with the question standing.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Admission,
+}
+
+impl Answers {
+    /// Whether `a` answers this question.
+    #[must_use]
+    pub const fn allows_a_session_grant(self) -> bool {
+        matches!(self, Self::ToolCall)
+    }
+
+    /// Whether an input this question does not take reaches the composer.
+    ///
+    /// **Not the negation of the line above, and that is deliberate.** One
+    /// says which answers exist; this says what becomes of an input that is
+    /// none of them. At a tool call the answer is nothing — [ADR-0011] D3's
+    /// prompt "prompts before any write or command", and the turn it
+    /// interrupts owns the composer's area meanwhile. At the door the session
+    /// has not started, and a person typing their first task is typing into a
+    /// prompt they have every reason to think is theirs.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    #[must_use]
+    pub const fn spare_input_reaches_the_composer(self) -> bool {
+        matches!(self, Self::Admission)
     }
 }
 

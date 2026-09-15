@@ -448,7 +448,7 @@ fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
                 statement: "run `rm -rf build` in /home/someone/project".to_owned(),
                 detail: Vec::new(),
                 prominent: true,
-                answers: crate::tools::prompt::SUFFIX,
+                answers: crate::tools::prompt::Answers::ToolCall,
             })
             .expect("the pane answered");
         assert_eq!(
@@ -479,7 +479,7 @@ fn a_pane_that_runs_out_of_keys_refuses_rather_than_declining() {
         statement: "write build/out.txt".to_owned(),
         detail: Vec::new(),
         prominent: false,
-        answers: crate::tools::prompt::SUFFIX,
+        answers: crate::tools::prompt::Answers::ToolCall,
     });
     let failure = outcome.expect_err("a pane with no answer must not answer");
     assert!(
@@ -508,7 +508,7 @@ fn the_question_reaches_the_painted_frame_before_a_key_is_read() {
                 statement: STATEMENT.to_owned(),
                 detail: Vec::new(),
                 prominent: true,
-                answers: crate::tools::prompt::SUFFIX,
+                answers: crate::tools::prompt::Answers::ToolCall,
             })
             .expect("the pane answered");
     }
@@ -1683,7 +1683,7 @@ fn a_question_crosses_to_the_shell_with_its_statement_unchanged() {
             statement: "run `rm -rf build` in /home/someone/project".to_owned(),
             detail: vec!["runs, as split:".to_owned(), "  rm".to_owned()],
             prominent,
-            answers: crate::tools::prompt::SUFFIX,
+            answers: crate::tools::prompt::Answers::ToolCall,
         };
         let crossed = question_for_the_shell(&question);
         assert_eq!(crossed.statement, question.statement);
@@ -1709,7 +1709,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         statement: "run `rm -rf build`".to_owned(),
         detail: Vec::new(),
         prominent: true,
-        answers: crate::tools::prompt::SUFFIX,
+        answers: crate::tools::prompt::Answers::ToolCall,
     }));
     let runner = crate::cli::Run {
         version: VERSION,
@@ -1776,22 +1776,22 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     use crate::tools::prompt::answer;
 
     assert_eq!(
-        answer(Some("y")),
+        answer(crate::tools::prompt::Answers::ToolCall, Some("y")),
         Answer::Once,
         "the plain prompt does not accept `y`"
     );
     assert_eq!(
-        answer(Some("a")),
+        answer(crate::tools::prompt::Answers::ToolCall, Some("a")),
         Answer::ForThisSession,
         "the plain prompt does not accept `a`, so the two surfaces offer different answers"
     );
     assert_eq!(
-        answer(Some("")),
+        answer(crate::tools::prompt::Answers::ToolCall, Some("")),
         Answer::No,
         "the plain prompt accepts an empty line"
     );
     assert_eq!(
-        answer(None),
+        answer(crate::tools::prompt::Answers::ToolCall, None),
         Answer::No,
         "the plain prompt accepts end of input"
     );
@@ -1801,7 +1801,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         statement: "run `rm -rf build`".to_owned(),
         detail: Vec::new(),
         prominent: false,
-        answers: crate::tools::prompt::SUFFIX,
+        answers: crate::tools::prompt::Answers::ToolCall,
     }));
     let _ = accepting.key(
         press(Key::Char('y')),
@@ -1821,7 +1821,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         statement: "run `rm -rf build`".to_owned(),
         detail: Vec::new(),
         prominent: false,
-        answers: crate::tools::prompt::SUFFIX,
+        answers: crate::tools::prompt::Answers::ToolCall,
     }));
     let _ = declining.key(
         press(Key::Enter),
@@ -2428,7 +2428,7 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
                 statement: "write build/out.txt".to_owned(),
                 detail: Vec::new(),
                 prominent: false,
-                answers: crate::tools::prompt::SUFFIX,
+                answers: crate::tools::prompt::Answers::ToolCall,
             })
             .expect("the pane answered")
     };
@@ -4236,7 +4236,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
                         statement: "write build/out.txt".to_owned(),
                         detail: Vec::new(),
                         prominent: false,
-                        answers: crate::tools::prompt::SUFFIX,
+                        answers: crate::tools::prompt::Answers::ToolCall,
                     })
                     .map_err(|failure| format!("{failure}")),
             )
@@ -5192,7 +5192,7 @@ fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read()
                 statement: "Allow fs.write /tmp/note.txt?".to_owned(),
                 detail: Vec::new(),
                 prominent: false,
-                answers: crate::tools::prompt::SUFFIX,
+                answers: crate::tools::prompt::Answers::ToolCall,
             })
             .expect("the terminal answered")
     };
@@ -6114,7 +6114,12 @@ fn corpus_the_out_of_tree_marking_is_on_the_question_at_72_columns_and_before_th
 fn pump_with_commands(
     scratch: &crate::commands::fixtures::Scratch,
     keys: Vec<zaru_tui::shell::Input>,
-) -> (Shell, Recording, crate::commands::Admissions) {
+) -> (
+    Shell,
+    Recording,
+    crate::commands::Admissions,
+    Vec<crate::session::Record>,
+) {
     let admissions = crate::commands::Admissions::under(&scratch.home());
     let ceiling = crate::cli::layers::file_ceiling();
     let project = scratch.project();
@@ -6126,6 +6131,12 @@ fn pump_with_commands(
         directory: Some(&project),
         ceiling,
     };
+
+    // ADR-0010 D1's transcript, which the pump writes to at the door and
+    // nowhere else. A real file under the scratch home rather than a seam, so
+    // what these checks read back is what a `--resume` would read.
+    let history = crate::session::History::under(&home);
+    let transcript = home.join("door-transcript.jsonl");
 
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::painting(Arc::clone(&restores), 72, Palette::Monochrome);
@@ -6150,12 +6161,34 @@ fn pump_with_commands(
         &trie,
         &Vocabulary,
         &mut turns,
-        None,
+        Some(crate::terminal::driver::Recording {
+            history: &history,
+            directory: &project,
+            transcript: &transcript,
+        }),
         &mut extensions,
     ))
     .expect("the recording terminal never fails");
     drop(extensions);
-    (shell, surface, admissions)
+    (shell, surface, admissions, records_in(&transcript))
+}
+
+/// Every record the pump wrote, in the order it wrote them.
+///
+/// Read back off the file rather than out of a seam, because what this is
+/// about is whether a person running `cat` on their own transcript finds the
+/// answer they gave.
+fn records_in(transcript: &std::path::Path) -> Vec<crate::session::Record> {
+    match std::fs::read_to_string(transcript) {
+        Ok(lines) => lines
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("the pump writes records"))
+            .collect(),
+        // A session where nothing was written has no file, which is a real
+        // state and not a failure: the door is the only thing the pump writes.
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(failure) => panic!("the transcript could not be read: {failure}"),
+    }
 }
 
 /// Every frame this surface painted, as one string with its runs of
@@ -6208,7 +6241,7 @@ fn a_project_that_offers_commands_is_asked_about_once_at_the_door() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Check $1.\n"),
     );
-    let (_, surface, admissions) = pump_with_commands(&scratch, admitting_then(&["/exit"]));
+    let (_, surface, admissions, _) = pump_with_commands(&scratch, admitting_then(&["/exit"]));
 
     let painted = flattened(&surface);
     assert!(
@@ -6247,7 +6280,8 @@ fn a_declined_project_admits_nothing_and_records_nothing() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Check $1.\n"),
     );
-    let (_, surface, admissions) = pump_with_commands(&scratch, declining_then(&["/d", "/exit"]));
+    let (_, surface, admissions, _) =
+        pump_with_commands(&scratch, declining_then(&["/d", "/exit"]));
 
     assert!(
         admissions.entries().expect("the file parses").is_empty(),
@@ -6257,6 +6291,136 @@ fn a_declined_project_admits_nothing_and_records_nothing() {
     assert!(
         painted.contains("there is no `/d` command"),
         "and the command is not loaded, so typing it is refused as it was before: {painted}"
+    );
+}
+
+/// An admission paints one line and writes one record, and both say how much
+/// of what was admitted.
+///
+/// # The defect this closes
+///
+/// Measured from the release binary at `c49e669` and again at `15d31f1`:
+/// answering the door with `y` painted **nothing at all**, and the transcript
+/// was zero bytes. The only later evidence was that the picker had gained a
+/// row. An act that outlives the session and governs what a cloned repository
+/// may put into a model's prompt left no trace at the moment it happened.
+///
+/// **Two mutants, because there are two halves**: deleting the `shell.notice`
+/// leaves the pane empty again, and deleting the `Transcript::append_to` block
+/// leaves the file empty. **The accepting sibling** is the decline below,
+/// which must get both halves too.
+#[test]
+fn an_admission_paints_one_line_and_writes_one_record() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "deploy-check",
+        &crate::commands::fixtures::file("", "Check $1.\n"),
+    );
+    let (_, surface, _, records) = pump_with_commands(&scratch, admitting_then(&["/exit"]));
+
+    let painted = flattened(&surface);
+    let said = crate::commands::admitted_statement(1, 0);
+    assert_eq!(said, "admitted 1 command from this project");
+    assert!(
+        painted.contains(&said),
+        "an admission painted nothing that says so: {painted}"
+    );
+
+    let doors: Vec<&crate::session::Admitted> = records
+        .iter()
+        .filter_map(|record| match record {
+            crate::session::Record::Admitted(door) => Some(door),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(doors.len(), 1, "one answer, one record: {records:?}");
+    assert!(doors[0].admitted, "the record says the door was declined");
+    assert_eq!(doors[0].offered, vec!["deploy-check".to_owned()]);
+    assert_eq!(
+        doors[0].text, said,
+        "the record does not carry the line the reader was shown, so a replay would paint a \
+         second spelling of it"
+    );
+}
+
+/// The decline gets its own line and its own record, and it is the only trace
+/// a decline leaves anywhere.
+///
+/// `admissions.jsonl` is deliberately not written on a decline — D4's gate is
+/// a standing question rather than a standing verdict — so without this the
+/// answer exists nowhere at all. **The mutant:** either half emitted only in
+/// the `admitted` arm.
+#[test]
+fn a_decline_paints_its_own_line_and_records_that_nothing_was_admitted() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "deploy-check",
+        &crate::commands::fixtures::file("", "Check $1.\n"),
+    );
+    let (_, surface, admissions, records) =
+        pump_with_commands(&scratch, declining_then(&["/exit"]));
+
+    assert!(
+        admissions.entries().expect("the file parses").is_empty(),
+        "a decline wrote an admission"
+    );
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains(crate::commands::NOTHING_WAS_ADMITTED),
+        "a decline painted nothing that says so: {painted}"
+    );
+    let doors: Vec<&crate::session::Admitted> = records
+        .iter()
+        .filter_map(|record| match record {
+            crate::session::Record::Admitted(door) => Some(door),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(doors.len(), 1, "one answer, one record: {records:?}");
+    assert!(!doors[0].admitted, "the record says the door was admitted");
+    assert_eq!(doors[0].text, crate::commands::NOTHING_WAS_ADMITTED);
+}
+
+/// A task typed at the door admits nothing, and the sentence is in the prompt
+/// when the door is answered.
+///
+/// The audit's own sentence, through the real pump: `what does this project
+/// do?` contains the `a` that admitted a cloned repository's commands on the
+/// binary this closes, and contains no `y` and no `n`, so every one of its
+/// characters must reach the prompt.
+///
+/// **The mutant:** the shell's composer arm deleted — the admission still does
+/// not happen, but the sentence is gone, which is the half a person notices.
+#[test]
+fn a_task_typed_at_the_door_admits_nothing_and_stays_whole() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "deploy-check",
+        &crate::commands::fixtures::file("", "Check $1.\n"),
+    );
+    let typed = "what does this project do?";
+    let mut keys: Vec<zaru_tui::shell::Input> = typed
+        .chars()
+        .map(|ch| press(zaru_tui::shell::Key::Char(ch)))
+        .collect();
+    keys.push(press(zaru_tui::shell::Key::Esc));
+    keys.extend(typing(&["/exit"]));
+    let (_, surface, admissions, records) = pump_with_commands(&scratch, keys);
+
+    assert!(
+        admissions.entries().expect("the file parses").is_empty(),
+        "a typed sentence admitted a project's commands"
+    );
+    assert!(
+        records.iter().any(
+            |record| matches!(record, crate::session::Record::Admitted(door) if !door.admitted)
+        ),
+        "the door the sentence was typed at was never answered: {records:?}"
+    );
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains(typed),
+        "the sentence did not survive the door: {painted}"
     );
 }
 
@@ -6276,7 +6440,7 @@ fn a_user_command_is_a_picker_row_with_no_admission_at_all() {
             "Check $1.\n",
         ),
     );
-    let (_, surface, admissions) = pump_with_commands(&scratch, typing(&["/de", "/exit"]));
+    let (_, surface, admissions, _) = pump_with_commands(&scratch, typing(&["/de", "/exit"]));
 
     assert!(
         admissions.entries().expect("the file parses").is_empty(),
@@ -6302,7 +6466,7 @@ fn an_expanded_command_is_attributed_and_echoes_what_was_typed() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Read the workflow for $1 and say yes or no.\n"),
     );
-    let (_, surface, _) =
+    let (_, surface, _, _) =
         pump_with_commands(&scratch, admitting_then(&["/deploy-check main", "/exit"]));
 
     let painted = flattened(&surface);
@@ -6334,7 +6498,7 @@ fn a_shadowing_file_is_refused_at_the_door_naming_the_collision() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Check $1.\n"),
     );
-    let (_, surface, _) = pump_with_commands(&scratch, typing(&["/d", "/exit"]));
+    let (_, surface, _, _) = pump_with_commands(&scratch, typing(&["/d", "/exit"]));
 
     let painted = flattened(&surface);
     assert!(
@@ -6434,7 +6598,7 @@ fn an_expanded_skill_is_attributed_as_a_skill_and_the_door_showed_its_run_line()
             "Triage issue $1.\n",
         ),
     );
-    let (_, surface, _) = pump_with_commands(&scratch, admitting_then(&["/triage 7", "/exit"]));
+    let (_, surface, _, _) = pump_with_commands(&scratch, admitting_then(&["/triage 7", "/exit"]));
 
     let painted = flattened(&surface);
     assert!(
@@ -6477,7 +6641,7 @@ fn an_admitted_skill_is_a_row_in_the_picker() {
         "tidy.skill",
         &crate::commands::fixtures::file("", "Tidy $1.\n"),
     );
-    let (_, surface, _) = pump_with_commands(&scratch, admitting_then(&["/ti", "/exit"]));
+    let (_, surface, _, _) = pump_with_commands(&scratch, admitting_then(&["/ti", "/exit"]));
 
     let painted = flattened(&surface);
     assert!(

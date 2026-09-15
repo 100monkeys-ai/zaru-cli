@@ -324,6 +324,12 @@ fn lines_for(record: &Record) -> Vec<Line> {
         // register's marker, so the register is read off the record rather
         // than chosen here and no glyph is authored anywhere.
         Record::Attribution(attributed) => attributed_lines(attributed),
+        // ADR-0010 D2's tenth producer, replayed. **`Announced`, and for the
+        // ninth producer's reason**: the line is a decision the person took,
+        // and `◈` is this register's own marker, so nothing is authored here
+        // either. A decline replays exactly as an admission does — it is the
+        // answer that differs and not the kind of thing that happened.
+        Record::Admitted(door) => vec![Line::new(Register::Announced, door.text.clone())],
     }
 }
 

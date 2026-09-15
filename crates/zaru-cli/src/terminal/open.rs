@@ -1070,6 +1070,12 @@ fn one_session(
         }
     }
 
+    // ADR-0010 D1's transcript, for the one record the pump writes outside a
+    // turn -- ADR-0015 D4's answered door. Composed here, by the session, and
+    // handed to the pump in `Recording`: this module owns the session and the
+    // pump owns neither.
+    let transcript_path = session.transcript_path();
+
     let runner = crate::cli::Run { version, report_at };
 
     // The guard is what restores, and it is the caller's: a switch keeps the
@@ -1093,6 +1099,7 @@ fn one_session(
                 .map(|here| crate::terminal::driver::Recording {
                     history: &history,
                     directory: here.root(),
+                    transcript: &transcript_path,
                 }),
             &mut extensions,
         ))

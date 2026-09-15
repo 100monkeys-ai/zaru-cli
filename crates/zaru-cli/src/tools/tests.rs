@@ -2679,24 +2679,94 @@ fn n_is_the_default_and_only_a_yes_is_a_yes() {
 
     let mut wrong = Vec::new();
     for typed in once {
-        if prompt::answer(Some(typed)) != Answer::Once {
+        if prompt::answer(prompt::Answers::ToolCall, Some(typed)) != Answer::Once {
             wrong.push(format!("{typed:?} was not read as an allow-once"));
         }
     }
     for typed in session {
-        if prompt::answer(Some(typed)) != Answer::ForThisSession {
+        if prompt::answer(prompt::Answers::ToolCall, Some(typed)) != Answer::ForThisSession {
             wrong.push(format!("{typed:?} was not read as a session grant"));
         }
     }
     for typed in no {
-        if prompt::answer(Some(typed)) != Answer::No {
+        if prompt::answer(prompt::Answers::ToolCall, Some(typed)) != Answer::No {
             wrong.push(format!("{typed:?} was read as something other than no"));
         }
     }
-    if prompt::answer(None) != Answer::No {
+    if prompt::answer(prompt::Answers::ToolCall, None) != Answer::No {
         wrong.push("end of input was read as something other than no".to_owned());
     }
     assert!(wrong.is_empty(), "{}", wrong.join("; "));
+}
+
+/// [ADR-0015] D4's door takes one accepting shape where a tool call takes two,
+/// and the plain reader honours the difference.
+///
+/// # The defect this is written against
+///
+/// The answers a question offers were carried as **words** from 2026-09-15
+/// and every reader kept its own table of which keys answered, so a reader
+/// could accept an answer the line it showed did not name — which is exactly
+/// what the pane did at this door. The set is a value now, and this asserts
+/// that the plain reader asks the question rather than deciding for itself.
+///
+/// **The mutant:** `answer` ignoring its first argument — every `always` row
+/// below comes back as a session grant. **The accepting sibling** is the
+/// tool-call half of the same loop, which must keep reading `a` as one.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn a_session_grant_is_typed_past_at_the_door_and_taken_at_a_tool_call() {
+    let mut wrong = Vec::new();
+    for typed in ["a", "A", "always", "ALWAYS", " a ", "a\n"] {
+        if prompt::answer(prompt::Answers::Admission, Some(typed)) != Answer::No {
+            wrong.push(format!(
+                "{typed:?} answered an admission, whose line offers `y`, `N` and `esc`"
+            ));
+        }
+        if prompt::answer(prompt::Answers::ToolCall, Some(typed)) != Answer::ForThisSession {
+            wrong.push(format!(
+                "{typed:?} stopped being a session grant at a tool call"
+            ));
+        }
+    }
+    // The answers both sets do share, so the mutant that refuses everything at
+    // an admission is red too.
+    for (typed, expected) in [
+        ("y", Answer::Once),
+        ("yes", Answer::Once),
+        ("n", Answer::No),
+        ("", Answer::No),
+    ] {
+        if prompt::answer(prompt::Answers::Admission, Some(typed)) != expected {
+            wrong.push(format!("{typed:?} is not {expected:?} at an admission"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("; "));
+}
+
+/// The line a question shows and the keys it takes are one value.
+///
+/// **The mutant:** either arm of [`prompt::Answers::line`] returning the other
+/// constant, or `allows_a_session_grant` answering `true` for an admission.
+/// Both are the drift this type exists to make impossible, and the needles are
+/// the constants themselves rather than retyped strings, so rewording either
+/// line moves this check with it.
+#[test]
+fn the_answers_a_question_shows_are_the_answers_it_takes() {
+    assert_eq!(prompt::Answers::ToolCall.line(), prompt::SUFFIX);
+    assert_eq!(prompt::Answers::Admission.line(), prompt::ADMISSION_SUFFIX);
+    assert!(
+        prompt::Answers::ToolCall.line().contains("/a "),
+        "a tool call's line stopped offering `a`, and the reader still takes it"
+    );
+    assert!(
+        !prompt::Answers::Admission.line().contains("/a"),
+        "an admission's line offers a key it does not take: {}",
+        prompt::Answers::Admission.line()
+    );
+    assert!(prompt::Answers::ToolCall.allows_a_session_grant());
+    assert!(!prompt::Answers::Admission.allows_a_session_grant());
 }
 
 /// **The prompt's I/O, driven over real handles.**
@@ -2716,7 +2786,7 @@ fn the_prompt_writes_its_line_and_reads_the_answer_back() {
         statement: format!("Allow {}", fixtures::nonce("statement")),
         detail: Vec::new(),
         prominent: true,
-        answers: crate::tools::prompt::SUFFIX,
+        answers: crate::tools::prompt::Answers::ToolCall,
     };
 
     for (typed, expected) in [

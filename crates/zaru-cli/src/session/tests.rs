@@ -2054,6 +2054,74 @@ fn a_line_said_once_is_a_record_that_names_which_line_it_was() {
     );
 }
 
+/// D2's tenth producer round-trips as itself and names itself on disk.
+///
+/// ADR-0010 D2's tenth producer, accepted 2026-09-15 under directives 20, 25,
+/// 31 and 35: [ADR-0015] D4's door, as it was answered. **The mutant this
+/// catches** is the record being written as one of the nine that already
+/// existed — `producer()` is a total function with no wildcard, so a variant
+/// that reused another's name would come back under it here — and the second
+/// assertion catches a `Deserialize` changed to match a changed `Serialize`,
+/// which is the shape the sixth producer's check above already guards.
+///
+/// **A decline is on the file too**, and that is the half that matters:
+/// `admissions.jsonl` is written only on a yes, so without this record a
+/// decline is a decision with no trace anywhere on the machine.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn an_answered_door_is_a_record_that_names_which_way_it_went() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store did not open");
+    let session = store
+        .start(id_at(1_700_000_000_000, 43))
+        .expect("could not start a session");
+
+    let admitted = Record::Admitted(crate::session::Admitted {
+        directory: std::path::PathBuf::from("/tmp/a-project"),
+        offered: vec!["deploy-check".to_owned(), "triage".to_owned()],
+        admitted: true,
+        text: "admitted 1 command and 1 skill from this project".to_owned(),
+    });
+    let declined = Record::Admitted(crate::session::Admitted {
+        directory: std::path::PathBuf::from("/tmp/a-project"),
+        offered: vec!["deploy-check".to_owned()],
+        admitted: false,
+        text: "nothing was admitted; this project's commands stay unloaded".to_owned(),
+    });
+
+    let mut transcript =
+        Transcript::append_to(session.transcript_path()).expect("could not open the transcript");
+    transcript.record(&admitted).expect("could not append");
+    transcript.record(&declined).expect("could not append");
+
+    assert_eq!(
+        admitted.producer(),
+        "admitted",
+        "the tenth producer needs a name of its own; `producer` is a total function and this is \
+         the name it chose",
+    );
+
+    let reading = Transcript::read(&session.transcript_path()).expect("the transcript reads back");
+    assert_eq!(
+        reading.records,
+        vec![admitted, declined],
+        "both answers must round-trip as themselves",
+    );
+    assert!(
+        reading.lines[0].contains("\"admitted\":{")
+            && reading.lines[0].contains("\"admitted\":true"),
+        "the record must name its producer and its answer to a reader with nothing but the file: \
+         {:?}",
+        reading.lines,
+    );
+    assert!(
+        reading.lines[1].contains("\"admitted\":false"),
+        "a decline must be legible as one: {:?}",
+        reading.lines,
+    );
+}
+
 /// A resumed session reads which once-ever lines it has already said.
 ///
 /// The mutant this catches is the witness being derived over the **tail**

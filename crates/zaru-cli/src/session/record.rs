@@ -128,6 +128,7 @@
 use crate::failure::{Classified, Presentation};
 use crate::tools::TranscriptEntry;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use zaru_core::context::Compaction;
 use zaru_core::iteration::Event;
 use zaru_core::tool_call::Event as TurnEvent;
@@ -431,6 +432,47 @@ pub struct Attribution {
     pub typed: String,
 }
 
+/// How [ADR-0015] D4's gate was answered, for one project.
+///
+/// # What it carries, and why the line is on it
+///
+/// The directory the answer was about, the names it was about in the order
+/// the question showed them, which way it went, and **the line the reader was
+/// shown** — the last for [`Said`]'s own reason: [ADR-0010] D2's claim is
+/// that "re-rendering it reproduces what the user saw", and a line the user
+/// was shown that the file does not hold breaks it.
+///
+/// **It does not carry the files.** `~/.zaru/admissions.jsonl` is D4's record
+/// of what was admitted and carries each file verbatim; this is the session's
+/// record that the question was answered. Two copies of a body would be two
+/// sources of truth for what a person said yes to, and the one that governs
+/// loading is the other file. A decline writes nothing there **by design**,
+/// which is exactly why it is written here: without this line a decline
+/// leaves no trace anywhere.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Admitted {
+    /// [ADR-0011](https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface)
+    /// D4's canonical root: the project the question was about.
+    pub directory: PathBuf,
+    /// What the door offered, by name, in the order it showed them.
+    pub offered: Vec<String>,
+    /// Whether they were admitted.
+    ///
+    /// **A boolean and not an `Option`**, because the door has exactly two
+    /// outcomes: `terminal::driver::ask_at_the_door` already reads a terminal
+    /// that stopped answering as a decline — "a question that could not be
+    /// answered has not been said yes to" — so there is no third state for
+    /// this to carry, and inventing one here would be a second reading of
+    /// that rule.
+    pub admitted: bool,
+    /// The sentence, exactly as the reader was shown it.
+    pub text: String,
+}
+
 /// One line of [ADR-0010] D2's transcript.
 ///
 /// **Externally tagged**, so a line is one JSON object whose single key names
@@ -498,6 +540,29 @@ pub enum Record {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Attribution(Attribution),
+    /// [ADR-0015] D4's gate, as it was answered.
+    ///
+    /// A **tenth producer**, and the first line a session can hold that
+    /// belongs to no turn: the door is put by the pump before a keystroke is
+    /// read, so this record sits above turn 1 and carries no `n`.
+    ///
+    /// **Why a producer rather than a [`Record::Said`].** The near miss was
+    /// that variant, and it fails on a case a person can reach: a session that
+    /// declines and is then resumed puts the door again, in the same session,
+    /// onto the same transcript — so a line `SaidOnce` calls "said once and
+    /// will not say again" would be on the file twice and the counter
+    /// [`crate::session::resume()`] builds from it would be a lie. The other
+    /// eight do not fit either: an admission is not a tool call, a decline is
+    /// not a failure, and [`Record::Conversation`] and [`Record::Attribution`]
+    /// are both keyed to the turn number this has none of.
+    ///
+    /// It is a `zaru-cli` variant and nothing in `zaru-core` is widened, for
+    /// the reason the seventh, eighth and ninth producers are: answering a
+    /// door is a state transition of neither loop and appears on neither
+    /// event stream.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Admitted(Admitted),
 }
 
 impl Record {
@@ -516,6 +581,7 @@ impl Record {
             Self::Said(_) => "said",
             Self::Conversation(_) => "conversation",
             Self::Attribution(_) => "attribution",
+            Self::Admitted(_) => "admitted",
         }
     }
 }

@@ -124,10 +124,15 @@ impl<R: Restore> Drop for Guard<R> {
 /// D3's port says it "is composed once, by the decision, and handed here...
 /// so that what the user was told and what the harness believes it asked
 /// cannot drift apart", and a conversion that reworded it would be that drift.
-/// **The answers cross too**, as [`prompt::SUFFIX`] trimmed of the padding the
-/// plain line needs and the pane does not: the `y/N` a user reads is part of
-/// what they were told, and it landed in `prompt` first, so `zaru-tui` holds
-/// no constant for it.
+/// **The answers cross too**, as [`prompt::Answers::line`] trimmed of the
+/// padding the plain line needs and the pane does not: the `y/N` a user reads
+/// is part of what they were told, and it landed in `prompt` first, so
+/// `zaru-tui` holds no constant for it. **The keys that answer cross beside
+/// the words**, through `answers_for_the_shell` — named in prose rather than
+/// linked, because it is private and rustdoc is right to refuse a public page
+/// pointing at something a reader of that page cannot open. A reader holding
+/// its own table is how the pane came to take `a` at a door whose line does
+/// not offer it.
 ///
 /// # What is deliberately *not* shared, because the inputs differ
 ///
@@ -139,14 +144,15 @@ impl<R: Restore> Drop for Guard<R> {
 /// `y` through both and a decline through both.
 ///
 /// [`Confirm`]: crate::tools::port::Confirm
-/// [`prompt::SUFFIX`]: crate::tools::prompt::SUFFIX
+/// [`prompt::Answers::line`]: crate::tools::prompt::Answers::line
 /// [`prompt::answer`]: crate::tools::prompt::answer
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[must_use]
 pub fn question_for_the_shell(question: &Question) -> Confirmation {
     Confirmation::new(
         question.statement.clone(),
-        question.answers.trim(),
+        question.answers.line().trim(),
+        answers_for_the_shell(question.answers),
         question.prominent,
     )
     // **The detail crosses unchanged too**, for the statement's own reason.
@@ -158,6 +164,19 @@ pub fn question_for_the_shell(question: &Question) -> Confirmation {
     // exists to prevent, and truncation in particular is what the pane's own
     // wrapping is there to make unnecessary.
     .showing(question.detail.clone())
+}
+
+/// The same answer set, as the shell's own mirror of it.
+///
+/// **A total match with no wildcard**, so a third kind of question cannot
+/// reach the pane without a table being chosen for it here — which is the
+/// property [`crate::tools::prompt::Answers`] exists to give the words and
+/// the keys together.
+const fn answers_for_the_shell(answers: crate::tools::prompt::Answers) -> zaru_tui::shell::Answers {
+    match answers {
+        crate::tools::prompt::Answers::ToolCall => zaru_tui::shell::Answers::ToolCall,
+        crate::tools::prompt::Answers::Admission => zaru_tui::shell::Answers::Admission,
+    }
 }
 
 /// What the fall-through in [`dispatch`] says.
@@ -919,7 +938,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::credentials::port::Confirm
             // ADR-0007 D8's gate is a tool-call-shaped question: `a` means
             // what it means everywhere else on this port, so the answers are
             // the ordinary ones.
-            answers: crate::tools::prompt::SUFFIX,
+            answers: crate::tools::prompt::Answers::ToolCall,
         };
         crate::tools::port::Confirm::confirm(self, &question)
             .map(crate::tools::port::Answer::permits)
@@ -1777,6 +1796,24 @@ pub struct Recording<'a> {
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     pub history: &'a crate::session::History,
+    /// This session's transcript, for the one record the pump writes itself.
+    ///
+    /// # Why the pump has one at all
+    ///
+    /// Every other producer is written inside a turn, by the code that holds
+    /// the session. [ADR-0015] D4's door is answered **before** the first
+    /// turn — and on a session that can run no turn at all, which is exactly
+    /// the session a person meets on a machine with no key — so the answer
+    /// would reach no file if the pump could not write one. The path is
+    /// composed once, by `Session::transcript_path`, and handed here rather
+    /// than re-derived: [ADR-0010] D1 owns where a session's files live.
+    ///
+    /// It sits on this pair because its condition is this pair's: the door is
+    /// put only where there is a working directory, which is the same `Some`
+    /// that makes a `Recording` exist.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub transcript: &'a std::path::Path,
     /// [ADR-0011] D4's canonical root, the value `meta.toml` records.
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
@@ -1964,9 +2001,15 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 .flat_map(crate::commands::Command::offered_rows)
                 .collect(),
             prominent: true,
-            answers: crate::tools::prompt::ADMISSION_SUFFIX,
+            answers: crate::tools::prompt::Answers::Admission,
         };
-        if ask_at_the_door(shell, surface, source, &question).await? {
+        let admitted = ask_at_the_door(shell, surface, source, &question).await?;
+        // **Composed before the reload**, which empties what the question was
+        // about. The trace is what was answered, so it is taken while the
+        // answer is still a fact about something.
+        let (said, answered) =
+            trace_of_the_door(admitted, extensions.loaded.offer.pending(), directory);
+        if admitted {
             if let Err(failure) = extensions.admissions.admit(
                 directory,
                 extensions.loaded.offer.pending(),
@@ -1975,6 +2018,20 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 shell.notice(Line::new(Register::Failed, failure.to_string()));
             }
             extensions.reload();
+        }
+        // **The line first and the record second**, which is the order
+        // `compose::turn` takes for ADR-0011 D2's notice and for the same
+        // reason: a transcript that will not take the record must not silence
+        // a line about what a repository was just allowed to do, and ADR-0010
+        // D2's "a crash loses at most the event in flight" is what bounds the
+        // other order's cost. A transcript failure is said in ADR-0016 D1's
+        // error register, exactly as the admissions file's is above.
+        shell.notice(said);
+        if let Some(recording) = recording
+            && let Err(failure) = crate::session::Transcript::append_to(recording.transcript)
+                .and_then(|mut transcript| transcript.record(&answered))
+        {
+            shell.notice(Line::new(Register::Failed, failure.to_string()));
         }
     }
     for refusal in &extensions.loaded.refusals {
@@ -3175,6 +3232,56 @@ pub enum Asked {
     Ended,
 }
 
+/// What answering [ADR-0015] D4's door leaves behind: one line and one record.
+///
+/// # A function rather than two blocks inside the pump
+///
+/// The pump needs a terminal, a runtime and a project on disk, so a rule
+/// written inside it can only be checked by running it — [Verification
+/// lessons] §27. This is the rule: which sentence each answer gets, what the
+/// record says, and that **both answers get both**. The pump is left with the
+/// painting and the appending.
+///
+/// **Both halves say the same thing**, because they are the same event read
+/// twice: the line is what the person saw and the record carries it verbatim,
+/// so a `--resume` repaints the sentence the live pane painted rather than a
+/// second spelling of it.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[must_use]
+pub fn trace_of_the_door(
+    admitted: bool,
+    offered: &[crate::commands::Command],
+    directory: &std::path::Path,
+) -> (Line, crate::session::Record) {
+    let text = if admitted {
+        let skills = offered
+            .iter()
+            .filter(|command| command.kind() == crate::commands::Kind::Skill)
+            .count();
+        crate::commands::admitted_statement(offered.len() - skills, skills)
+    } else {
+        crate::commands::NOTHING_WAS_ADMITTED.to_owned()
+    };
+    (
+        // **`Announced`, and the glyph is the register's own.** ADR-0015 D6's
+        // attribution line already reads `◈ /deploy-check (project · admitted
+        // 2026-08-19)` out of this register, and a decision the person took is
+        // what this register is for, so no glyph is authored here.
+        Line::new(Register::Announced, text.clone()),
+        crate::session::Record::Admitted(crate::session::Admitted {
+            directory: directory.to_path_buf(),
+            offered: offered
+                .iter()
+                .map(|command| command.name().to_owned())
+                .collect(),
+            admitted,
+            text,
+        }),
+    )
+}
+
 /// Put one [ADR-0011] D3 confirmation to the person, from outside a turn.
 ///
 /// # It awaits, where [`PaneConfirm`] cannot, and for the same reason
@@ -3225,15 +3332,13 @@ pub async fn ask_at_the_door<S: Surface + Send>(
         surface.draw(shell)?;
 
         if let Some(answered) = shell.answer() {
-            // **`a` admits.** It is not offered -- `prompt::ADMISSION_SUFFIX`
-            // names `y`, `N` and `esc` -- and a person who types it anyway has
-            // said yes to a thing that already outlives the session, so
-            // reading it as anything else would refuse an answer that is not
-            // ambiguous.
-            return Ok(matches!(
-                answered,
-                zaru_tui::shell::Answered::Once | zaru_tui::shell::Answered::ForThisSession
-            ));
+            // **`y` and nothing else.** The question carries its own answer
+            // set, and this one does not offer `a`: an admission is on disk
+            // and outlives every session, so a grant for the rest of this one
+            // has nothing to add. `Answered::ForThisSession` is therefore not
+            // reachable here, and this reads as the one accepting answer
+            // rather than as two.
+            return Ok(matches!(answered, zaru_tui::shell::Answered::Once));
         }
     }
 }

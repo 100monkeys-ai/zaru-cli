@@ -88,6 +88,6 @@ mod tests;
 pub use admission::{ADMISSIONS_FILE, Admission, AdmissionError, Admissions};
 pub use document::{
     ADMISSION_STATEMENT, COMMAND_EXTENSION, COMMANDS_DIRECTORY, Command, CommandRefused, Expanded,
-    Kind, Source, VALIDATOR_TABLE, origin_words,
+    Kind, NOTHING_WAS_ADMITTED, Source, VALIDATOR_TABLE, admitted_statement, origin_words,
 };
 pub use load::{Loaded, Offer, load_from};

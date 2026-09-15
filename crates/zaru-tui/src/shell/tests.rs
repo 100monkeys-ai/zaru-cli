@@ -6,7 +6,7 @@ use crate::shell::command::{LEAVE, Refused, Typed, read};
 use crate::shell::fixtures::{
     SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, cells, painted,
 };
-use crate::shell::port::{CommandVocabulary, Confirmation, Line, Palette, Register, Row};
+use crate::shell::port::{Answers, CommandVocabulary, Confirmation, Line, Palette, Register, Row};
 use crate::shell::{Action, Answered, COMPOSER_ROWS, Leaving, Segment, Shell, Status};
 use core::time::Duration;
 use ratatui::style::Color;
@@ -177,6 +177,7 @@ fn the_status_line_names_the_tier_in_every_state() {
     asking.ask(Confirmation::new(
         "delete every file under /tmp",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         true,
     ));
     states.push(("a standing confirmation", asking));
@@ -1204,6 +1205,7 @@ fn a_confirmation_defaults_to_decline() {
     shell.ask(Confirmation::new(
         "run `rm -rf build`",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     let (rows, _) = painted(&shell, WIDTH, HEIGHT);
@@ -1229,6 +1231,7 @@ fn an_explicit_yes_accepts() {
     shell.ask(Confirmation::new(
         "run `rm -rf build`",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     assert_eq!(key(&mut shell, Key::Char('y')), Action::Idle);
@@ -1250,6 +1253,7 @@ fn an_a_allows_for_the_session_and_is_not_the_same_answer_as_a_yes() {
         shell.ask(Confirmation::new(
             "run `rm -rf build`",
             STAGED_ANSWERS,
+            Answers::ToolCall,
             false,
         ));
         assert_eq!(key(&mut shell, pressed), Action::Idle);
@@ -1269,6 +1273,7 @@ fn an_a_allows_for_the_session_and_is_not_the_same_answer_as_a_yes() {
     shell.ask(Confirmation::new(
         "run `rm -rf build`",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     key(&mut shell, Key::Char('y'));
@@ -1287,6 +1292,7 @@ fn an_explicit_no_and_an_escape_both_decline() {
         shell.ask(Confirmation::new(
             "run `rm -rf build`",
             STAGED_ANSWERS,
+            Answers::ToolCall,
             false,
         ));
         key(&mut shell, pressed);
@@ -1309,6 +1315,7 @@ fn a_key_that_is_neither_yes_nor_no_leaves_the_question_standing() {
     shell.ask(Confirmation::new(
         "run `rm -rf build`",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     key(&mut shell, Key::Char('z'));
@@ -1327,6 +1334,7 @@ fn a_standing_question_takes_every_key_and_the_composer_receives_none() {
     shell.ask(Confirmation::new(
         "run `rm -rf build`",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     for ch in "hello".chars() {
@@ -1363,6 +1371,7 @@ fn a_standing_question_absorbs_a_paste_and_the_composer_receives_none() {
     shell.ask(Confirmation::new(
         "run `rm -rf build`",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     shell.pasted(
@@ -1402,6 +1411,166 @@ fn a_paste_reaches_the_composer_whole_when_no_question_stands() {
     );
 }
 
+// ------------------------------------------- ADR-0015 D4's door, and its keys
+
+/// The line an admission shows, as `zaru-cli` spells it, for the checks below.
+///
+/// **A literal this check owns**, for `STAGED_ANSWERS`' reason one screen up:
+/// the product constant is in the other crate and this one holds no words a
+/// user reads.
+const STAGED_ADMISSION: &str = "[y/N · esc declines]";
+
+/// A sentence typed at [ADR-0015] D4's door leaves it standing and lands in
+/// the prompt underneath.
+///
+/// # The defect this closes
+///
+/// Measured from the release binary at `c49e669` and again at `15d31f1`, in a
+/// project offering one command: typing `what does this project do?` at the
+/// door **admitted it** — on the `a` of `what` — painted nothing, threw away
+/// the `w` and the `h`, and left `t does this project do?` in the composer.
+/// The sentence a person typed is the evidence they were not answering a
+/// question, so it is what the door must not consume.
+///
+/// **The mutant:** the composer arm deleted, so a spare printable is ignored
+/// as it is at a tool call — the composer comes back empty and every
+/// character before the answer is gone. **The accepting sibling** is
+/// `a_standing_question_takes_every_key_and_the_composer_receives_none`
+/// above, which holds the tool call's rule unchanged.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn a_sentence_typed_at_the_door_leaves_it_standing_and_reaches_the_composer() {
+    let typed = "what does this project do?";
+    let mut shell = shell();
+    shell.ask(Confirmation::new(
+        "this project offers commands",
+        STAGED_ADMISSION,
+        Answers::Admission,
+        true,
+    ));
+    for ch in typed.chars() {
+        key(&mut shell, Key::Char(ch));
+    }
+    assert!(
+        shell.answer().is_none(),
+        "a typed sentence answered the door: {:?}",
+        shell.answer()
+    );
+    assert!(
+        shell.asking().is_some(),
+        "the door is a door a person can type past"
+    );
+    assert_eq!(
+        shell.composer().text(),
+        typed,
+        "the sentence did not reach the prompt whole"
+    );
+}
+
+/// `a` is not an answer at the door, and it is not thrown away either.
+///
+/// It answers at a tool call — `an_a_allows_for_the_session_and_is_not_the_
+/// same_answer_as_a_yes` above is the accepting sibling — and an admission is
+/// on disk and outlives every session, so a grant for the rest of this one has
+/// nothing to add and the line does not offer it.
+///
+/// **The mutant:** the `a` arm made unconditional again, which is the build
+/// this closes — the answer comes back `ForThisSession` and the door is gone.
+#[test]
+fn an_a_is_typed_past_at_the_door_rather_than_admitting() {
+    for pressed in [Key::Char('a'), Key::Char('A')] {
+        let mut shell = shell();
+        shell.ask(Confirmation::new(
+            "this project offers commands",
+            STAGED_ADMISSION,
+            Answers::Admission,
+            true,
+        ));
+        assert_eq!(key(&mut shell, pressed), Action::Idle);
+        assert_eq!(
+            shell.answer(),
+            None,
+            "{pressed:?} answered a question whose line does not offer it"
+        );
+        assert!(shell.asking().is_some(), "{pressed:?} opened the door");
+        assert_eq!(
+            shell.composer().text(),
+            if pressed == Key::Char('A') { "A" } else { "a" },
+            "{pressed:?} was swallowed rather than typed"
+        );
+    }
+}
+
+/// The four answers the door does take, and none of them reaches the prompt.
+///
+/// **The mutant:** `y` moved into the printable arm — the door never opens and
+/// the letter lands in the composer, which is the failure mode opposite to the
+/// one above and is why both are asserted.
+#[test]
+fn the_doors_own_answers_resolve_and_reach_no_composer() {
+    for (pressed, expected) in [
+        (Key::Char('y'), Answered::Once),
+        (Key::Char('Y'), Answered::Once),
+        (Key::Char('n'), Answered::No),
+        (Key::Esc, Answered::No),
+        (Key::Enter, Answered::No),
+    ] {
+        let mut shell = shell();
+        shell.ask(Confirmation::new(
+            "this project offers commands",
+            STAGED_ADMISSION,
+            Answers::Admission,
+            true,
+        ));
+        assert_eq!(key(&mut shell, pressed), Action::Idle);
+        assert_eq!(
+            shell.answer(),
+            Some(expected),
+            "{pressed:?} is not the answer the door's own line names"
+        );
+        assert_eq!(
+            shell.composer().text(),
+            "",
+            "{pressed:?} answered the door and typed itself as well"
+        );
+    }
+}
+
+/// A paste at the door goes where a typed character goes.
+///
+/// One rule rather than two spellings of one: a person who pastes a task at
+/// the door is doing what a person who types one is doing, and neither is
+/// answering. The tool call's rule is unchanged and is asserted by
+/// `a_standing_question_absorbs_a_paste_and_the_composer_receives_none`.
+///
+/// **The mutant:** the guard in `pasted` reading "a question stands" again
+/// rather than asking the question — the block never reaches the prompt.
+#[test]
+fn a_paste_at_the_door_reaches_the_composer_and_answers_nothing() {
+    let mut shell = shell();
+    shell.ask(Confirmation::new(
+        "this project offers commands",
+        STAGED_ADMISSION,
+        Answers::Admission,
+        true,
+    ));
+    shell.pasted(
+        "read the readme",
+        Duration::ZERO,
+        &TrieOf::new(0),
+        &StagedVocabulary,
+    );
+    assert_eq!(
+        shell.composer().text(),
+        "read the readme",
+        "the paste did not reach the prompt; it holds {:?}",
+        shell.composer().text()
+    );
+    assert!(shell.answer().is_none(), "the paste answered the door");
+    assert!(shell.asking().is_some(), "the paste opened the door");
+}
+
 /// ADR-0011 D6's marking, which raises the prompt without changing what it can
 /// do.
 #[test]
@@ -1410,6 +1579,7 @@ fn a_destructive_question_renders_more_prominently_than_an_ordinary_one() {
     prominent.ask(Confirmation::new(
         "delete every file under /tmp",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         true,
     ));
     let (loud, _) = painted(&prominent, WIDTH, HEIGHT);
@@ -1418,6 +1588,7 @@ fn a_destructive_question_renders_more_prominently_than_an_ordinary_one() {
     ordinary.ask(Confirmation::new(
         "delete every file under /tmp",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     let (quiet, _) = painted(&ordinary, WIDTH, HEIGHT);
@@ -3082,6 +3253,7 @@ fn corpus_the_call_a_permission_prompt_is_about_is_on_the_pane_while_an_answer_s
                 shell.ask(Confirmation::new(
                     "Allow cmd.run ls -la?".to_owned(),
                     "[y/N]".to_owned(),
+                    Answers::ToolCall,
                     false,
                 ));
             }
@@ -3343,7 +3515,12 @@ fn corpus_a_pasted_secret_reaches_no_cell_and_is_what_take_secret_yields() {
 #[test]
 fn a_confirmation_still_absorbs_a_paste() {
     let mut shell = shell();
-    shell.ask(Confirmation::new("about to write", STAGED_ANSWERS, false));
+    shell.ask(Confirmation::new(
+        "about to write",
+        STAGED_ANSWERS,
+        Answers::ToolCall,
+        false,
+    ));
     shell.pasted("y\n", NOW, &TrieOf::new(0), &StagedVocabulary);
     assert!(
         shell.asking().is_some(),
@@ -3418,7 +3595,12 @@ fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
 #[test]
 fn a_confirmation_still_ignores_ctrl_c() {
     let mut shell = shell();
-    shell.ask(Confirmation::new("about to write", STAGED_ANSWERS, false));
+    shell.ask(Confirmation::new(
+        "about to write",
+        STAGED_ANSWERS,
+        Answers::ToolCall,
+        false,
+    ));
     let acted = shell.key(
         Input {
             key: Key::Char('c'),
@@ -3468,7 +3650,12 @@ fn the_input_row_is_byte_identical_either_side_of_a_secret_question() {
 #[test]
 fn a_second_question_replaces_the_first_and_two_never_stand() {
     let mut shell = asking_for_a_secret();
-    shell.ask(Confirmation::new("about to write", STAGED_ANSWERS, false));
+    shell.ask(Confirmation::new(
+        "about to write",
+        STAGED_ANSWERS,
+        Answers::ToolCall,
+        false,
+    ));
     assert!(shell.asking_secret().is_none());
     assert!(shell.asking().is_some());
 
@@ -3981,7 +4168,10 @@ fn staged_detail() -> Vec<String> {
 
 fn asking_about_a_write() -> Shell {
     let mut shell = shell();
-    shell.ask(Confirmation::new(DEEP_STATEMENT, STAGED_ANSWERS, false).showing(staged_detail()));
+    shell.ask(
+        Confirmation::new(DEEP_STATEMENT, STAGED_ANSWERS, Answers::ToolCall, false)
+            .showing(staged_detail()),
+    );
     shell
 }
 
@@ -4080,8 +4270,10 @@ fn a_question_with_a_preview_leaves_the_composers_area_where_it_was() {
     for (width, height) in MEASURED {
         let bare = Shell::regions(ratatui::layout::Rect::new(0, 0, width, height));
         let mut shell = shell();
-        shell
-            .ask(Confirmation::new(DEEP_STATEMENT, STAGED_ANSWERS, false).showing(staged_detail()));
+        shell.ask(
+            Confirmation::new(DEEP_STATEMENT, STAGED_ANSWERS, Answers::ToolCall, false)
+                .showing(staged_detail()),
+        );
         let with_preview = Shell::regions(ratatui::layout::Rect::new(0, 0, width, height));
         assert_eq!(
             bare[2], with_preview[2],
@@ -4106,6 +4298,7 @@ fn a_question_with_no_detail_paints_the_statement_and_the_answers_alone() {
     shell.ask(Confirmation::new(
         "Allow web.fetch https://example.test/?",
         STAGED_ANSWERS,
+        Answers::ToolCall,
         false,
     ));
     assert_eq!(

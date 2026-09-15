@@ -59,6 +59,75 @@ pub const COMMAND_EXTENSION: &str = "md";
 pub const ADMISSION_STATEMENT: &str =
     "this project offers commands, and none of them is loaded until you admit it. Admit them here?";
 
+/// What [ADR-0015] D4's gate says once it has been answered yes.
+///
+/// **Authored under a delegated coordinator ruling of 2026-09-15 11:01:57Z
+/// and open to Jeshua's veto**, in the shape [`ADMISSION_STATEMENT`] above
+/// takes. It reads, for a project offering two commands and one skill:
+///
+/// > `admitted 2 commands and 1 skill from this project`
+///
+/// **The count is composed and the words are not.** A tally is a fact about
+/// the project, and the kinds are counted separately because a skill's
+/// validators run a command line where a command's body is text — a person
+/// who admitted one has admitted a different thing. A half that is zero is
+/// omitted rather than written as `0 skills`, which would say the project
+/// offers a kind it does not.
+///
+/// # Why an admission says anything at all
+///
+/// It said nothing until 2026-09-15, measured on the release binary at
+/// `c49e669` and again at `15d31f1`: answering the door with `y` left the
+/// pane empty, and the only later evidence was that the picker had gained a
+/// row. An act that outlives the session and governs what a cloned repository
+/// may put into a model's prompt was invisible at the moment it happened.
+/// That is the reasoning [ADR-0011](https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface-updates-3)'s
+/// amendments volume 3 already wrote for the prompt beside it: without a
+/// line, "the only difference … would be the **absence** of a later prompt,
+/// which is a thing a reader cannot see".
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[must_use]
+pub fn admitted_statement(commands: usize, skills: usize) -> String {
+    format!("admitted {} from this project", tally(commands, skills))
+}
+
+/// What the same gate says when it is declined.
+///
+/// **Authored under the same ruling and open to the same veto.** It reads,
+/// verbatim:
+///
+/// > `nothing was admitted; this project's commands stay unloaded`
+///
+/// A decline writes nothing to [`Admissions`](super::Admissions) by design —
+/// D4's gate is a standing question rather than a standing verdict — so this
+/// line is the only trace it leaves, and it says what the state now is rather
+/// than what the person pressed.
+pub const NOTHING_WAS_ADMITTED: &str =
+    "nothing was admitted; this project's commands stay unloaded";
+
+/// `2 commands and 1 skill`, with a zero half left out.
+///
+/// Both halves zero cannot be reached from the door — it is put only where
+/// something is offered — and is written as `nothing` rather than as an empty
+/// string, because a sentence with a hole in it is worse than a sentence that
+/// is merely never said.
+fn tally(commands: usize, skills: usize) -> String {
+    let counted = |how_many: usize, one: &str, many: &str| {
+        format!("{how_many} {}", if how_many == 1 { one } else { many })
+    };
+    match (commands, skills) {
+        (0, 0) => "nothing".to_owned(),
+        (0, skills) => counted(skills, "skill", "skills"),
+        (commands, 0) => counted(commands, "command", "commands"),
+        (commands, skills) => format!(
+            "{} and {}",
+            counted(commands, "command", "commands"),
+            counted(skills, "skill", "skills")
+        ),
+    }
+}
+
 /// Which of [ADR-0015] D3's locations a command came from.
 ///
 /// **Two variants, not three.** The served location loads nothing, so a

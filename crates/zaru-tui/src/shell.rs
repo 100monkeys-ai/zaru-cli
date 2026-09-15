@@ -67,7 +67,7 @@ pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{
-    Answered, CommandVocabulary, Confirmation, Extension, Line, Namespace, Palette, Prose,
+    Answered, Answers, CommandVocabulary, Confirmation, Extension, Line, Namespace, Palette, Prose,
     Register, Row, SecretAnswer, SecretRequest, TranscriptSource,
 };
 
@@ -1487,11 +1487,6 @@ impl Shell {
         self.answered
     }
 
-    /// Whether a question of either kind is standing.
-    const fn questioned(&self) -> bool {
-        self.standing.is_some()
-    }
-
     /// Apply one keystroke at `now`.
     ///
     /// # A standing question takes every key
@@ -1522,7 +1517,35 @@ impl Shell {
     /// asking. [ADR-0011] D6 gives the harness no veto and this gives it no
     /// accidental one either.
     ///
+    /// # `a` only where the question offers it, and the door is where it does
+    /// not
+    ///
+    /// [`Confirmation::answered_by`] says which keys answer, because this
+    /// reader took `a` at [ADR-0015] D4's admission for a day while the line
+    /// that question shows offered `y`, `N` and `Esc`. Measured from the
+    /// release binary at `c49e669` and again at `15d31f1`: typing `what does
+    /// this project do?` at the door admitted a cloned repository's commands
+    /// on the `a` of `what`, painted nothing, and left `t does this project
+    /// do?` in the composer. So `a` resolves
+    /// [`Answered::ForThisSession`] only where
+    /// [`Answers::allows_a_session_grant`] says so.
+    ///
+    /// # A printable input the door does not take reaches the composer
+    ///
+    /// **It does not answer and it is not thrown away.** The door stands —
+    /// "a prompt the user can type past is not a prompt" is why, and it is
+    /// unchanged — and the keystroke goes into the prompt underneath, so the
+    /// sentence a person was typing is whole the moment they answer. The
+    /// alternative, which this replaced, was to swallow it: a person typing a
+    /// task into what looks like their own prompt loses however many
+    /// characters they type before they read the question, and the ones they
+    /// lose are exactly the ones that told them something was wrong.
+    /// [`Answers::spare_input_reaches_the_composer`] carries which questions
+    /// this is true of, and it is not the negation of the answer set — see
+    /// that method.
+    ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     pub fn key(
         &mut self,
         input: Input,
@@ -1550,14 +1573,27 @@ impl Shell {
             return Action::Idle;
         }
 
-        if self.asking().is_some() {
+        if let Some(answers) = self.asking().map(|question| question.answered_by) {
             match input.key {
                 Key::Char('y' | 'Y') => self.resolve(Answered::Once),
                 // [ADR-0011] D3's third answer, since 2026-09-14: allow this
                 // exact line for the rest of the session. What that means and
                 // what is remembered are `zaru-cli`'s; this is the keystroke.
-                Key::Char('a' | 'A') => self.resolve(Answered::ForThisSession),
+                // **Only where the question offers it**: see the section above
+                // for the door where it does not and for what taking it there
+                // cost.
+                Key::Char('a' | 'A') if answers.allows_a_session_grant() => {
+                    self.resolve(Answered::ForThisSession);
+                }
                 Key::Char('n' | 'N') | Key::Esc | Key::Enter => self.resolve(Answered::No),
+                // A printable character this question does not take is not an
+                // answer, so it goes where the person was typing. The question
+                // stands either way.
+                Key::Char(_)
+                    if answers.spare_input_reaches_the_composer() && !input.ctrl && !input.alt =>
+                {
+                    self.composer.key(input, now, entries, vocabulary);
+                }
                 _ => {}
             }
             return Action::Idle;
@@ -1614,10 +1650,18 @@ impl Shell {
     /// waits in the prompt for the `Enter` that submits all of it as one — the
     /// 2026-09-13 amendment to [ADR-0005] D1 and D2.
     ///
-    /// **A standing question absorbs it**, exactly as [`Self::key`] has a
+    /// **A standing tool call absorbs it**, exactly as [`Self::key`] has that
     /// question absorb every key but five: [ADR-0011] D3's `ask` "prompts
     /// before any write or command", and a prompt a user can paste past is no
     /// more a prompt than one they can type past.
+    ///
+    /// **A standing admission takes it into the prompt instead**, under the
+    /// one rule [`Self::key`] follows there: a printable input the question
+    /// does not take is not an answer and is not thrown away either, and the
+    /// question stands. A paste that reached nothing while a typed character
+    /// reached the prompt would be one rule with two spellings, and a person
+    /// who pastes a task at the door is doing what a person who types one is
+    /// doing.
     ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
@@ -1637,7 +1681,10 @@ impl Shell {
             typed.push_str(text);
             return;
         }
-        if self.questioned() {
+        if self
+            .asking()
+            .is_some_and(|question| !question.answered_by.spare_input_reaches_the_composer())
+        {
             return;
         }
         self.composer.paste(text, now, entries, vocabulary);

@@ -110,6 +110,61 @@ pub const SUFFIX: &str = " [y/N/a · a allows this exact line for this session �
 /// [ADR-0015's amendments volume 2]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility-updates-2
 pub const ADMISSION_SUFFIX: &str = " [y/N · esc declines] ";
 
+/// Which answers a question takes, and therefore which line it shows.
+///
+/// # The line and the keys are one value, since 2026-09-15
+///
+/// [`Question::answers`](crate::tools::port::Question::answers) carried the
+/// *words* from 2026-09-15 — so that "a third kind of question cannot be added
+/// without choosing an answers line for it" — and every reader kept its own
+/// table of which keys answered. The two drifted the same day: the pane's
+/// reader took `a` at [ADR-0015] D4's door, where [`ADMISSION_SUFFIX`] does
+/// not offer it and this record says it is absent, so a person typing an
+/// ordinary sentence admitted a cloned repository's commands on the third
+/// character of it. Measured on the release binary at `c49e669` and again at
+/// `15d31f1`: `what does this project do?` typed at the door admitted `greet`
+/// and left `t does this project do?` in the composer.
+///
+/// **So the words and the table are one value chosen at one call site.** A
+/// reader asks this type which keys answer rather than holding a table of its
+/// own, and a line that does not offer `a` cannot be shown by a question that
+/// takes it.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answers {
+    /// [ADR-0011] D3's tool call: `y`, `a`, `n`, `Esc` and `Enter`.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    ToolCall,
+    /// [ADR-0015] D4's admission: `y`, `n`, `Esc` and `Enter`, and **not** `a`.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Admission,
+}
+
+impl Answers {
+    /// What follows the statement, as a user reads it.
+    #[must_use]
+    pub const fn line(self) -> &'static str {
+        match self {
+            Self::ToolCall => SUFFIX,
+            Self::Admission => ADMISSION_SUFFIX,
+        }
+    }
+
+    /// Whether `a` answers this question.
+    ///
+    /// The one difference between the two sets, and it is read from the same
+    /// value the line is read from — so a reader that took `a` at a question
+    /// whose line does not offer it would have to be written against this
+    /// method returning `false`.
+    #[must_use]
+    pub const fn allows_a_session_grant(self) -> bool {
+        matches!(self, Self::ToolCall)
+    }
+}
+
 /// What ADR-0011 D3's prompt writes.
 ///
 /// The statement, then each line of [`Question::detail`], then the
@@ -131,30 +186,40 @@ pub fn line(question: &Question) -> String {
         written.push('\n');
         written.push_str(row);
     }
-    written.push_str(question.answers);
+    written.push_str(question.answers.line());
     written
 }
 
-/// What a typed line means.
+/// What a typed line means, for the answers this question offers.
 ///
-/// `y` or `yes` is [`Answer::Once`] and `a` or `always` is
-/// [`Answer::ForThisSession`], in any case, after trimming — **anything else
-/// is no**, including an empty line and end of input. That is what makes `N`
-/// the default rather than a branch somebody could forget: there are two
-/// accepting shapes and everything else falls through both.
+/// `y` or `yes` is [`Answer::Once`], and `a` or `always` is
+/// [`Answer::ForThisSession`] **where the question offers `a`**, in any case,
+/// after trimming — **anything else is no**, including an empty line and end
+/// of input. That is what makes `N` the default rather than a branch somebody
+/// could forget: there are two accepting shapes and everything else falls
+/// through both.
+///
+/// [`Answers::Admission`] offers one accepting shape rather than two, so
+/// `always` typed at [ADR-0015] D4's door is a no. The set is the question's
+/// and is read from the same value its line is read from; see [`Answers`] for
+/// the day the two disagreed.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 ///
 /// `None` is end of input: the user pressed the end-of-file key, or the
 /// stream ran out. It is a no rather than a failure, because a person who
 /// closed the prompt has answered it.
 #[must_use]
-pub fn answer(typed: Option<&str>) -> Answer {
+pub fn answer(answers: Answers, typed: Option<&str>) -> Answer {
     let Some(typed) = typed else {
         return Answer::No;
     };
     let typed = typed.trim();
     if typed.eq_ignore_ascii_case("y") || typed.eq_ignore_ascii_case("yes") {
         Answer::Once
-    } else if typed.eq_ignore_ascii_case("a") || typed.eq_ignore_ascii_case("always") {
+    } else if answers.allows_a_session_grant()
+        && (typed.eq_ignore_ascii_case("a") || typed.eq_ignore_ascii_case("always"))
+    {
         Answer::ForThisSession
     } else {
         Answer::No
@@ -190,7 +255,10 @@ pub fn ask(
     let read = input.read_line(&mut typed).map_err(|failure| {
         ConfirmFailure::new(format!("the answer could not be read: {failure}"))
     })?;
-    Ok(answer((read > 0).then_some(typed.as_str())))
+    Ok(answer(
+        question.answers,
+        (read > 0).then_some(typed.as_str()),
+    ))
 }
 
 /// ADR-0011 D3's prompt, over a terminal.
