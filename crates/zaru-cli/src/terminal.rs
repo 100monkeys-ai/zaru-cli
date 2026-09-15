@@ -43,12 +43,14 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 
+pub mod corpus;
 pub mod driver;
 pub mod open;
 pub mod source;
 pub mod trie;
 pub mod vocabulary;
 
+pub use corpus::{CORPUS_FILE, CachedCorpus, CorpusCache, CorpusError};
 pub use driver::{
     Added, AfterTurn, Asked, Asking, Guard, KEY_IS_STORED, NOTES_STRIP_HAS_NO_SINGLE_TOKEN,
     NOTES_TOKEN_IS_STORED, Pump, Pumped, Restore, SECRET_DECLINED, SECRET_GUIDANCE, Surface,
