@@ -48,7 +48,7 @@
 use crate::cli::namespace::Namespace;
 use crate::commands::admission::Admissions;
 use crate::commands::document::{
-    Command, CommandRefused, Source, COMMAND_EXTENSION, COMMANDS_DIRECTORY,
+    Command, CommandRefused, Expanded, Source, COMMAND_EXTENSION, COMMANDS_DIRECTORY,
 };
 use crate::commands::{front_matter, placeholder};
 use crate::config::file::{text, SizeCeiling, TomlFile};
@@ -120,6 +120,30 @@ impl Loaded {
             .iter()
             .find(|(admitted_name, _)| admitted_name == name)
             .map(|(_, date)| date.as_str())
+    }
+
+    /// The task `typed` is, if `name` loaded.
+    ///
+    /// `typed` is the whole line, `/name` and all; the tail handed to the
+    /// grammar is everything after the first word, trimmed of the whitespace
+    /// that separated the two and of nothing else — an argument's own
+    /// interior spacing is the user's.
+    #[must_use]
+    pub fn expand(&self, name: &str, typed: &str) -> Option<Expanded> {
+        let command = self.named(name)?;
+        let tail = typed
+            .trim_start()
+            .strip_prefix('/')
+            .and_then(|rest| rest.strip_prefix(name))
+            .map(str::trim_start)
+            .unwrap_or_default();
+        Some(Expanded {
+            name: command.name().to_owned(),
+            source: command.source(),
+            admitted: self.admitted_on(name).map(ToOwned::to_owned),
+            typed: typed.to_owned(),
+            task: command.expand(tail),
+        })
     }
 }
 

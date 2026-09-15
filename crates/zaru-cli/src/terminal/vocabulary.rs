@@ -26,44 +26,20 @@ use zaru_tui::shell::port::{
 ///
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-#[derive(Debug, Clone, Default)]
-pub struct Vocabulary {
-    extensions: Vec<Extension>,
-}
-
-impl Vocabulary {
-    /// The built-in vocabulary, with [ADR-0015] D1's commands this session
-    /// loaded beside it.
-    ///
-    /// **`Vocabulary::default()` is the built-ins alone**, and every surface
-    /// that is not a session uses it: a picker outside a session has no
-    /// project to have admitted anything.
-    ///
-    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-    #[must_use]
-    pub fn of(commands: &[crate::commands::Command]) -> Self {
-        Self {
-            extensions: commands
-                .iter()
-                .map(|command| Extension {
-                    slash: command.slash(),
-                    // The file's own `description` where it has one. A command
-                    // with none gets its source word rather than a blank
-                    // column or a sentence composed here: what a reader wants
-                    // from an undescribed row is where it came from.
-                    governs: command
-                        .description()
-                        .map_or_else(|| command.source().word().to_owned(), ToOwned::to_owned),
-                })
-                .collect(),
-        }
-    }
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Vocabulary;
 
 impl CommandVocabulary for Vocabulary {
-    /// This session's loaded commands, in load order.
+    /// **None.** This is the built-in vocabulary, and [ADR-0015] D1's
+    /// commands are a session's rather than a build's: they come off files
+    /// read when a session opens, they change when a project is admitted, and
+    /// every surface that is not a session has none. They ride on
+    /// `terminal::driver`'s own wrapper over this one, which is where the
+    /// loaded corpus lives for exactly as long as the pump does.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     fn extensions(&self) -> Vec<Extension> {
-        self.extensions.clone()
+        Vec::new()
     }
 
     fn namespaces(&self) -> Vec<Row> {

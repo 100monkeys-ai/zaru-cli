@@ -22,6 +22,23 @@ use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 use zaru_tui::shell::port::{CommandVocabulary, Register, TranscriptSource};
 use zaru_tui::shell::{COMPOSER_ROWS, Key, Palette, Shell, Status, Struck};
 
+/// A session with no [ADR-0015] D3 command anywhere, which is what every check
+/// in this file that predates them is about — and the accepting sibling for
+/// the ones that do not.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+fn no_commands() -> crate::terminal::driver::Extensions<'static> {
+    // A leaked `Admissions` so the borrow outlives the call: a check's own
+    // staging is the one place in this workspace where that is cheaper than
+    // threading a lifetime through every call site, and the value is a path
+    // and nothing else.
+    let admissions: &'static crate::commands::Admissions = Box::leak(Box::new(
+        crate::commands::Admissions::at("/nonexistent/admissions.jsonl"),
+    ));
+    crate::terminal::driver::Extensions::none(admissions)
+}
+
+
 const VERSION: &str = "0.0.0";
 
 /// The workspace the checks below attach their sessions to.
@@ -155,6 +172,7 @@ fn pump_staged_painting(
         &Vocabulary::default(),
         &mut turns,
         None,
+        &mut no_commands(),
     ))
     .expect("the recording terminal never fails");
     assert_eq!(
@@ -431,6 +449,7 @@ fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
                 statement: "run `rm -rf build` in /home/someone/project".to_owned(),
                 detail: Vec::new(),
                 prominent: true,
+                answers: crate::tools::prompt::SUFFIX,
             })
             .expect("the pane answered");
         assert_eq!(
@@ -461,6 +480,7 @@ fn a_pane_that_runs_out_of_keys_refuses_rather_than_declining() {
         statement: "write build/out.txt".to_owned(),
         detail: Vec::new(),
         prominent: false,
+        answers: crate::tools::prompt::SUFFIX,
     });
     let failure = outcome.expect_err("a pane with no answer must not answer");
     assert!(
@@ -489,6 +509,7 @@ fn the_question_reaches_the_painted_frame_before_a_key_is_read() {
                 statement: STATEMENT.to_owned(),
                 detail: Vec::new(),
                 prominent: true,
+                answers: crate::tools::prompt::SUFFIX,
             })
             .expect("the pane answered");
     }
@@ -1663,6 +1684,7 @@ fn a_question_crosses_to_the_shell_with_its_statement_unchanged() {
             statement: "run `rm -rf build` in /home/someone/project".to_owned(),
             detail: vec!["runs, as split:".to_owned(), "  rm".to_owned()],
             prominent,
+            answers: crate::tools::prompt::SUFFIX,
         };
         let crossed = question_for_the_shell(&question);
         assert_eq!(crossed.statement, question.statement);
@@ -1688,6 +1710,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         statement: "run `rm -rf build`".to_owned(),
         detail: Vec::new(),
         prominent: true,
+        answers: crate::tools::prompt::SUFFIX,
     }));
     let runner = crate::cli::Run {
         version: VERSION,
@@ -1703,6 +1726,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         &Vocabulary::default(),
         &mut Turnable::Cannot(Vec::new()),
         None,
+        &mut no_commands(),
     ))
     .expect("pump");
 
@@ -1778,6 +1802,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         statement: "run `rm -rf build`".to_owned(),
         detail: Vec::new(),
         prominent: false,
+        answers: crate::tools::prompt::SUFFIX,
     }));
     let _ = accepting.key(
         press(Key::Char('y')),
@@ -1797,6 +1822,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         statement: "run `rm -rf build`".to_owned(),
         detail: Vec::new(),
         prominent: false,
+        answers: crate::tools::prompt::SUFFIX,
     }));
     let _ = declining.key(
         press(Key::Enter),
@@ -2403,6 +2429,7 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
                 statement: "write build/out.txt".to_owned(),
                 detail: Vec::new(),
                 prominent: false,
+                answers: crate::tools::prompt::SUFFIX,
             })
             .expect("the pane answered")
     };
@@ -4210,6 +4237,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
                         statement: "write build/out.txt".to_owned(),
                         detail: Vec::new(),
                         prominent: false,
+                        answers: crate::tools::prompt::SUFFIX,
                     })
                     .map_err(|failure| format!("{failure}")),
             )
@@ -5165,6 +5193,7 @@ fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read()
                 statement: "Allow fs.write /tmp/note.txt?".to_owned(),
                 detail: Vec::new(),
                 prominent: false,
+                answers: crate::tools::prompt::SUFFIX,
             })
             .expect("the terminal answered")
     };
@@ -5234,6 +5263,7 @@ fn a_queued_task_runs_when_the_turn_ends_with_no_keystroke() {
         &Vocabulary::default(),
         &mut turns,
         None,
+        &mut no_commands(),
     ))
     .expect("the recording terminal never fails");
 
@@ -6072,5 +6102,256 @@ fn corpus_the_out_of_tree_marking_is_on_the_question_at_72_columns_and_before_th
         !painted.contains(marking),
         "an ordinary in-tree call's question was marked as having left the tree, so the marking \
          says nothing:\n{painted}"
+    );
+}
+
+// --------------------------------- ADR-0015 D1, D4 and D6, through the pump
+
+/// A pump over a real home and a real project, so a command check drives the
+/// paths the product writes to rather than a seam ([Testing]'s "each test owns
+/// its own state").
+///
+/// [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
+fn pump_with_commands(
+    scratch: &crate::commands::fixtures::Scratch,
+    keys: Vec<zaru_tui::shell::Input>,
+) -> (Shell, Recording, crate::commands::Admissions) {
+    let admissions = crate::commands::Admissions::under(&scratch.home());
+    let ceiling = crate::cli::layers::file_ceiling();
+    let project = scratch.project();
+    let home = scratch.home();
+    let mut extensions = crate::terminal::driver::Extensions {
+        loaded: crate::commands::load_from(Some(&home), Some(&project), &admissions, ceiling),
+        admissions: &admissions,
+        home: Some(&home),
+        directory: Some(&project),
+        ceiling,
+    };
+
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::painting(Arc::clone(&restores), 72, Palette::Monochrome);
+    let source = Source::staged(keys.into_iter().map(Into::into).collect());
+    let pace = Held::default();
+    let mut shell = shell();
+    let runner = crate::cli::Run {
+        version: VERSION,
+        report_at: REPORT_AT,
+    };
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+    let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
+        zaru_tui::shell::port::Register::Failed,
+        CANNOT.to_owned(),
+    )]);
+    futures_lite_block_on(run(
+        &mut shell,
+        &mut surface,
+        &source,
+        &pace,
+        &runner,
+        &trie,
+        &Vocabulary::default(),
+        &mut turns,
+        None,
+        &mut extensions,
+    ))
+    .expect("the recording terminal never fails");
+    drop(extensions);
+    (shell, surface, admissions)
+}
+
+/// Every frame this surface painted, as one string with its runs of
+/// whitespace collapsed.
+///
+/// The pane **wraps**, so a sentence longer than the frame is two rows and a
+/// check that searched the rows for it would be asserting about the width
+/// rather than about the words. Collapsing is what makes the needle the
+/// sentence a person read.
+fn flattened(surface: &Recording) -> String {
+    let joined = surface
+        .frames
+        .iter()
+        .map(|frame| frame.join(" "))
+        .collect::<Vec<_>>()
+        .join(" ");
+    joined.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Answer the door with `y`, then type these lines.
+fn admitting_then(lines: &[&str]) -> Vec<zaru_tui::shell::Input> {
+    let mut keys = vec![press(zaru_tui::shell::Key::Char('y'))];
+    keys.extend(typing(lines));
+    keys
+}
+
+/// Decline the door with `Esc`, then type these lines.
+fn declining_then(lines: &[&str]) -> Vec<zaru_tui::shell::Input> {
+    let mut keys = vec![press(zaru_tui::shell::Key::Esc)];
+    keys.extend(typing(lines));
+    keys
+}
+
+/// Type these lines, each followed by `Enter`.
+fn typing(lines: &[&str]) -> Vec<zaru_tui::shell::Input> {
+    lines.iter().flat_map(|line| typed(line)).collect()
+}
+
+/// ADR-0015 D4's gate, at the door: a project that offers commands is asked
+/// about once, the question names them, and **nothing loads until it is
+/// answered**.
+///
+/// **The mutant:** `run` skipping the question when `offer.pending()` is
+/// non-empty reddens the first assertion, and a cloned repository's commands
+/// would load on first run — which is the sentence D4 opens with.
+#[test]
+fn a_project_that_offers_commands_is_asked_about_once_at_the_door() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "deploy-check",
+        &crate::commands::fixtures::file("", "Check $1.\n"),
+    );
+    let (_, surface, admissions) = pump_with_commands(
+        &scratch,
+        admitting_then(&["/exit"]),
+    );
+
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains(crate::commands::ADMISSION_STATEMENT),
+        "the question is put at the door: {painted}"
+    );
+    assert!(
+        painted.contains("/deploy-check"),
+        "and it names what the project offers: {painted}"
+    );
+    assert!(
+        painted.contains("[y/N · esc declines]"),
+        "with the answers an admission takes, and never `a`: {painted}"
+    );
+    let entries = admissions.entries().expect("the file parses");
+    assert_eq!(entries.len(), 1, "one admission, written once");
+    assert_eq!(entries[0].name, "deploy-check");
+    assert_eq!(entries[0].body, "Check $1.\n");
+}
+
+/// The same door, declined: nothing is written and nothing loads, so the
+/// question stands again next session.
+///
+/// The accepting sibling of the check above, and the one that makes the gate
+/// a gate rather than a notice.
+#[test]
+fn a_declined_project_admits_nothing_and_records_nothing() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "deploy-check",
+        &crate::commands::fixtures::file("", "Check $1.\n"),
+    );
+    let (_, surface, admissions) = pump_with_commands(
+        &scratch,
+        declining_then(&["/d", "/exit"]),
+    );
+
+    assert!(
+        admissions.entries().expect("the file parses").is_empty(),
+        "a decline writes nothing, so a repository trusted later needs no row deleted"
+    );
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains("there is no `/d` command"),
+        "and the command is not loaded, so typing it is refused as it was before: {painted}"
+    );
+}
+
+/// D3's user location needs no admission, and an admitted command is a row in
+/// the `/` picker beside the namespaces.
+///
+/// **The mutant:** `WithCommands::extensions` returning nothing reddens the
+/// picker row, and a person who admitted a command would type `/` and not see
+/// it.
+#[test]
+fn a_user_command_is_a_picker_row_with_no_admission_at_all() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.user_command(
+        "deploy-check",
+        &crate::commands::fixtures::file(
+            "description = \"run the deploy checklist\"\n",
+            "Check $1.\n",
+        ),
+    );
+    let (_, surface, admissions) = pump_with_commands(
+        &scratch,
+        typing(&["/de", "/exit"]),
+    );
+
+    assert!(
+        admissions.entries().expect("the file parses").is_empty(),
+        "the user's own directory is not a supply chain and is not gated"
+    );
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains("/deploy-check") && painted.contains("run the deploy checklist"),
+        "the picker shows the command and the file's own description: {painted}"
+    );
+}
+
+/// D1's expansion, D6's attribution, and what the pane shows: the line the
+/// person typed, under the attribution, and never the template.
+///
+/// **The mutants:** the `Action::Extension` conversion echoing `task` instead
+/// of `expanded.typed` reddens the last assertion; dropping the attribution
+/// row reddens the first.
+#[test]
+fn an_expanded_command_is_attributed_and_echoes_what_was_typed() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "deploy-check",
+        &crate::commands::fixtures::file("", "Read the workflow for $1 and say yes or no.\n"),
+    );
+    let (_, surface, _) = pump_with_commands(
+        &scratch,
+        admitting_then(&["/deploy-check main", "/exit"]),
+    );
+
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains("◈ /deploy-check (project · admitted"),
+        "D6's attribution line, in the register whose marker is its own glyph: {painted}"
+    );
+    assert!(
+        painted.contains("/deploy-check main"),
+        "the pane echoes the line the person typed: {painted}"
+    );
+    assert!(
+        !painted.contains("Read the workflow for main"),
+        "and not the template it became, which belongs on the transcript: {painted}"
+    );
+}
+
+/// A file this harness will not load says so once, at the door, in ADR-0016
+/// D1's error register — and its neighbour still loads.
+///
+/// **The mutant:** dropping the refusal loop in `run` reddens the first
+/// assertion, and a person whose command does not run would have nothing to
+/// read.
+#[test]
+fn a_shadowing_file_is_refused_at_the_door_naming_the_collision() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.user_command("help", &crate::commands::fixtures::file("", "A body.\n"));
+    scratch.user_command(
+        "deploy-check",
+        &crate::commands::fixtures::file("", "Check $1.\n"),
+    );
+    let (_, surface, _) = pump_with_commands(
+        &scratch,
+        typing(&["/d", "/exit"]),
+    );
+
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains("`/help` is already this harness's"),
+        "the refusal names the built-in spelling it collided with: {painted}"
+    );
+    assert!(
+        painted.contains("/deploy-check"),
+        "and the neighbour still loads: {painted}"
     );
 }

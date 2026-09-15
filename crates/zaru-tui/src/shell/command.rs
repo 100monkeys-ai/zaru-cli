@@ -78,6 +78,22 @@ pub enum Typed {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Command(Command),
+    /// One of [ADR-0015] D1's **commands**, which the host loaded from a
+    /// file, with the line it was typed on.
+    ///
+    /// This crate knows the spelling and nothing else. A command's body is a
+    /// template the host read off disk, and expanding it is the host's — so
+    /// what crosses is the name and the typed line, and no part of the file
+    /// reaches the terminal.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Extension {
+        /// The command's name, without its slash.
+        name: String,
+        /// The whole line, verbatim, so the host can echo what was typed and
+        /// take the tail from it.
+        typed: String,
+    },
     /// A line beginning with `/` that named no command.
     Refused(Refused),
 }
@@ -235,6 +251,22 @@ pub fn read(line: &str, vocabulary: &dyn CommandVocabulary) -> Typed {
         .into_iter()
         .find(|namespace| namespace.slash == spelled)
     else {
+        // The second corpus, read **after** the namespaces and before the
+        // refusal. The order cannot matter -- ADR-0015 D2's shadowing rule
+        // means the host refuses a command named for a namespace at load, so
+        // no spelling is in both -- and it is written this way round so that
+        // a defect in that rule shows up as a command that does not run
+        // rather than as a built-in that silently stopped.
+        if vocabulary
+            .extensions()
+            .into_iter()
+            .any(|extension| extension.slash == spelled)
+        {
+            return Typed::Extension {
+                name: head.to_owned(),
+                typed: line.to_owned(),
+            };
+        }
         return Typed::Refused(Refused::UnknownCommand {
             offered: head.to_owned(),
             nearest: vocabulary.nearest(head),

@@ -94,9 +94,28 @@ use std::sync::Mutex;
 /// [ADR-0011's amendments volume 3]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface-updates-3
 pub const SUFFIX: &str = " [y/N/a · a allows this exact line for this session · esc declines] ";
 
+/// The answers [ADR-0015] D4's admission takes.
+///
+/// **`a` is absent, and that is the whole difference.** `a` allows one exact
+/// line for the rest of the session; an admission is recorded on disk and
+/// outlives every session, so there is nothing for it to add and offering it
+/// would promise a distinction that does not exist. `N` is the default here
+/// for the reason it is the default there: D4's gate is the answer to the
+/// supply-chain problem, and a gate whose default is yes is not one.
+///
+/// **Drafted under a delegated coordinator ruling of 2026-09-15, open to
+/// Jeshua's veto**, and recorded on [ADR-0015's amendments volume 2].
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0015's amendments volume 2]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility-updates-2
+pub const ADMISSION_SUFFIX: &str = " [y/N · esc declines] ";
+
 /// What ADR-0011 D3's prompt writes.
 ///
-/// The statement, then each line of [`Question::detail`], then [`SUFFIX`].
+/// The statement, then each line of [`Question::detail`], then the
+/// question's own [`answers`](Question::answers) — [`SUFFIX`] for a tool
+/// call, [`ADMISSION_SUFFIX`] for [ADR-0015](https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility)
+/// D4's admission.
 /// **Nothing else**: no second sentence, no re-derived annotation, no
 /// separate prominence marker, and nothing composed here — every line
 /// arrives from the decision. See the module documentation for where D6's
@@ -112,7 +131,7 @@ pub fn line(question: &Question) -> String {
         written.push('\n');
         written.push_str(row);
     }
-    written.push_str(SUFFIX);
+    written.push_str(question.answers);
     written
 }
 

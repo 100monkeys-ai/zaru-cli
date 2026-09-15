@@ -2712,6 +2712,7 @@ fn the_prompt_writes_its_line_and_reads_the_answer_back() {
         statement: format!("Allow {}", fixtures::nonce("statement")),
         detail: Vec::new(),
         prominent: true,
+        answers: crate::tools::prompt::SUFFIX,
     };
 
     for (typed, expected) in [

@@ -37,6 +37,22 @@ use zaru_cli::terminal::{NOTHING_CACHED, NotesTrie};
 use zaru_notes::trie::{CachedEntry, EntryKind};
 use zaru_tui::shell::{COMPOSER_ROWS, Input, Key, Palette, Queued, Shell, Status};
 
+/// A session with no [ADR-0015] D3 command anywhere, which is what every check
+/// in this file that predates them is about.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+fn no_commands() -> zaru_cli::terminal::driver::Extensions<'static> {
+    // A leaked `Admissions` so the borrow outlives the call: a check's own
+    // staging is the one place in this workspace where that is cheaper than
+    // threading a lifetime through every call site, and the value is a path
+    // and nothing else.
+    let admissions: &'static zaru_cli::commands::Admissions = Box::leak(Box::new(
+        zaru_cli::commands::Admissions::at("/nonexistent/admissions.jsonl"),
+    ));
+    zaru_cli::terminal::driver::Extensions::none(admissions)
+}
+
+
 /// A value planted in the session's transcript, so what is read back could
 /// only have come from the file the check wrote.
 const NONCE: &str = "planted-4d81f";
@@ -267,6 +283,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
             &Vocabulary::default(),
             &mut Turnable::Cannot(Vec::new()),
             None,
+            &mut no_commands(),
         ))
         .expect("the pump");
     assert_eq!(
@@ -519,6 +536,7 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
                 &Vocabulary::default(),
                 &mut Turnable::Cannot(Vec::new()),
                 None,
+                &mut no_commands(),
             ))
             .expect("the pump");
 
@@ -1762,6 +1780,7 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
             &Vocabulary::default(),
             &mut Turnable::Cannot(Vec::new()),
             None,
+            &mut no_commands(),
         ))
         .expect("the pump");
 
@@ -2334,6 +2353,7 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
             &Vocabulary::default(),
             &mut Turnable::Cannot(Vec::new()),
             None,
+            &mut no_commands(),
         ))
         .expect("the pump");
 

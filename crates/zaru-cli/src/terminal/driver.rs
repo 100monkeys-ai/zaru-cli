@@ -146,7 +146,7 @@ impl<R: Restore> Drop for Guard<R> {
 pub fn question_for_the_shell(question: &Question) -> Confirmation {
     Confirmation::new(
         question.statement.clone(),
-        crate::tools::prompt::SUFFIX.trim(),
+        question.answers.trim(),
         question.prominent,
     )
     // **The detail crosses unchanged too**, for the statement's own reason.
@@ -916,6 +916,10 @@ impl<S: Surface + Send, P: Pace + Sync> crate::credentials::port::Confirm
             statement: apex_statement(alias, grants),
             detail: Vec::new(),
             prominent: true,
+            // ADR-0007 D8's gate is a tool-call-shaped question: `a` means
+            // what it means everywhere else on this port, so the answers are
+            // the ordinary ones.
+            answers: crate::tools::prompt::SUFFIX,
         };
         crate::tools::port::Confirm::confirm(self, &question)
             .map(crate::tools::port::Answer::permits)
@@ -1777,6 +1781,120 @@ pub struct Recording<'a> {
     pub directory: &'a std::path::Path,
 }
 
+/// [ADR-0015] D3's loaded commands, and what it takes to admit more.
+///
+/// Held by the pump for exactly as long as the session lasts, because that is
+/// how long the corpus is true for: a project admitted at the door changes it
+/// once, and nothing else does.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug)]
+pub struct Extensions<'a> {
+    /// What loaded, and what the project still offers.
+    pub loaded: crate::commands::Loaded,
+    /// D4's record.
+    pub admissions: &'a crate::commands::Admissions,
+    /// The `~/.zaru`-equivalent root, or `None` on a machine with no home.
+    pub home: Option<&'a std::path::Path>,
+    /// [ADR-0011] D4's canonical root, or `None` where the process has none.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub directory: Option<&'a std::path::Path>,
+    /// The one ceiling `cli` declares, passed rather than defaulted.
+    pub ceiling: crate::config::file::SizeCeiling,
+}
+
+impl Extensions<'_> {
+    /// Nothing loaded and nothing to admit.
+    ///
+    /// The shape every check that predates commands is about, and the
+    /// accepting sibling for the ones that are not.
+    #[must_use]
+    pub fn none(admissions: &crate::commands::Admissions) -> Extensions<'_> {
+        Extensions {
+            loaded: crate::commands::load_from(
+                None,
+                None,
+                admissions,
+                crate::cli::layers::file_ceiling(),
+            ),
+            admissions,
+            home: None,
+            directory: None,
+            ceiling: crate::cli::layers::file_ceiling(),
+        }
+    }
+
+    /// Re-read both locations, which is what an admission changes.
+    fn reload(&mut self) {
+        self.loaded = crate::commands::load_from(
+            self.home,
+            self.directory,
+            self.admissions,
+            self.ceiling,
+        );
+    }
+}
+
+/// The built-in vocabulary with this session's commands beside it.
+///
+/// # A wrapper rather than a field on [`crate::terminal::Vocabulary`]
+///
+/// That type is the *build's* vocabulary — [ADR-0015] D2's closed table — and
+/// every surface that is not a session uses it. A command corpus is a
+/// session's: it is read when the session opens and it changes once, when a
+/// project is admitted. So it is held here, for exactly as long as the pump,
+/// and rebuilt in the one place an admission happens rather than mutated
+/// behind a shared reference.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+struct WithCommands<'a> {
+    built_in: &'a dyn zaru_tui::shell::CommandVocabulary,
+    extensions: Vec<zaru_tui::shell::Extension>,
+}
+
+impl<'a> WithCommands<'a> {
+    fn over(
+        built_in: &'a dyn zaru_tui::shell::CommandVocabulary,
+        commands: &[crate::commands::Command],
+    ) -> Self {
+        let loaded = commands.iter();
+        Self {
+            built_in,
+            extensions: loaded
+                .map(|command| zaru_tui::shell::Extension {
+                    slash: command.slash(),
+                    // The file's own `description` where it has one. A command
+                    // with none gets its source word rather than a blank
+                    // column or a sentence composed here: what a reader wants
+                    // from an undescribed row is where it came from.
+                    governs: command
+                        .description()
+                        .map_or_else(|| command.source().word().to_owned(), ToOwned::to_owned),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl zaru_tui::shell::CommandVocabulary for WithCommands<'_> {
+    fn extensions(&self) -> Vec<zaru_tui::shell::Extension> {
+        self.extensions.clone()
+    }
+
+    fn namespaces(&self) -> Vec<zaru_tui::shell::Namespace> {
+        self.built_in.namespaces()
+    }
+
+    fn nearest(&self, offered: &str) -> Option<&'static str> {
+        self.built_in.nearest(offered)
+    }
+
+    fn nearest_verb(&self, slash: &str, offered: &str) -> Option<&'static str> {
+        self.built_in.nearest_verb(slash, offered)
+    }
+}
+
 /// Run the shell against a terminal until the user leaves.
 ///
 /// # What a command does here is what the subcommand does outside
@@ -1809,8 +1927,58 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
     turns: &mut Turnable<'_>,
     recording: Option<Recording<'_>>,
+    extensions: &mut Extensions<'_>,
 ) -> std::io::Result<Pump> {
     let mut now = Duration::ZERO;
+
+    // ADR-0015 D4's gate, put **once, at the door**, before a keystroke is
+    // read. It is asked here rather than in `terminal::open` for a measured
+    // reason: that module is allowed exactly one `block_on` -- the outer one
+    // the whole session runs on -- and a second would make "no `block_on`
+    // inside a `block_on`" a property nothing could check. The pump is
+    // already inside the runtime, so this awaits.
+    //
+    // A refusal is shown afterwards either way: a file this harness would not
+    // load is said so once, in ADR-0016 D1's error register, because
+    // swallowing it leaves a person whose command does not run with nothing
+    // to read.
+    if let Some(directory) = extensions.directory
+        && !extensions.loaded.offer.pending().is_empty()
+    {
+        let question = Question {
+            statement: crate::commands::ADMISSION_STATEMENT.to_owned(),
+            // The commands themselves, one per row, which is what
+            // `Question::detail` is for: what the question is *about*, shown
+            // under the sentence and composed by the decision rather than by
+            // the renderer.
+            detail: extensions
+                .loaded
+                .offer
+                .pending()
+                .iter()
+                .map(crate::commands::Command::slash)
+                .collect(),
+            prominent: true,
+            answers: crate::tools::prompt::ADMISSION_SUFFIX,
+        };
+        if ask_at_the_door(shell, surface, source, &question).await? {
+            if let Err(failure) = extensions.admissions.admit(
+                directory,
+                extensions.loaded.offer.pending(),
+                &crate::commands::date::today(),
+            ) {
+                shell.notice(Line::new(Register::Failed, failure.to_string()));
+            }
+            extensions.reload();
+        }
+    }
+    for refusal in &extensions.loaded.refusals {
+        shell.notice(Line::new(Register::Failed, refusal.to_string()));
+    }
+    let with_commands = WithCommands::over(vocabulary, &extensions.loaded.commands);
+    let vocabulary: &dyn zaru_tui::shell::CommandVocabulary = &with_commands;
+    let commands = &extensions.loaded;
+
     surface.draw(shell)?;
 
     // What a turn left queued, waiting to be submitted without a keystroke.
@@ -1869,8 +2037,33 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
             shell.notice(Line::new(Register::Failed, failure.to_string()));
         }
 
+        // [ADR-0015] D1's command, expanded before the match so that what runs
+        // it is the one arm that runs a task: a command *is* a task, and a
+        // second turn-running arm would be a second place the session's rules
+        // are kept.
+        let mut expanded: Option<crate::commands::Expanded> = None;
+        let action = match action {
+            Action::Extension { name, typed } => match commands.expand(&name, &typed) {
+                Some(it) => {
+                    let task = it.task.clone();
+                    expanded = Some(it);
+                    Action::Task(task)
+                }
+                // The corpus the grammar read and the corpus this expands from
+                // are the same value, so this is unreachable from the product.
+                // It is an arm rather than an `expect` because a harness that
+                // aborted on a command a person typed would be a defect report
+                // where a refusal belongs.
+                None => Action::Idle,
+            },
+            other => other,
+        };
+
         match action {
             Action::Idle => {}
+            // Converted above; this arm exists so the match stays exhaustive
+            // over `Action` and a tenth variant cannot arrive unanswered.
+            Action::Extension { .. } => {}
             Action::Leave(leaving) => {
                 surface.draw(shell)?;
                 return Ok(Pump {
@@ -2081,10 +2274,49 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // work. Accepted 2026-09-06 on ADR-0010 D2, open to Jeshua's
                 // veto, with that paragraph on the record rather than only
                 // here.
-                shell.notice(crate::terminal::vocabulary::spoken(
-                    crate::session::Voice::User,
-                    &task,
-                ));
+                //
+                // **An expanded command paints two lines and echoes the line
+                // the person typed**, not the template it became. [ADR-0015]
+                // D6's attribution goes above it, in the register whose marker
+                // is D6's own glyph, and the transcript keeps both: the record
+                // below carries the typed line and the `Conversation` the turn
+                // writes carries the expansion, so a `--resume` paints what
+                // this pane painted.
+                match &expanded {
+                    Some(expanded) => {
+                        for line in crate::terminal::vocabulary::attributed_lines(
+                            &crate::session::Attribution {
+                                n: 0,
+                                name: expanded.name.clone(),
+                                source: expanded.source.word().to_owned(),
+                                admitted: expanded.admitted.clone(),
+                                typed: expanded.typed.clone(),
+                            },
+                        ) {
+                            shell.notice(line);
+                        }
+                        shell.notice(crate::terminal::vocabulary::spoken(
+                            crate::session::Voice::User,
+                            &expanded.typed,
+                        ));
+                    }
+                    None => shell.notice(crate::terminal::vocabulary::spoken(
+                        crate::session::Voice::User,
+                        &task,
+                    )),
+                }
+
+                // ADR-0010 D2's ninth producer, written **before** the turn so
+                // `cat` reads in the order the turn happened. A session with
+                // no provider writes none: there is no turn for it to be the
+                // attribution of.
+                if let (Some(expanded), Turnable::Ready(turns)) = (&expanded, &*turns) {
+                    crate::compose::turn::record_the_attribution(
+                        turns.session,
+                        turns.next,
+                        expanded,
+                    );
+                }
 
                 // ADR-0008 D1: turns are the outer loop's unit, so a second
                 // task in the same session is the next turn. The session stays
@@ -2909,6 +3141,69 @@ pub enum Asked {
     Declined,
     /// The terminal stopped answering before the question was.
     Ended,
+}
+
+/// Put one [ADR-0011] D3 confirmation to the person, from outside a turn.
+///
+/// # It awaits, where [`PaneConfirm`] cannot, and for the same reason
+///
+/// `PaneConfirm::confirm` spins on `Source::try_next` because it runs *inside*
+/// a turn's poll. This question is raised **before the pump**, with nothing
+/// running, so it awaits `Source::next` — the `poll_fn` that takes the
+/// receiver's lock for one poll and never across a suspension.
+///
+/// # It is not a third confirmer
+///
+/// It is the same `Confirmation` the pane already stands and the same
+/// `Shell::answer` it is resolved by. What differs is only who raises it, and
+/// `this_harness_has_exactly_two_confirmers_and_the_masked_question_is_not_a_third`
+/// stays green unedited: nothing here implements
+/// [`crate::tools::port::Confirm`].
+///
+/// A terminal that stops answering is `Ok(false)`, which is a decline: a
+/// question that could not be answered has not been said yes to, and
+/// [ADR-0015] D4's gate is one where the safe direction is the one that does
+/// not load.
+///
+/// # Errors
+///
+/// The terminal's, from painting the frame.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+pub async fn ask_at_the_door<S: Surface + Send>(
+    shell: &mut Shell,
+    surface: &mut S,
+    source: &Source,
+    question: &Question,
+) -> std::io::Result<bool> {
+    shell.ask(question_for_the_shell(question));
+    surface.draw(shell)?;
+
+    let mut now = Duration::ZERO;
+    loop {
+        let Some(struck) = source.next().await else {
+            return Ok(false);
+        };
+        now += Duration::from_millis(1);
+        let region = surface
+            .area()
+            .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
+        shell.struck(struck, region, now, &NoEntries, &NoVocabulary);
+        surface.draw(shell)?;
+
+        if let Some(answered) = shell.answer() {
+            // **`a` admits.** It is not offered -- `prompt::ADMISSION_SUFFIX`
+            // names `y`, `N` and `esc` -- and a person who types it anyway has
+            // said yes to a thing that already outlives the session, so
+            // reading it as anything else would refuse an answer that is not
+            // ambiguous.
+            return Ok(matches!(
+                answered,
+                zaru_tui::shell::Answered::Once | zaru_tui::shell::Answered::ForThisSession
+            ));
+        }
+    }
 }
 
 /// Stand [ADR-0011] D3's masked question and pump the terminal until it is

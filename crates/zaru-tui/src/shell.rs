@@ -336,6 +336,20 @@ pub enum Action {
     /// the host refuses it with the same sentence the out-of-session surface
     /// already prints.
     Task(String),
+    /// The user typed one of [ADR-0015] D1's commands, which the host loaded
+    /// from a file.
+    ///
+    /// The host expands it and runs the result as the turn's task. This crate
+    /// carries the name and the line and never the body — see
+    /// [`Typed::Extension`](crate::shell::Typed::Extension).
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Extension {
+        /// The command's name, without its slash.
+        name: String,
+        /// The whole line, verbatim.
+        typed: String,
+    },
     /// The user is leaving.
     Leave(Leaving),
 }
@@ -1667,6 +1681,7 @@ impl Shell {
             Typed::Leave => Action::Leave(Leaving::Word),
             Typed::Task(task) => Action::Task(task),
             Typed::Command(command) => Action::Run(command),
+            Typed::Extension { name, typed } => Action::Extension { name, typed },
             Typed::Refused(refusal) => {
                 self.notice(Line::new(Register::Failed, refusal.to_string()));
                 Action::Idle

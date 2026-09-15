@@ -1136,7 +1136,10 @@ fn the_leave_rule_has_one_spelling_and_the_shell_uses_it() {
                     let acted = shell.key(input, pane(), NOW, &TrieOf::new(0), &StagedVocabulary);
                     let acted_leave = match acted {
                         Action::Leave(leaving) => Some(leaving),
-                        Action::Idle | Action::Run(_) | Action::Task(_) => None,
+                        Action::Idle
+                        | Action::Run(_)
+                        | Action::Task(_)
+                        | Action::Extension { .. } => None,
                     };
                     assert_eq!(
                         ruled, acted_leave,

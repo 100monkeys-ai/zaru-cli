@@ -709,6 +709,32 @@ fn one_session(
         }
     }
 
+    // ADR-0015 D3's two built locations, read once before the terminal is
+    // busy. **D4's gate is not asked here**: `driver::run` puts it, because
+    // this module is allowed exactly one `block_on` -- the outer one the whole
+    // session runs on -- and a second would make "no `block_on` inside a
+    // `block_on`" a property nothing could check. The pump is already inside
+    // the runtime and awaits.
+    //
+    // A machine with no home and a directory with no `.zaru/commands/` both
+    // load nothing, silently, which is ADR-0002 D1: the question is caused by
+    // a project offering something this user has not answered for, and by
+    // nothing else.
+    let admissions = crate::commands::Admissions::under(store.root());
+    let ceiling = crate::cli::layers::file_ceiling();
+    let mut extensions = crate::terminal::driver::Extensions {
+        loaded: crate::commands::load_from(
+            Some(store.root()),
+            here.as_ref().map(crate::tools::WorkingDirectory::root),
+            &admissions,
+            ceiling,
+        ),
+        admissions: &admissions,
+        home: Some(store.root()),
+        directory: here.as_ref().map(crate::tools::WorkingDirectory::root),
+        ceiling,
+    };
+
     // ADR-0010 D3's checkpoint, read back into ADR-0013 D1's layer 6, before
     // the terminal is taken so a refusal reaches a terminal that still echoes.
     let context = restored_context(
@@ -802,6 +828,7 @@ fn one_session(
                     history: &history,
                     directory: here.root(),
                 }),
+            &mut extensions,
         ))
     };
 

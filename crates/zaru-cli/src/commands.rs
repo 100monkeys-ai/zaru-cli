@@ -76,6 +76,7 @@ mod tests;
 
 pub use admission::{Admission, AdmissionError, Admissions, ADMISSIONS_FILE};
 pub use document::{
-    Command, CommandRefused, Expanded, Source, COMMANDS_DIRECTORY, COMMAND_EXTENSION,
+    Command, CommandRefused, Expanded, Source, ADMISSION_STATEMENT, COMMANDS_DIRECTORY,
+    COMMAND_EXTENSION,
 };
 pub use load::{load_from, Loaded, Offer};

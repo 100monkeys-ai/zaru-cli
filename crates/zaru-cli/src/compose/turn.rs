@@ -1698,6 +1698,46 @@ pub(super) fn record_the_failure(session: &crate::session::Session, classified: 
     }
 }
 
+/// Write [ADR-0010] D2's **ninth** producer: what a command contributed.
+///
+/// # Why it is here and not in the terminal
+///
+/// [`record_the_failure`] above is the shape this follows: one `Record`
+/// variant, one construction of it, and callers that decide *when*. The
+/// terminal decides that a typed line was a command; what a transcript record
+/// of that looks like is this module's, beside the two halves of
+/// [`crate::session::Record::Conversation`] it sits between.
+///
+/// **It is written before the turn**, so `cat` reads in the order the turn
+/// happened: the attribution, then the user's half carrying the expanded
+/// text, then the work, then the answer.
+///
+/// A transcript that will not take the record is not reported. The turn is
+/// what the reader asked for, and replacing it with the reason its
+/// bookkeeping failed is strictly less useful — [ADR-0016] D6's "partial
+/// success is reported as partial", which is the rule [`record_the_failure`]
+/// already applies to itself.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+pub fn record_the_attribution(
+    session: &crate::session::Session,
+    n: u32,
+    expanded: &crate::commands::Expanded,
+) {
+    if let Ok(mut transcript) = Transcript::append_to(session.transcript_path()) {
+        let _ = transcript.record(&crate::session::Record::Attribution(
+            crate::session::Attribution {
+                n,
+                name: expanded.name.clone(),
+                source: expanded.source.word().to_owned(),
+                admitted: expanded.admitted.clone(),
+                typed: expanded.typed.clone(),
+            },
+        ));
+    }
+}
+
 /// What the reader is shown, and what the process exits with.
 ///
 /// [ADR-0012] D7's "per session on exit" is the usage line, read off the

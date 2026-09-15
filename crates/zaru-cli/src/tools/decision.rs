@@ -655,6 +655,7 @@ impl Decision {
                 statement: format!("Allow {}?", self.entry.render()),
                 detail: self.detail.clone(),
                 prominent: self.prominent,
+                answers: crate::tools::prompt::SUFFIX,
             }),
         }
     }

@@ -39,6 +39,25 @@ pub const COMMANDS_DIRECTORY: &str = "commands";
 /// The extension D3 spells: `<name>.md`.
 pub const COMMAND_EXTENSION: &str = "md";
 
+/// What [ADR-0015] D4's gate says when a project offers something new.
+///
+/// D4 names no sentence, so this is one, **drafted under a delegated
+/// coordinator ruling of 2026-09-15 and open to Jeshua's veto**, in the shape
+/// `compose::prose`'s constants and `tools::prompt::SUFFIX` already have: no
+/// record supplies a line and one is needed, so it is named once here with
+/// its reasoning rather than typed at a call site.
+///
+/// It says three things and nothing else, which is what D4's own Negative
+/// section asks for — "the report must be short and the admission one
+/// keystroke". That this directory offers commands; that nothing has loaded
+/// them; and what the question is. The commands themselves are the question's
+/// `detail` rather than words in this sentence, so a project with nine of
+/// them makes the list longer and this line does not move.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+pub const ADMISSION_STATEMENT: &str =
+    "this project offers commands, and none of them is loaded until you admit it. Admit them here?";
+
 /// Which of [ADR-0015] D3's locations a command came from.
 ///
 /// **Two variants, not three.** The served location loads nothing, so a

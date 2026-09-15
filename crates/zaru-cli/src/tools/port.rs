@@ -138,6 +138,28 @@ pub struct Question {
     /// Whether D6 matched, so a renderer can raise the prompt's prominence
     /// without re-deriving why.
     pub prominent: bool,
+    /// The answers this question takes, and which of them is the default.
+    ///
+    /// # Carried by the question rather than by the renderer, since
+    /// 2026-09-15
+    ///
+    /// It was [`prompt::SUFFIX`](crate::tools::prompt::SUFFIX) read directly
+    /// at both rendering sites, which was right while every question was a
+    /// tool call. [ADR-0015] D4's admission is a second **kind** of question
+    /// on this one port, and it takes `y`, `N` and `Esc` and **not** `a`:
+    /// `a` allows one call for the rest of the session, and an admission
+    /// outlives the session by construction, so there is nothing for it to
+    /// add.
+    ///
+    /// Carrying it here rather than branching in the renderers is what makes
+    /// the choice the **question's**: a third kind cannot be added without
+    /// choosing an answers line for it, because this field has no default.
+    /// And it keeps D3's own rule — what the user was told and what the
+    /// harness believes it asked cannot drift apart — true of the answers as
+    /// well as of the statement.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub answers: &'static str,
 }
 
 /// Why an ask did not reach the user.
