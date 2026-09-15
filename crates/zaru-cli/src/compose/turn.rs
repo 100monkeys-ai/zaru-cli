@@ -30,7 +30,7 @@
 //! is reachable on `main` and which two records say is not. This adds:
 //!
 //! - **`1`**, the work's own failure: a turn the model stopped, or one that
-//!   reached [`TOOL_CALL_CEILING`](crate::cli::layers::TOOL_CALL_CEILING) with
+//!   reached a configured `runtime.max_tool_exchanges` limit with
 //!   the model still asking for tools. D1 row 1 and D5's own "loop exhausted".
 //!   **It needs a real model**, so on the artefact it is behind a key.
 //! - **`3`**, environmental: a provider that answered `5xx` or a socket that
@@ -297,6 +297,8 @@ pub struct Prepared {
     iterating: bool,
     /// ADR-0001 D3's iteration ceiling for this run.
     ceiling: zaru_core::iteration::Ceiling,
+    /// ADR-0034's optional outer tool-call exchange limit.
+    tool_call_ceiling: zaru_core::tool_call::ToolCallCeiling,
     mode: Mode,
     model: crate::providers::ModelId,
     here: WorkingDirectory,
@@ -836,6 +838,12 @@ pub fn prepare(
             return Err(Box::new(Ran::refused(Surface::iteration_ceiling(&refusal))));
         }
     };
+    let tool_call_ceiling = match crate::runtime::tool_call_ceiling_for(resolution) {
+        Ok(ceiling) => ceiling,
+        Err(refusal) => {
+            return Err(Box::new(Ran::refused(Surface::iteration_ceiling(&refusal))));
+        }
+    };
 
     // --- The key, where this kind needs one, and the redactor always -------
     //
@@ -1080,6 +1088,7 @@ pub fn prepare(
         declared,
         iterating,
         ceiling,
+        tool_call_ceiling,
         mode,
         model,
         here,
@@ -1590,7 +1599,7 @@ async fn ran(
         let ran = tool_call::run(
             n,
             start,
-            layers::tool_call_ceiling(),
+            prepared.tool_call_ceiling,
             prepared.witness,
             Ports {
                 model: &provider,

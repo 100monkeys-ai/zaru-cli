@@ -1609,6 +1609,52 @@ fn a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it() {
     );
     println!("{refusal}");
 }
+
+#[test]
+fn a_project_may_set_or_lower_a_tool_exchange_limit_but_not_raise_one() {
+    use crate::config::{ConfigRefused, Contribution, Layer, Resolution, Source, Table, Value};
+
+    let document = |number: i64| {
+        let mut runtime = Table::new();
+        runtime.insert("max_tool_exchanges", Value::Integer(number));
+        let mut document = Table::new();
+        document.insert(crate::manifest::RUNTIME_TABLE, Value::Table(runtime));
+        document
+    };
+    let fold = |user: Option<i64>, project: i64| {
+        let mut layers = Vec::new();
+        if let Some(user) = user {
+            layers.push(Contribution::new(
+                Layer::User,
+                Source::named("~/.zaru/config.toml"),
+                document(user),
+            ));
+        }
+        layers.push(Contribution::new(
+            Layer::Project,
+            Source::named("./zaru.toml"),
+            document(project),
+        ));
+        Resolution::resolve(&crate::cli::layers::schema(), layers)
+    };
+
+    let introduced = fold(None, 9).expect("a project may introduce a finite limit");
+    assert_eq!(
+        crate::runtime::tool_call_ceiling_for(&introduced)
+            .expect("a positive limit")
+            .limit(),
+        Some(9)
+    );
+    let lowered = fold(Some(9), 3).expect("a project may lower a user limit");
+    assert_eq!(
+        crate::runtime::tool_call_ceiling_for(&lowered)
+            .expect("a positive limit")
+            .limit(),
+        Some(3)
+    );
+    let refusal = fold(Some(3), 9).expect_err("a project may not raise a user limit");
+    assert!(matches!(refusal, ConfigRefused::ProjectMayNotRaise { .. }));
+}
 /// A store holding a provider key and no Notes token still answers.
 ///
 /// **Found by running rather than by reading**, on 2026-09-05: `notes tokens`
@@ -1704,27 +1750,17 @@ fn provider_keys_over_an_empty_store_names_the_command_and_the_kinds() {
 // the constructor validates, and an ordering between two numbers that answer
 // different questions.
 
-/// The tool-call ceiling clears the floor its own mechanism sets.
-///
-/// `TOOL_CALL_CEILING`'s documentation says the floor is two, because a turn
-/// that calls a tool spends one exchange asking and a second answering. That
-/// is a property of `zaru_core::tool_call::run` rather than of the number, and
-/// it is what makes any ceiling of one unable to complete a tool-using turn.
-///
-/// The mutant: a ceiling of one, which is a value
-/// `ToolCallCeiling::new` accepts — so the constructor cannot hold this and a
-/// check has to. It printed *"a ceiling of 1 cannot both call a tool and
-/// answer: ADR-0008 D1's cycle needs one exchange to ask and a second to
-/// reply"*.
+/// An absent outer-loop configuration means unlimited exchanges.
 #[test]
-fn the_tool_call_ceiling_clears_the_floor_the_mechanism_sets() {
-    let ceiling = crate::cli::layers::tool_call_ceiling().get();
-    assert!(
-        ceiling >= 2,
-        "a ceiling of {ceiling} cannot both call a tool and answer: ADR-0008 D1's cycle needs one \
-         exchange to ask and a second to reply"
+fn an_absent_tool_call_exchange_limit_is_unlimited() {
+    let resolution = crate::config::Resolution::resolve(&crate::cli::layers::schema(), [])
+        .expect("an empty configuration resolves");
+    assert_eq!(
+        crate::runtime::tool_call_ceiling_for(&resolution)
+            .expect("absence is unlimited")
+            .limit(),
+        None
     );
-    assert_eq!(ceiling, crate::cli::layers::TOOL_CALL_CEILING);
 }
 
 /// The three byte numbers answer two different questions, and the smaller one

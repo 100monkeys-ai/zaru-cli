@@ -87,7 +87,7 @@ pub use flag::Flag;
 pub use invocation::{CommandLine, Overrides, Request};
 pub use layers::{
     FILE_CEILING_BYTES, Files, Flags, LoadFailure, OUTPUT_BUDGET_BYTES, PATTERN_CEILING_BYTES,
-    PROCESS_CEILING, ProjectFile, SEARCH_CEILING_BYTES, TOOL_CALL_CEILING, UserFile,
+    PROCESS_CEILING, ProjectFile, SEARCH_CEILING_BYTES, UserFile,
 };
 pub use namespace::Namespace;
 pub use parse::{parse, parse_process};

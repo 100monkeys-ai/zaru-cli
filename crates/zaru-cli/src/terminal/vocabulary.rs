@@ -457,9 +457,13 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
     use zaru_core::tool_call::{Event, TurnEnding};
 
     match event {
-        Event::TurnStarted { n, of } => {
-            Line::new(Register::Plain, format!("turn {n}, up to {of} exchange(s)"))
-        }
+        Event::TurnStarted { n, of } => Line::new(
+            Register::Plain,
+            match of {
+                Some(of) => format!("turn {n}, up to {of} exchange(s)"),
+                None => format!("turn {n}, unlimited exchanges"),
+            },
+        ),
         Event::ModelResponded {
             round,
             tokens,

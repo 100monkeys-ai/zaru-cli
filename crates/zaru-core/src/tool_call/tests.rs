@@ -335,6 +335,49 @@ async fn the_ceiling_comes_from_the_caller_and_bounds_the_exchanges() {
     }
 }
 
+/// An unlimited caller policy does not inherit the former eight-exchange default.
+#[tokio::test]
+async fn an_unlimited_turn_can_answer_after_more_than_eight_exchanges() {
+    let clock = manual_clock();
+    let mut answers: Vec<Answer> = (0..9)
+        .map(|_| Answer::Calls(vec![request("c", "fs.read")]))
+        .collect();
+    answers.push(Answer::Text("done".to_owned()));
+    let model = StagedModel::new(answers, Arc::clone(&clock), Duration::ZERO);
+    let mut executor = StagedTools::new(
+        (0..9).map(|_| Act::Return(nonce("out"))).collect(),
+        tools(),
+        Arc::clone(&clock),
+        Duration::ZERO,
+    );
+    let context = RecordingContext::default();
+    let mut recorder = Recorder::default();
+
+    let outcome = run::<_, _, _, _, _, StagedInner>(
+        1,
+        Start::Task("t"),
+        ToolCallCeiling::unlimited(),
+        ToolCalling::required(&model, "staged").expect("can call tools"),
+        Ports {
+            model: &model,
+            tools: &mut executor,
+            context: &context,
+            clock: &*clock,
+            redactor: &NothingHeld,
+        },
+        None,
+        &mut [&mut recorder],
+    )
+    .await
+    .expect("no port failed");
+
+    assert!(matches!(outcome, Outcome::Answered { rounds: 10, .. }));
+    assert!(matches!(
+        recorder.events.first(),
+        Some(Event::TurnStarted { of: None, .. })
+    ));
+}
+
 /// ADR-0009 D4: "A project with no `zaru.toml` runs the tool-call loop only."
 ///
 /// Two mutants, and the second is the one that matters. Entering the inner

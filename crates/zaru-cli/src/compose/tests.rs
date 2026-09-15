@@ -253,7 +253,7 @@ fn every_event_the_loop_emits_becomes_one_transcript_line() {
         .expect("the scratch root is writable");
 
     let staged = [
-        Event::TurnStarted { n: 1, of: 8 },
+        Event::TurnStarted { n: 1, of: Some(8) },
         Event::ToolRequested {
             round: 1,
             call: 1,

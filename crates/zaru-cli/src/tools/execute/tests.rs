@@ -880,7 +880,7 @@ fn a_turn_that_ran_some_calls_and_had_others_refused_reports_both() {
     use zaru_core::tool_call::Event;
 
     let stream = vec![
-        Event::TurnStarted { n: 1, of: 4 },
+        Event::TurnStarted { n: 1, of: Some(4) },
         Event::ToolCompleted {
             round: 1,
             call: 1,

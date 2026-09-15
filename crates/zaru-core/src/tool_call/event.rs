@@ -96,8 +96,8 @@ pub enum Event {
     TurnStarted {
         /// Which turn of the session this is.
         n: u32,
-        /// The turn's ceiling, so a consumer can render "2 of 5".
-        of: u32,
+        /// The turn's finite ceiling, when one was configured.
+        of: Option<u32>,
     },
     /// The model answered one exchange.
     ModelResponded {

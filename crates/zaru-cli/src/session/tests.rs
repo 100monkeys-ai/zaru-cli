@@ -1457,7 +1457,7 @@ fn a_resumed_session_continues_the_turn_count_from_the_transcript() {
     for n in [1u32, 5, 2] {
         transcript
             .record(&Record::TurnLoop(
-                zaru_core::tool_call::Event::TurnStarted { n, of: 8 },
+                zaru_core::tool_call::Event::TurnStarted { n, of: Some(8) },
             ))
             .expect("could not append");
     }
