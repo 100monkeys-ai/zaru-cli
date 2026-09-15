@@ -2998,10 +2998,23 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[must_use]
 pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
+    // **One of these lines may be the model's own prose, and only that one is
+    // parsed as CommonMark.** Which it is comes from the producer -- see
+    // `Ran::answer_at` -- rather than from arithmetic over the list, because
+    // the list also carries ADR-0011 D2's notice, ADR-0013 D2's compaction
+    // announcements and ADR-0012 D7's usage line, each of which carries
+    // back-ticks and asterisks as ordinary characters.
     let mut lines: Vec<Line> = ran
         .lines
         .iter()
-        .map(|text| Line::new(Register::Plain, text.clone()))
+        .enumerate()
+        .map(|(at, text)| {
+            if ran.answer_at == Some(at) {
+                Line::answer(Register::Plain, "", text)
+            } else {
+                Line::new(Register::Plain, text.clone())
+            }
+        })
         .collect();
     if let Exit::Failed(classified) = &ran.exit {
         lines.extend(crate::terminal::vocabulary::refusal_lines(classified));

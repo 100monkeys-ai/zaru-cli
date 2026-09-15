@@ -341,7 +341,18 @@ fn lines_for(record: &Record) -> Vec<Line> {
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 pub(crate) fn spoken(voice: Voice, text: &str) -> Line {
-    Line::new(Register::Plain, format!("{}: {text}", voice.spoken_as()))
+    match voice {
+        // **A person's typed line is not a document.** It is parsed by
+        // nothing, which is what keeps a task that names `**/*.rs` or a path
+        // with underscores on the pane exactly as it was typed.
+        Voice::User => Line::new(Register::Plain, format!("{}: {text}", voice.spoken_as())),
+        // The model's half is prose the model wrote, so it is parsed -- and
+        // the `zaru: ` label is handed across as a **lead** rather than
+        // prepended to the text, because parsing `zaru: ## Greetings` makes it
+        // a paragraph and the replayed session would then render differently
+        // from the session that produced it. See `Prose::CommonMark`.
+        Voice::Zaru => Line::answer(Register::Plain, &format!("{}: ", voice.spoken_as()), text),
+    }
 }
 
 /// One of [ADR-0008] D1's **outer** loop's seven events, as a sentence.

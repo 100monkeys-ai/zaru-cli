@@ -110,6 +110,32 @@ use zaru_core::tool_call::{self, Outcome as TurnOutcome, Ports, Start, ToolCalli
 pub struct Ran {
     /// Standard output.
     pub lines: Vec<String>,
+    /// Which of [`Self::lines`] is the **model's** answer, if one of them is.
+    ///
+    /// # Why the producer says so rather than the renderer guessing
+    ///
+    /// By the time a turn is rendered its lines also carry [ADR-0011] D2's
+    /// not-a-sandbox notice, [ADR-0013] D2's compaction announcements and
+    /// [ADR-0012] D7's usage line — the enumeration `answer_of` already makes
+    /// one function down, named in prose rather than linked because it is
+    /// private and rustdoc is right to refuse a public page pointing at
+    /// something a reader of that page cannot open. Only one of them is prose
+    /// a model wrote, and
+    /// only that one is parsed as CommonMark when the pane paints it. A
+    /// consumer that recovered the index by arithmetic over that list would be
+    /// re-deriving something this function knows, and would be wrong the first
+    /// time a producer was added.
+    ///
+    /// **`None` for a turn that answered nothing, and for the iteration loop's
+    /// own `satisfied` sentence**, which is the harness's words rather than a
+    /// model's: `answer_of` records it as the turn's `zaru` half because the
+    /// transcript wants what the reader was shown, and the pane does not parse
+    /// it because nothing about it is a document.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    pub answer_at: Option<usize>,
     /// [ADR-0016] D5's code.
     ///
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
@@ -122,6 +148,7 @@ impl Ran {
         Self {
             lines: Vec::new(),
             exit: Exit::Failed(classified),
+            answer_at: None,
         }
     }
 
@@ -142,6 +169,7 @@ impl Ran {
         Self {
             lines,
             exit: Exit::Failed(classified),
+            answer_at: None,
         }
     }
 }
@@ -1716,8 +1744,10 @@ fn rendered(
 
     let mut lines = core::mem::take(lines);
     let answer = answer_of(outcome);
+    let mut answer_at = None;
     let exit = match outcome {
         TurnOutcome::Answered { text, .. } => {
+            answer_at = Some(lines.len());
             lines.push(text.clone());
             Exit::Succeeded
         }
@@ -1752,7 +1782,14 @@ fn rendered(
         lines.push(String::new());
         lines.push(crate::cli::render::usage(&usage));
     }
-    (Ran { lines, exit }, answer)
+    (
+        Ran {
+            lines,
+            exit,
+            answer_at,
+        },
+        answer,
+    )
 }
 
 /// A current-thread runtime, built once by whoever is going to poll a turn.
