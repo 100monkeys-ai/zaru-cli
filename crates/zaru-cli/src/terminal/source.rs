@@ -137,7 +137,7 @@ pub const TICK: Duration = Duration::from_millis(100);
 /// # It bounds nothing and cancels nothing
 ///
 /// This is a threshold a repaint is compared against, not a deadline. What
-/// bounds a quiet exchange is `crate::providers::gemini::EXCHANGE_TIMEOUT`,
+/// bounds a quiet exchange is `crate::providers::transport::EXCHANGE_TIMEOUT`,
 /// which is a different number owned by a different record.
 ///
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative

@@ -1795,24 +1795,38 @@ fn the_pressure_threshold_is_below_the_window_rather_than_at_it() {
     }
 }
 
-/// The process ceiling bounds a build rather than a request, so it is longer
-/// than the provider's own exchange timeout.
+/// The process ceiling and the exchange ceiling are two numbers, and neither
+/// is the other.
 ///
-/// `PROCESS_CEILING`'s documentation says the sixty seconds
-/// `providers::gemini::EXCHANGE_TIMEOUT` uses is deliberately not reused,
-/// because the two bound different things. Reusing it is the mutant, and it
-/// printed *"a command is a build or a test suite and a request is not: 60s
-/// against the provider's 60s"*.
+/// **This check read the other way until 2026-09-15, and the premise it
+/// asserted was reversed rather than refined.** It said "the process ceiling
+/// bounds a build rather than a request, so it is longer than the provider's
+/// own exchange timeout", which was true while the `gemini` client gave an
+/// exchange sixty seconds. Under the `exchange-ceiling` ruling every kind gets
+/// ten minutes, because a reasoning exchange is bounded by a model that thinks
+/// and a `cmd.run` by a machine that does not — so the exchange is now the
+/// longer of the two and the old ordering cannot be asserted at all.
+///
+/// **What survives is the property the ordering was standing in for**: the two
+/// are supplied by different records for different reasons and one is never
+/// derived from the other. Reusing either for the other is the mutant, and it
+/// printed *"a command is a build or a test suite and an exchange is not, so
+/// neither ceiling is the other's: 600s against the provider's 600s"*.
 #[test]
-fn the_process_ceiling_is_longer_than_the_providers_exchange_timeout() {
+fn the_process_ceiling_and_the_exchange_ceiling_are_separate_numbers() {
     let ceiling = crate::cli::layers::process_ceiling().get();
-    let exchange = crate::providers::gemini::EXCHANGE_TIMEOUT;
-    assert!(
-        ceiling > exchange,
-        "a command is a build or a test suite and a request is not: {ceiling:?} against the \
-         provider's {exchange:?}"
+    let exchange = crate::providers::transport::EXCHANGE_TIMEOUT;
+    assert_ne!(
+        ceiling, exchange,
+        "a command is a build or a test suite and an exchange is not, so neither ceiling is the \
+         other's: {ceiling:?} against the provider's {exchange:?}"
     );
     assert_eq!(ceiling, crate::cli::layers::PROCESS_CEILING);
+    assert_eq!(
+        ceiling,
+        core::time::Duration::from_secs(120),
+        "the process ceiling is two minutes, which is this composition's own number"
+    );
 }
 
 // ---------------------------------------------------------------------------

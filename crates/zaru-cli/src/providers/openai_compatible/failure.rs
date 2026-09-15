@@ -215,7 +215,7 @@ impl std::error::Error for OpenAiCompatibleFailure {}
 /// sentence from the same three points and now call the same function; a walk
 /// of a dependency's error chain is not this kind's, and it was here only
 /// because this kind was the first measured against a closed port.
-pub use crate::providers::transport::{CHAIN_DEPTH, transport_detail};
+pub use crate::providers::transport::{CHAIN_DEPTH, transport_detail, transport_detail_within};
 
 impl OpenAiCompatibleFailure {
     /// `detail`, unless it quotes `key`.

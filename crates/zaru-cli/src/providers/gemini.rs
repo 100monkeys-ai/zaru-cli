@@ -119,32 +119,8 @@ use crate::providers::port::Provider;
 use crate::providers::resolution::ModelId;
 use crate::providers::usage::TokenUsage;
 use std::sync::Mutex;
-use std::time::Duration;
 use zaru_core::iteration::PortFailure;
 use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
-
-/// How long one exchange may take before the client gives up.
-///
-/// **A ceiling rather than a policy.** No record states a timeout, and one
-/// that a caller cannot see is a value chosen for a different caller — so
-/// this is a named constant a check can read, not a hidden default, and it is
-/// raised on ADR-0012 rather than settled here. Sixty seconds is long enough
-/// that a large prompt on a slow link is not cut off, short enough that a
-/// hung socket is not a hung terminal.
-///
-/// **It bounds the whole streamed exchange, first byte to last, and that is
-/// stated because it is the reading that changed on 2026-09-05.** This
-/// sentence said "the shape a single non-streaming completion needs" while
-/// the client made one request and read one body; a stream is still one
-/// request and one body, so the ceiling still applies to the same thing — but
-/// the body now arrives over the whole time the model is answering, so the
-/// budget is spent by generation rather than by latency.
-///
-/// There is deliberately **no retry and no backoff**. A retry policy decides
-/// whether a request that may have had an effect is repeated, and no record
-/// makes that decision; a client that retried on its own would be answering
-/// it silently.
-pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How large this kind's context window is, in tokens.
 ///
@@ -285,12 +261,14 @@ impl GeminiClient {
         // a client here does about cookies and TLS, which is the
         // rule-in-two-places that made `Layer` drift while it was declared
         // twice.
-        let http =
-            crate::web::client::build(EXCHANGE_TIMEOUT, reqwest::redirect::Policy::default())
-                .map_err(|error| GeminiFailure::Unavailable {
-                    code: None,
-                    detail: error.detail().to_owned(),
-                })?;
+        let http = crate::web::client::build(
+            crate::providers::transport::EXCHANGE_TIMEOUT,
+            reqwest::redirect::Policy::default(),
+        )
+        .map_err(|error| GeminiFailure::Unavailable {
+            code: None,
+            detail: error.detail().to_owned(),
+        })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
             configured: endpoint,
@@ -585,7 +563,10 @@ impl GeminiClient {
                 // resolve printed the same sentence but for the URL, and this
                 // kind's class is environmental, so the remedy beside it told
                 // both readers to run the command again.
-                detail: crate::providers::transport::transport_detail(&error),
+                detail: crate::providers::transport::transport_detail_within(
+                    &error,
+                    crate::providers::transport::EXCHANGE_TIMEOUT,
+                ),
             })?;
 
         let status = response.status();
@@ -604,7 +585,10 @@ impl GeminiClient {
                 .await
                 .map_err(|error| GeminiFailure::Unavailable {
                     code: Some(status.as_u16()),
-                    detail: crate::providers::transport::transport_detail(&error),
+                    detail: crate::providers::transport::transport_detail_within(
+                        &error,
+                        crate::providers::transport::EXCHANGE_TIMEOUT,
+                    ),
                 })?;
             return Err(self.classify(status.as_u16(), &bytes));
         }
@@ -630,7 +614,10 @@ impl GeminiClient {
                 .await
                 .map_err(|error| GeminiFailure::Unavailable {
                     code: Some(status.as_u16()),
-                    detail: crate::providers::transport::transport_detail(&error),
+                    detail: crate::providers::transport::transport_detail_within(
+                        &error,
+                        crate::providers::transport::EXCHANGE_TIMEOUT,
+                    ),
                 })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();

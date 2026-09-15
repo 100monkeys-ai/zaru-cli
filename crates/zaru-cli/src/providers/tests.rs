@@ -1663,3 +1663,127 @@ fn each_kind_states_its_window_from_its_own_source_and_a_kind_without_one_refuse
         4_096
     );
 }
+
+// ---------------------------------------------------------------------------
+// The exchange ceiling — ADR-0012 D3, one figure for every kind
+// ---------------------------------------------------------------------------
+
+/// The ceiling is ten minutes, and the figure is a measurement.
+///
+/// **This check is `openai_compatible`'s own, moved rather than written.** It
+/// stood beside that kind's constant as
+/// `the_exchange_ceiling_is_the_local_one_because_a_cold_load_took_minutes`
+/// and carried the cold-load measurement that is the reason for 600; the
+/// constant moved to the seam on 2026-09-15 and its reason moved with it,
+/// because a figure whose measurement is deleted is a figure nobody can
+/// defend. The second measurement is the one that made the move necessary.
+#[test]
+fn the_exchange_ceiling_is_ten_minutes_for_every_kind() {
+    assert_eq!(
+        crate::providers::transport::EXCHANGE_TIMEOUT.as_secs(),
+        600,
+        "measured at both ends: a cold load of llama3.2:3b through llama-server took over four \
+         minutes before a token on 2026-09-14, so a 60-second ceiling calls a working server \
+         unreachable; and a reasoning turn against gemini-3.6-flash had its first SSE byte at \
+         92.7s on 2026-09-15, so a 60-second ceiling kills a turn inside the model's ordinary \
+         range",
+    );
+}
+
+/// A real timeout says what it was refused at, and it runs in milliseconds.
+///
+/// **The ceiling is passed as an argument, which is the whole reason this can
+/// be checked at all.** Driving the real figure would mean a check that waits
+/// ten minutes; eighty milliseconds against a listener that accepts the
+/// connection and then answers nothing produces the same `reqwest` failure by
+/// the same route, and `transport_detail_within` composes the figure it was
+/// given rather than one it reads.
+///
+/// The client is built through `crate::web::client::build`, the one builder
+/// in this workspace and the one the three provider clients call, so what is
+/// exercised is the path a turn takes rather than a `reqwest` builder written
+/// for the check.
+#[tokio::test]
+async fn a_timed_out_exchange_names_the_ceiling_it_was_refused_at() {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("loopback accepts a bind on port 0");
+    let port = listener
+        .local_addr()
+        .expect("a bound listener has an address")
+        .port();
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    let keeper = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("the client connects");
+        // Held open and answered never. The connection is not refused and the
+        // name resolves, so the only thing that can end the request is the
+        // ceiling.
+        let _ = finished.recv_timeout(core::time::Duration::from_secs(30));
+        drop(stream);
+    });
+
+    let ceiling = core::time::Duration::from_millis(80);
+    let http = crate::web::client::build(ceiling, reqwest::redirect::Policy::default())
+        .expect("an HTTP client builds");
+    let error = http
+        .get(format!("http://127.0.0.1:{port}/"))
+        .send()
+        .await
+        .expect_err("a server that answers nothing cannot produce a response");
+
+    assert!(
+        error.is_timeout(),
+        "a listener that accepts and never answers must fail as a timeout, or this check is \
+         measuring something else: {error}"
+    );
+    let said = crate::providers::transport::transport_detail_within(&error, ceiling);
+    assert!(
+        said.ends_with("after 80ms"),
+        "a timed-out exchange must name the bound it was refused at, because a turn lost to a \
+         ceiling and a turn lost to a dead socket otherwise read identically: {said}"
+    );
+
+    let _ = done.send(());
+    keeper.join().expect("the listener thread ends");
+}
+
+/// A failure that is not a timeout says exactly what it said.
+///
+/// **The accepting sibling of the check above, and it is what says the figure
+/// joins a timeout rather than every transport failure.** A refused connection
+/// is the case that already read well -- `providers::transport` exists because
+/// it did not, and the sentence it now composes is not this arc's to change.
+/// Without this half, a `transport_detail_within` that appended the ceiling
+/// unconditionally would pass.
+#[tokio::test]
+async fn a_refused_connection_gains_no_ceiling() {
+    // Bound only to learn a free port from the operating system, and dropped
+    // before any client is built, so the kernel refuses.
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("loopback accepts a bind on port 0");
+    let port = listener
+        .local_addr()
+        .expect("a bound listener has an address")
+        .port();
+    drop(listener);
+
+    let ceiling = core::time::Duration::from_millis(80);
+    let http = crate::web::client::build(ceiling, reqwest::redirect::Policy::default())
+        .expect("an HTTP client builds");
+    let error = http
+        .get(format!("http://127.0.0.1:{port}/"))
+        .send()
+        .await
+        .expect_err("nothing is listening on that port");
+
+    assert!(
+        !error.is_timeout(),
+        "a refused connection is not a timeout, or this check cannot see the difference: {error}"
+    );
+    let said = crate::providers::transport::transport_detail_within(&error, ceiling);
+    assert_eq!(
+        said,
+        crate::providers::transport::transport_detail(&error),
+        "a transport failure that is not a timeout must say exactly what the walk says, with no \
+         ceiling appended: {said}"
+    );
+}

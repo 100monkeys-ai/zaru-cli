@@ -52,7 +52,7 @@
 
 use super::endpoint::{CHAT_PATH, Endpoint};
 use super::failure::{DETAIL_WITHHELD, OpenAiCompatibleFailure};
-use super::{AUTHORIZATION_HEADER, BEARER_PREFIX, EXCHANGE_TIMEOUT, map, wire};
+use super::{AUTHORIZATION_HEADER, BEARER_PREFIX, map, wire};
 use crate::credentials::{Alias, Secret};
 use crate::providers::ProviderKind;
 use crate::providers::endpoint::ProviderEndpoint;
@@ -1023,16 +1023,6 @@ fn usage_is_none_before_a_client_has_made_a_request() {
     assert!(
         Provider::usage(&client_with(None)).is_none(),
         "a client that had made no request and reported a zero would be inventing a datum",
-    );
-}
-
-#[test]
-fn the_exchange_ceiling_is_the_local_one_because_a_cold_load_took_minutes() {
-    assert_eq!(
-        EXCHANGE_TIMEOUT.as_secs(),
-        600,
-        "measured 2026-09-14: a cold load of llama3.2:3b through llama-server took over four \
-         minutes before a token, so a 60-second ceiling would call a working server unreachable",
     );
 }
 
