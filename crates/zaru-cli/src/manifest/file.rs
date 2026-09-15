@@ -149,7 +149,8 @@ pub enum ManifestNotRead {
     NoSuchExpectKind {
         /// Which entry, counting from one.
         position: usize,
-        /// What was written, escaped.
+        /// What was written, escaped once and already delimited: the
+        /// no-argument site quotes it and the with-argument site backticks it.
         offered: String,
         /// The nearest of D3's four.
         nearest: &'static str,
@@ -519,7 +520,7 @@ impl ManifestFile {
         }
         Err(ManifestNotRead::NoSuchExpectKind {
             position,
-            offered: format!("{:?}", kind.escape_debug().to_string()),
+            offered: format!("{kind:?}"),
             nearest: Self::nearest_kind(kind),
         })
     }
