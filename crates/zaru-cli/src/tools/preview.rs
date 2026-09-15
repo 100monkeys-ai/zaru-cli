@@ -152,7 +152,23 @@ pub fn detail_for(
             }
             lines
         }
-        Subject::Path(_) | Subject::Search { .. } | Subject::Url(_) => Vec::new(),
+        // **A projected call's arguments are in the statement, not here**, and
+        // that is the whole of what distinguishes it from `fs.write`. A
+        // write's subject is its *path* -- the contents reach this detail and
+        // are redacted on the way -- because the path is what D3's allowlist
+        // matches. A projected call has no path, so its arguments *are* its
+        // subject: they are what makes one `pages.read` a different line from
+        // another, and therefore what D3's third answer grants for the
+        // session. Showing them twice, once raw in the statement and once
+        // redacted here, would show the reader two versions of one call.
+        //
+        // What keeps a held value out of that statement is a refusal rather
+        // than a redaction -- see `execute`'s projected arm -- which is the
+        // stronger of the two: a marker in a question still sends the value.
+        Subject::Path(_)
+        | Subject::Search { .. }
+        | Subject::Url(_)
+        | Subject::Remote { .. } => Vec::new(),
     }
 }
 

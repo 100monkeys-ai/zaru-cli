@@ -66,6 +66,16 @@ pub enum Effect {
     Command,
     /// Retrieves a URL.
     Retrieve,
+    /// Reaches a Nuclear Notes instance through a projected MCP server.
+    ///
+    /// A fifth category rather than one of the four, for the reason
+    /// [`Effect::Retrieve`] is a fourth: D3's sentence admits two and this is
+    /// neither. Unlike `Retrieve` it **does** prompt in `ask` — see
+    /// [`Effect::prompts_in_ask`] — because what a projected call reaches is
+    /// somebody's cortex rather than a page on the open web, and a `pages.
+    /// apply_patch` behind it is a write in every ordinary sense of the word
+    /// even though ADR-0011 D1 does not name it.
+    Remote,
 }
 
 impl Effect {
@@ -88,7 +98,7 @@ impl Effect {
     /// so a *read* outside the working directory still prompts.
     #[must_use]
     pub const fn prompts_in_ask(self) -> bool {
-        matches!(self, Self::Write | Self::Command)
+        matches!(self, Self::Write | Self::Command | Self::Remote)
     }
 }
 
@@ -304,3 +314,114 @@ impl fmt::Display for ToolName {
         f.write_str(self.as_str())
     }
 }
+
+/// What a tool call names: one of D1's seven, or a tool on a projected server.
+///
+/// # Why this sits above [`ToolName`] rather than inside it
+///
+/// D1's set is closed and the closure *is* the security posture: "the built-in
+/// set stays small because each entry is a capability with no membrane behind
+/// it at `bare`", and [`ToolName`] has "no eighth and no way to make one".
+/// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+/// D5's projected tools are not an eighth built-in — D1's own closing sentence
+/// says what they are: "**Everything beyond this is an MCP server.**" So they
+/// are a second arm above the enum, and the enum is untouched: the seven are
+/// still seven and `the_built_in_set_is_the_seven_adr_0011_d1_names` still
+/// fails to compile on an eighth variant.
+///
+/// # The declared spelling, and why a collision cannot arise
+///
+/// A projected tool is declared to the model as `notes:<alias>.<tool>` — the
+/// alias is the namespace D5 names and the dot is the separator `tools/list`
+/// already uses in `pages.read`. Under the coordinator's default of
+/// 2026-09-15, recorded on `operations/adr-status-questions`, built-in and
+/// server tool names share **one** namespace and a server whose tool collides
+/// with a built-in is refused at registration naming the built-in.
+///
+/// **Measured, that refusal is unreachable under this spelling, and it is
+/// built anyway as stated defence in depth rather than claimed as a live
+/// gate.** `Alias::new` refuses a colon by name — its `NamespaceSeparator`
+/// variant cites D5 — so every projected name contains one and no built-in
+/// does. An alias *equal to* a built-in's name is legal (`Alias::new` permits
+/// a dot), so `fs.read` is a usable alias and `notes:fs.read` a usable server
+/// name; its tools still declare as `notes:fs.read.pages.read`, which is not
+/// `fs.read`. The registration check therefore has no reachable input, which
+/// is said here rather than left for a reader to infer from a check that never
+/// fires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Called {
+    /// One of ADR-0011 D1's seven.
+    Builtin(ToolName),
+    /// A tool on the MCP server ADR-0007 D5 projects for one stored token.
+    Projected {
+        /// Which token's namespace, as the store names it.
+        alias: crate::credentials::Alias,
+        /// The tool, as that instance's `tools/list` spells it.
+        tool: String,
+    },
+}
+
+impl Called {
+    /// How this call is spelled wherever it is shown or declared.
+    #[must_use]
+    pub fn rendered(&self) -> String {
+        match self {
+            Self::Builtin(tool) => tool.as_str().to_owned(),
+            Self::Projected { alias, tool } => {
+                format!("{}:{alias}.{tool}", crate::credentials::NAMESPACE_PREFIX)
+            }
+        }
+    }
+
+    /// Which built-in this is, if it is one.
+    #[must_use]
+    pub const fn builtin(&self) -> Option<ToolName> {
+        match self {
+            Self::Builtin(tool) => Some(*tool),
+            Self::Projected { .. } => None,
+        }
+    }
+
+    /// What this call does to the world.
+    #[must_use]
+    pub const fn effect(&self) -> Effect {
+        match self {
+            Self::Builtin(tool) => tool.effect(),
+            Self::Projected { .. } => Effect::Remote,
+        }
+    }
+
+    /// Whether this call addresses something in the filesystem.
+    ///
+    /// Never, for a projected one: ADR-0011 D4's boundary is about paths and a
+    /// projected call has none, exactly as `web.fetch` has none.
+    #[must_use]
+    pub const fn addresses_a_path(&self) -> bool {
+        match self {
+            Self::Builtin(tool) => tool.addresses_a_path(),
+            Self::Projected { .. } => false,
+        }
+    }
+}
+
+impl fmt::Display for Called {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.rendered())
+    }
+}
+
+/// How a call that leaves this machine is marked wherever it is shown.
+///
+/// **Text, and deliberately not a colour or an eighth register.** That is
+/// `narrative-rendering`'s own reasoning for ADR-0011 D4's out-of-tree class,
+/// quoted rather than re-derived: "The distinction is text in the buffer and
+/// deliberately not a colour or a register: no record gives an out-of-tree
+/// call one, and inventing a seventh register would be authoring." No record
+/// gives a projected call one either, and `web.fetch` — the other built-in
+/// that leaves the machine — is `Register::Call` like all the rest, so there
+/// is no existing remote register to reuse. This marking sits beside D4's, in
+/// the same line, composed in the same place.
+///
+/// **Drafted under the coordinator's ruling of 2026-09-15 and open to
+/// Jeshua's veto**; it is the one authored line this work adds.
+pub const REMOTE_MARKING: &str = "leaves this machine";

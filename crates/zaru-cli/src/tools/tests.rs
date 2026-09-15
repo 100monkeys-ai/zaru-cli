@@ -1245,7 +1245,7 @@ fn two_built_ins_do_not_address_a_path_and_carry_no_placement() {
     let url = crate::web::RequestedUrl::parse("https://example.invalid/thing")
         .expect("staging: a https URL parses");
     let fetch = Invocation::fetching(&url);
-    assert_eq!(fetch.tool(), ToolName::WebFetch);
+    assert_eq!(fetch.tool(), Some(ToolName::WebFetch));
     assert_eq!(
         fetch.placement(),
         None,
@@ -1255,7 +1255,7 @@ fn two_built_ins_do_not_address_a_path_and_carry_no_placement() {
 
     let line = CommandLine::split("printf hello").expect("a command line");
     let command = Invocation::running(&line);
-    assert_eq!(command.tool(), ToolName::CmdRun);
+    assert_eq!(command.tool(), Some(ToolName::CmdRun));
     assert_eq!(
         command.placement(),
         None,
@@ -1288,7 +1288,7 @@ fn two_built_ins_do_not_address_a_path_and_carry_no_placement() {
          not carry its arguments, which is ADR-0011 clause 1's second half"
     );
     let search = Invocation::searching(&target, "need\"le");
-    assert_eq!(search.tool(), ToolName::FsSearch);
+    assert_eq!(search.tool(), Some(ToolName::FsSearch));
     assert_eq!(
         search.placement(),
         Some(target.placement()),
@@ -2192,7 +2192,7 @@ fn an_allowlist_entry_is_the_line_the_prompt_showed() {
     let entry = Entry::parse(1, shown).unwrap_or_else(|refusal| {
         panic!("the line the prompt showed is not an allowlist entry: {refusal}")
     });
-    assert_eq!(entry.tool(), ToolName::FsWrite, "the tool did not survive");
+    assert_eq!(entry.tool(), Some(ToolName::FsWrite), "the tool did not survive");
     assert_eq!(
         entry.target(),
         invocation.subject_text(),
@@ -3095,10 +3095,10 @@ fn the_allowlist_matches_the_same_string_after_the_question_gained_rows() {
                  `tools.allowlist` entry naming this tool has just stopped matching"
             ));
         }
-        if invocation.tool() != *tool {
+        if invocation.tool() != Some(*tool) {
             wrong.push(format!(
                 "{tool}: the invocation reports {}",
-                invocation.tool()
+                invocation.called()
             ));
         }
     }
@@ -3609,4 +3609,174 @@ fn collect_rust_sources(root: &std::path::Path, into: &mut Vec<std::path::PathBu
             into.push(path);
         }
     }
+}
+
+// --- ADR-0007 D5's projected call, under ADR-0011 D3's permission model -----
+//
+// D1's closing sentence is what puts a projected tool here at all:
+// "Everything beyond this is an MCP server." So a projected call is not an
+// eighth built-in -- the seven are still seven, asserted next door -- and it is
+// an ordinary `ToolCall` at D3's modes.
+
+fn projected(arguments: &str) -> crate::tools::Invocation<'_> {
+    crate::tools::Invocation::projecting(
+        crate::credentials::Alias::new("play").expect("a usable alias"),
+        "pages.read",
+        arguments,
+    )
+}
+
+/// The mutant: leave `Effect::Remote` out of `prompts_in_ask`.
+#[test]
+fn adr_0011_d3_a_projected_call_is_asked_about_at_every_mode_short_of_yolo() {
+    let arguments = r#"{"pathOrId":"home","workspace":"zaru"}"#;
+
+    // `ask`: D3's default. A projected call reaches somebody's cortex, so it
+    // prompts -- which `web.fetch` does not, and that difference is the whole
+    // reason `Effect::Remote` is a fifth category rather than `Retrieve`.
+    assert_eq!(
+        Decision::reach(Mode::Ask, &projected(arguments), Assessment::default()).requirement(),
+        Requirement::Ask,
+    );
+
+    // `allow`: nothing allowlists it, because `Entry::parse` refuses a
+    // projected spelling -- see the accepting sibling below and
+    // `Entry::tool`'s own documentation.
+    assert_eq!(
+        Decision::reach(Mode::Allow, &projected(arguments), Assessment::default()).requirement(),
+        Requirement::Ask,
+    );
+
+    // `yolo`: D3 says "No prompts", and that is not narrowed here. A user who
+    // chose it has chosen it.
+    assert_eq!(
+        Decision::reach(Mode::Yolo, &projected(arguments), Assessment::default()).requirement(),
+        Requirement::Proceed,
+    );
+
+    // D3's third answer still reaches it: a session grant is the user having
+    // answered this exact question for this exact line, not a bypass of it.
+    let granted = Assessment {
+        session_granted: true,
+        ..Assessment::default()
+    };
+    assert_eq!(
+        Decision::reach(Mode::Ask, &projected(arguments), granted).requirement(),
+        Requirement::Proceed,
+    );
+
+    // The accepting sibling for the `web.fetch` contrast, so the assertion
+    // above is about `Remote` rather than about every effect: a retrieval
+    // still does not prompt at the default mode.
+    let url = crate::web::RequestedUrl::parse("https://example.com/").expect("a well-formed URL");
+    assert_eq!(
+        Decision::reach(
+            Mode::Ask,
+            &crate::tools::Invocation::fetching(&url),
+            Assessment::default()
+        )
+        .requirement(),
+        Requirement::Proceed,
+        "ADR-0011's open question on `web.fetch` is untouched by this work"
+    );
+}
+
+/// The mutant: drop the `is_remote` arm from `TranscriptEntry::render`.
+#[test]
+fn adr_0007_d5_a_projected_call_names_the_alias_the_tool_and_its_arguments_and_is_marked_remote() {
+    let arguments = r#"{"pathOrId":"home","workspace":"zaru"}"#;
+    let decision = Decision::reach(Mode::Ask, &projected(arguments), Assessment::default());
+    let question = decision.question().expect("`ask` asks");
+
+    assert!(
+        question.statement.contains("notes:play.pages.read"),
+        "the question names the alias and the tool: {}",
+        question.statement
+    );
+    assert!(
+        question.statement.contains(arguments),
+        "and the arguments, so a person can see what would be sent: {}",
+        question.statement
+    );
+    assert!(
+        question.statement.contains(crate::tools::REMOTE_MARKING),
+        "and that it leaves the machine: {}",
+        question.statement
+    );
+    assert!(
+        question.detail.is_empty(),
+        "the arguments are the subject, so they are in the statement and not shown twice: {:?}",
+        question.detail
+    );
+
+    // The accepting sibling, so the marking distinguishes something: a
+    // built-in in the same tree is not marked remote.
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let here = WorkingDirectory::at(tree.project()).expect("the scratch project is a directory");
+    let target = here.classify("inside.txt");
+    let inside = crate::tools::Invocation::on_path(ToolName::FsRead, &target)
+        .expect("`fs.read` addresses a path");
+    assert!(
+        !Decision::reach(Mode::Ask, &inside, Assessment::default())
+            .entry()
+            .render()
+            .contains(crate::tools::REMOTE_MARKING),
+        "every call is marked remote, so the marking distinguishes nothing"
+    );
+}
+
+/// **Security corpus.** The mutant: make `Entry::parse` fall back to a
+/// projected name when the word is not a built-in.
+#[test]
+fn corpus_no_allowlist_entry_a_user_can_write_names_a_projected_tool() {
+    // The refusing arm: D3's allowlist is "what the harness may run without
+    // asking", and running a call into somebody's cortex without asking is a
+    // decision no record has taken.
+    let refusal = crate::tools::Entry::parse(1, "notes:play.pages.read home")
+        .expect_err("a projected name is not one of D1's seven");
+    assert!(
+        matches!(refusal, crate::tools::AllowlistRefused::NoSuchTool { .. }),
+        "{refusal:?}"
+    );
+
+    // The accepting sibling: a built-in still parses, so the refusal is about
+    // the projected spelling rather than about the parser.
+    let entry = crate::tools::Entry::parse(1, "fs.read /etc/hostname")
+        .expect("a built-in with a target is an entry");
+    assert_eq!(entry.tool(), Some(ToolName::FsRead));
+
+    // And a projected call matches no entry that does exist, over the
+    // product's own comparison rather than by inspection.
+    assert!(
+        !entry.approves(&projected(r#"{"pathOrId":"home"}"#)),
+        "an allowlist entry approved a call into a cortex"
+    );
+}
+
+/// The mutant: give `Called::Projected` a `Some(..)` arm in `builtin`.
+#[test]
+fn adr_0011_d1_the_seven_stay_seven_and_a_projected_tool_is_not_an_eighth() {
+    let call = projected("{}");
+    assert_eq!(
+        call.tool(),
+        None,
+        "a projected tool is not one of D1's seven, and the set is closed"
+    );
+    assert_eq!(call.called().rendered(), "notes:play.pages.read");
+    assert!(
+        !call.called().addresses_a_path(),
+        "ADR-0011 D4's boundary is about paths and a projected call has none"
+    );
+    assert_eq!(
+        call.placement(),
+        None,
+        "so it has no placement, exactly as a URL has none"
+    );
+
+    // The accepting sibling: a built-in still reports itself.
+    let url = crate::web::RequestedUrl::parse("https://example.com/").expect("a well-formed URL");
+    assert_eq!(
+        crate::tools::Invocation::fetching(&url).tool(),
+        Some(ToolName::WebFetch)
+    );
 }

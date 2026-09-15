@@ -47,7 +47,7 @@
 use crate::process::line::CommandLine;
 use crate::tools::grants::SessionGrants;
 use crate::tools::mode::Mode;
-use crate::tools::name::ToolName;
+use crate::tools::name::{Called, ToolName};
 use crate::tools::port::{Allowlist, Answer, Confirm, DestructiveMatch, Question};
 use crate::tools::tree::{Placement, Target};
 use crate::web::url::RequestedUrl;
@@ -147,6 +147,23 @@ pub enum Subject<'a> {
         /// What replaces it.
         new: &'a str,
     },
+    /// A projected MCP call's arguments, as the model wrote them.
+    ///
+    /// A seventh variant rather than reusing one, for the reason
+    /// [`Subject::Search`] is a fourth: ADR-0011 clause 1 asks that a call
+    /// "appear in the transcript **with their arguments**", and which tool on
+    /// which token is carried by [`Called`] rather than here — so what is left
+    /// for the subject to be is the arguments themselves. D4 says nothing
+    /// about it: a projected call has no path, exactly as a URL has none.
+    Remote {
+        /// The arguments as JSON, exactly as the model wrote them.
+        ///
+        /// **Never parsed here.** What the arguments mean is the instance's to
+        /// decide across ninety-four tools this harness has never seen, and a
+        /// subject that re-shaped them would show the user one thing and send
+        /// another.
+        arguments: &'a str,
+    },
     /// A URL that parsed, carrying a scheme `web.fetch` retrieves.
     ///
     /// A [`RequestedUrl`] rather than a `&str` for
@@ -160,7 +177,7 @@ pub enum Subject<'a> {
 /// One tool call, as the permission decision sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation<'a> {
-    tool: ToolName,
+    called: Called,
     subject: Subject<'a>,
 }
 
@@ -180,7 +197,7 @@ impl<'a> Invocation<'a> {
             return Err(InvocationRefused { tool });
         }
         Ok(Self {
-            tool,
+            called: Called::Builtin(tool),
             subject: Subject::Path(target),
         })
     }
@@ -193,7 +210,7 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub const fn searching(root: &'a Target, needle: &'a str) -> Self {
         Self {
-            tool: ToolName::FsSearch,
+            called: Called::Builtin(ToolName::FsSearch),
             subject: Subject::Search { root, needle },
         }
     }
@@ -208,7 +225,7 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub const fn writing(target: &'a Target, contents: &'a str) -> Self {
         Self {
-            tool: ToolName::FsWrite,
+            called: Called::Builtin(ToolName::FsWrite),
             subject: Subject::Write { target, contents },
         }
     }
@@ -219,7 +236,7 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub const fn editing(target: &'a Target, old: &'a str, new: &'a str) -> Self {
         Self {
-            tool: ToolName::FsEdit,
+            called: Called::Builtin(ToolName::FsEdit),
             subject: Subject::Edit { target, old, new },
         }
     }
@@ -231,7 +248,7 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub const fn fetching(url: &'a RequestedUrl) -> Self {
         Self {
-            tool: ToolName::WebFetch,
+            called: Called::Builtin(ToolName::WebFetch),
             subject: Subject::Url(url),
         }
     }
@@ -246,15 +263,42 @@ impl<'a> Invocation<'a> {
     #[must_use]
     pub const fn running(line: &'a CommandLine) -> Self {
         Self {
-            tool: ToolName::CmdRun,
+            called: Called::Builtin(ToolName::CmdRun),
             subject: Subject::Command(line),
         }
     }
 
-    /// Which built-in this is.
+    /// A call on a tool ADR-0007 D5 projected from a stored token.
+    ///
+    /// `const` is not available here and the constructor takes no
+    /// [`ToolName`], because there is none: a projected call is not one of
+    /// D1's seven. See [`Called`] for why that arm sits above the enum rather
+    /// than inside it.
     #[must_use]
-    pub const fn tool(&self) -> ToolName {
-        self.tool
+    pub fn projecting(
+        alias: crate::credentials::Alias,
+        tool: impl Into<String>,
+        arguments: &'a str,
+    ) -> Self {
+        Self {
+            called: Called::Projected {
+                alias,
+                tool: tool.into(),
+            },
+            subject: Subject::Remote { arguments },
+        }
+    }
+
+    /// What this call names.
+    #[must_use]
+    pub const fn called(&self) -> &Called {
+        &self.called
+    }
+
+    /// Which built-in this is, if it is one.
+    #[must_use]
+    pub const fn tool(&self) -> Option<ToolName> {
+        self.called.builtin()
     }
 
     /// What it is addressed to.
@@ -277,7 +321,7 @@ impl<'a> Invocation<'a> {
             | Subject::Write { target, .. }
             | Subject::Edit { target, .. }
             | Subject::Search { root: target, .. } => Some(target.placement()),
-            Subject::Command(_) | Subject::Url(_) => None,
+            Subject::Command(_) | Subject::Url(_) | Subject::Remote { .. } => None,
         }
     }
 
@@ -311,6 +355,13 @@ impl<'a> Invocation<'a> {
             }
             Subject::Command(line) => line.render(),
             Subject::Url(url) => url.as_str().to_owned(),
+            // The arguments, unaltered. D3's allowlist compares this byte for
+            // byte and `Entry::parse` refuses a projected spelling, so a
+            // projected call is matched by no entry a user can write -- it is
+            // reachable only by D3's third answer, the session grant, which is
+            // the user having answered this exact question for this exact
+            // line.
+            Subject::Remote { arguments } => arguments.to_owned(),
         }
     }
 }
@@ -377,17 +428,29 @@ pub enum Requirement {
 /// would become a thing to assert rather than a thing that is true.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptEntry {
-    tool: ToolName,
+    tool: Called,
     subject: String,
     placement: Option<Placement>,
     destructive: bool,
 }
 
 impl TranscriptEntry {
-    /// Which built-in was called.
+    /// What was called.
     #[must_use]
-    pub const fn tool(&self) -> ToolName {
-        self.tool
+    pub const fn called(&self) -> &Called {
+        &self.tool
+    }
+
+    /// Which built-in was called, if it was one.
+    #[must_use]
+    pub const fn tool(&self) -> Option<ToolName> {
+        self.tool.builtin()
+    }
+
+    /// Whether this call leaves the machine.
+    #[must_use]
+    pub const fn is_remote(&self) -> bool {
+        matches!(self.tool, Called::Projected { .. })
     }
 
     /// Whether ADR-0011 D4's out-of-tree class applies.
@@ -432,6 +495,17 @@ impl TranscriptEntry {
         {
             line.push_str("  [");
             line.push_str(placement.as_str());
+            line.push(']');
+        }
+        // **Beside D4's and for D4's own reason.** ADR-0011 D4 has no clause
+        // about a call with no path, so nothing here claims one: this marks
+        // that the call leaves the machine, which is the property `web.fetch`
+        // has and which no register distinguishes. It is text rather than a
+        // colour, quoting `narrative-rendering`: "inventing a seventh register
+        // would be authoring".
+        if self.is_remote() {
+            line.push_str("  [");
+            line.push_str(crate::tools::name::REMOTE_MARKING);
             line.push(']');
         }
         if self.destructive {
@@ -557,7 +631,8 @@ impl Decision {
 
         // D4 is not conditional on the effect: an out-of-tree *read* prompts
         // in `ask` and `allow` too.
-        let would_prompt_in_ask = out_of_tree || invocation.tool().effect().prompts_in_ask();
+        let would_prompt_in_ask =
+            out_of_tree || invocation.called().effect().prompts_in_ask();
 
         let mut requirement = match mode {
             // D3: "No prompts."
@@ -595,7 +670,7 @@ impl Decision {
         Self {
             requirement,
             entry: TranscriptEntry {
-                tool: invocation.tool(),
+                tool: invocation.called().clone(),
                 subject: invocation.subject_text(),
                 placement,
                 destructive: assessment.destructive,

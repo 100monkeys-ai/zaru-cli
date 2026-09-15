@@ -97,7 +97,7 @@
 use crate::config::{Field, FieldKind, Key, Layer, Resolution, Schema, Value};
 use crate::failure::THERE_ARE_EXACTLY;
 use crate::tools::decision::Invocation;
-use crate::tools::name::ToolName;
+use crate::tools::name::{Called, ToolName};
 use crate::tools::port::Allowlist;
 use core::fmt;
 
@@ -266,7 +266,7 @@ fn spellings() -> String {
 /// reading one path has said nothing about running a command".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    tool: ToolName,
+    tool: Called,
     target: String,
 }
 
@@ -303,7 +303,7 @@ impl Entry {
             });
         }
         Ok(Self {
-            tool,
+            tool: Called::Builtin(tool),
             target: target.to_owned(),
         })
     }
@@ -318,14 +318,29 @@ impl Entry {
     /// compared by the same [`Entry::approves`] — rather than a second
     /// matching rule that could come to disagree with D3's.
     #[must_use]
-    pub fn of(tool: ToolName, target: String) -> Self {
+    pub fn of(tool: Called, target: String) -> Self {
         Self { tool, target }
     }
 
-    /// Which built-in this entry approves.
+    /// What this entry approves.
     #[must_use]
-    pub const fn tool(&self) -> ToolName {
-        self.tool
+    pub const fn called(&self) -> &Called {
+        &self.tool
+    }
+
+    /// Which built-in this entry approves, if it names one.
+    ///
+    /// Always `Some` for an entry a user wrote: [`Entry::parse`] refuses a
+    /// name that is not one of ADR-0011 D1's seven, and it still does. **A
+    /// projected tool is therefore in no allowlist anybody can write**, which
+    /// is not an omission — D3's allowlist is "what the harness may run
+    /// without asking", and a grant that ran a call into somebody's cortex
+    /// without asking is a decision no record has taken. The session grant,
+    /// D3's third answer, is the route that exists: the user answering this
+    /// exact question for this exact line.
+    #[must_use]
+    pub const fn tool(&self) -> Option<ToolName> {
+        self.tool.builtin()
     }
 
     /// What it approves that built-in for.
@@ -340,7 +355,7 @@ impl Entry {
     /// why there is no glob and no path resolution here.
     #[must_use]
     pub fn approves(&self, invocation: &Invocation<'_>) -> bool {
-        self.tool == invocation.tool() && self.target == invocation.subject_text()
+        &self.tool == invocation.called() && self.target == invocation.subject_text()
     }
 }
 

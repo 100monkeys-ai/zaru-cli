@@ -68,7 +68,7 @@ impl SessionGrants {
     /// Idempotent: allowing the same line twice leaves one entry, so the count
     /// is the number of distinct lines a person said yes to.
     pub fn allow(&self, invocation: &Invocation<'_>) {
-        let entry = Entry::of(invocation.tool(), invocation.subject_text());
+        let entry = Entry::of(invocation.called().clone(), invocation.subject_text());
         let mut granted = match self.granted.lock() {
             Ok(granted) => granted,
             // A poisoned lock means a check or a caller panicked while holding

@@ -184,7 +184,7 @@ impl crate::tools::port::Allowlist for StagedAllowlist {
     fn approves(&self, invocation: &crate::tools::decision::Invocation<'_>) -> bool {
         self.asked.borrow_mut().push(format!(
             "{} {}",
-            invocation.tool(),
+            invocation.called(),
             invocation.subject_text()
         ));
         self.answer

@@ -109,7 +109,7 @@ pub use execute::{
     Executor, NotACall, OVERFLOW_PREFIX, SessionOverflow, descriptor_set, descriptors,
 };
 pub use mode::{Layer, Mode, ModeRefused, Tier};
-pub use name::{Effect, SubjectKind, ToolName};
+pub use name::{Called, Effect, REMOTE_MARKING, SubjectKind, ToolName};
 pub use notice::SessionNotice;
 pub use output::{
     BudgetIsZero, Captured, ELISION_PREFIX, Excerpt, OutputBudget, Overflow, OverflowFailure,
