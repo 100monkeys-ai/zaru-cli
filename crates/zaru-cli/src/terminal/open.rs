@@ -1056,18 +1056,34 @@ fn one_session(
     // rather than ending the session, which is the same answer the history
     // file's failure gets one screen up: a person opened a session to work,
     // not to be told about a counter.
-    if let Turnable::Ready(turns) = &turns {
-        let tips = crate::compose::Tips::under(store.root());
-        if let Ok(Some(tip)) =
-            crate::compose::tips::eligible(turns.owed.has_room_for_a_tip(), conditions, &tips)
-            && tips
-                .record_a_showing(tip, &crate::commands::date::today())
-                .is_ok()
-        {
-            shell
-                .composer_mut()
-                .set_standing(0, Some(tip.line().to_owned()));
-        }
+    //
+    // **Offered whenever the shell opens, `Ready` or not, since 2026-09-15.**
+    // This stood inside `if let Turnable::Ready(turns)`, the guard the status
+    // refresh above it uses, where it is correct and here it was borrowed: a
+    // session that resolved no provider is exactly the session whose person
+    // has discovered nothing, and it was the one the tip was withheld from.
+    // Row 5 of the second look-and-feel audit measured that the line painted
+    // on no machine that survey could produce. `compose::tips::room_for_a_tip`
+    // carries why the budget survives the absence of an `Owed`;
+    // `Owed::has_room_for_a_tip` is unedited and the condition is still
+    // `conditions.composer_token`, which is a fact about the credential store
+    // and not about a model.
+    let room = crate::compose::tips::room_for_a_tip(
+        match &turns {
+            Turnable::Ready(turns) => Some(&turns.owed),
+            Turnable::Cannot(_) => None,
+        },
+        crate::compose::tips::enabled(&resolution),
+    );
+    let tips = crate::compose::Tips::under(store.root());
+    if let Ok(Some(tip)) = crate::compose::tips::eligible(room, conditions, &tips)
+        && tips
+            .record_a_showing(tip, &crate::commands::date::today())
+            .is_ok()
+    {
+        shell
+            .composer_mut()
+            .set_standing(0, Some(tip.line().to_owned()));
     }
 
     // ADR-0010 D1's transcript, for the one record the pump writes outside a

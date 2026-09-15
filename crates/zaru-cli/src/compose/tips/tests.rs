@@ -359,3 +359,36 @@ fn only_one_place_in_the_product_records_a_tip_showing() {
         sites[0]
     );
 }
+
+/// [ADR-0002] D8's budget is a session's, and a session that can run no turn
+/// still has one.
+///
+/// # The mutant and the accepting sibling
+///
+/// `owed.map_or(false, …)`, which is the guard `terminal::open` carried until
+/// 2026-09-15 written as a function: the tip is withheld from exactly the
+/// session whose person has discovered nothing. Watched red.
+///
+/// The sibling is the third arm: a session that **has** an `Owed` takes its
+/// answer from that value and not from the switch beside it, so the first arm
+/// is a decision about the absence of an `Owed` rather than a blanket yes.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+#[test]
+fn a_session_that_resolved_no_provider_still_has_room_for_a_tip() {
+    assert!(
+        super::room_for_a_tip(None, true),
+        "a session with no provider is offered no tip, which is the session the tip is for"
+    );
+    assert!(
+        !super::room_for_a_tip(None, false),
+        "`tips = false` did not reach a session with no provider, and D8 says it disables both"
+    );
+    // A default `Owed` owes nothing and carries `tips: false`, so it answers
+    // `false` whatever the switch beside it says.
+    assert!(
+        !super::room_for_a_tip(Some(&crate::compose::Owed::default()), true),
+        "the switch overrode an `Owed` that said no, so the first arm would pass on a harness \
+         that always answered yes"
+    );
+}

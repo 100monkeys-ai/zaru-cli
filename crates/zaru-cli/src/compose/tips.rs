@@ -583,6 +583,38 @@ pub fn enabled(resolution: &Resolution) -> bool {
     !matches!(resolution.get(&key()), Some(Value::Bool(false)))
 }
 
+/// [ADR-0002] D8's budget, for a session that may not be able to run a turn.
+///
+/// # Why the absence of an `Owed` is not the absence of room
+///
+/// Row 5 of [the second look-and-feel audit] measured the standing tip
+/// painting on no machine this workspace could produce: `terminal::open`
+/// offered it inside `if let Turnable::Ready(turns)`, so **the session whose
+/// person has discovered nothing** — the one with no model configured, or a
+/// model and no key — was the one session the tip was withheld from. The guard
+/// is the status refresh's beside it, where it is correct, and it was borrowed.
+///
+/// A session that resolved no provider has no [`Owed`](crate::compose::Owed) because it has no
+/// [`Prepared`](crate::compose::Prepared) to build one from. It also cannot
+/// run a turn, so **nothing else can spend D8's one-per-session budget**:
+/// [ADR-0011] D2's notice and [ADR-0009] D4's recommendation are both a turn's,
+/// and neither can arise. What is left of the budget is `tips = false`, which
+/// D8 says "disables both", and that is the whole of the `None` arm.
+///
+/// `tips` is read only where there is no `Owed`; where there is one it
+/// already holds the switch, which is that type's own reason for holding it.
+/// [`Owed::has_room_for_a_tip`](crate::compose::Owed::has_room_for_a_tip) is
+/// unedited.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+#[must_use]
+pub fn room_for_a_tip(owed: Option<&crate::compose::Owed>, tips: bool) -> bool {
+    owed.map_or(tips, crate::compose::Owed::has_room_for_a_tip)
+}
+
 /// The tip this session may offer, if any.
 ///
 /// Three gates, in this order, and each is somebody else's rule:
