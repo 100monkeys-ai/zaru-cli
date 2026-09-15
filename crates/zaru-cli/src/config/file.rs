@@ -379,16 +379,50 @@ impl TomlFile {
         let Some(text) = text(&self.path, self.ceiling)? else {
             return Ok(None);
         };
+        self.parse_text(&text, 0).map(Some)
+    }
+
+    /// The document `text` spells, as though it began `above` lines into this
+    /// file.
+    ///
+    /// # Why this is a seam rather than the body of [`TomlFile::read`]
+    ///
+    /// This module's own documentation says it is "the only thing in this
+    /// workspace that calls a TOML parser", and
+    /// [ADR-0015](https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility)
+    /// D3's command file is TOML **front matter** — a slice of a Markdown
+    /// file rather than the whole of it. A second `text.parse()` beside the
+    /// loader would make that sentence false and would give the workspace a
+    /// second refusal shape for one failure, so the slice is parsed here.
+    ///
+    /// `above` is how many lines of the enclosing file sit before the slice.
+    /// The parser reports a span inside the slice; a refusal that named the
+    /// slice's own line number would send a reader to the wrong line of the
+    /// file they actually wrote, which is [ADR-0016] D2's "an error message
+    /// whose reader cannot act" arriving as an off-by-a-fence.
+    ///
+    /// # Errors
+    ///
+    /// [`FileRefused::NotToml`] naming the file and the position, and
+    /// [`FileRefused::UnrepresentableKind`] for a TOML kind this value model
+    /// has no counterpart for.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    pub fn parse_text(&self, text: &str, above: usize) -> Result<Table, FileRefused> {
         let parsed: toml::Table = text.parse().map_err(|error: toml::de::Error| {
             // `error.to_string()` renders the offending source line. It is
             // never reached from here; see the module documentation.
             FileRefused::NotToml {
                 path: self.path.clone(),
-                at: error.span().map(|span| Position::of(&text, span.start)),
+                at: error.span().map(|span| {
+                    let mut at = Position::of(text, span.start);
+                    at.line += above;
+                    at
+                }),
                 detail: error.message().to_owned(),
             }
         })?;
-        self.document(parsed).map(Some)
+        self.document(parsed)
     }
 
     /// This crate's value model, from the parser's.
@@ -480,7 +514,18 @@ pub(crate) fn bytes(path: &Path, ceiling: SizeCeiling) -> Result<Option<Vec<u8>>
 ///
 /// The step both parsers take before they differ: TOML and JSON are both UTF-8
 /// by their formats' own definitions.
-fn text(path: &Path, ceiling: SizeCeiling) -> Result<Option<String>, FileRefused> {
+///
+/// **Public since 2026-09-15**, for [`crate::commands`]: a command file is
+/// Markdown whose head is TOML, so its reader needs the bytes before it needs
+/// a parser — and the ceiling, the absent-file rule and the not-UTF-8 refusal
+/// are exactly the ones this module already owns. A second reader beside it
+/// would be the ceiling in two places.
+///
+/// # Errors
+///
+/// [`FileRefused::NotRead`], [`FileRefused::TooLarge`] and
+/// [`FileRefused::NotText`].
+pub fn text(path: &Path, ceiling: SizeCeiling) -> Result<Option<String>, FileRefused> {
     let Some(raw) = bytes(path, ceiling)? else {
         return Ok(None);
     };
