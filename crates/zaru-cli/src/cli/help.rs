@@ -22,11 +22,17 @@
 //!
 //! # What it says about what is missing
 //!
-//! It says it, in one paragraph, rather than staying silent. A user who runs
-//! `zaru` and finds five inspection commands is owed the sentence explaining
-//! that the harness cannot yet run a task, because otherwise they will
-//! conclude the binary is broken. That is [ADR-0016] D2's "where there
-//! genuinely is no action, say that", applied to a help text.
+//! It says it, in one paragraph, rather than staying silent. A user owed a
+//! sentence about what the binary will not do for them is owed it here,
+//! because otherwise they conclude the binary is broken. That is [ADR-0016]
+//! D2's "where there genuinely is no action, say that", applied to a help
+//! text.
+//!
+//! **That paragraph is walked too, and the comment at its site says why.** It
+//! named capabilities by hand and went stale three times in ten days, each
+//! time in a commit that never opened this file, so the half of it that is a
+//! set is read from [`KINDS_WITH_A_CLIENT`](crate::compose::KINDS_WITH_A_CLIENT)
+//! and only the half that is a property of the composition is still typed.
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
@@ -34,6 +40,16 @@
 
 use crate::cli::flag::Flag;
 use crate::cli::namespace::Namespace;
+use crate::providers::ProviderKind;
+
+/// The width the closing paragraph is wrapped to.
+///
+/// Sixty-eight columns, which is the width the paragraph was hand-wrapped to
+/// for as long as it was hand-wrapped. The number is here rather than at the
+/// call so that it is one decision rather than a constant folded into a
+/// `format!`, and it is deliberately narrower than eighty: a help text read
+/// through a pipe is usually read beside something else.
+const PARAGRAPH_COLUMNS: usize = 68;
 
 /// What each built command does, in the words its own record uses.
 ///
@@ -118,6 +134,30 @@ pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static s
     }
 }
 
+/// What the closing paragraph says is missing, from the kinds with no client.
+///
+/// A function rather than two lines inside [`lines`] because the branch that
+/// matters most is the one no build reaches today: **every kind having a
+/// client is the state this sentence is written towards**, and a paragraph
+/// that rendered "the provider kind(s) , which carry no client" on the day it
+/// arrived would be the drift this walk exists to end, wearing a different
+/// shape. Both branches are asserted rather than one being reasoned about.
+///
+/// The membrane half is in both branches and is a literal in both: it is true
+/// of the composition rather than of a constant, `verdicts` being `NoMembrane`
+/// at every tier, so there is no array to walk and nothing to keep in step.
+pub(crate) fn cannot_do_yet(without_a_client: &[String]) -> String {
+    if without_a_client.is_empty() {
+        "a membrane at the contained and linked tiers, which enforce nothing yet".to_owned()
+    } else {
+        format!(
+            "the provider kind(s) {}, which carry no client, and a membrane at the contained \
+             and linked tiers, which enforce nothing yet",
+            without_a_client.join(", ")
+        )
+    }
+}
+
 /// The whole help text, as lines.
 ///
 /// The version is the first line so that the artefact's own identity is
@@ -166,49 +206,55 @@ pub fn lines(version: &str) -> Vec<String> {
     }
 
     lines.push(String::new());
-    // Rewritten twice on 2026-09-05, both times because it overstated what was
-    // missing. It said no provider client was built until the `gemini` client
-    // landed; it then said nothing connected a client to the agent loop, which
-    // stopped being true the moment `zaru <task>` ran a turn — and it went on
-    // saying it, in the one place a user reads to find out what this binary
-    // does, through every arc since. A help text that overstates what is
-    // missing is as wrong as one that overstates what works, and it is the
-    // more expensive way round: nobody tries the thing it disowns.
+
+    // **The last sentence is walked, and this comment is the third thing to
+    // stand here.** Its two predecessors were prose recording that the
+    // sentence had drifted -- once when the `gemini` client landed and once
+    // when the iteration loop and `--resume` did -- and the second of them
+    // ended by asserting that "`KINDS_WITH_A_CLIENT` has one element", which
+    // was itself the third drift and reached a reader as "any provider kind
+    // but `gemini`" on a binary that had talked to three kinds since
+    // 2026-09-14.
     //
-    // Corrected on sight by the `mode-key` arc, which needed this paragraph to
-    // be true in order to add a line to the list above it.
+    // The mechanism that comment named is right: **this sentence is about
+    // capabilities other arcs land, so a hand-written one goes stale in a
+    // commit that never opens this file.** What it concluded -- that no check
+    // can hold it, because "what this binary cannot do" is a sentence about
+    // absent code -- is what a walk makes unnecessary. The kinds with no
+    // client are `ProviderKind::ALL` minus the kinds that have one, which is
+    // a set the refusal path in `cli::classify` already reads, so the arc
+    // that writes the fourth client changes this paragraph by changing that
+    // array and nothing else.
     //
-    // **It drifted a second time and is corrected again on 2026-09-05.** It
-    // read "cannot do yet: any provider kind but `gemini`, the iteration loop,
-    // or a conversation longer than one turn", and two of those three had
-    // stopped being true: `iteration-wiring` landed the iteration loop, so a
-    // project declaring validators in `./zaru.toml` runs it, and
-    // `shell-task-turns` landed `--resume` and `--continue`, so a session is a
-    // conversation whose next turn remembers the last. Twice in two days is
-    // the shape rather than the accident: **this list names capabilities other
-    // arcs land, so it goes stale in a commit that never touches this file**,
-    // and no check can hold it because "what this binary cannot do" is a
-    // sentence about absent code. What is left below is verified rather than
-    // remembered -- `KINDS_WITH_A_CLIENT` has one element, and the
-    // composition's `verdicts` is `NoMembrane` at every tier.
-    lines.push("`zaru \"<task>\"` runs a turn: it asks the model, runs the tools it".to_owned());
-    lines.push(
-        // The permission model is ADR-0011's.
-        "asks for under the permission model, and writes a transcript you can".to_owned(),
+    // The membrane half stays a literal because it is true of the
+    // composition rather than of a constant: `verdicts` is `NoMembrane` at
+    // every tier, and there is no array to walk.
+    let without_a_client: Vec<String> = ProviderKind::ALL
+        .into_iter()
+        .filter(|kind| !crate::compose::KINDS_WITH_A_CLIENT.contains(kind))
+        .map(|kind| format!("`{}`", kind.as_str()))
+        .collect();
+    let cannot = cannot_do_yet(&without_a_client);
+    let paragraph = format!(
+        "`zaru \"<task>\"` runs a turn: it asks the model, runs the tools it asks for under the \
+         permission model, and writes a transcript you can read with `cat`. A project that \
+         declares validators in `./zaru.toml` runs the iteration loop instead, and `--resume` \
+         and `--continue` reopen a session where each line you type is a turn. Store a key with \
+         `providers keys add <kind>` first. What it cannot do yet: {cannot}."
     );
-    lines.push(
-        "read with `cat`. A project that declares validators in `./zaru.toml` runs".to_owned(),
+    // **Trimmed, and the trim is not tidiness.** `wrap::rows` breaks a row
+    // *after* the spaces that ended its last word rather than consuming them,
+    // because the pane it was written for needs concatenating the rows to
+    // reproduce the text byte for byte. A pane never shows a trailing space
+    // and a pipe does: `--help` is read by `diff` and by a release checklist,
+    // and rows that end in whitespace are bytes a reader did not ask for. The
+    // hand-wrapped literals this replaced carried none, so trimming is what
+    // keeps the change to the sentence rather than to the file's bytes.
+    lines.extend(
+        zaru_tui::shell::wrap::rows(&paragraph, PARAGRAPH_COLUMNS)
+            .into_iter()
+            .map(|row| row.trim_end().to_owned()),
     );
-    lines.push(
-        "the iteration loop instead, and `--resume` and `--continue` reopen a session".to_owned(),
-    );
-    lines.push(
-        "where each line you type is a turn. Store a key with `providers keys add".to_owned(),
-    );
-    lines.push(
-        "<kind>` first. What it cannot do yet: any provider kind but `gemini`, and a".to_owned(),
-    );
-    lines.push("membrane at the contained and linked tiers, which enforce nothing yet.".to_owned());
 
     lines
 }

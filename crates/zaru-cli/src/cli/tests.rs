@@ -107,6 +107,112 @@ fn the_help_row_is_listed_by_the_help_it_prints() {
     );
 }
 
+/// The closing paragraph names exactly the kinds that carry no client.
+///
+/// Row 3 of [the second look-and-feel audit]. That sentence was typed by hand
+/// and had drifted three times in ten days — each time in a commit that never
+/// opened `cli::help` — so the binary told every reader it could reach one
+/// provider kind on a day it could reach three. It is walked now, and this is
+/// the check that says the walk is real rather than a list that happens to
+/// agree today.
+///
+/// **Both directions, because only one of them is the drift that happened.** A
+/// kind with no client must be named, or the paragraph understates what is
+/// missing; a kind that has one must not be, which is the direction that
+/// reached a reader as "any provider kind but `gemini`".
+///
+/// The mutant: removing `ProviderKind::Ollama` from
+/// [`KINDS_WITH_A_CLIENT`](crate::compose::KINDS_WITH_A_CLIENT) makes this
+/// check demand `ollama` in the paragraph, which the walk supplies with no
+/// edit here — so the red-watch for the walk itself is the binary's own output
+/// changing, and what this check holds is that the two sets cannot come apart.
+///
+/// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+#[test]
+fn the_help_paragraph_names_exactly_the_kinds_with_no_client() {
+    let printed = crate::cli::help::lines("0.0.0").join(" ");
+    let (_, cannot) = printed
+        .split_once("What it cannot do yet:")
+        .expect("`--help` closes with the sentence naming what is missing");
+
+    for kind in crate::providers::ProviderKind::ALL {
+        let named = cannot.contains(&format!("`{}`", kind.as_str()));
+        let has_a_client = crate::compose::KINDS_WITH_A_CLIENT.contains(&kind);
+        assert_eq!(
+            named,
+            !has_a_client,
+            "the closing paragraph {} `{}` among the kinds with no client and \
+             `KINDS_WITH_A_CLIENT` {} it, so the sentence and the constant have come apart: \
+             {cannot}",
+            if named { "names" } else { "omits" },
+            kind.as_str(),
+            if has_a_client {
+                "holds"
+            } else {
+                "does not hold"
+            },
+        );
+    }
+}
+
+/// The sentence survives the day every kind has a client.
+///
+/// The branch no build reaches, asserted rather than reasoned about. A
+/// paragraph composed by joining an empty list would read "the provider
+/// kind(s) , which carry no client" — the walk producing a worse sentence than
+/// the literal it replaced, on the one day this whole surface is finally true.
+///
+/// The mutant: dropping the `is_empty` arm, which renders exactly that.
+#[test]
+fn the_help_paragraph_drops_the_clause_when_every_kind_has_a_client() {
+    let none_missing = crate::cli::help::cannot_do_yet(&[]);
+    assert!(
+        !none_missing.contains("provider kind"),
+        "with every kind carrying a client the sentence still talks about provider kinds: \
+         {none_missing}"
+    );
+    assert!(
+        none_missing.starts_with("a membrane at the contained and linked tiers"),
+        "the membrane half is the whole of what is missing then, and it is not what was \
+         composed: {none_missing}"
+    );
+
+    // The accepting sibling: with something missing the clause is there, so
+    // the assertions above are not satisfied by a function that says nothing.
+    let one_missing = crate::cli::help::cannot_do_yet(&["`anthropic`".to_owned()]);
+    assert!(
+        one_missing.contains("the provider kind(s) `anthropic`, which carry no client"),
+        "a kind with no client is not named at all: {one_missing}"
+    );
+}
+
+/// The paragraph that is not the table is wrapped, and to one width.
+///
+/// It was seven `to_owned()` literals hand-wrapped to sixty-eight columns, so
+/// a word added anywhere in it re-wrapped nothing and the rows drifted apart.
+/// The command and flag tables are **not** held to this: their rows are as
+/// wide as the widest summary, which is a layout decision `render` makes
+/// everywhere, and a rule forcing them narrower would silently truncate a
+/// command's own words.
+///
+/// The mutant: raising `PARAGRAPH_COLUMNS` past the budget asserted here.
+#[test]
+fn the_help_paragraph_is_wrapped_to_one_width() {
+    let printed = crate::cli::help::lines("0.0.0");
+    let opens = printed
+        .iter()
+        .position(|line| line.starts_with("`zaru "))
+        .expect("the closing paragraph opens with the invocation it describes");
+    for line in &printed[opens..] {
+        assert!(
+            zaru_tui::shell::wrap::columns(line) <= 68,
+            "a row of the closing paragraph is {} columns wide, so a reader at eighty sees it \
+             wrapped twice: {line:?}",
+            zaru_tui::shell::wrap::columns(line)
+        );
+    }
+}
+
 /// D2's table governs both spellings and neither is derived from the other.
 ///
 /// The mutant this catches is the obvious economy — deriving the subcommand
