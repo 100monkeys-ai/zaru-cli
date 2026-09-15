@@ -64,6 +64,7 @@ use zaru_cli::credentials::{
 };
 use zaru_core::iteration::Clock;
 use zaru_notes::session::{
+    Instance as NotesInstance,
     Bearer, Endpoint, EndpointFailure, Instance, Invalidation, NotesError, Session, WorkspaceId,
 };
 
@@ -324,11 +325,20 @@ impl Endpoint for InProcess {
             // `serve_server` blocks until the client sends `initialize`, so it
             // has to run concurrently with `serve_client` or the two deadlock.
             match serve_server(handler, server_end).await {
-                Ok(service) => {
-                    if let Some(tx) = started {
+                Ok(service) => match started {
+                    Some(tx) => {
                         let _ = tx.send(service);
                     }
-                }
+                    // **No channel means this task owns the handle**, and it
+                    // must hold it: dropping a `RunningService` shuts the
+                    // server down, so a caller that does not want to manage
+                    // the handle would otherwise get one `initialize` and
+                    // then `Transport closed` on its first real call. Waiting
+                    // here keeps it until the client hangs up.
+                    None => {
+                        let _ = service.waiting().await;
+                    }
+                },
                 Err(error) => panic!("the fixture server failed to start: {error}"),
             }
         });
@@ -900,3 +910,331 @@ async fn what_the_wiring_offers_is_printed_for_a_reader() {
     }
     println!("session: {:?}", wired.session);
 }
+
+// --- ADR-0007 D5's projection, end to end, with no socket -------------------
+//
+// # Why there is no loopback listener here
+//
+// The coordinator's ruling of 2026-09-15 asked for this half "against a
+// loopback instance". **The standing ruling of 2026-09-14 forbids exactly
+// that** -- a loopback listener standing in for a server -- and it is recorded
+// in three places in this workspace, most plainly in
+// `tests/transport_from_outside.rs`: "a fake of a provider at the wire is the
+// mock that [Testing] refuses". A standing ruling is not a brief's to lift, so
+// what is built is the shape this crate already uses and which loses nothing
+// the ruling was protecting: `rmcp` over `tokio::io::duplex`, where every
+// frame is serialised, framed and parsed by `rmcp`'s own codec exactly as it
+// would be over a network, and no socket is opened.
+//
+// What that leaves unexercised is the `reqwest` call inside `HttpEndpoint`,
+// which is the same thing `zaru-notes` leaves unexercised for the same reason
+// and says so in `session::transport::request`'s own documentation.
+
+/// A store holding one Notes token, a key, and a projection over the
+/// in-process server.
+struct Projected {
+    base: PathBuf,
+    store: zaru_cli::credentials::CredentialStore,
+    keys: StagedKey,
+    alias: Alias,
+    server: FakeNotes,
+    wire: Arc<Mutex<Vec<u8>>>,
+    handed: Arc<Mutex<Vec<String>>>,
+    planted: String,
+}
+
+impl Drop for Projected {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
+impl Projected {
+    fn wire_text(&self) -> String {
+        String::from_utf8(
+            self.wire
+                .lock()
+                .expect("the wire lock is not poisoned")
+                .clone(),
+        )
+        .expect("the protocol is UTF-8 JSON")
+    }
+
+    fn endpoint(&self) -> InProcess {
+        InProcess {
+            server: self.server.clone(),
+            wire: Arc::clone(&self.wire),
+            handed: Arc::clone(&self.handed),
+            started: Mutex::new(None),
+        }
+    }
+}
+
+/// Two Notes tokens, so `composer_token` serves neither and both project.
+fn projected_store() -> Projected {
+    let base = std::env::temp_dir().join(nonce("ncp-outside"));
+    let root = base.join("zaru");
+    let keys = StagedKey::minted();
+    let mut store =
+        zaru_cli::credentials::CredentialStore::open(&root).expect("a fresh root opens");
+
+    let alias = Alias::new(&nonce("play")).expect("a nonce is a legal alias");
+    let planted = format!("nn_mcp_{}", nonce("secret"));
+    store
+        .add(
+            Entry::notes(
+                alias.clone(),
+                Description::new("the cortex I share with the team").expect("one line"),
+                Secret::notes(planted.clone()).expect("nn_mcp_ names a kind"),
+                Reach::InstanceLocked(TokenInstance::new("play.cortex.page")),
+            )
+            .expect("an nn_ value builds a Nuclear Notes entry"),
+            &keys,
+            None,
+        )
+        .expect("the token is stored");
+    // The second token is staging: with one, `composer_token` answers this
+    // alias and D5 never projects it. See `credentials::projection`.
+    store
+        .add(
+            Entry::notes(
+                Alias::new(&nonce("beside")).expect("a nonce is a legal alias"),
+                Description::new("a second context").expect("one line"),
+                Secret::notes(format!("nn_mcp_{}", nonce("second")))
+                    .expect("nn_mcp_ names a kind"),
+                Reach::InstanceLocked(TokenInstance::new("play.cortex.page")),
+            )
+            .expect("an nn_ value builds a Nuclear Notes entry"),
+            &keys,
+            None,
+        )
+        .expect("the second token is stored");
+
+    Projected {
+        base,
+        store,
+        keys,
+        alias,
+        server: FakeNotes::new(),
+        wire: Arc::new(Mutex::new(Vec::new())),
+        handed: Arc::new(Mutex::new(Vec::new())),
+        planted,
+    }
+}
+
+/// **ADR-0007 D5, whole, over real protocol bytes.**
+///
+/// The cache is filled by one `tools/list`, the declaration the model is
+/// offered is built from it, the model's call goes out over the wire, and the
+/// answer comes back -- through `zaru-cli`'s public door, with the bearer
+/// resolved from the store and never named by the caller.
+///
+/// The mutant: make `Projection::call` open a session per call rather than
+/// once per alias, which the frame count catches.
+#[tokio::test]
+async fn adr_0007_d5_a_granted_tool_is_declared_called_and_answered_over_real_protocol_bytes() {
+    let mut staged = projected_store();
+
+    // D6's cache, filled by one `tools/list` through the product's own door.
+    let endpoint = staged.endpoint();
+    let session = Session::attach(
+        &endpoint,
+        NotesInstance::new("play.cortex.page"),
+        bearer_for_dispatch(
+            &staged
+                .store
+                .secret(&staged.alias, &staged.keys)
+                .expect("the port holds it"),
+        ),
+    )
+    .await
+    .expect("the in-process server attaches");
+    staged
+        .store
+        .cache_tool_scope(&staged.alias, &session, &ManualClock {
+            elapsed: Mutex::new(Duration::from_secs(0)),
+        })
+        .await
+        .expect("one tools/list fills the cache");
+    drop(session);
+
+    // The scope now carries declarations rather than names, which is what D5
+    // needs and what a store written before 2026-09-15 does not have.
+    let scope = staged
+        .store
+        .record(&staged.alias)
+        .expect("the token is stored")
+        .tools_scope()
+        .expect("a Notes token has a scope");
+    assert!(
+        scope.is_declarable(),
+        "the cache came back without schemas, so nothing could be declared"
+    );
+
+    // The surface the model is offered, built from that cache and one grant.
+    let namespaces = staged.store.agent_namespaces();
+    let grant = granted_for(&staged.store, &staged.alias, &["pages.read"]);
+    let declared = zaru_cli::tools::surface(&namespaces, |asked| {
+        if asked == &staged.alias {
+            &grant
+        } else {
+            &NOTHING
+        }
+    })
+    .expect("nothing collides");
+    let name = format!("notes:{}.pages.read", staged.alias);
+    let offered = declared
+        .iter()
+        .find(|descriptor| descriptor.name == name)
+        .unwrap_or_else(|| panic!("`{name}` was not declared: {declared:?}"));
+    assert_eq!(
+        offered.parameters, r#"{"type":"object"}"#,
+        "the schema the model is shown is the server's own bytes"
+    );
+    assert!(
+        offered.description.contains("the cortex I share with the team"),
+        "ADR-0007 D2: the token's description reaches the agent: {}",
+        offered.description
+    );
+    // And the tool the person did not grant is absent rather than refused.
+    assert!(
+        !declared
+            .iter()
+            .any(|descriptor| descriptor.name.ends_with(".atoms.read")),
+        "an ungranted tool was offered: {declared:?}"
+    );
+
+    // The call, through the port, over the wire.
+    let projection =
+        zaru_cli::credentials::Projection::over(&staged.store, &staged.keys, staged.endpoint());
+    let captured = zaru_cli::tools::Projected::call(
+        &projection,
+        &staged.alias,
+        "pages.read",
+        &format!(r#"{{"pathOrId":"home","workspace":"{WORKSPACE}"}}"#),
+    )
+    .await
+    .expect("the in-process server answers");
+    assert_eq!(captured.exit_code, 0, "{captured:?}");
+    assert!(
+        captured.stdout.contains(&format!("home as read from {WORKSPACE}")),
+        "the server's own answer did not come back: {captured:?}"
+    );
+
+    // A second call into the same alias reuses the session: one `initialize`
+    // on the wire for the projection's own connection, not two.
+    let before = staged.wire_text().matches(r#""method":"initialize""#).count();
+    zaru_cli::tools::Projected::call(
+        &projection,
+        &staged.alias,
+        "pages.read",
+        &format!(r#"{{"pathOrId":"second","workspace":"{WORKSPACE}"}}"#),
+    )
+    .await
+    .expect("the second call answers");
+    assert_eq!(
+        staged.wire_text().matches(r#""method":"initialize""#).count(),
+        before,
+        "the projection opened a second session for the same alias"
+    );
+
+    // The bearer crossed to the endpoint and is not in anything rendered.
+    assert!(
+        staged
+            .handed
+            .lock()
+            .expect("lock")
+            .contains(&staged.planted),
+        "the endpoint was never handed the bearer, so the absence checks below assert nothing"
+    );
+    let rendered = format!("{declared:?}{captured:?}{projection:?}");
+    assert!(
+        !rendered.contains(&staged.planted),
+        "a bearer value reached the agent's surface"
+    );
+}
+
+/// **The instance's refusal is a tool result, not a port failure.**
+///
+/// This is the half a test double could not establish: the executor check uses
+/// one, so the mutant that turns a refusal into a `PortFailure` compiles and
+/// reddens nothing there. Here the refusal comes from a real `rmcp` server
+/// over real frames, through the product's own `Projection`.
+///
+/// The mutant: `Err(refused) => Err(PortFailure::new(refused.to_string()))`.
+#[tokio::test]
+async fn adr_0016_an_instances_refusal_comes_back_as_a_result_and_a_transport_failure_does_not() {
+    let staged = projected_store();
+    let projection =
+        zaru_cli::credentials::Projection::over(&staged.store, &staged.keys, staged.endpoint());
+
+    // The refusing arm: a tool the fixture's scope does not carry, which is
+    // what ADR-0135's three gates produce -- `METHOD_NOT_FOUND`.
+    let captured = zaru_cli::tools::Projected::call(
+        &projection,
+        &staged.alias,
+        "pages.apply_patch",
+        r#"{"pathOrId":"home"}"#,
+    )
+    .await
+    .expect("an instance refusing is not a port failure, and that is the whole point");
+    assert_eq!(captured.exit_code, 1, "a refusal is a failed result");
+    assert!(
+        captured.stderr.contains("pages.apply_patch"),
+        "the server's own refusal did not come back: {captured:?}"
+    );
+
+    // The accepting sibling, so a refuse-everything implementation cannot
+    // pass: a tool it does carry answers.
+    let captured = zaru_cli::tools::Projected::call(
+        &projection,
+        &staged.alias,
+        "pages.read",
+        &format!(r#"{{"pathOrId":"home","workspace":"{WORKSPACE}"}}"#),
+    )
+    .await
+    .expect("the in-process server answers");
+    assert_eq!(captured.exit_code, 0, "{captured:?}");
+}
+
+/// A grant of `names` for `alias`, built through the product's own reader.
+fn granted_for(
+    store: &zaru_cli::credentials::CredentialStore,
+    alias: &Alias,
+    names: &[&str],
+) -> zaru_cli::credentials::Granted {
+    use zaru_cli::config::{Contribution, Field, FieldKind, Layer, Resolution, Schema, Source, Table, Value};
+    let schema = Schema::new().with_family(
+        zaru_cli::credentials::grant::PREFIX,
+        zaru_cli::credentials::grant::SUFFIX,
+        Field::free(FieldKind::Array),
+    );
+    let mut document = Table::new();
+    document.insert_path(
+        &zaru_cli::credentials::grant::key(alias),
+        Value::Array(
+            names
+                .iter()
+                .map(|name| Value::Text((*name).to_owned()))
+                .collect(),
+        ),
+    );
+    let resolution = Resolution::resolve(
+        &schema,
+        [Contribution::new(Layer::User, Source::named("staged"), document)],
+    )
+    .expect("a permissive schema takes an array at the user's layer");
+    let cached: Vec<String> = store
+        .record(alias)
+        .expect("the token is stored")
+        .tools()
+        .iter()
+        .map(|tool| tool.name().to_owned())
+        .collect();
+    let cached: Vec<&str> = cached.iter().map(String::as_str).collect();
+    zaru_cli::credentials::Granted::from_configuration(&resolution, alias, &cached)
+        .expect("every name is in the token's own scope")
+}
+
+static NOTHING: std::sync::LazyLock<zaru_cli::credentials::Granted> =
+    std::sync::LazyLock::new(zaru_cli::credentials::Granted::nothing);

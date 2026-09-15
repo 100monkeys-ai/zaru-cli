@@ -25,6 +25,26 @@
 //! and attaches it when dispatching". Nothing on the port could carry one, and
 //! this type has no field a caller could put one in.
 //!
+//! # The endpoint is a parameter, and that is what makes this checkable
+//!
+//! [`Projection::over`] takes an [`Endpoint`], exactly as
+//! [`Session::attach`] does. The binary passes
+//! [`HttpEndpoint`] through [`Projection::new`]; a check passes the in-process
+//! `rmcp` server this workspace's other session checks already run against —
+//! real protocol bytes over `tokio::io::duplex`, no socket.
+//!
+//! **That is not a convenience, it is the only shape the rules here permit.**
+//! The gate has no network, and **the standing ruling of 2026-09-14 forbids a
+//! loopback listener standing in for a server** — the reasoning is recorded in
+//! three places in this workspace already, most plainly in
+//! `tests/transport_from_outside.rs`: "a fake of a provider at the wire is the
+//! mock that [Testing] refuses". A `Projection` that could only ever hold an
+//! `HttpEndpoint` would therefore be a network path with nothing asserted
+//! about it at all, which is what `zaru-notes`' own transport split exists to
+//! avoid. What stays unexercised is the `reqwest` call itself, and that is the
+//! same thing `zaru-notes` leaves unexercised for the same reason.
+//!
+//! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 
 use crate::credentials::alias::Alias;
@@ -34,43 +54,54 @@ use crate::credentials::store::CredentialStore;
 use crate::tools::output::Captured;
 use std::collections::BTreeMap;
 use zaru_core::iteration::PortFailure;
-use zaru_notes::session::{HttpEndpoint, Instance as NotesInstance, Session};
+use zaru_notes::session::{Endpoint, HttpEndpoint, Instance as NotesInstance, Session};
 
 /// Open sessions for [ADR-0007] D5's projected tokens.
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
-pub struct Projection<'a, K> {
+pub struct Projection<'a, K, E> {
     store: &'a CredentialStore,
     keys: &'a K,
-    endpoint: HttpEndpoint,
+    endpoint: E,
     open: tokio::sync::Mutex<BTreeMap<Alias, Session>>,
 }
 
-impl<K> core::fmt::Debug for Projection<'_, K> {
+impl<K, E> core::fmt::Debug for Projection<'_, K, E> {
     /// Names how many contexts are open and nothing about any of them.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Projection").finish_non_exhaustive()
     }
 }
 
-impl<'a, K: KeyStore> Projection<'a, K> {
-    /// Take a projection over a store.
+impl<'a, K: KeyStore, E: Endpoint> Projection<'a, K, E> {
+    /// Take a projection over a store and an endpoint.
+    #[must_use]
+    pub fn over(store: &'a CredentialStore, keys: &'a K, endpoint: E) -> Self {
+        Self {
+            store,
+            keys,
+            endpoint,
+            open: tokio::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl<'a, K: KeyStore> Projection<'a, K, HttpEndpoint> {
+    /// Take a projection over the transport the binary uses.
     ///
     /// # Errors
     ///
     /// When this workspace's one HTTP client cannot be built.
     pub fn new(store: &'a CredentialStore, keys: &'a K) -> Result<Self, PortFailure> {
-        Ok(Self {
+        Ok(Self::over(
             store,
             keys,
-            endpoint: HttpEndpoint::new()
-                .map_err(|failure| PortFailure::new(failure.to_string()))?,
-            open: tokio::sync::Mutex::new(BTreeMap::new()),
-        })
+            HttpEndpoint::new().map_err(|failure| PortFailure::new(failure.to_string()))?,
+        ))
     }
 }
 
-impl<K: KeyStore + Sync> crate::tools::Projected for Projection<'_, K> {
+impl<K: KeyStore + Sync, E: Endpoint + Sync> crate::tools::Projected for Projection<'_, K, E> {
     async fn call(
         &self,
         alias: &Alias,
