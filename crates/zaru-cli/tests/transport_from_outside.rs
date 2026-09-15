@@ -298,6 +298,11 @@ async fn the_gemini_client_says_which_transport_failure_a_reader_has() {
 /// this check is that reading made mechanical: a fourth arm added to any client
 /// with `to_string()` reddens here even though nothing can drive it.
 ///
+/// **The needle became `transport_detail_within(` on 2026-09-15**, when the
+/// arms began passing the exchange ceiling so a timed-out refusal could name
+/// it. The property is unchanged and so is the count; what the arms call is
+/// the wrapper rather than the walk.
+///
 /// The count is asserted in both directions on purpose. Zero occurrences of the
 /// forbidden spelling is the property; three occurrences of the required one is
 /// the control that says the file was found and the needle is findable at all,
@@ -314,7 +319,7 @@ fn every_client_composes_its_transport_failures_the_same_way() {
     ];
 
     for (kind, source) in CLIENTS {
-        let walked = source.matches("transport_detail(&error)").count();
+        let walked = source.matches("transport_detail_within(").count();
         assert_eq!(
             walked, 3,
             "the {kind} client has {walked} transport arms walking the source chain rather than \
@@ -347,9 +352,14 @@ fn every_client_composes_its_transport_failures_the_same_way() {
 /// chooses nothing.
 ///
 /// The count is asserted in both directions, as the walk check's is: zero
-/// declarations is the property, and three readings of the shared constant is
-/// the control that says the files were found and the needle is findable, so a
-/// path typo cannot make this pass by reading nothing.
+/// declarations is the property, and four readings of the shared constant per
+/// client is the control that says the files were found and the needle is
+/// findable, so a path typo cannot make this pass by reading nothing. **Four
+/// is the builder plus the three transport arms** -- the client passes the
+/// ceiling to `web::client::build` and then to `transport_detail_within` at
+/// each of the three points it maps a `reqwest::Error`, so the figure a
+/// refusal names and the figure the request ran under are the same value by
+/// construction rather than by two constants agreeing.
 #[test]
 fn no_client_declares_an_exchange_ceiling_of_its_own() {
     const CLIENTS: [(&str, &str); 3] = [
@@ -373,9 +383,10 @@ fn no_client_declares_an_exchange_ceiling_of_its_own() {
             .matches("crate::providers::transport::EXCHANGE_TIMEOUT")
             .count();
         assert_eq!(
-            read, 1,
-            "the {kind} client reads the shared ceiling {read} time(s) rather than once, so \
-             either it stopped reading it or this needle no longer names anything",
+            read, 4,
+            "the {kind} client reads the shared ceiling {read} time(s) rather than 4 -- the \
+             builder and the three transport arms. Either it stopped reading it somewhere, or \
+             this needle no longer names anything",
         );
     }
 }

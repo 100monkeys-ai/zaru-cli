@@ -160,15 +160,14 @@ impl OpenAiCompatibleClient {
         // one, the `ollama` one and `web.fetch` cannot drift about cookies,
         // TLS and redirects. What this caller differs on is passed as an
         // argument: its own timeout, and `reqwest`'s default redirect policy.
-        let http =
-            crate::web::client::build(
-                crate::providers::transport::EXCHANGE_TIMEOUT,
-                reqwest::redirect::Policy::default(),
-            )
-                .map_err(|error| OpenAiCompatibleFailure::Unavailable {
-                    code: None,
-                    detail: error.detail().to_owned(),
-                })?;
+        let http = crate::web::client::build(
+            crate::providers::transport::EXCHANGE_TIMEOUT,
+            reqwest::redirect::Policy::default(),
+        )
+        .map_err(|error| OpenAiCompatibleFailure::Unavailable {
+            code: None,
+            detail: error.detail().to_owned(),
+        })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
             configured: endpoint,
@@ -302,7 +301,10 @@ impl OpenAiCompatibleClient {
                 // "error sending request for url (…)" and drops "Connection
                 // refused" three links below it, which is the only part a
                 // reader can act on.
-                detail: failure::transport_detail(&error),
+                detail: failure::transport_detail_within(
+                    &error,
+                    crate::providers::transport::EXCHANGE_TIMEOUT,
+                ),
             }
         })?;
 
@@ -324,7 +326,10 @@ impl OpenAiCompatibleClient {
                     .await
                     .map_err(|error| OpenAiCompatibleFailure::Unavailable {
                         code: Some(status.as_u16()),
-                        detail: failure::transport_detail(&error),
+                        detail: failure::transport_detail_within(
+                            &error,
+                            crate::providers::transport::EXCHANGE_TIMEOUT,
+                        ),
                     })?;
             return Err(OpenAiCompatibleFailure::from_status(
                 status.as_u16(),
@@ -352,7 +357,10 @@ impl OpenAiCompatibleClient {
                     .await
                     .map_err(|error| OpenAiCompatibleFailure::Unreachable {
                         endpoint: self.configured.clone(),
-                        detail: failure::transport_detail(&error),
+                        detail: failure::transport_detail_within(
+                            &error,
+                            crate::providers::transport::EXCHANGE_TIMEOUT,
+                        ),
                     })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();

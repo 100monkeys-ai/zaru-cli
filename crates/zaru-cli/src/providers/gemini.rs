@@ -261,15 +261,14 @@ impl GeminiClient {
         // a client here does about cookies and TLS, which is the
         // rule-in-two-places that made `Layer` drift while it was declared
         // twice.
-        let http =
-            crate::web::client::build(
-                crate::providers::transport::EXCHANGE_TIMEOUT,
-                reqwest::redirect::Policy::default(),
-            )
-                .map_err(|error| GeminiFailure::Unavailable {
-                    code: None,
-                    detail: error.detail().to_owned(),
-                })?;
+        let http = crate::web::client::build(
+            crate::providers::transport::EXCHANGE_TIMEOUT,
+            reqwest::redirect::Policy::default(),
+        )
+        .map_err(|error| GeminiFailure::Unavailable {
+            code: None,
+            detail: error.detail().to_owned(),
+        })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
             configured: endpoint,
@@ -564,7 +563,10 @@ impl GeminiClient {
                 // resolve printed the same sentence but for the URL, and this
                 // kind's class is environmental, so the remedy beside it told
                 // both readers to run the command again.
-                detail: crate::providers::transport::transport_detail(&error),
+                detail: crate::providers::transport::transport_detail_within(
+                    &error,
+                    crate::providers::transport::EXCHANGE_TIMEOUT,
+                ),
             })?;
 
         let status = response.status();
@@ -583,7 +585,10 @@ impl GeminiClient {
                 .await
                 .map_err(|error| GeminiFailure::Unavailable {
                     code: Some(status.as_u16()),
-                    detail: crate::providers::transport::transport_detail(&error),
+                    detail: crate::providers::transport::transport_detail_within(
+                        &error,
+                        crate::providers::transport::EXCHANGE_TIMEOUT,
+                    ),
                 })?;
             return Err(self.classify(status.as_u16(), &bytes));
         }
@@ -609,7 +614,10 @@ impl GeminiClient {
                 .await
                 .map_err(|error| GeminiFailure::Unavailable {
                     code: Some(status.as_u16()),
-                    detail: crate::providers::transport::transport_detail(&error),
+                    detail: crate::providers::transport::transport_detail_within(
+                        &error,
+                        crate::providers::transport::EXCHANGE_TIMEOUT,
+                    ),
                 })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();
