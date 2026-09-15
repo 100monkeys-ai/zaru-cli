@@ -6,14 +6,13 @@
 //!
 //! **No real keyring is reached from here and no real credential is held.** A
 //! key here is 32 bytes of a repeated pattern or a minted one; a keyring here
-//! is a `RefCell`. What a check may conclude from these is how the precedence
+//! is a `Mutex`. What a check may conclude from these is how the precedence
 //! in [`HarnessKeys`](super::HarnessKeys) behaves, and nothing whatever about
 //! the operating system's own store — that is what the environment-gated arm of
 //! `tests/sealing_from_outside.rs` is for.
 
 use crate::credentials::sealing::failure::SealingError;
 use crate::credentials::sealing::key::{FromKeyring, KeyStore, Keyring, SealingKey};
-use std::cell::RefCell;
 
 /// A keyring staged into one of [`FromKeyring`]'s four states.
 ///
@@ -21,9 +20,15 @@ use std::cell::RefCell;
 /// well as that one came back — a minting path that returned a key and stored
 /// nothing would satisfy an assertion about the return value perfectly, and the
 /// next run would find the keyring still empty.
+/// **`Mutex` rather than `RefCell` since 2026-09-15.** `HarnessKeys` now takes
+/// a `&(dyn Keyring + Sync)`, because ADR-0007 D5's projection resolves a
+/// bearer from a tool surface shared between ADR-0008 D1's two loops. A double
+/// that could not be shared between threads would be a double that cannot
+/// stand where the product's keyring stands, which is the one thing a double
+/// must not be.
 pub(crate) struct StagedKeyring {
-    answer: RefCell<FromKeyring>,
-    written: RefCell<Vec<String>>,
+    answer: std::sync::Mutex<FromKeyring>,
+    written: std::sync::Mutex<Vec<String>>,
     refuses_writes: bool,
 }
 
@@ -56,29 +61,35 @@ impl StagedKeyring {
     /// A keyring that exists, holds nothing, and refuses to be written to.
     pub(crate) fn empty_and_unwritable() -> Self {
         Self {
-            answer: RefCell::new(FromKeyring::Empty),
-            written: RefCell::new(Vec::new()),
+            answer: std::sync::Mutex::new(FromKeyring::Empty),
+            written: std::sync::Mutex::new(Vec::new()),
             refuses_writes: true,
         }
     }
 
     fn answering(answer: FromKeyring) -> Self {
         Self {
-            answer: RefCell::new(answer),
-            written: RefCell::new(Vec::new()),
+            answer: std::sync::Mutex::new(answer),
+            written: std::sync::Mutex::new(Vec::new()),
             refuses_writes: false,
         }
     }
 
     /// Every key this keyring was asked to store, in order.
     pub(crate) fn written(&self) -> Vec<String> {
-        self.written.borrow().clone()
+        self.written
+            .lock()
+            .expect("the staged keyring's lock is not poisoned")
+            .clone()
     }
 }
 
 impl Keyring for StagedKeyring {
     fn read(&self) -> FromKeyring {
-        self.answer.borrow().clone()
+        self.answer
+            .lock()
+            .expect("the staged keyring's lock is not poisoned")
+            .clone()
     }
 
     fn write(&self, key: &SealingKey) -> Result<(), SealingError> {
@@ -88,11 +99,17 @@ impl Keyring for StagedKeyring {
             });
         }
         let held = key.expose_for_the_keyring();
-        self.written.borrow_mut().push(held.clone());
+        self.written
+            .lock()
+            .expect("the staged keyring's lock is not poisoned")
+            .push(held.clone());
         // A real keyring answers with what was stored on the next read, and a
         // double that did not would let a check pass over a write that went
         // nowhere.
-        *self.answer.borrow_mut() = FromKeyring::Held(held);
+        *self
+            .answer
+            .lock()
+            .expect("the staged keyring's lock is not poisoned") = FromKeyring::Held(held);
         Ok(())
     }
 }

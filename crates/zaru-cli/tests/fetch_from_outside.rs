@@ -284,6 +284,8 @@ async fn drive(scratch: &Scratch, mode: Mode, script: Vec<ModelResponse>) -> Run
             redactor: &redactor as &(dyn Redactor + Sync),
             subprocess: &commands,
             fetch: &web,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         run::<_, _, _, _, _, NeverIterates>(
             1,

@@ -65,20 +65,31 @@ use zaru_core::tool_call::{ToolDescriptor, ToolExecutor, ToolOutcome, ToolReques
 /// [`Mutex`] is invariant in its contents, and tying them together would make
 /// the composition's declaration order a thing to get right rather than a
 /// thing that compiles.
-pub struct Shared<'m, 'e, C, F> {
-    cell: &'m Mutex<Executor<'e, C, F>>,
+pub struct Shared<'m, 'e, C, F, P> {
+    cell: &'m Mutex<Executor<'e, C, F, P>>,
+    /// The surface this session declares, borrowed from the composition.
+    ///
+    /// **Not read through the lock**, which is the whole reason it is here.
+    /// [`ToolExecutor::descriptors`] returns `&[ToolDescriptor]` borrowed from
+    /// `&self`, and a slice taken from inside the guard would borrow the guard
+    /// and die at the end of the call. Until 2026-09-15 that was solved by a
+    /// process-wide `OnceLock` over ADR-0011 D1's seven, which are a
+    /// compile-time constant; ADR-0007 D5's projected tools are a *session's*,
+    /// so the list now lives where the session is composed and both
+    /// implementations borrow the same one.
+    declared: &'m [zaru_core::tool_call::ToolDescriptor],
 }
 
-impl<C, F> Clone for Shared<'_, '_, C, F> {
+impl<C, F, P> Clone for Shared<'_, '_, C, F, P> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
 /// Two handles to one surface, which is the point of the type.
-impl<C, F> Copy for Shared<'_, '_, C, F> {}
+impl<C, F, P> Copy for Shared<'_, '_, C, F, P> {}
 
-impl<C, F> core::fmt::Debug for Shared<'_, '_, C, F> {
+impl<C, F, P> core::fmt::Debug for Shared<'_, '_, C, F, P> {
     /// Names what it is and renders nothing it holds.
     ///
     /// [`Executor`] writes its own `Debug` by hand because what it holds
@@ -90,26 +101,30 @@ impl<C, F> core::fmt::Debug for Shared<'_, '_, C, F> {
     }
 }
 
-impl<'m, 'e, C, F> Shared<'m, 'e, C, F> {
+impl<'m, 'e, C, F, P> Shared<'m, 'e, C, F, P> {
     /// Take a handle to the session's one tool surface.
     #[must_use]
-    pub const fn over(cell: &'m Mutex<Executor<'e, C, F>>) -> Self {
-        Self { cell }
+    pub const fn over(
+        cell: &'m Mutex<Executor<'e, C, F, P>>,
+        declared: &'m [zaru_core::tool_call::ToolDescriptor],
+    ) -> Self {
+        Self { cell, declared }
     }
 }
 
-impl<C, F> ToolExecutor for Shared<'_, '_, C, F>
+impl<C, F, P> ToolExecutor for Shared<'_, '_, C, F, P>
 where
     C: Subprocess + Sync,
     F: Fetch + Sync,
+    P: crate::tools::Projected + Sync,
 {
-    /// The seven, from the one list both implementations return.
+    /// The whole surface, from the one list both implementations return.
     ///
     /// It cannot come from the executor: that method borrows from `&self`,
     /// and a slice borrowed from the guard would not outlive this call. See
-    /// [`descriptor_set`](crate::tools::descriptor_set).
+    /// [`Shared::declared`](Shared).
     fn descriptors(&self) -> &[ToolDescriptor] {
-        crate::tools::descriptor_set()
+        self.declared
     }
 
     /// Execute one call on the shared surface.

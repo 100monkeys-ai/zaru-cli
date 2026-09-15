@@ -101,6 +101,28 @@ pub enum NotACall {
         /// What was asked for, escaped.
         asked: String,
     },
+    /// A projected call carried a value the credential store holds.
+    ///
+    /// **Refused rather than redacted, and that is the stronger of the two.**
+    /// A redaction puts a marker on the copy a person reads and still sends
+    /// the value; a refusal sends nothing. ADR-0007 D3: "a model that can read
+    /// its own bearer token can exfiltrate it through any tool that takes a
+    /// string" -- and a projected tool takes strings, so this is that sentence
+    /// applied to the surface D5 opens.
+    ///
+    /// **It carries no value and no marker.** What it names is the tool that
+    /// was asked for, so a reader can find the call; what it deliberately does
+    /// not name is which credential matched, because that is a fact about the
+    /// store and this sentence reaches the model.
+    CarriedAHeldValue {
+        /// The declared name that was asked for, escaped.
+        asked: String,
+    },
+    /// A projected call carried no arguments at all.
+    CarriedNoArguments {
+        /// The declared name that was asked for, escaped.
+        asked: String,
+    },
     /// The arguments carried no target.
     NoTarget {
         /// Which built-in.
@@ -162,6 +184,17 @@ impl core::fmt::Display for NotACall {
                 "{asked:?} is not one of the seven built-in tools, so there is \
                  nothing to call. The set is closed and there is no eighth"
             ),
+            Self::CarriedAHeldValue { asked } => write!(
+                f,
+                "the call to {asked:?} carried a credential this harness holds, so it was not \
+                 made; a stored secret never leaves the store, and a tool that takes a string is \
+                 how one would"
+            ),
+            Self::CarriedNoArguments { asked } => write!(
+                f,
+                "the call to {asked:?} carried no arguments, and every tool on a projected server \
+                 takes a JSON object"
+            ),
             Self::NoTarget { tool } => write!(
                 f,
                 "the call to {tool} carried no target, so there is nothing to address it to"
@@ -175,12 +208,50 @@ impl core::fmt::Display for NotACall {
 
 impl std::error::Error for NotACall {}
 
+/// What a request turned out to be.
+///
+/// Two arms for the two halves of ADR-0011 D1: the seven, and "everything
+/// beyond this is an MCP server". A projected call is not a [`Call`], because
+/// [`Call`] is an enum over the seven and ADR-0007 D5's tools are not among
+/// them — see [`Called`](crate::tools::Called).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Requested {
+    /// One of D1's seven, with its arguments read.
+    Builtin(Call),
+    /// A tool on a projected server, with its arguments unread.
+    Projected {
+        /// Which token's namespace.
+        alias: crate::credentials::Alias,
+        /// The tool, as that instance spells it.
+        tool: String,
+        /// The arguments, as JSON, exactly as the model wrote them.
+        arguments: String,
+    },
+}
+
+/// The alias and the tool inside a declared `notes:<alias>.<tool>` name.
+///
+/// Reads the name this crate composed, so the two spellings cannot drift: the
+/// prefix and the separators are [`crate::credentials::NAMESPACE_PREFIX`] and
+/// the colon and dot [`Called::rendered`](crate::tools::Called::rendered)
+/// writes. **The alias cannot contain a colon** — `Alias::new` refuses one by
+/// name — so the first colon ends the prefix and the first dot after it ends
+/// the alias.
+fn split_projected(declared: &str) -> Option<(crate::credentials::Alias, String)> {
+    let bare = declared.strip_prefix(&format!("{}:", crate::credentials::NAMESPACE_PREFIX))?;
+    let (alias, tool) = bare.split_once('.')?;
+    if tool.is_empty() {
+        return None;
+    }
+    Some((crate::credentials::Alias::new(alias).ok()?, tool.to_owned()))
+}
+
 /// Everything the acting half needs, and every one of it a caller's.
 ///
 /// Bundled for the reason `zaru-core`'s port bundles are: a constructor
 /// taking eleven arguments is a constructor whose order is a thing to get
 /// wrong.
-pub struct Executor<'a, C, F> {
+pub struct Executor<'a, C, F, P> {
     /// D4's boundary, canonical from construction.
     pub working_directory: &'a WorkingDirectory,
     /// D3's mode. Governs prompting and nothing else.
@@ -243,9 +314,25 @@ pub struct Executor<'a, C, F> {
     /// `web.fetch`. The product implementation is
     /// [`WebClient`](crate::web::WebClient).
     pub fetch: &'a F,
+    /// [ADR-0007] D5's projected servers. The product implementation is
+    /// [`Projection`](crate::credentials::Projection).
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub projected: &'a P,
+    /// The whole surface this session offers the model.
+    ///
+    /// **Built once where the session is composed and borrowed here**, rather
+    /// than returned from a `OnceLock` like the seven were. A projected
+    /// server's tools are a session's — they come from the store D6 cached
+    /// and the grant a person wrote — so a process-wide list could not hold
+    /// them. Both [`ToolExecutor`] implementations are handed a slice of the
+    /// same `Vec`, which keeps the property the `OnceLock` existed to hold:
+    /// the set the model is offered and the set this executor will accept are
+    /// one set. See [`crate::tools::declared`].
+    pub declared: &'a [ToolDescriptor],
 }
 
-impl<C, F> core::fmt::Debug for Executor<'_, C, F> {
+impl<C, F, P> core::fmt::Debug for Executor<'_, C, F, P> {
     /// Names what it holds and renders none of it.
     ///
     /// A tool surface's `Debug` is a thing that ends up in a bug report, and
@@ -257,6 +344,7 @@ impl<C, F> core::fmt::Debug for Executor<'_, C, F> {
             .field("working_directory", &self.working_directory.root())
             .field("mode", &self.mode)
             .field("has_confirmer", &self.confirmer.is_some())
+            .field("declared", &self.declared.len())
             .finish_non_exhaustive()
     }
 }
@@ -307,10 +395,11 @@ pub fn descriptor_set() -> &'static [ToolDescriptor] {
     DESCRIPTORS.get_or_init(descriptors)
 }
 
-impl<C, F> Executor<'_, C, F>
+impl<C, F, P> Executor<'_, C, F, P>
 where
     C: Subprocess + Sync,
     F: Fetch + Sync,
+    P: crate::tools::port::Projected + Sync,
 {
     /// Turn a request into a call this surface can classify.
     ///
@@ -318,7 +407,42 @@ where
     ///
     /// [`NotACall`] when the name is not a built-in, the arguments are empty,
     /// or they are not the JSON object [`ToolName::fields`] declares.
-    fn call_for(request: &ToolRequest) -> Result<Call, NotACall> {
+    fn call_for(&self, request: &ToolRequest) -> Result<Requested, NotACall> {
+        // **A projected name is recognised against what this session actually
+        // declared**, never by parsing the shape of the name. A model that
+        // invented `notes:someone.pages.apply_patch` has asked for something
+        // this session did not offer, and it is told so -- the same answer it
+        // gets for an invented built-in, by the same route.
+        if let Some(descriptor) = self
+            .declared
+            .iter()
+            .find(|descriptor| descriptor.name == request.name)
+            && let Some((alias, tool)) = split_projected(&descriptor.name)
+        {
+            let arguments = request.arguments.trim();
+            if arguments.is_empty() {
+                return Err(NotACall::CarriedNoArguments {
+                    asked: request.name.escape_debug().to_string(),
+                });
+            }
+            // ADR-0007 D3, at the one surface that could carry a value out.
+            // `Redactor::redact` answers `Cow::Borrowed` when nothing matched,
+            // which its own documentation says is there so "a caller can
+            // distinguish 'nothing was redacted' from 'something was' without
+            // comparing strings" -- so this asks the seam rather than the
+            // store, and never holds a secret to compare against.
+            if matches!(self.redactor.redact(arguments), std::borrow::Cow::Owned(_)) {
+                return Err(NotACall::CarriedAHeldValue {
+                    asked: request.name.escape_debug().to_string(),
+                });
+            }
+            return Ok(Requested::Projected {
+                alias,
+                tool,
+                arguments: arguments.to_owned(),
+            });
+        }
+
         let tool = ToolName::ALL
             .into_iter()
             .find(|tool| tool.as_str() == request.name)
@@ -333,6 +457,7 @@ where
             return Err(NotACall::NoTarget { tool });
         }
         Call::parse(tool, arguments)
+            .map(Requested::Builtin)
             .map_err(|because| NotACall::NotTheDeclaredArguments { because })
     }
 
@@ -351,27 +476,42 @@ where
     async fn act(
         &mut self,
         invocation: &Invocation<'_>,
-        call: &Call,
+        call: &Requested,
     ) -> Result<Captured, PortFailure> {
         // Every filesystem act reads its path out of the subject the decision
         // was reached about, so a decision about one path cannot authorise an
         // act on another.
         match (invocation.subject(), call) {
-            (Subject::Path(target), Call::OnPath { tool, .. }) => Ok(match tool {
+            // ADR-0007 D5, through the port. The bearer is resolved behind it
+            // and never crosses it; the arguments go out exactly as the
+            // decision was reached about them.
+            (
+                Subject::Remote { .. },
+                Requested::Projected {
+                    alias,
+                    tool,
+                    arguments,
+                },
+            ) => self.projected.call(alias, tool, arguments).await,
+            (Subject::Path(target), Requested::Builtin(Call::OnPath { tool, .. })) => Ok(match tool {
                 ToolName::FsList => files::list(target.resolved()),
                 _ => files::read(target.resolved()),
             }),
-            (Subject::Write { target, .. }, Call::Write { contents, .. }) => {
+            (Subject::Write { target, .. }, Requested::Builtin(Call::Write { contents, .. })) => {
                 Ok(files::write(target.resolved(), contents))
             }
-            (Subject::Edit { target, .. }, Call::Edit { old, new, .. }) => {
+            (Subject::Edit { target, .. }, Requested::Builtin(Call::Edit { old, new, .. })) => {
                 Ok(files::edit(target.resolved(), old, new))
             }
-            (Subject::Search { root, needle }, Call::Search { .. }) => {
+            (Subject::Search { root, needle }, Requested::Builtin(Call::Search { .. })) => {
                 Ok(files::search(root.resolved(), needle, self.search_ceiling))
             }
-            (Subject::Command(line), Call::Run { .. }) => self.subprocess.run(line).await,
-            (Subject::Url(url), Call::Fetch { .. }) => self.fetch.retrieve(url).await,
+            (Subject::Command(line), Requested::Builtin(Call::Run { .. })) => {
+                self.subprocess.run(line).await
+            }
+            (Subject::Url(url), Requested::Builtin(Call::Fetch { .. })) => {
+                self.fetch.retrieve(url).await
+            }
             // Unbuildable: `Executor::execute` derives the subject from the
             // call it just parsed, and each constructor takes one kind. It is
             // reported as a port failure rather than panicked on, because it
@@ -385,17 +525,18 @@ where
     }
 }
 
-impl<C, F> ToolExecutor for Executor<'_, C, F>
+impl<C, F, P> ToolExecutor for Executor<'_, C, F, P>
 where
     C: Subprocess + Sync,
     F: Fetch + Sync,
+    P: crate::tools::port::Projected + Sync,
 {
     fn descriptors(&self) -> &[ToolDescriptor] {
-        descriptor_set()
+        self.declared
     }
 
     async fn execute(&mut self, request: &ToolRequest) -> Result<ToolOutcome, PortFailure> {
-        let call = match Self::call_for(request) {
+        let call = match self.call_for(request) {
             Ok(call) => call,
             // The model asked for something that is not a call. It is told so
             // and the turn carries on, which is the same shape a refusal
@@ -420,7 +561,17 @@ where
         let line;
         let requested;
         let invocation = match &call {
-            Call::Fetch { url } => {
+            // **No classification and no parse.** D4's boundary is about paths
+            // and a projected call has none; the arguments are the instance's
+            // to read across ninety-four tools this harness has never seen,
+            // and a second reading here could disagree with the server's. What
+            // the decision is reached about is exactly what would be sent.
+            Requested::Projected {
+                alias,
+                tool,
+                arguments,
+            } => Invocation::projecting(alias.clone(), tool.as_str(), arguments.as_str()),
+            Requested::Builtin(Call::Fetch { url }) => {
                 // Parsed before the decision, for the reason `cmd.run` is
                 // split before it: D4's transcript entry and D3's prompt both
                 // show the target, and a string nobody has parsed is not yet
@@ -442,7 +593,7 @@ where
                 };
                 Invocation::fetching(&requested)
             }
-            Call::Run { command } => {
+            Requested::Builtin(Call::Run { command }) => {
                 // Split before the decision, because D4's transcript entry
                 // and D3's prompt both show the command, and a string that
                 // has not been split is not yet one. A shell construct is
@@ -463,7 +614,7 @@ where
                 };
                 Invocation::running(&line)
             }
-            Call::Search { root, needle } => {
+            Requested::Builtin(Call::Search { root, needle }) => {
                 // The root is classified exactly as any other path is: D4
                 // applies to where a search looks, and a search that started
                 // outside the tree prompts and is marked like any other
@@ -471,7 +622,7 @@ where
                 classified = self.working_directory.classify(root);
                 Invocation::searching(&classified, needle)
             }
-            Call::Write { path, contents } => {
+            Requested::Builtin(Call::Write { path, contents }) => {
                 // The contents travel with the invocation rather than being
                 // looked up again where the question is composed: D3's prompt
                 // and the act must be about the same bytes, and two reads of
@@ -479,13 +630,13 @@ where
                 classified = self.working_directory.classify(path);
                 Invocation::writing(&classified, contents)
             }
-            Call::Edit { path, old, new } => {
+            Requested::Builtin(Call::Edit { path, old, new }) => {
                 classified = self.working_directory.classify(path);
                 Invocation::editing(&classified, old, new)
             }
-            Call::OnPath { path, .. } => {
+            Requested::Builtin(inner @ Call::OnPath { path, .. }) => {
                 classified = self.working_directory.classify(path);
-                Invocation::on_path(call.tool(), &classified).map_err(|refused| {
+                Invocation::on_path(inner.tool(), &classified).map_err(|refused| {
                     // A tool that is not described by a bare path given a path
                     // subject is the harness having built the wrong call,
                     // which is a defect rather than anything the user or the
@@ -572,7 +723,7 @@ where
     }
 }
 
-impl<C, F> Executor<'_, C, F> {
+impl<C, F, P> Executor<'_, C, F, P> {
     /// Append one record and carry a transcript failure out as a port failure.
     fn record(&mut self, record: &Record) -> Result<(), PortFailure> {
         self.transcript.record(record).map_err(|failure| {

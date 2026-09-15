@@ -368,3 +368,67 @@ pub trait Fetch {
         Output = Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure>,
     > + Send;
 }
+
+/// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+/// D5's projected servers: one call to a tool on a stored token's instance.
+///
+/// # Why a port rather than a session held here
+///
+/// The same reason [`Fetch`] is one. A session is a socket, a bearer and a
+/// lifetime; this module decides permission and must stay checkable with no
+/// network, no credential and no keyring. The product implementation is
+/// `crate::credentials::projection`'s, which opens a session lazily on the
+/// first call into an alias and closes it when the session ends.
+///
+/// **The bearer never crosses this port.** The implementation resolves it from
+/// the store, which is ADR-0007 D3's "the harness holds the bearer and
+/// attaches it when dispatching": nothing here names a secret, and nothing
+/// here could pass one.
+pub trait Projected {
+    /// Call `tool` on the instance `alias` authenticates against.
+    ///
+    /// `arguments` is JSON exactly as the model wrote it. This port does not
+    /// interpret it and neither does the crate behind it — see
+    /// `zaru_notes::session::Session::call_declared`.
+    fn call(
+        &self,
+        alias: &crate::credentials::Alias,
+        tool: &str,
+        arguments: &str,
+    ) -> impl core::future::Future<
+        Output = Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure>,
+    > + Send;
+}
+
+/// The projection a composition with nothing to project uses.
+///
+/// The shape [`NoMembrane`](crate::tools::NoMembrane) already has for
+/// ADR-0004's verdicts: a named implementation that refuses, rather than an
+/// `Option` at every call site. **It refuses rather than panicking**, because
+/// reaching it is not a defect — a model can ask for a tool that was declared
+/// by a session other than this one, and being told no is the answer.
+///
+/// Nothing can reach it in the product today, because `compose::turn` always
+/// builds a real [`Projection`](crate::credentials::Projection); it exists so
+/// that a caller composing a tool surface without a credential store has
+/// something to pass that is not a test double.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoProjection;
+
+impl Projected for NoProjection {
+    async fn call(
+        &self,
+        alias: &crate::credentials::Alias,
+        tool: &str,
+        _arguments: &str,
+    ) -> Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure> {
+        Ok(crate::tools::output::Captured {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: format!(
+                "this session projects no Nuclear Notes servers, so there is no `{alias}` to call \
+                 `{tool}` on",
+            ),
+        })
+    }
+}

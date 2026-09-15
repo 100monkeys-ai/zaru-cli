@@ -285,6 +285,25 @@ pub struct Prepared {
     client: ProviderClient,
     witness: ToolCalling,
     store_root: std::path::PathBuf,
+    /// The credential store this session read, kept for [ADR-0007] D5.
+    ///
+    /// **Kept rather than re-opened per turn**, because the surface the model
+    /// is offered is decided once for the session: re-reading the store
+    /// between two turns of one conversation would let a token added
+    /// mid-session change what the model may call without the model ever being
+    /// told, which is the same argument that put D3's mode here.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    store: CredentialStore,
+    /// The keyring this store's sealing key is filed under.
+    ///
+    /// Kept rather than the `HarnessKeys` built over it, because that type
+    /// borrows this one and a `Prepared` holding both would be
+    /// self-referential. `ran` builds the borrower.
+    keyring: OsKeyring,
+    /// The whole surface this session offers the model: D1's seven, then
+    /// D5's projected tools, filtered to what was granted.
+    declared: Vec<zaru_core::tool_call::ToolDescriptor>,
     /// [ADR-0012] D3's window for the kind that answered, in tokens.
     ///
     /// Not `Option`: `prepare` refuses a kind that could not state one, so a
@@ -984,7 +1003,23 @@ pub fn prepare(
     //
     // A schema this kind cannot map is refused here rather than on the first
     // exchange, which is where the same failure would otherwise arrive.
-    let reserved = match client.tool_surface_bytes(crate::tools::descriptor_set()) {
+    // --- ADR-0007 D5's projected servers, decided once for the session -----
+    //
+    // **Before the reserve is measured, and that is the order that matters.**
+    // ADR-0013's reserve is "what this request spends beside the prompt", and
+    // a projected tool's declaration rides on every request exactly as a
+    // built-in's does. Measuring the seven and then declaring ninety-four
+    // would put the harness's own number below the provider's -- the defect
+    // `context-window` measured on 2026-09-14 and fixed by counting the whole
+    // request.
+    let declared = match projected_surface(&store, resolution) {
+        Ok(declared) => declared,
+        Err(failure) => {
+            return Err(Box::new(Ran::refused(Surface::projection(&failure))));
+        }
+    };
+
+    let reserved = match client.tool_surface_bytes(&declared) {
         Ok(bytes) => bytes,
         Err(failure) => {
             return Err(Box::new(Ran::refused(Surface::provider(&failure))));
@@ -1023,6 +1058,9 @@ pub fn prepare(
         client,
         witness,
         store_root,
+        store,
+        keyring,
+        declared,
         window,
         reserved,
         session_grants: crate::tools::grants::SessionGrants::none(),
@@ -1101,6 +1139,59 @@ pub fn plan_for_the_turn(
     let mut declared = project.to_vec();
     declared.extend_from_slice(skill.validators);
     zaru_core::iteration::validator::Plan::from_declared(declared).map(Some)
+
+/// What the model is offered, for this session, over this store.
+///
+/// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+/// D5's namespaces, each filtered to the grant a person wrote for it, appended
+/// to ADR-0011 D1's seven.
+///
+/// **A namespace whose cached scope carries no schemas contributes nothing and
+/// is not an error.** That is D6's refresh rule applied where it belongs: a
+/// scope cached before schemas were kept cannot be declared, the remedy is one
+/// `tools/list`, and refusing to start a session over it would make a person
+/// unable to run Zaru because of a token they are not using. The refresh
+/// happens the next time that token is attached.
+fn projected_surface(
+    store: &CredentialStore,
+    resolution: &Resolution,
+) -> Result<Vec<zaru_core::tool_call::ToolDescriptor>, crate::tools::RegistrationRefused> {
+    let namespaces = store.agent_namespaces();
+    let mut grants = std::collections::BTreeMap::new();
+    for namespace in &namespaces {
+        let Some(bare) = namespace
+            .name
+            .strip_prefix(&format!("{}:", crate::credentials::NAMESPACE_PREFIX))
+        else {
+            continue;
+        };
+        let Ok(alias) = crate::credentials::Alias::new(bare) else {
+            continue;
+        };
+        let declarable = store
+            .record(&alias)
+            .and_then(crate::credentials::Record::tools_scope)
+            .is_some_and(|scope| scope.is_declarable());
+        let cached: Vec<&str> = namespace
+            .tools
+            .iter()
+            .map(crate::credentials::CachedTool::name)
+            .collect();
+        // A grant a person wrote against a name the token does not carry is
+        // their mistake to fix, and it is reported by the surface that reads
+        // it rather than swallowed here -- but it must not stop a session
+        // opening, so an unreadable grant declares nothing and says so where a
+        // person asks: `zaru config explain notes.<alias>.agent_tools`.
+        let granted = if declarable {
+            crate::credentials::Granted::from_configuration(resolution, &alias, &cached)
+                .unwrap_or_else(|_| crate::credentials::Granted::nothing())
+        } else {
+            crate::credentials::Granted::nothing()
+        };
+        grants.insert(alias, granted);
+    }
+    let nothing = crate::credentials::Granted::nothing();
+    crate::tools::surface(&namespaces, |alias| grants.get(alias).unwrap_or(&nothing))
 }
 
 /// Run one turn of a session that already exists.
@@ -1325,6 +1416,16 @@ async fn ran(
             return Ran::refused_having_said(lines, Surface::web_client(&refusal));
         }
     };
+    // ADR-0007 D5's projected servers. Built per turn like the spawner and the
+    // web client, and it opens nothing: a session is opened on the first call
+    // into an alias and by no turn that makes none.
+    let keys = HarnessKeys::from_process(&prepared.keyring);
+    let projection = match crate::credentials::Projection::new(&prepared.store, &keys) {
+        Ok(projection) => projection,
+        Err(refusal) => {
+            return Ran::refused_having_said(lines, Surface::projection_port(&refusal));
+        }
+    };
 
     let executor = Executor {
         working_directory: &prepared.here,
@@ -1349,6 +1450,8 @@ async fn ran(
         redactor: &prepared.held,
         subprocess: &spawn,
         fetch: &fetch,
+        projected: &projection,
+        declared: &prepared.declared,
     };
 
     // --- ADR-0015 D5's skill, if this turn is one --------------------------
@@ -1383,7 +1486,7 @@ async fn ran(
         // why sharing the value rather than building a second one is what
         // makes "a candidate cannot do what a turn cannot" a property.
         let tool_surface = tokio::sync::Mutex::new(executor);
-        let mut tools = crate::compose::Shared::over(&tool_surface);
+        let mut tools = crate::compose::Shared::over(&tool_surface, &prepared.declared);
 
         // --- ADR-0009 D4's inner loop, over the same surface ---------------
         //

@@ -167,6 +167,11 @@ macro_rules! executor {
             redactor: &HeldSecrets::none(),
             subprocess: $unbuilt,
             fetch: $unbuilt,
+            // Nothing in this file's checks projects a server, so reaching one
+            // is the harness having gone somewhere it had no business going --
+            // which this says louder than a refusal would.
+            projected: &crate::tools::fixtures::UnreachableProjection,
+            declared: crate::tools::descriptor_set(),
         }
     };
 }
@@ -691,6 +696,8 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         redactor: &HeldSecrets::none(),
         subprocess: &unbuilt,
         fetch: &unbuilt,
+        projected: &crate::tools::NoProjection,
+        declared: crate::tools::descriptor_set(),
     };
 
     let outcome = executor
@@ -1159,7 +1166,7 @@ async fn the_two_handles_to_one_tool_surface_return_one_descriptor_list() {
     let direct = executor.descriptors().as_ptr();
 
     let cell = tokio::sync::Mutex::new(executor);
-    let outer = crate::compose::Shared::over(&cell);
+    let outer = crate::compose::Shared::over(&cell, crate::tools::descriptor_set());
     let inner = outer;
 
     assert!(
@@ -1223,7 +1230,7 @@ async fn a_candidate_applied_whole_reports_zero_and_carries_what_the_tools_produ
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell, crate::tools::descriptor_set()));
 
     let candidate = candidate(&[("fs.read", &["inside/file"]), ("fs.list", &["inside"])]).await;
     let outcome = applying.execute(&candidate).await.expect("no port failed");
@@ -1306,7 +1313,7 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell, crate::tools::descriptor_set()));
     let outcome = applying.execute(&candidate).await.expect("no port failed");
 
     assert!(
@@ -1356,7 +1363,7 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell, crate::tools::descriptor_set()));
     let accepted = applying.execute(&candidate).await.expect("no port failed");
     assert_eq!(
         accepted.exit_code, 0,
@@ -1466,4 +1473,280 @@ fn staged_prompt() -> zaru_core::iteration::Prompt {
         &HeldSecrets::none(),
         "staging",
     ))
+}
+
+// --- ADR-0007 D5's projected call, through the executor ---------------------
+
+/// A declared surface carrying D1's seven and one projected tool.
+fn with_projected() -> Vec<zaru_core::tool_call::ToolDescriptor> {
+    let mut declared = crate::tools::descriptors();
+    declared.push(zaru_core::tool_call::ToolDescriptor {
+        name: "notes:play.pages.read".to_owned(),
+        description: "Read a page (via the cortex I share with the team)".to_owned(),
+        parameters: r#"{"type":"object","properties":{"pathOrId":{"type":"string"}}}"#.to_owned(),
+    });
+    declared
+}
+
+/// **Security corpus.** The mutant: delete the `Cow::Owned` arm from
+/// `call_for`, so a held value reaches the wire.
+///
+/// ADR-0007 D3: "a model that can read its own bearer token can exfiltrate it
+/// through any tool that takes a string". A projected tool takes strings, and
+/// this is the one surface in the harness that would carry one to somebody
+/// else's server.
+#[tokio::test]
+async fn corpus_a_projected_call_carrying_a_held_value_is_refused_and_never_reaches_the_port() {
+    let scratch = Scratch::new();
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("a directory");
+    let mut transcript =
+        Transcript::append_to(scratch.session.transcript_path()).expect("the transcript opens");
+    let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+    let allow = StagedAllowlist(false);
+    let destructive = StagedDestructive(false);
+    let unbuilt = Unbuilt;
+    let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
+    let projection = crate::tools::fixtures::StagedProjection::answering("{}");
+    let declared = with_projected();
+
+    // A value the store holds, planted here so the check owns it and reaching
+    // the redactor through the product's own door rather than a constructor
+    // written for a check -- `HeldSecrets` has none, which is the point.
+    let store_root = crate::credentials::fixtures::ScratchRoot::new();
+    let keys = crate::credentials::sealing::fixtures::StagedKey::minted();
+    let mut store = crate::credentials::CredentialStore::open(store_root.store_root())
+        .expect("a fresh root opens");
+    let planted = format!("nn_mcp_{}", crate::credentials::fixtures::nonce("secret"));
+    store
+        .add(
+            crate::credentials::Entry::notes(
+                crate::credentials::Alias::new("play").expect("a usable alias"),
+                crate::credentials::Description::new("the cortex I share with the team")
+                    .expect("one line"),
+                crate::credentials::Secret::notes(planted.clone()).expect("nn_mcp_ names a kind"),
+                crate::credentials::Reach::InstanceLocked(crate::credentials::Instance::new(
+                    "play.cortex.page",
+                )),
+            )
+            .expect("an nn_ value builds a Nuclear Notes entry"),
+            &keys,
+            None,
+        )
+        .expect("the token is stored");
+    let held = crate::redaction::held_secrets_for_redaction(&store, &keys)
+        .expect("the store opens its own secrets");
+    assert_eq!(held.len(), 1, "the redactor must actually hold the value");
+
+    let mut executor = Executor {
+        working_directory: &working,
+        mode: Mode::Yolo,
+        allowlist: &allow,
+        destructive: &destructive,
+        session_grants: &no_grants,
+        confirmer: None,
+        verdicts: &membrane,
+        budget: OutputBudget::new(4096).expect("a usable budget"),
+        preview_budget: OutputBudget::new(4096).expect("a usable budget"),
+        search_ceiling: crate::cli::layers::search_ceiling(),
+        overflow: &mut overflow,
+        transcript: &mut transcript,
+        redactor: &held,
+        subprocess: &unbuilt,
+        fetch: &unbuilt,
+        projected: &projection,
+        declared: &declared,
+    };
+
+    // **`yolo` deliberately**, so the refusal cannot be mistaken for the
+    // permission model declining: at this mode D3 prompts for nothing, and
+    // this call still does not happen.
+    let outcome = executor
+        .execute(&raw_request(
+            "notes:play.pages.read",
+            &format!(r#"{{"pathOrId":"home","note":"{planted}"}}"#),
+        ))
+        .await
+        .expect("a refusal is not a port failure");
+
+    match outcome {
+        ToolOutcome::Refused { because, .. } => {
+            assert!(
+                because.contains("carried a credential this harness holds"),
+                "{because}"
+            );
+            assert!(
+                !because.contains(&planted),
+                "the refusal quoted the value it exists to keep in the store"
+            );
+            assert!(
+                !because.contains(crate::credentials::fixtures::ascii_core(&planted)),
+                "the refusal quoted the value's ASCII core"
+            );
+        }
+        other => panic!("a held value must not reach a projected server: {other:?}"),
+    }
+    assert!(
+        projection.asked().is_empty(),
+        "the call reached the port: {:?}",
+        projection.asked()
+    );
+
+    // The accepting sibling, so a refuse-everything implementation cannot
+    // pass: the same call without the value goes through and reaches the port
+    // with exactly what the decision was reached about.
+    let outcome = executor
+        .execute(&raw_request(
+            "notes:play.pages.read",
+            r#"{"pathOrId":"home"}"#,
+        ))
+        .await
+        .expect("no port failed");
+    assert!(
+        matches!(outcome, ToolOutcome::Completed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        projection.asked(),
+        vec![r#"play pages.read {"pathOrId":"home"}"#.to_owned()],
+        "the port was not handed the alias, the tool and the arguments the decision was about"
+    );
+}
+
+/// The mutant: recognise a projected name by its shape rather than against
+/// what this session declared.
+#[tokio::test]
+async fn a_projected_name_this_session_did_not_declare_is_not_a_call() {
+    let scratch = Scratch::new();
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("a directory");
+    let mut transcript =
+        Transcript::append_to(scratch.session.transcript_path()).expect("the transcript opens");
+    let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+    let allow = StagedAllowlist(false);
+    let destructive = StagedDestructive(false);
+    let unbuilt = Unbuilt;
+    let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
+    let projection = crate::tools::fixtures::StagedProjection::answering("{}");
+    let declared = with_projected();
+
+    let mut executor = Executor {
+        working_directory: &working,
+        mode: Mode::Yolo,
+        allowlist: &allow,
+        destructive: &destructive,
+        session_grants: &no_grants,
+        confirmer: None,
+        verdicts: &membrane,
+        budget: OutputBudget::new(4096).expect("a usable budget"),
+        preview_budget: OutputBudget::new(4096).expect("a usable budget"),
+        search_ceiling: crate::cli::layers::search_ceiling(),
+        overflow: &mut overflow,
+        transcript: &mut transcript,
+        redactor: &HeldSecrets::none(),
+        subprocess: &unbuilt,
+        fetch: &unbuilt,
+        projected: &projection,
+        declared: &declared,
+    };
+
+    // A tool on a server this session never offered, and a tool the offered
+    // server does not carry. Both are the model asking for something that was
+    // not declared, and both are told so.
+    for invented in [
+        "notes:someone.pages.apply_patch",
+        "notes:play.pages.apply_patch",
+    ] {
+        let outcome = executor
+            .execute(&raw_request(invented, r#"{"pathOrId":"home"}"#))
+            .await
+            .expect("a refusal is not a port failure");
+        assert!(
+            matches!(outcome, ToolOutcome::Refused { .. }),
+            "{invented} was not declared and must not be callable: {outcome:?}"
+        );
+    }
+    assert!(
+        projection.asked().is_empty(),
+        "an undeclared name reached the port: {:?}",
+        projection.asked()
+    );
+
+    // The accepting sibling: the one that *was* declared still works.
+    assert!(
+        matches!(
+            executor
+                .execute(&raw_request(
+                    "notes:play.pages.read",
+                    r#"{"pathOrId":"home"}"#
+                ))
+                .await
+                .expect("no port failed"),
+            ToolOutcome::Completed { .. }
+        ),
+        "the declared tool stopped working, so the assertions above assert nothing"
+    );
+}
+
+/// The mutant: make a projected refusal a `PortFailure`.
+#[tokio::test]
+async fn an_instances_refusal_reaches_the_model_as_a_tool_result_rather_than_ending_the_turn() {
+    let scratch = Scratch::new();
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("a directory");
+    let mut transcript =
+        Transcript::append_to(scratch.session.transcript_path()).expect("the transcript opens");
+    let mut overflow = SessionOverflow::in_session(scratch.session.directory());
+    let allow = StagedAllowlist(false);
+    let destructive = StagedDestructive(false);
+    let unbuilt = Unbuilt;
+    let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
+    // What the `play` token actually answers on every workspace it was probed
+    // against: it authenticates and is a member of nothing.
+    let projection =
+        crate::tools::fixtures::StagedProjection::refusing("You are not a member of that workspace.");
+    let declared = with_projected();
+
+    let mut executor = Executor {
+        working_directory: &working,
+        mode: Mode::Yolo,
+        allowlist: &allow,
+        destructive: &destructive,
+        session_grants: &no_grants,
+        confirmer: None,
+        verdicts: &membrane,
+        budget: OutputBudget::new(4096).expect("a usable budget"),
+        preview_budget: OutputBudget::new(4096).expect("a usable budget"),
+        search_ceiling: crate::cli::layers::search_ceiling(),
+        overflow: &mut overflow,
+        transcript: &mut transcript,
+        redactor: &HeldSecrets::none(),
+        subprocess: &unbuilt,
+        fetch: &unbuilt,
+        projected: &projection,
+        declared: &declared,
+    };
+
+    let outcome = executor
+        .execute(&raw_request(
+            "notes:play.pages.read",
+            r#"{"pathOrId":"home","workspace":"zaru"}"#,
+        ))
+        .await
+        .expect("an instance refusing is not a port failure, and that is the point");
+
+    match outcome {
+        ToolOutcome::Completed { result, .. } => {
+            assert!(result.failed, "the instance refused, so the result failed");
+            assert!(
+                result.content.as_str().contains("not a member"),
+                "the instance's own words did not reach the model: {:?}",
+                result.content
+            );
+        }
+        other => panic!("an honest refusal is a tool result: {other:?}"),
+    }
 }

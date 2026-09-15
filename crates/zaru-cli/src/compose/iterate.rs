@@ -216,22 +216,23 @@ where
 /// boundary, permission decision and transcript record a turn's call gets is
 /// a candidate's call's too, by construction rather than by rule.
 #[derive(Debug)]
-pub struct Applying<'m, 'e, C, F> {
-    surface: Shared<'m, 'e, C, F>,
+pub struct Applying<'m, 'e, C, F, P> {
+    surface: Shared<'m, 'e, C, F, P>,
 }
 
-impl<'m, 'e, C, F> Applying<'m, 'e, C, F> {
+impl<'m, 'e, C, F, P> Applying<'m, 'e, C, F, P> {
     /// Apply candidates through this surface.
     #[must_use]
-    pub const fn through(surface: Shared<'m, 'e, C, F>) -> Self {
+    pub const fn through(surface: Shared<'m, 'e, C, F, P>) -> Self {
         Self { surface }
     }
 }
 
-impl<C, F> Executor for Applying<'_, '_, C, F>
+impl<C, F, P> Executor for Applying<'_, '_, C, F, P>
 where
     C: Subprocess + Sync,
     F: Fetch + Sync,
+    P: crate::tools::Projected + Sync,
 {
     type Candidate = Candidate;
 

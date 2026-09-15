@@ -1430,6 +1430,36 @@ impl Surface<'_> {
         }
     }
 
+    /// A projected server could not be registered.
+    ///
+    /// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+    /// D5's registration refused a namespace. The user's, because both arms
+    /// name something a person can act on: a collision names the built-in, and
+    /// a scope with no schemas names the token whose next attach refreshes it.
+    #[must_use]
+    pub fn projection(refusal: &crate::tools::RegistrationRefused) -> Classified {
+        correctable(
+            refusal,
+            run(
+                "see which tools each stored token grants",
+                "notes tokens",
+            ),
+        )
+    }
+
+    /// The projected-server port could not be built.
+    #[must_use]
+    pub fn projection_port(refusal: &zaru_core::iteration::PortFailure) -> Classified {
+        Classified::Environmental {
+            statement: Statement::sanitised(refusal.to_string()),
+            wait: Wait::NoWaitWillHelp(Statement::sanitised(
+                "a projected Nuclear Notes server needs an HTTP client and this machine could \
+                 not provide one, which waiting does not change. Every built-in works without it"
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// The allowlist a user's configuration set could not be read.
     #[must_use]
     pub fn allowlist(refusal: &crate::tools::AllowlistRefused) -> Classified {

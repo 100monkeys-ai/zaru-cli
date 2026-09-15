@@ -83,6 +83,7 @@
 
 pub mod allowlist;
 pub mod arguments;
+pub mod declared;
 pub mod decision;
 pub mod destructive;
 pub mod execute;
@@ -100,6 +101,7 @@ pub mod tree;
 
 pub use allowlist::{Allowed, AllowlistRefused, Entry};
 pub use arguments::{ArgumentsRefused, Call, schema};
+pub use declared::{Refused as RegistrationRefused, surface};
 pub use decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, InvocationRefused, Permission,
     RefusedBecause, Requirement, Subject, TranscriptEntry,
@@ -115,7 +117,10 @@ pub use output::{
     BudgetIsZero, Captured, ELISION_PREFIX, Excerpt, OutputBudget, Overflow, OverflowFailure,
     PresentationRefused, Presented,
 };
-pub use port::{Allowlist, Confirm, ConfirmFailure, DestructiveMatch, Fetch, Question, Subprocess};
+pub use port::{
+    Allowlist, Confirm, ConfirmFailure, DestructiveMatch, Fetch, NoProjection, Projected,
+    Question, Subprocess,
+};
 // `prompt` is deliberately **not** re-exported here. `zaru-core` already has
 // an `iteration::Prompt` and several checks in this crate import it, so a
 // second `tools::Prompt` at the same level would be two different things one

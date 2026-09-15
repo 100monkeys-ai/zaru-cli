@@ -275,6 +275,8 @@ async fn a_model_reads_a_file_inside_the_boundary_and_the_bytes_reach_it() {
             redactor: &HeldSecrets::none(),
             subprocess: &unbuilt,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         run::<_, _, _, _, _, NeverIterates>(
             1,
@@ -377,6 +379,8 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
             redactor: &HeldSecrets::none(),
             subprocess: &unbuilt,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         run::<_, _, _, _, _, NeverIterates>(
             1,
@@ -582,6 +586,8 @@ async fn a_resumed_session_tells_the_model_once_and_re_executes_nothing() {
             redactor: &HeldSecrets::none(),
             subprocess: &unbuilt,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         // Three turns over one surface, written out rather than folded into a
         // helper: what makes the third one evidence about the first two is
@@ -836,6 +842,8 @@ async fn a_denying_membrane_refuses_at_yolo_and_presents_as_an_expected_failure(
             redactor: &HeldSecrets::none(),
             subprocess: &unbuilt,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         run::<_, _, _, _, _, NeverIterates>(
             1,

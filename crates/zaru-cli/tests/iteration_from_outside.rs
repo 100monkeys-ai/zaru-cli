@@ -356,6 +356,8 @@ fn drive_narrating<P: ContextPolicy + Sync>(
         redactor: staged.held,
         subprocess: &spawn,
         fetch: &unbuilt,
+        projected: &zaru_cli::tools::NoProjection,
+        declared: zaru_cli::tools::descriptor_set(),
     };
 
     let clock = Ticking::default();
@@ -366,7 +368,7 @@ fn drive_narrating<P: ContextPolicy + Sync>(
 
     let outcome = {
         let cell = tokio::sync::Mutex::new(executor);
-        let mut tools = Shared::over(&cell);
+        let mut tools = Shared::over(&cell, zaru_cli::tools::descriptor_set());
         let generating = Generating::over(staged.provider);
         let applying = Applying::through(tools);
         let inner = Inner::over(
@@ -984,6 +986,8 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
                 redactor: &held,
                 subprocess: &spawn,
                 fetch: &unbuilt,
+                projected: &zaru_cli::tools::NoProjection,
+                declared: zaru_cli::tools::descriptor_set(),
             };
             let clock = Ticking::default();
             let policy = Policy;
@@ -996,7 +1000,7 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
             let dispatch = Dispatch::new(&plan, &spawn, &patterns, &schemas);
 
             let cell = tokio::sync::Mutex::new(executor);
-            let mut tools = Shared::over(&cell);
+            let mut tools = Shared::over(&cell, zaru_cli::tools::descriptor_set());
             let generating = Generating::over(&provider);
             let applying = Applying::through(tools);
             let inner = Inner::over(

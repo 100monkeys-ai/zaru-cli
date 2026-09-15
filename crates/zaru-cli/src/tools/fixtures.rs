@@ -370,3 +370,88 @@ impl crate::tools::port::Confirm for FailingConfirmer {
         ))
     }
 }
+
+/// A [`Projected`](crate::tools::Projected) that answers without a network.
+///
+/// **Not a stand-in for Nuclear Notes.** It records what it was asked for and
+/// hands back a fixed capture, so a check can assert that a permitted
+/// projected call reached the port with the alias, the tool and the arguments
+/// the decision was reached about — and nothing about what a real instance
+/// would say. The offline half of that lives against a loopback instance; see
+/// `tests/notes_projection_from_outside.rs`.
+pub(crate) struct StagedProjection {
+    asked: std::sync::Mutex<Vec<String>>,
+    answer: crate::tools::output::Captured,
+}
+
+impl StagedProjection {
+    /// A projection that answers `answer` to everything.
+    pub(crate) fn answering(answer: &str) -> Self {
+        Self {
+            asked: std::sync::Mutex::new(Vec::new()),
+            answer: crate::tools::output::Captured {
+                exit_code: 0,
+                stdout: answer.to_owned(),
+                stderr: String::new(),
+            },
+        }
+    }
+
+    /// A projection that answers as an instance refusing does.
+    pub(crate) fn refusing(detail: &str) -> Self {
+        Self {
+            asked: std::sync::Mutex::new(Vec::new()),
+            answer: crate::tools::output::Captured {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: detail.to_owned(),
+            },
+        }
+    }
+
+    /// Every call it was asked to make, in order.
+    pub(crate) fn asked(&self) -> Vec<String> {
+        self.asked
+            .lock()
+            .expect("the staged projection's lock is not poisoned")
+            .clone()
+    }
+}
+
+impl crate::tools::Projected for StagedProjection {
+    async fn call(
+        &self,
+        alias: &crate::credentials::Alias,
+        tool: &str,
+        arguments: &str,
+    ) -> Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure> {
+        self.asked
+            .lock()
+            .expect("the staged projection's lock is not poisoned")
+            .push(format!("{alias} {tool} {arguments}"));
+        Ok(self.answer.clone())
+    }
+}
+
+/// A [`Projected`](crate::tools::Projected) nothing may call.
+///
+/// Distinct from the product's [`NoProjection`](crate::tools::NoProjection),
+/// which *refuses*: being told no is an answer a model may legitimately get,
+/// so a check whose subject is a built-in wants something that says the
+/// harness reached a server it had no business reaching.
+///
+/// The shape `NoMembrane` already has: a check whose subject is a built-in
+/// should not be able to reach a projected server at all, and a port that
+/// panics says so louder than one that returns an empty capture.
+pub(crate) struct UnreachableProjection;
+
+impl crate::tools::Projected for UnreachableProjection {
+    async fn call(
+        &self,
+        alias: &crate::credentials::Alias,
+        tool: &str,
+        _arguments: &str,
+    ) -> Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure> {
+        panic!("nothing in this check should reach a projected server, and `{alias}` `{tool}` did")
+    }
+}

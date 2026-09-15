@@ -3780,3 +3780,261 @@ fn adr_0011_d1_the_seven_stay_seven_and_a_projected_tool_is_not_an_eighth() {
         Some(ToolName::WebFetch)
     );
 }
+
+// --- ADR-0007 D5's surface: what is declared, and what is not ---------------
+
+fn namespace(alias: &str, tools: &[(&str, Option<&str>)]) -> crate::credentials::Namespace {
+    crate::credentials::Namespace {
+        name: format!("{}:{alias}", crate::credentials::NAMESPACE_PREFIX),
+        description: "the cortex I share with the team".to_owned(),
+        tools: tools
+            .iter()
+            .map(|(name, schema)| match schema {
+                Some(schema) => crate::credentials::CachedTool::declared(
+                    *name,
+                    Some(format!("what {name} does")),
+                    *schema,
+                ),
+                None => crate::credentials::CachedTool::name_only(*name),
+            })
+            .collect(),
+    }
+}
+
+const OBJECT: &str = r#"{"type":"object"}"#;
+
+/// **Security corpus.** The mutant: declare every cached tool rather than the
+/// granted ones.
+///
+/// ADR-0007's Negative section is what this is about: "Every namespace the
+/// agent sees costs context-window budget for its tool schemas ... so tight
+/// per-token scoping matters more here than in a single-token design, not
+/// less." Measured 2026-09-15, one token grants 94 tools and the seven
+/// built-ins are 1,619 bytes of a 1,937-byte request.
+#[test]
+fn corpus_a_write_tool_the_person_did_not_grant_is_absent_from_the_declarations() {
+    let namespaces = vec![namespace(
+        "play",
+        &[
+            ("pages.read", Some(OBJECT)),
+            ("pages.apply_patch", Some(OBJECT)),
+        ],
+    )];
+    let alias = crate::credentials::Alias::new("play").expect("a usable alias");
+
+    // The refusing arm: a grant naming only the read. **Absence rather than a
+    // refusal**, which is the shape `ToolName`'s own closure uses -- the
+    // forbidden reach has nothing to call.
+    let read_only = granted(&["pages.read"]);
+    let declared =
+        crate::tools::surface(&namespaces, |_| &read_only).expect("nothing collides");
+    let names: Vec<&str> = declared
+        .iter()
+        .map(|descriptor| descriptor.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"notes:play.pages.read"),
+        "the granted tool is missing: {names:?}"
+    );
+    assert!(
+        !names.contains(&"notes:play.pages.apply_patch"),
+        "a tool the person did not grant was offered to the model: {names:?}"
+    );
+
+    // The accepting sibling, so an offer-nothing implementation cannot pass:
+    // granting the write declares it.
+    let both = granted(&["pages.read", "pages.apply_patch"]);
+    let declared = crate::tools::surface(&namespaces, |_| &both).expect("nothing collides");
+    assert!(
+        declared
+            .iter()
+            .any(|descriptor| descriptor.name == "notes:play.pages.apply_patch"),
+        "a granted write was not declared"
+    );
+    let _ = alias;
+}
+
+/// The mutant: declare a namespace whose grant is empty.
+#[test]
+fn adr_0007_d5_a_namespace_with_no_grant_contributes_nothing_at_all() {
+    let namespaces = vec![namespace("play", &[("pages.read", Some(OBJECT))])];
+    let nothing = crate::credentials::Granted::nothing();
+    let declared = crate::tools::surface(&namespaces, |_| &nothing).expect("nothing collides");
+
+    assert_eq!(
+        declared.len(),
+        ToolName::ALL.len(),
+        "a namespace with no grant added something: {:?}",
+        declared
+            .iter()
+            .map(|descriptor| descriptor.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    // Not an empty server under a name either -- nothing at all.
+    assert!(
+        !declared
+            .iter()
+            .any(|descriptor| descriptor.name.starts_with("notes:")),
+        "an empty namespace was named to the model"
+    );
+
+    // The accepting sibling: the built-ins are still all there, in D1's own
+    // order, so the assertion above is about the projection rather than about
+    // the whole surface having collapsed.
+    for (offered, built_in) in declared.iter().zip(ToolName::ALL) {
+        assert_eq!(offered.name, built_in.as_str());
+    }
+}
+
+/// **Security corpus.** The mutant: drop the collision arm from `declaration`.
+///
+/// The coordinator's default of 2026-09-15: built-in and server tool names
+/// share one namespace and a collision is refused at registration naming the
+/// built-in. **This refusal has no reachable input under the
+/// `notes:<alias>.<tool>` spelling**, and both halves of that are asserted
+/// here rather than one of them being left as a comment: the property that
+/// makes it unreachable, and the refusal that would fire if the property went
+/// away.
+#[test]
+fn corpus_the_projected_spelling_cannot_collide_with_a_builtin_and_a_collision_is_refused() {
+    // The property. `Alias::new` refuses a colon by name, citing D5, so every
+    // projected name carries one and no built-in does.
+    for builtin in ToolName::ALL {
+        assert!(
+            !builtin.as_str().contains(':'),
+            "{builtin} carries the separator that makes a projected name unambiguous"
+        );
+    }
+    assert!(
+        matches!(
+            crate::credentials::Alias::new("has:colon"),
+            Err(crate::credentials::AliasRefused::NamespaceSeparator { .. })
+        ),
+        "an alias may carry a colon, so a projected name is no longer unambiguous"
+    );
+
+    // **An alias equal to a built-in's name is legal**, because `Alias::new`
+    // permits a dot -- and its tools still do not collide.
+    let alias = crate::credentials::Alias::new("fs.read").expect("a dot is a legal alias");
+    let namespaces = vec![namespace(alias.as_str(), &[("pages.read", Some(OBJECT))])];
+    let grant = granted(&["pages.read"]);
+    let declared = crate::tools::surface(&namespaces, |_| &grant).expect("nothing collides");
+    assert!(
+        declared
+            .iter()
+            .any(|descriptor| descriptor.name == "notes:fs.read.pages.read"),
+        "an alias named after a built-in should still project"
+    );
+    assert_eq!(
+        declared
+            .iter()
+            .filter(|descriptor| descriptor.name == "fs.read")
+            .count(),
+        1,
+        "the built-in `fs.read` is declared exactly once"
+    );
+
+    // **The refusal is not exercised by a call, because nothing can reach it**,
+    // and that is stated here rather than hidden behind a check that passes
+    // for the wrong reason. What is asserted instead is that the refusal
+    // exists, names the built-in it would have collided with, and is not
+    // silently empty -- so if the spelling ever changes, what fires is a
+    // refusal somebody has read rather than one nobody ever saw.
+    let refusal = crate::tools::RegistrationRefused::Collides {
+        alias: "play".to_owned(),
+        tool: "fs.read".to_owned(),
+        builtin: ToolName::FsRead,
+    };
+    let said = refusal.to_string();
+    assert!(
+        said.contains("fs.read") && said.contains("play") && said.contains("one namespace"),
+        "the refusal must name the built-in, the token, and why: {said}"
+    );
+}
+
+/// The mutant: declare a tool whose cached entry carries no schema.
+#[test]
+fn adr_0007_d6_a_granted_tool_with_no_cached_schema_is_refused_naming_the_token() {
+    let namespaces = vec![namespace("play", &[("pages.read", None)])];
+    let grant = granted(&["pages.read"]);
+    let refusal = crate::tools::surface(&namespaces, |_| &grant)
+        .expect_err("a tool with no schema cannot be declared");
+    match &refusal {
+        crate::tools::RegistrationRefused::NoSchema { alias, tool } => {
+            assert_eq!(alias, "play");
+            assert_eq!(tool, "pages.read");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        refusal.to_string().contains("refreshed at the next session"),
+        "the refusal must name D6's remedy: {refusal}"
+    );
+
+    // The accepting sibling: the same tool with a schema declares.
+    let with_schema = vec![namespace("play", &[("pages.read", Some(OBJECT))])];
+    assert!(crate::tools::surface(&with_schema, |_| &grant).is_ok());
+}
+
+/// The mutant: compose the description from the tool alone.
+#[test]
+fn adr_0007_d2_a_declaration_carries_the_tools_words_and_the_tokens_description() {
+    let namespaces = vec![namespace("play", &[("pages.read", Some(OBJECT))])];
+    let grant = granted(&["pages.read"]);
+    let declared = crate::tools::surface(&namespaces, |_| &grant).expect("nothing collides");
+    let projected = declared
+        .iter()
+        .find(|descriptor| descriptor.name == "notes:play.pages.read")
+        .expect("it is declared");
+
+    assert!(
+        projected.description.contains("what pages.read does"),
+        "the server's own words are missing: {}",
+        projected.description
+    );
+    assert!(
+        projected
+            .description
+            .contains("the cortex I share with the team"),
+        "ADR-0007 D2: the token's description is shown to the agent: {}",
+        projected.description
+    );
+    assert_eq!(projected.parameters, OBJECT, "the schema is the server's");
+}
+
+/// A grant of `names`, built through the product's own door.
+///
+/// **Not a constructor written for a check.** `Granted` has one way in --
+/// ADR-0014's resolved configuration -- and a check that reached around it
+/// would be asserting against a value the product cannot produce. So this
+/// stages the layer a person actually writes and lets the real reader answer.
+fn granted(names: &[&str]) -> crate::credentials::Granted {
+    use crate::config::{Contribution, Layer, Resolution, Source, Table, Value};
+    let alias = crate::credentials::Alias::new("play").expect("a usable alias");
+    let schema = crate::config::Schema::new().with_family(
+        crate::credentials::grant::PREFIX,
+        crate::credentials::grant::SUFFIX,
+        crate::config::Field::free(crate::config::FieldKind::Array),
+    );
+    let mut document = Table::new();
+    document.insert_path(
+        &crate::credentials::grant::key(&alias),
+        Value::Array(
+            names
+                .iter()
+                .map(|name| Value::Text((*name).to_owned()))
+                .collect(),
+        ),
+    );
+    let resolution = Resolution::resolve(
+        &schema,
+        [Contribution::new(
+            Layer::User,
+            Source::named("staged"),
+            document,
+        )],
+    )
+    .expect("a permissive schema takes an array at the user's layer");
+    crate::credentials::Granted::from_configuration(&resolution, &alias, names)
+        .expect("every name is in the token's own scope")
+}

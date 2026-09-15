@@ -351,6 +351,20 @@ impl Record {
         }
     }
 
+    /// D6's cached scope as a [`ToolScope`], for the readings that are the
+    /// scope's rather than the list's.
+    ///
+    /// `None` for a provider key, which has no scope at all — rather than an
+    /// empty one, which would answer `is_declarable` truthfully and mean
+    /// something different.
+    #[must_use]
+    pub fn tools_scope(&self) -> Option<ToolScope> {
+        match &self.held {
+            StoredHeld::Notes { tools, .. } => Some(ToolScope::new(tools.clone())),
+            StoredHeld::Provider { .. } => None,
+        }
+    }
+
     /// D2's informational workspace pointer, which only a Notes token has.
     #[must_use]
     pub fn workspace(&self) -> Option<&str> {

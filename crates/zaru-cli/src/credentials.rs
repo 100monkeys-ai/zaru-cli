@@ -57,6 +57,7 @@ pub mod family;
 pub mod notes;
 pub mod port;
 pub mod grant;
+pub mod projected;
 pub mod projection;
 pub mod sealing;
 pub mod secret;
@@ -74,6 +75,7 @@ pub use notes::{
     composer_token, corpus_at, corpus_from, tool_scope_at,
 };
 pub use port::Confirm;
+pub use projected::Projection;
 pub use projection::{Listed, Listing, NAMESPACE_PREFIX, Namespace};
 pub use sealing::{
     CREDENTIAL_KEY_VARIABLE, FromKeyring, HarnessKeys, KeyStore, Keyring, OsKeyring, Sealed,

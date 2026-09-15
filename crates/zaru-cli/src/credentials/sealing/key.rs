@@ -280,14 +280,21 @@ impl Keyring for OsKeyring {
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 pub struct HarnessKeys<'a> {
-    keyring: &'a dyn Keyring,
+    /// **`+ Sync` since 2026-09-15**, because the key store is now reached
+    /// from a shared surface: [ADR-0007] D5's projection resolves a bearer
+    /// when the model calls a projected tool, and that surface is behind a
+    /// `tokio::sync::Mutex` shared by both of ADR-0008 D1's loops. A keyring
+    /// that could not be shared between threads would make the whole tool
+    /// surface un-shareable. Every implementation in the workspace already
+    /// satisfied it; what changed is that the bound is now stated.
+    keyring: &'a (dyn Keyring + Sync),
     variable: Option<String>,
 }
 
 impl<'a> HarnessKeys<'a> {
     /// Take a keyring and whatever [`CREDENTIAL_KEY_VARIABLE`] holds.
     #[must_use]
-    pub fn new(keyring: &'a dyn Keyring, variable: Option<String>) -> Self {
+    pub fn new(keyring: &'a (dyn Keyring + Sync), variable: Option<String>) -> Self {
         Self { keyring, variable }
     }
 
@@ -298,7 +305,7 @@ impl<'a> HarnessKeys<'a> {
     /// and [`CredentialStore::default_root`](crate::credentials::CredentialStore::default_root)
     /// already use: one named impure function, findable by one search.
     #[must_use]
-    pub fn from_process(keyring: &'a dyn Keyring) -> Self {
+    pub fn from_process(keyring: &'a (dyn Keyring + Sync)) -> Self {
         Self::new(keyring, std::env::var(CREDENTIAL_KEY_VARIABLE).ok())
     }
 }

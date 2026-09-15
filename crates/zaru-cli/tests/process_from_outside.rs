@@ -506,6 +506,8 @@ async fn one_command_turn(
             redactor,
             subprocess: &spawn,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         run::<_, _, _, _, _, NeverIterates>(
             1,
@@ -1212,6 +1214,8 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
         redactor: &HeldSecrets::none(),
         subprocess: &spawn,
         fetch: &unbuilt,
+        projected: &zaru_cli::tools::NoProjection,
+        declared: zaru_cli::tools::descriptor_set(),
     };
     let _ = run::<_, _, _, _, _, NeverIterates>(
         1,
@@ -1363,6 +1367,8 @@ async fn corpus_an_interrupt_with_a_child_in_flight_ends_it_and_leaves_the_call_
             redactor: &redactor,
             subprocess: &spawn,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         let mut sinks: [&mut dyn EventSink; 1] = [&mut sink];
         let running = run::<_, _, _, _, _, NeverIterates>(
@@ -1553,6 +1559,8 @@ async fn an_uninterrupted_round_leaves_a_matched_pair_for_both_calls() {
             redactor: &redactor,
             subprocess: &spawn,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         run::<_, _, _, _, _, NeverIterates>(
             1,

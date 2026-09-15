@@ -337,6 +337,8 @@ async fn drive(
             redactor,
             subprocess: &unbuilt,
             fetch: &unbuilt,
+            projected: &zaru_cli::tools::NoProjection,
+            declared: zaru_cli::tools::descriptor_set(),
         };
         run::<_, _, _, _, _, NeverIterates>(
             1,
