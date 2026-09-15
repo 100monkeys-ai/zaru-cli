@@ -210,10 +210,28 @@ impl Expanded {
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     #[must_use]
     pub fn attribution(&self) -> String {
-        match &self.admitted {
-            Some(admitted) => format!("/{} ({} · admitted {admitted})", self.name, self.source),
-            None => format!("/{} ({})", self.name, self.source),
-        }
+        attribution_line(&self.name, self.source.word(), self.admitted.as_deref())
+    }
+}
+
+/// [ADR-0015] D6's attribution line, less the glyph the register paints.
+///
+/// **The one place this line is spelled.** Its two callers are
+/// [`Expanded::attribution`], which is what the pane paints the moment a
+/// command expands, and `terminal::vocabulary`, which is what `--resume`
+/// paints from the transcript record. Two spellings of one line are two
+/// things that can come to disagree, which is the rule this workspace keeps
+/// giving.
+///
+/// `admitted` is `None` for a user command, which was never admitted; saying
+/// it was would be false.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[must_use]
+pub fn attribution_line(name: &str, source: &str, admitted: Option<&str>) -> String {
+    match admitted {
+        Some(admitted) => format!("/{name} ({source} · admitted {admitted})"),
+        None => format!("/{name} ({source})"),
     }
 }
 

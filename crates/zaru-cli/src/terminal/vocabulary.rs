@@ -306,7 +306,49 @@ fn lines_for(record: &Record) -> Vec<Line> {
         // candidate", so the type already names this exact use and nothing is
         // authored for it.
         Record::Conversation(said) => vec![spoken(said.voice, &said.text)],
+        // ADR-0010 D2's ninth producer, replayed. **`Announced`, and the
+        // glyph is the record's own**: [ADR-0015] D6 writes the line as
+        // `◈ /deploy-check (project · admitted 2026-08-19)`, and `◈` is this
+        // register's marker, so the register is read off the record rather
+        // than chosen here and no glyph is authored anywhere.
+        Record::Attribution(attributed) => attributed_lines(attributed),
     }
+}
+
+/// [ADR-0015] D6's attribution, as the line a pane paints.
+///
+/// **One function, two callers**, which is the rule [`spoken`] already
+/// follows: the pump paints this the moment a command expands, and
+/// [`Transcript::of`] paints it again on `--resume`. Two spellings of one line
+/// are two things that can come to disagree about a word.
+///
+/// The register is [`Register::Announced`] because **D6's glyph is that
+/// register's own marker** — the record writes the line as
+/// `◈ /deploy-check (project · admitted 2026-08-19)` — so the register is read
+/// off the record rather than chosen here, and no glyph is authored anywhere.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[must_use]
+pub fn attributed_lines(attributed: &crate::session::Attribution) -> Vec<Line> {
+    let register = Register::Announced;
+    vec![Line::new(register, attributed_line(attributed))]
+}
+
+/// [ADR-0015] D6's attribution line, less the glyph the register paints.
+///
+/// The line itself is [`crate::commands::document::attribution_line`]'s and
+/// is spelled once there, for the reason [`spoken`] is one function: what a
+/// person watches and what they read back cannot be allowed to disagree about
+/// a word. This is the adapter that gives it the register.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[must_use]
+pub fn attributed_line(attributed: &crate::session::Attribution) -> String {
+    crate::commands::document::attribution_line(
+        &attributed.name,
+        &attributed.source,
+        attributed.admitted.as_deref(),
+    )
 }
 
 /// One half of a turn's conversation, as a line.

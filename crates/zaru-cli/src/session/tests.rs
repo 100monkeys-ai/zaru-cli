@@ -2410,3 +2410,61 @@ fn compaction_keeps_the_newest_lines_of_every_directory() {
         "and compacting a file already at the cap drops nothing"
     );
 }
+
+/// ADR-0010 D2's **ninth** producer: ADR-0015 D6's attribution, round-tripped
+/// through the file and rendered as the line D6 writes.
+///
+/// **The mutant:** `terminal::vocabulary`'s arm painting `Register::Plain`
+/// reddens the register assertion, and D6's `◈` — which is `Announced`'s own
+/// marker — would stop being what a reader sees.
+#[test]
+fn the_ninth_producer_round_trips_and_renders_the_records_own_line() {
+    let attributed = crate::session::Attribution {
+        n: 1,
+        name: "deploy-check".to_owned(),
+        source: "project".to_owned(),
+        admitted: Some("2026-08-19".to_owned()),
+        typed: "/deploy-check main".to_owned(),
+    };
+    let record = Record::Attribution(attributed.clone());
+    assert_eq!(record.producer(), "attribution");
+
+    let rendered = serde_json::to_string(&record).expect("a record must serialise");
+    assert!(
+        rendered.starts_with("{\"attribution\""),
+        "the line names its producer: {rendered}"
+    );
+    assert!(
+        rendered.contains("/deploy-check main"),
+        "the typed line is on the file, so a replay paints what the pane painted: {rendered}"
+    );
+    assert_eq!(
+        serde_json::from_str::<Record>(&rendered).expect("a record must parse"),
+        record
+    );
+
+    let lines = crate::terminal::Transcript::of(&[record]);
+    let painted = zaru_tui::shell::TranscriptSource::lines(&lines);
+    assert_eq!(painted.len(), 1);
+    assert_eq!(
+        painted[0].register,
+        zaru_tui::shell::Register::Announced,
+        "D6's `◈` is this register's own marker, so no glyph is authored"
+    );
+    assert_eq!(
+        painted[0].text, "/deploy-check (project · admitted 2026-08-19)",
+        "D6's own line, less the glyph the register paints"
+    );
+
+    // A user command was never admitted, and the line says so rather than
+    // claiming a date nobody gave.
+    let mine = crate::session::Attribution {
+        source: "user".to_owned(),
+        admitted: None,
+        ..attributed
+    };
+    let painted = zaru_tui::shell::TranscriptSource::lines(&crate::terminal::Transcript::of(&[
+        Record::Attribution(mine),
+    ]));
+    assert_eq!(painted[0].text, "/deploy-check (user)");
+}

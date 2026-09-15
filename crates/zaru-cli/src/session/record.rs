@@ -9,17 +9,23 @@
 //!
 //! # A producer is a variant, never a string
 //!
-//! Eight producers are named above and **seven exist in this workspace**:
-//! `zaru-core`'s [`Event`], its outer-loop [`TurnEvent`], [ADR-0011] D4's
-//! transcript entry, [ADR-0016] D1's five classes, [ADR-0013] D2's
-//! compaction, a line this session says once and never again, and — since
-//! 2026-09-06 — D2's own **user messages**, arriving beside the answer they
-//! were answered by. Each is a variant of [`Record`], so an eighth producer
-//! is a variant and every match over the enum fails to compile
-//! rather than a `kind` string being invented at a call site — the same
-//! closed-enum discipline [`Class`](crate::failure::Class),
-//! [`Layer`](crate::config::Layer) and [`ToolName`](crate::tools::ToolName)
-//! already carry in this crate.
+//! **Nine producers exist in this workspace as of 2026-09-15**: `zaru-core`'s
+//! [`Event`], its outer-loop [`TurnEvent`], [ADR-0011] D4's transcript entry,
+//! [ADR-0016] D1's five classes, [ADR-0013] D2's compaction, a line this
+//! session says once and never again, D2's own **user messages** arriving
+//! beside the answer they were answered by, the turn that failed, and
+//! [ADR-0015] D6's **attribution** for a command that contributed to a turn.
+//! Each is a variant of [`Record`], so a tenth producer is a variant and every
+//! match over the enum fails to compile rather than a `kind` string being
+//! invented at a call site — the same closed-enum discipline
+//! [`Class`](crate::failure::Class), [`Layer`](crate::config::Layer) and
+//! [`ToolName`](crate::tools::ToolName) already carry in this crate.
+//!
+//! *This paragraph read "Eight producers are named above and seven exist"
+//! until 2026-09-15 and was false twice over: the eighth,
+//! [`Record::Failure`], gained its producer on 2026-09-14, and the ninth
+//! arrived with the commands that produce it. Corrected rather than annotated,
+//! which is what a comment gets.*
 //!
 //! **The producers that do not exist get no variant at all.** SEAL verdicts
 //! and attachments belong to records that are unbuilt, and a
@@ -28,15 +34,17 @@
 //! gap findable — which is exactly how the compaction variant arrived: it was
 //! absent while nothing compacted, and it is here because something does.
 //!
-//! **One variant here is that exemption, arrived at from the other
-//! direction.** [`Record::Failure`] is constructed nowhere in the product
-//! tree — every refusal inside [`crate::compose::turn::run_one`] becomes
-//! printed lines and an exit code — so a turn that failed reaches no file at
-//! all, and D5's "every byte" is false for exactly the turns a reader would
-//! most want back. Found 2026-09-06 while [`Record::Conversation`] was being
-//! added, filed as a `Diagnosed` row on Known Defects rather than fixed here,
-//! and named in this paragraph because the paragraph above is what it
-//! falsifies.
+//! **One variant here was that exemption, arrived at from the other
+//! direction, and it is not one any more.** [`Record::Failure`] was
+//! constructed nowhere in the product tree until 2026-09-14 — every refusal
+//! inside [`crate::compose::turn::run_one`] became printed lines and an exit
+//! code, so a turn that failed reached no file at all and D5's "every byte"
+//! was false for exactly the turns a reader would most want back. It was
+//! found 2026-09-06 while [`Record::Conversation`] was being added and closed
+//! by the `first-run` arc, which made `run_one` a wrapper that records the
+//! classified failure once on `Exit::Failed`. The paragraph is kept, in the
+//! past tense, because the rule above it is what the defect falsified and the
+//! example is what makes the rule readable.
 //!
 //! # The compaction record is what makes D2's "history is preserved" true
 //!
@@ -385,6 +393,44 @@ pub struct Utterance {
     pub text: String,
 }
 
+/// [ADR-0015] D6's attribution: what a command contributed to a turn, where
+/// it came from, and when the user admitted it.
+///
+/// D6: "Everything a command or skill contributes is attributed in the
+/// transcript... The user must always be able to tell which of their
+/// behaviour is Zaru and which is something a repository asked for."
+///
+/// # It carries the typed line as well as the name, and that is the point
+///
+/// The pane paints the line the person typed — `/deploy-check main` — while
+/// the [`Record::Conversation`] beside this one carries the **expanded** text
+/// the model was given. A record holding only the name would leave a
+/// `--resume` unable to paint what the live pane painted, which is the
+/// asymmetry this file already carries for redaction and which there is no
+/// reason to repeat when one field closes it.
+///
+/// `admitted` is `None` for a user command, because a user command is never
+/// admitted and saying it was would be false.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attribution {
+    /// Which turn of the session this belongs to, the same `n` the
+    /// [`Utterance`] beside it carries.
+    pub n: u32,
+    /// The command's name, without a leading slash.
+    pub name: String,
+    /// `user` or `project`, [ADR-0015] D3's location.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    pub source: String,
+    /// `YYYY-MM-DD`, or absent for a user command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted: Option<String>,
+    /// The line the person typed, verbatim.
+    pub typed: String,
+}
+
 /// One line of [ADR-0010] D2's transcript.
 ///
 /// **Externally tagged**, so a line is one JSON object whose single key names
@@ -439,6 +485,19 @@ pub enum Record {
     /// two halves are written around the loop rather than together, and why
     /// these are the only two strings on this file that pass a redactor.
     Conversation(Utterance),
+    /// [ADR-0015] D6's attribution for a command that contributed to a turn.
+    ///
+    /// A **ninth producer**, written immediately before the
+    /// [`Record::Conversation`] whose `user` half it is about, so `cat` reads
+    /// in the order the turn happened: what the command was, then what the
+    /// model was actually given.
+    ///
+    /// It is a `zaru-cli` variant and nothing in `zaru-core` was widened, for
+    /// the reason the seventh and eighth producers are: an expansion is not a
+    /// state transition of either loop and appears on neither event stream.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    Attribution(Attribution),
 }
 
 impl Record {
@@ -456,6 +515,7 @@ impl Record {
             Self::Compacted(_) => "compacted",
             Self::Said(_) => "said",
             Self::Conversation(_) => "conversation",
+            Self::Attribution(_) => "attribution",
         }
     }
 }
