@@ -2537,3 +2537,332 @@ fn corpus_an_apex_token_holding_the_role_is_never_declared_though_composer_token
     assert_eq!(declared.len(), 1, "{declared:?}");
     drop(scratch);
 }
+
+use crate::config::{Contribution, Key, Layer, Resolution, Source, Table, Value};
+use crate::credentials::grant::{GrantRefused, Granted};
+
+// --- ADR-0007 D5's grant, as a configuration key ----------------------------
+//
+// D5 projects "that token's tools", and every real token grants 94. Measured
+// on 2026-09-15 from the release binary, the seven built-ins' declarations are
+// 1,619 bytes of a 1,937-byte request; 94 at that average is about 22 KB on
+// every request, against `ollama`'s own declared window of 4,096 tokens. So a
+// projection declares nothing unless a person says which tools -- which is
+// ADR-0007's own Negative consequence built rather than a filter this harness
+// chose.
+
+/// The product's own declaration, which refuses the project layer at the fold.
+fn grant_schema() -> crate::config::Schema {
+    crate::credentials::grant::declare(crate::config::Schema::new())
+}
+
+/// The same family declared **free at every layer**, which the product
+/// deliberately does not do.
+///
+/// It is the only way to reach [`Granted::from_configuration`]'s own
+/// escalation arm at all: the product's `grant::field` makes the fold refuse a
+/// project layer first, so a resolution carrying a project grant cannot
+/// otherwise exist. That is the point of the two arms being independent, and
+/// it is why this does not call `cli::layers::schema` — [Verification lessons]
+/// §11, one arm of a comparison must not travel through the thing being
+/// checked.
+///
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+fn permissive_grant_schema() -> crate::config::Schema {
+    crate::config::Schema::new().with_family(
+        crate::credentials::grant::PREFIX,
+        crate::credentials::grant::SUFFIX,
+        crate::config::Field::free(crate::config::FieldKind::Array),
+    )
+}
+
+/// A resolution in which one layer granted `names` to `alias`, over the
+/// permissive schema.
+fn grant_from(layer: Layer, alias: &Alias, names: &[&str]) -> Resolution {
+    grant_over(permissive_grant_schema(), layer, alias, names)
+        .expect("a permissive schema takes an array at any layer")
+}
+
+/// The same, over whichever schema a caller names, and reporting the fold's
+/// own refusal rather than panicking on it.
+fn grant_over(
+    schema: crate::config::Schema,
+    layer: Layer,
+    alias: &Alias,
+    names: &[&str],
+) -> Result<Resolution, crate::config::ConfigRefused> {
+    let mut document = Table::new();
+    document.insert_path(
+        &crate::credentials::grant::key(alias),
+        Value::Array(
+            names
+                .iter()
+                .map(|name| Value::Text((*name).to_owned()))
+                .collect(),
+        ),
+    );
+    Resolution::resolve(
+        &schema,
+        [Contribution::new(
+            layer,
+            Source::named(format!("{} (staged)", layer.label())),
+            document,
+        )],
+    )
+}
+
+/// The mutant: make `Granted::from_configuration` answer every cached tool
+/// when nothing is set.
+#[test]
+fn adr_0007_d5_nothing_is_granted_by_default_and_a_grant_is_the_users_own() {
+    let alias = Alias::new("play").expect("a usable alias");
+    let cached = ["pages.read", "pages.list", "me.set_current_workspace"];
+
+    // Absent: the refusing arm, and the state of every machine until somebody
+    // decides otherwise.
+    let empty =
+        Resolution::resolve(&permissive_grant_schema(), Vec::new()).expect("an empty resolution");
+    let nothing = Granted::from_configuration(&empty, &alias, &cached).expect("absence is not a refusal");
+    assert!(
+        nothing.is_empty(),
+        "a token with no grant declares nothing: 94 tools on every request is what ADR-0007's own \
+         Negative section says this costs"
+    );
+
+    // Present at the user's layer: the accepting sibling, so an
+    // always-empty implementation cannot pass.
+    let granted = Granted::from_configuration(
+        &grant_from(Layer::User, &alias, &["pages.read"]),
+        &alias,
+        &cached,
+    )
+    .expect("the user's own layer may grant");
+    assert_eq!(granted.names(), ["pages.read"]);
+    assert!(granted.carries("pages.read"));
+    assert!(
+        !granted.carries("me.set_current_workspace"),
+        "a tool the person did not grant is not granted by a tool they did"
+    );
+
+    // An empty list is a decision rather than an absence, and it declares
+    // nothing -- stated so that the two cannot be confused later.
+    let none = Granted::from_configuration(&grant_from(Layer::User, &alias, &[]), &alias, &cached)
+        .expect("an empty list is a legal grant");
+    assert!(none.is_empty());
+}
+
+/// **Security corpus.** The mutant: declare the family with `Field::free`.
+#[test]
+fn corpus_a_cloned_repository_cannot_widen_what_a_model_may_reach_in_your_cortex() {
+    let alias = Alias::new("play").expect("a usable alias");
+    let cached = ["pages.read", "pages.apply_patch"];
+
+    // **The first arm, which is the one a person actually meets.** Over the
+    // product's own declaration the fold refuses before anything reads the
+    // value, so a resolution carrying a project grant does not come into
+    // existence at all.
+    let at_the_fold = grant_over(grant_schema(), Layer::Project, &alias, &["pages.apply_patch"])
+        .expect_err("the fold refuses a project grant");
+    let folded = at_the_fold.to_string();
+    assert!(
+        folded.contains("notes.play.agent_tools") && folded.contains("~/.zaru/config.toml"),
+        "ADR-0014 D6's error names the key and the reason: {folded}"
+    );
+    // And the fold admits the user's layer over the same declaration, so the
+    // refusal is about the layer rather than about the key.
+    assert!(
+        grant_over(grant_schema(), Layer::User, &alias, &["pages.read"]).is_ok(),
+        "the product's own declaration takes a grant at the user's layer"
+    );
+
+    // **The second arm**, reached only over a permissive schema: a caller
+    // holding a resolution built some other way. ADR-0014 D6's escalation
+    // ceiling again, in the reader rather than in the fold.
+    let refusal = Granted::from_configuration(
+        &grant_from(Layer::Project, &alias, &["pages.apply_patch"]),
+        &alias,
+        &cached,
+    )
+    .expect_err("a project may not grant a model reach into somebody's cortex");
+    match &refusal {
+        GrantRefused::FromAClonedRepository { alias: named, layer } => {
+            assert_eq!(named, &alias);
+            assert_eq!(*layer, Layer::Project);
+        }
+        other => panic!("the project layer should be refused, not {other:?}"),
+    }
+    assert!(
+        refusal_text(&refusal).contains("~/.zaru/config.toml"),
+        "ADR-0016 D2: the refusal names where the key does belong: {}",
+        refusal_text(&refusal)
+    );
+
+    // The three accepting siblings, so a refuse-everything implementation
+    // cannot pass: the user, environment and flag layers each grant.
+    for layer in [Layer::User, Layer::Environment, Layer::Flag] {
+        let granted =
+            Granted::from_configuration(&grant_from(layer, &alias, &["pages.read"]), &alias, &cached)
+                .unwrap_or_else(|refused| panic!("{layer:?} may grant: {refused}"));
+        assert_eq!(granted.names(), ["pages.read"], "at {layer:?}");
+    }
+}
+
+/// The mutant: drop the membership check and push every name.
+#[test]
+fn adr_0007_d6_a_granted_name_the_token_does_not_carry_is_refused_naming_its_own_list() {
+    let alias = Alias::new("play").expect("a usable alias");
+    let cached = ["pages.read", "pages.list"];
+
+    let refusal = Granted::from_configuration(
+        &grant_from(Layer::User, &alias, &["pages.raed"]),
+        &alias,
+        &cached,
+    )
+    .expect_err("a typo is a mistake the person can fix, not a tool that never fires");
+    match &refusal {
+        GrantRefused::NotInTheTokensScope {
+            offered, cached: listed, ..
+        } => {
+            assert_eq!(offered, "pages.raed");
+            assert_eq!(listed, &vec!["pages.read".to_owned(), "pages.list".to_owned()]);
+        }
+        other => panic!("a name outside the scope should be refused, not {other:?}"),
+    }
+    let text = refusal_text(&refusal);
+    assert!(
+        text.contains("pages.raed") && text.contains("pages.read") && text.contains("2 tool(s)"),
+        "the refusal names what was granted and what the token actually carries: {text}"
+    );
+
+    // The accepting sibling: a name the token does carry.
+    assert!(
+        Granted::from_configuration(
+            &grant_from(Layer::User, &alias, &["pages.list"]),
+            &alias,
+            &cached,
+        )
+        .is_ok()
+    );
+}
+
+/// The mutant: make `KeyFamily::member` accept any key whose first segment
+/// matches.
+#[test]
+fn a_grant_key_is_three_segments_and_neither_more_nor_fewer() {
+    let schema = grant_schema();
+    let declared = |spelling: &str| {
+        schema
+            .field(&Key::new(spelling).expect("a well-formed key"))
+            .is_some()
+    };
+
+    assert!(declared("notes.play.agent_tools"), "the family's own shape");
+    assert!(
+        declared("notes.a.very.long.alias.agent_tools") == false,
+        "five segments is not a member: an alias is one segment"
+    );
+    assert!(!declared("notes.agent_tools"), "two segments is not a member");
+    assert!(!declared("notes.play.agent_tool"), "the suffix is exact");
+    assert!(!declared("note.play.agent_tools"), "the prefix is exact");
+
+    // And the suggestion for a near miss names the *shape*, because a family
+    // has no enumerable members to name instead.
+    assert_eq!(
+        schema.nearest_spelling("notes.play.agenttools").as_deref(),
+        Some("notes.<alias>.agent_tools"),
+    );
+}
+
+fn refusal_text(refusal: &GrantRefused) -> String {
+    refusal.to_string()
+}
+
+/// **The binary's own schema declares the family, and the reachable surface is
+/// measured rather than assumed.**
+///
+/// The declaration is asked of `cli::layers::schema`, so this is the key a
+/// user actually writes rather than a spelling retyped here.
+///
+/// Three mutants. Dropping `grant::declare` from `schema()` fails the first
+/// assertion. Declaring it `FieldKind::Text` fails the second. Declaring it
+/// `Free` fails the third.
+#[test]
+fn adr_0014_the_grant_family_is_declared_once_holds_a_list_and_is_refused_to_a_project() {
+    let schema = crate::cli::layers::schema();
+    let alias = Alias::new("play").expect("a usable alias");
+    let field = schema
+        .field(&crate::credentials::grant::key(&alias))
+        .expect("the binary declares the grant family");
+
+    assert_eq!(
+        field.kind,
+        crate::config::FieldKind::Array,
+        "a grant is a list of tool names"
+    );
+    assert!(
+        matches!(field.project, crate::config::ProjectPolicy::Refused { .. }),
+        "ADR-0014 D6: a repository the reader cloned must not widen what a model may reach"
+    );
+
+    // **Measured, and recorded rather than worked around**: a grant is a list,
+    // layers 4 and 5 arrive as text, and no text-to-array coercion exists. So
+    // the reachable surface is layer 2 alone. Inventing a separator here would
+    // settle for every array key in the catalogue a question ADR-0014 has not
+    // answered -- the same limit `tools.allowlist` already carries.
+    assert!(
+        matches!(
+            crate::config::FieldKind::Array
+                .coerce(Value::Text("pages.read,pages.list".to_owned())),
+            Err(crate::config::CoercionFailure::WrongShape { .. })
+        ),
+        "if this starts passing, somebody has decided how a list is spelled in an environment \
+         variable, and that decision belongs to ADR-0014 rather than to this module"
+    );
+    // The accepting sibling: an array value passes the same coercion, so the
+    // assertion above is about the *text* rather than about the kind.
+    assert!(
+        crate::config::FieldKind::Array
+            .coerce(Value::Array(vec![Value::Text("pages.read".to_owned())]))
+            .is_ok()
+    );
+}
+
+/// **Layer 4 resolves a family member's name to its key, which no other key
+/// needs.**
+///
+/// ADR-0014 D3's transform is not injective, so every other key is matched
+/// forwards. A family fixes both ends, which is what makes the reverse
+/// unambiguous -- see `config::environment::family_key`.
+///
+/// The mutant: delete the `family_key` arm from `environment::read`.
+#[test]
+fn adr_0014_d3_a_family_members_variable_names_its_key() {
+    let schema = crate::credentials::grant::declare(crate::config::Schema::new());
+
+    // The refusing arm is what this is really about: before the family arm
+    // existed, this variable was an unknown key.
+    let document = crate::config::environment::read(
+        &schema,
+        [(
+            "ZARU_NOTES_PLAY_AGENT_TOOLS".to_owned(),
+            "pages.read".to_owned(),
+        )],
+    )
+    .expect("a family member's variable names a declared key");
+    let key = crate::credentials::grant::key(&Alias::new("play").expect("a usable alias"));
+    assert!(
+        document.get_path(&key).is_some(),
+        "the variable did not reach `{key}`: {document:?}"
+    );
+
+    // The accepting sibling, so a take-everything implementation cannot pass:
+    // a variable that is not a member is still an unknown key.
+    assert!(
+        crate::config::environment::read(
+            &schema,
+            [("ZARU_NOTES_PLAY".to_owned(), "pages.read".to_owned())],
+        )
+        .is_err(),
+        "two segments is not a family member and must stay an unknown key"
+    );
+}

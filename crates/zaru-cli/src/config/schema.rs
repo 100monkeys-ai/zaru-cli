@@ -216,6 +216,86 @@ impl Field {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Schema {
     fields: BTreeMap<Key, Field>,
+    families: Vec<KeyFamily>,
+}
+
+/// A family of keys sharing one shape, distinguished by a middle segment.
+///
+/// # Why the schema needs one at all
+///
+/// Every key declared here is a name somebody typed into this binary. That
+/// works while the set is closed — [ADR-0001] D2's tier, [ADR-0011] D3's mode,
+/// [ADR-0012] D3's five kinds — and it cannot express a key whose middle
+/// segment is **a name the user chose**. [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+/// D5's per-token grant is the first of those: an alias is local metadata that
+/// Nuclear Notes has no notion of, so the set of `notes.<alias>.agent_tools`
+/// keys is whatever the store happens to hold, and it changes when a person
+/// runs `notes tokens add`.
+///
+/// The alternative was to read the credential store while building the schema,
+/// which would make configuration resolution depend on a store that can fail
+/// to open, on a keyring, and on a sealing key — for a schema whose whole job
+/// is to say which *names* exist. A family says that without knowing any
+/// aliases.
+///
+/// **A family matches exactly three segments** and never fewer or more, so
+/// `notes.agent_tools` and `notes.a.b.agent_tools` are both unknown keys
+/// rather than near misses. The middle segment is not validated as an alias
+/// here: an alias nothing is stored under resolves to a value nothing reads,
+/// which is a setting with no effect rather than an error, and refusing it
+/// would make configuration refuse to load because a token was removed.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyFamily {
+    prefix: String,
+    suffix: String,
+    field: Field,
+}
+
+impl KeyFamily {
+    /// The first segment every member shares.
+    #[must_use]
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// The last segment every member shares.
+    #[must_use]
+    pub fn suffix(&self) -> &str {
+        &self.suffix
+    }
+
+    /// What every member holds.
+    #[must_use]
+    pub const fn field(&self) -> &Field {
+        &self.field
+    }
+
+    /// The middle segment of a key in this family, if it is one.
+    #[must_use]
+    pub fn member<'k>(&self, key: &'k Key) -> Option<&'k str> {
+        let mut segments = key.segments();
+        let first = segments.next()?;
+        let middle = segments.next()?;
+        let last = segments.next()?;
+        if segments.next().is_some() || first != self.prefix || last != self.suffix {
+            return None;
+        }
+        Some(middle)
+    }
+
+    /// How a member of this family is spelled, for a person to read.
+    ///
+    /// The placeholder is angle-bracketed the way this workspace's records
+    /// spell one, so a listing shows the shape rather than an example that
+    /// could be mistaken for a stored alias.
+    #[must_use]
+    pub fn shape(&self) -> String {
+        format!("{}.<alias>.{}", self.prefix, self.suffix)
+    }
 }
 
 impl Schema {
@@ -244,10 +324,41 @@ impl Schema {
         self.fields.len()
     }
 
+    /// Declare a family of keys distinguished by a middle segment.
+    ///
+    /// See [`KeyFamily`] for why the schema has one.
+    #[must_use]
+    pub fn with_family(
+        mut self,
+        prefix: impl Into<String>,
+        suffix: impl Into<String>,
+        field: Field,
+    ) -> Self {
+        self.families.push(KeyFamily {
+            prefix: prefix.into(),
+            suffix: suffix.into(),
+            field,
+        });
+        self
+    }
+
+    /// Every declared family.
+    pub fn families(&self) -> impl Iterator<Item = &KeyFamily> {
+        self.families.iter()
+    }
+
     /// What a key holds, if it is declared.
+    ///
+    /// An exact declaration wins over a family, so a key named outright is
+    /// never shadowed by one whose shape it happens to match.
     #[must_use]
     pub fn field(&self, key: &Key) -> Option<&Field> {
-        self.fields.get(key)
+        self.fields.get(key).or_else(|| {
+            self.families
+                .iter()
+                .find(|family| family.member(key).is_some())
+                .map(KeyFamily::field)
+        })
     }
 
     /// Every declared key, in lexical order.
@@ -269,5 +380,25 @@ impl Schema {
     pub fn nearest(&self, offered: &str) -> Option<&Key> {
         let found = crate::config::nearest::nearest(self.keys().map(Key::as_str), offered)?;
         self.fields.keys().find(|key| key.as_str() == found)
+    }
+
+    /// The nearest declared spelling to one that is not declared, families
+    /// included.
+    ///
+    /// A family cannot be enumerated — its members are whatever a person has
+    /// stored — so what a suggestion can offer is its *shape*. That is the
+    /// honest answer to a mistyped `notes.work.agenttools`: the nearest thing
+    /// that exists is `notes.<alias>.agent_tools`, and naming a stored alias
+    /// instead would suggest a key the schema does not actually declare.
+    #[must_use]
+    pub fn nearest_spelling(&self, offered: &str) -> Option<String> {
+        let shapes: Vec<String> = self.families.iter().map(KeyFamily::shape).collect();
+        let candidates = self
+            .keys()
+            .map(|key| key.as_str().to_owned())
+            .chain(shapes.iter().cloned())
+            .collect::<Vec<_>>();
+        crate::config::nearest::nearest(candidates.iter().map(String::as_str), offered)
+            .map(str::to_owned)
     }
 }

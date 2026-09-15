@@ -81,7 +81,7 @@ pub use layer::{Contribution, Layer, Source};
 pub use port::{LayerSource, SourceFailure, gather};
 pub use refusal::ConfigRefused;
 pub use resolve::Resolution;
-pub use schema::{CoercionFailure, Field, FieldKind, ProjectPolicy, Schema};
+pub use schema::{CoercionFailure, Field, FieldKind, KeyFamily, ProjectPolicy, Schema};
 pub use value::{Table, Value};
 
 // `pub(crate)` rather than private, for the reason `credentials::fixtures`

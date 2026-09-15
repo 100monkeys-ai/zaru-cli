@@ -56,6 +56,7 @@ pub mod entry;
 pub mod family;
 pub mod notes;
 pub mod port;
+pub mod grant;
 pub mod projection;
 pub mod sealing;
 pub mod secret;
@@ -67,6 +68,7 @@ pub use entry::{
     Role, ToolScope, Ttl, TtlRefused,
 };
 pub use family::Family;
+pub use grant::{Granted, GrantRefused};
 pub use notes::{
     Cached, ReachFailure, Refreshed, ScopeError, bearer_for_dispatch, composer_apex_marking,
     composer_token, corpus_at, corpus_from, tool_scope_at,

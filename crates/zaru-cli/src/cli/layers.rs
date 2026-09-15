@@ -603,6 +603,7 @@ pub fn schema() -> Schema {
     let declared = crate::tools::allowlist::declare(declared);
     let declared = crate::tools::mode::declare(declared);
     let declared = crate::compose::tips::declare(declared);
+    let declared = crate::credentials::grant::declare(declared);
     declared
         .with(crate::runtime::key(), crate::runtime::field())
         .with(

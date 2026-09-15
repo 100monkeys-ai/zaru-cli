@@ -83,6 +83,50 @@ pub fn variable_name(key: &Key) -> String {
     name
 }
 
+/// The key a variable names, when it names a member of a declared family.
+///
+/// # This is the one place the transform runs backwards, and only a family
+/// makes that possible
+///
+/// [ADR-0014](https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy)
+/// D3's transform is `ZARU_` plus the key upper-cased with dots turned into
+/// underscores, and it is **not injective**: `ZARU_NOTES_WORK_AGENT_TOOLS`
+/// could be `notes.work.agent_tools` or `notes.work.agent.tools` or
+/// `notes.work_agent.tools`, and nothing in the name says which. That is why
+/// every other key is matched forwards, by computing its variable and looking
+/// the name up.
+///
+/// A family removes the ambiguity, because it fixes both ends: the prefix and
+/// the suffix are known, so what is left between them is one segment whatever
+/// underscores it contains. `ZARU_NOTES_` and `_AGENT_TOOLS` bracket exactly
+/// `WORK`, and the key is `notes.work.agent_tools`.
+///
+/// **The middle is lower-cased**, which is the inverse of the forward
+/// transform and is therefore the only spelling that round-trips. An alias
+/// carrying an upper-case letter is reachable from a file and not from layer
+/// 4, which is the same limit ADR-0014's own register already records for a
+/// key segment carrying a hyphen — a name no POSIX shell can set — and it is
+/// recorded here rather than worked around, because inventing a second
+/// spelling would be this module deciding what a person's alias is called.
+fn family_key(schema: &Schema, variable: &str) -> Option<Key> {
+    let bare = variable.strip_prefix(PREFIX)?;
+    schema.families().find_map(|family| {
+        let head = format!("{}_", family.prefix().to_uppercase());
+        let tail = format!("_{}", family.suffix().replace('.', "_").to_uppercase());
+        let middle = bare.strip_prefix(&head)?.strip_suffix(&tail)?;
+        if middle.is_empty() {
+            return None;
+        }
+        Key::new(&format!(
+            "{}.{}.{}",
+            family.prefix(),
+            middle.to_lowercase(),
+            family.suffix()
+        ))
+        .ok()
+    })
+}
+
 /// Build layer 4's document from a schema and a set of variables.
 ///
 /// The variables are a parameter rather than read from the process, because
@@ -139,13 +183,19 @@ pub fn read(
         }
         match names.get(&name) {
             Some(key) => document.insert_path(key, Value::Text(value)),
-            None => {
-                return Err(ConfigRefused::UnknownKey {
-                    layer: Layer::Environment,
-                    offered: name.clone(),
-                    suggestion: nearest_variable(&names, &name),
-                });
-            }
+            // A declared *family* has no enumerable members, so its variables
+            // cannot be in the map above: they are recognised by shape
+            // instead. See `family_key`.
+            None => match family_key(schema, &name) {
+                Some(key) => document.insert_path(&key, Value::Text(value)),
+                None => {
+                    return Err(ConfigRefused::UnknownKey {
+                        layer: Layer::Environment,
+                        offered: name.clone(),
+                        suggestion: nearest_variable(&names, &name),
+                    });
+                }
+            },
         }
     }
     Ok(document)
