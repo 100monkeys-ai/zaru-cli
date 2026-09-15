@@ -114,10 +114,15 @@ pub enum StripContent {
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Command {
         /// The namespaces whose slash spelling begins with the word being
-        /// typed, in D2's own table order, capped at the rows the strip can
-        /// paint. Empty when the word matches none, which is what a miss looks
-        /// like everywhere else in this composer, and empty once the line
-        /// carries a space, because the namespace has then been named.
+        /// typed, in D2's own table order, **whole**. Empty when the word
+        /// matches none, which is what a miss looks like everywhere else in
+        /// this composer, and empty once the line carries a space, because the
+        /// namespace has then been named.
+        ///
+        /// It was "capped at the rows the strip can paint" until 2026-09-15,
+        /// when the cap moved to
+        /// [`render::fitted`](crate::composer::render) so that every corpus
+        /// gets it rather than this one alone. The painted rows are unchanged.
         matches: Vec<Namespace>,
         /// The **second corpus**, since 2026-09-15: [ADR-0015] D1's commands
         /// this session has loaded, narrowed by the same prefix and shown
@@ -131,13 +136,6 @@ pub enum StripContent {
         ///
         /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
         extensions: Vec<Extension>,
-        /// How many further namespaces matched and are not in `matches`.
-        ///
-        /// Zero when they all fit. When it is not, the last row is
-        /// [`continues`](crate::composer::render::continues) rather than a
-        /// sixth namespace, so the strip never drops a match without saying
-        /// so.
-        beyond: usize,
     },
     /// `[[` or `@` entered: the explicit picker, filtered by what follows.
     /// D1 row 6.

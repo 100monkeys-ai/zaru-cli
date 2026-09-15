@@ -72,6 +72,67 @@ pub fn continues(beyond: usize) -> String {
     format!("… {beyond} more · type to narrow")
 }
 
+/// `matches` cut to the `rows` the strip paints, with [`continues`] last where
+/// anything was left out.
+///
+/// # One pager, because two copies of this rule is what the defect was
+///
+/// The command picker landed on 2026-09-15 carrying this arithmetic inside
+/// `Composer::strip`'s own `Intent::Command` arm, and the three corpora beside
+/// it had none. So the trie handed [`Composer::strip_lines`] up to
+/// [`MATCH_LIMIT`] rows — nine with [`KEYWORD_ONLY`] — the shell gave the
+/// strip [`STRIP_ROWS`] of them, `Paragraph` carried no `Wrap`, and rows seven
+/// and eight were painted into no cell with **nothing on the screen saying a
+/// match had been dropped**. Neither constant was wrong and nobody had
+/// reconciled them. The rule therefore lives here, once, and every arm goes
+/// through it: inside one crate a rule lives in one place.
+///
+/// # Trailers are reserved, never paged
+///
+/// [`KEYWORD_ONLY`] is ADR-0005 D8's honest degradation and is not a match.
+/// Appending it to the matches and paging the result would make it the row the
+/// budget drops — the one row on the strip whose whole purpose is to say
+/// something is wrong. So a trailer's rows come off the budget first and the
+/// matches page into what is left.
+///
+/// # The overflow row is last
+///
+/// It is the row a reader acts on, and what it says is what to type. That is
+/// also where the command picker already put it, and this function exists so
+/// that surface's behaviour is unchanged while the others acquire it.
+///
+/// `paint` formats the matches that survived, and is handed them rather than
+/// the whole set, because the command picker pads its column to the widest
+/// **shown** spelling: padding to the widest in the narrowed set would indent
+/// every row by the width of a spelling nobody can see.
+///
+/// [`MATCH_LIMIT`]: crate::composer::MATCH_LIMIT
+/// [`STRIP_ROWS`]: crate::shell::STRIP_ROWS
+fn fitted<T>(
+    matches: Vec<T>,
+    trailers: Vec<String>,
+    rows: usize,
+    paint: impl FnOnce(Vec<T>) -> Vec<String>,
+) -> Vec<String> {
+    if matches.len() + trailers.len() <= rows {
+        let mut lines = paint(matches);
+        lines.extend(trailers);
+        return lines;
+    }
+    // The overflow row takes one row and the trailers keep theirs; the
+    // matches get whatever is left. A budget too small to hold even the
+    // trailers and the overflow row cannot arise from `STRIP_ROWS`, and is
+    // answered by showing fewer of them rather than by a branch no caller
+    // reaches and no check could redden.
+    let kept = trailers.len().min(rows.saturating_sub(1));
+    let shown = rows.saturating_sub(kept).saturating_sub(1);
+    let beyond = matches.len() - shown;
+    let mut lines = paint(matches.into_iter().take(shown).collect());
+    lines.extend(trailers.into_iter().take(kept));
+    lines.push(continues(beyond));
+    lines
+}
+
 impl Composer {
     /// The lines the strip is showing, top to bottom.
     ///
@@ -79,6 +140,13 @@ impl Composer {
     /// reclaim its rows rather than paint blank ones.
     #[must_use]
     pub fn strip_lines(&self) -> Vec<String> {
+        // The rendering budget, read once here and handed to every arm, so
+        // that no corpus can be painted against a number of its own. See
+        // [`fitted`].
+        let rows = usize::from(crate::shell::STRIP_ROWS);
+        let titles = |matches: Vec<crate::composer::Entry>| -> Vec<String> {
+            matches.into_iter().map(|entry| entry.title).collect()
+        };
         match self.strip() {
             StripContent::Collapsed => Vec::new(),
             StripContent::Deposits { count } => {
@@ -92,18 +160,11 @@ impl Composer {
             StripContent::Command {
                 matches,
                 extensions,
-                beyond,
             } => {
-                // The spellings are padded to the widest row shown, the way
-                // `--help` pads its own, so the descriptions line up. Padding
-                // to the widest in the *vocabulary* instead would indent every
-                // narrowed list by the width of `/providers`, which is a
-                // column of blanks a person has no use for.
-                //
                 // **Across both corpora**, since 2026-09-15: a command's row
                 // and a namespace's row sit in one list, so a column that
                 // lined up only within each half would read as two tables.
-                let rows: Vec<(String, String)> = matches
+                let pairs: Vec<(String, String)> = matches
                     .into_iter()
                     .map(|namespace| (namespace.slash.to_owned(), namespace.governs.to_owned()))
                     .chain(
@@ -112,39 +173,47 @@ impl Composer {
                             .map(|extension| (extension.slash, extension.governs)),
                     )
                     .collect();
-                let width = rows
-                    .iter()
-                    .map(|(slash, _)| slash.chars().count())
-                    .max()
-                    .unwrap_or(0);
-                let mut lines: Vec<String> = rows
-                    .into_iter()
-                    .map(|(slash, governs)| format!("{slash:width$}  {governs}"))
-                    .collect();
-                if beyond > 0 {
-                    lines.push(continues(beyond));
-                }
-                lines
+                fitted(pairs, Vec::new(), rows, |shown| {
+                    // The spellings are padded to the widest row shown, the
+                    // way `--help` pads its own, so the descriptions line up.
+                    // Padding to the widest in the *vocabulary* instead would
+                    // indent every narrowed list by the width of `/providers`,
+                    // which is a column of blanks a person has no use for —
+                    // which is why the padding is computed here, on what
+                    // survived the paging, and not on the set handed in.
+                    let width = shown
+                        .iter()
+                        .map(|(slash, _)| slash.chars().count())
+                        .max()
+                        .unwrap_or(0);
+                    shown
+                        .into_iter()
+                        .map(|(slash, governs)| format!("{slash:width$}  {governs}"))
+                        .collect()
+                })
             }
             // A picker never carries the absence line. An open picker with no
             // matches is what a miss looks like, and the picker's own sigil is
-            // already on the screen saying what is being picked.
-            StripContent::Picker { matches, .. } => {
-                matches.into_iter().map(|entry| entry.title).collect()
-            }
+            // already on the screen saying what is being picked. It pages like
+            // every other corpus: an explicit picker over a large cortex is
+            // exactly where eight matches meet six rows.
+            StripContent::Picker { matches, .. } => fitted(matches, Vec::new(), rows, titles),
             StripContent::Trie { matches } => {
-                self.or_absence(matches.into_iter().map(|entry| entry.title).collect())
+                self.or_absence(fitted(matches, Vec::new(), rows, titles))
             }
             StripContent::Merged { entries, search } => {
-                let mut lines: Vec<String> = entries.into_iter().map(|entry| entry.title).collect();
-                if search
+                // `keyword only` is a **trailer**: it is D8's statement about
+                // the ranking rather than a match, and paging it with the
+                // matches would make the honest line the row the budget drops.
+                let trailers = if search
                     == (SearchState::Returned {
                         semantic_available: false,
-                    })
-                {
-                    lines.push(KEYWORD_ONLY.to_owned());
-                }
-                self.or_absence(lines)
+                    }) {
+                    vec![KEYWORD_ONLY.to_owned()]
+                } else {
+                    Vec::new()
+                };
+                self.or_absence(fitted(entries, trailers, rows, titles))
             }
         }
     }
@@ -699,5 +768,228 @@ mod tests {
                 cursor.x
             );
         }
+    }
+
+    /// The trie's matches page against the rows the strip paints, and the row
+    /// that says so is [`continues`](super::continues) — the command picker's
+    /// own line, reused.
+    ///
+    /// **This is the check that would have caught the defect.** At `c915001`
+    /// a composer typed into against a trie of eight answered
+    /// `strip_lines().len() == 8` while the shell gave the strip six rows and
+    /// `Paragraph` carried no `Wrap`, so rows seven and eight were painted
+    /// into no cell and nothing on the screen said a match had been dropped.
+    /// The count is asserted against `STRIP_ROWS` rather than against a
+    /// literal six, so a shell that changes its budget cannot leave this
+    /// passing while the strip drops rows again.
+    #[test]
+    fn a_strip_with_more_matches_than_rows_paints_the_overflow_row() {
+        let rows = usize::from(crate::shell::STRIP_ROWS);
+        let trie = TrieOf::new(crate::composer::MATCH_LIMIT);
+        let mut composer = Composer::new();
+        typing(&mut composer, "tí", Duration::ZERO, &trie);
+
+        let lines = composer.strip_lines();
+        assert_eq!(
+            lines.len(),
+            rows,
+            "the strip was handed {} lines for {rows} rows, so {} of them reach a person nowhere; \
+             the lines were {lines:?}",
+            lines.len(),
+            lines.len().saturating_sub(rows)
+        );
+        for (n, line) in lines.iter().take(rows - 1).enumerate() {
+            assert_eq!(
+                line,
+                &format!("títle-{n}·{TRIE_NONCE} ✦"),
+                "row {n} is not the {n}th match; the lines were {lines:?}"
+            );
+        }
+        assert_eq!(
+            lines[rows - 1],
+            super::continues(crate::composer::MATCH_LIMIT - (rows - 1)),
+            "the last row does not say how many matches were left out, so the strip drops them \
+             silently; the lines were {lines:?}"
+        );
+    }
+
+    /// The accepting sibling: a strip whose matches fit carries no overflow
+    /// row at all.
+    ///
+    /// Without this, `continues` pushed unconditionally — even at a count of
+    /// zero — would pass the check above while putting `… 0 more · type to
+    /// narrow` under every short list on the surface.
+    #[test]
+    fn a_strip_that_fits_paints_no_overflow_row() {
+        let trie = TrieOf::new(4);
+        let mut composer = Composer::new();
+        typing(&mut composer, "tí", Duration::ZERO, &trie);
+
+        let lines = composer.strip_lines();
+        assert_eq!(lines.len(), 4, "four matches are four rows; got {lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("more · type to narrow")),
+            "a list that fits was given an overflow row anyway; the lines were {lines:?}"
+        );
+    }
+
+    /// ADR-0005 D8's `keyword only` is a **trailer**: its row comes off the
+    /// budget before the matches page into what is left, so it can never be
+    /// the row the budget drops.
+    ///
+    /// The failure this is written against is the tempting shape — append the
+    /// line to the matches and page the result — under which the one row on
+    /// the strip whose whole purpose is to say something is wrong is the first
+    /// casualty of there being too much to show.
+    #[test]
+    fn the_merged_strip_reserves_the_keyword_only_row_before_it_pages() {
+        let rows = usize::from(crate::shell::STRIP_ROWS);
+        let trie = TrieOf::new(crate::composer::MATCH_LIMIT);
+        let mut composer = Composer::new();
+        typing(&mut composer, "títle", Duration::ZERO, &trie);
+        composer.deliver(SearchResponse {
+            results: Vec::new(),
+            semantic_available: false,
+        });
+
+        let lines = composer.strip_lines();
+        assert_eq!(
+            lines.len(),
+            rows,
+            "the merged strip was handed {} lines for {rows} rows; they were {lines:?}",
+            lines.len()
+        );
+        assert!(
+            lines.iter().any(|line| line == KEYWORD_ONLY),
+            "D8's degradation line was the row the budget dropped, which is the one row that \
+             exists to say something is wrong; the lines were {lines:?}"
+        );
+        assert_eq!(
+            lines[rows - 1],
+            super::continues(crate::composer::MATCH_LIMIT - (rows - 2)),
+            "the overflow row is not last, or it is not counting the matches the trailer left \
+             room for; the lines were {lines:?}"
+        );
+    }
+
+    /// An explicit picker pages against the same budget as everything else.
+    ///
+    /// D1 row 6's picker is the surface most likely to meet a large cortex —
+    /// `[[` over every page and atom — and it had no paging at all.
+    #[test]
+    fn an_open_picker_pages_against_the_same_budget() {
+        let rows = usize::from(crate::shell::STRIP_ROWS);
+        let trie = TrieOf::new(crate::composer::MATCH_LIMIT);
+        let mut composer = Composer::new();
+        typing(&mut composer, "[[tí", Duration::ZERO, &trie);
+
+        let lines = composer.strip_lines();
+        assert_eq!(
+            lines.len(),
+            rows,
+            "an open picker was handed {} lines for {rows} rows; they were {lines:?}",
+            lines.len()
+        );
+        assert_eq!(
+            lines[rows - 1],
+            super::continues(crate::composer::MATCH_LIMIT - (rows - 1)),
+            "the picker drops matches without saying so; the lines were {lines:?}"
+        );
+    }
+
+    /// The command picker's rows are byte-identical across the move of its
+    /// paging into [`fitted`](super::fitted).
+    ///
+    /// The regression guard on the refactor: this surface was already correct
+    /// and the arc's whole claim is that the other three acquired its
+    /// behaviour without it acquiring theirs. The expected rows are literals
+    /// written here, taken from the frame the release binary painted at
+    /// `c915001`.
+    #[test]
+    fn the_command_pickers_rows_are_byte_identical_across_the_move() {
+        let rows = usize::from(crate::shell::STRIP_ROWS);
+        let vocabulary = VocabularyOf::new(6).and_commands(4);
+        let trie = TrieOf::new(0);
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sé", Duration::ZERO, &trie, &vocabulary);
+
+        let lines = composer.strip_lines();
+        assert_eq!(
+            lines,
+            vec![
+                "/séance  a staged namespace".to_owned(),
+                "/sédan   a staged namespace".to_owned(),
+                "/sédge   a staged namespace".to_owned(),
+                "/sédum   a staged namespace".to_owned(),
+                "/séism   a staged namespace".to_owned(),
+                super::continues(10 - (rows - 1)),
+            ],
+            "the picker's rows changed when its paging moved — the column's padding is computed \
+             on the rows shown, not on the set handed in"
+        );
+    }
+
+    /// No match the strip holds reaches a person nowhere, read out of the
+    /// painted buffer rather than out of `strip_lines`.
+    ///
+    /// The two are different subjects. `strip_lines` is what the composer
+    /// says it will paint; this is what `ratatui` put in the cells of an area
+    /// the size the shell gives it. The original defect lived exactly in the
+    /// gap between them, so the frame is where it is asserted gone.
+    #[test]
+    fn no_match_the_strip_holds_reaches_a_person_nowhere() {
+        let held = crate::composer::MATCH_LIMIT;
+        let trie = TrieOf::new(held);
+        let mut composer = Composer::new();
+        typing(&mut composer, "tí", Duration::ZERO, &trie);
+
+        // The shell's own geometry: one input row and `STRIP_ROWS` below it.
+        let (rows, _) = painted(&composer, 60, crate::shell::COMPOSER_ROWS);
+        let painted_text = rows.join("\n");
+
+        let mut shown = 0;
+        for n in 0..held {
+            if painted_text.contains(&format!("títle-{n}·{TRIE_NONCE} ✦")) {
+                shown += 1;
+            }
+        }
+        assert!(
+            painted_text.contains("more · type to narrow"),
+            "{} of {held} matches are on the frame and no row says the rest exist; the frame was \
+             {rows:?}",
+            shown
+        );
+        assert_eq!(
+            shown + (held - shown),
+            held,
+            "the arithmetic below is only meaningful if every match is either painted or counted"
+        );
+        assert!(
+            painted_text.contains(&super::continues(held - shown)),
+            "the overflow row's count is not the number of matches missing from the frame: {shown} \
+             are painted out of {held}, so the row should read {:?}; the frame was {rows:?}",
+            super::continues(held - shown)
+        );
+    }
+
+    /// The retrieval budget exceeds the rendering budget, at run time as well
+    /// as at compile time.
+    ///
+    /// The `const _` beside `MATCH_LIMIT` is the real gate and a change that
+    /// breaks it does not compile. This states the same property where a
+    /// reader of the checks will find it, and says why it matters: a retrieval
+    /// budget equal to the row budget can be exhausted without the strip being
+    /// able to say so.
+    #[test]
+    fn the_retrieval_budget_exceeds_the_row_budget() {
+        assert!(
+            crate::composer::MATCH_LIMIT > usize::from(crate::shell::STRIP_ROWS),
+            "MATCH_LIMIT is {} and STRIP_ROWS is {}; with no gap between them a full strip cannot \
+             say that anything was left out",
+            crate::composer::MATCH_LIMIT,
+            crate::shell::STRIP_ROWS
+        );
     }
 }

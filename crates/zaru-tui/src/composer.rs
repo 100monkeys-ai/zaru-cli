@@ -51,18 +51,63 @@ use core::cell::Cell;
 use core::time::Duration;
 use tui_textarea::{Input, Key, TextArea};
 
-/// How many entries the strip will carry.
+/// How many entries the strip asks the corpus for.
 ///
 /// **No record names this number.** ADR-0005 sets the debounce and the
 /// character floor and says nothing about how many matches a strip holds, so
 /// this is a proposal made here, named, and reported on the record rather than
 /// invented silently — [ADR Workflow]'s rule for a clause citing a page for
-/// something the page does not say. It is a rendering budget: the strip is one
-/// surface below the input on a terminal, and D2 forbids it growing into the
-/// text the user is composing.
+/// something the page does not say.
+///
+/// # It is the retrieval budget, and the rendering budget is one crate over
+///
+/// This doc comment read "it is a rendering budget: the strip is one surface
+/// below the input on a terminal" until 2026-09-15, and **that sentence was
+/// the defect**. The rendering budget is [`STRIP_ROWS`], named in the shell
+/// with its own reasoning; this is how many matches the corpus is asked for.
+/// Nobody had reconciled the two, so the strip was handed eight rows, nine
+/// with [`KEYWORD_ONLY`], painted into an area of six — and the rest reached
+/// a person nowhere with nothing on the screen saying a match had been
+/// dropped. [`render::fitted`] is the reconciliation.
+///
+/// # It is strictly greater than the row budget, on purpose
+///
+/// A retrieval budget equal to the row budget can be exhausted without the
+/// strip being able to say so: the corpus would answer exactly the rows there
+/// are to paint, and "there are more" would be unrepresentable. The gap is
+/// what lets the overflow row exist at all, and the `const _` below makes
+/// that a thing the compiler checks rather than a thing a reader has to
+/// notice.
+///
+/// # What the overflow row's count means, given this
+///
+/// `zaru_notes::trie::Trie` is built at this budget and **retains this many
+/// entries per node**, so a prefix matching more than [`MATCH_LIMIT`] entries
+/// is answered with [`MATCH_LIMIT`] of them. The count on the overflow row is
+/// therefore of matches **the strip holds** — a lower bound on the corpus,
+/// never an over-count — and `type to narrow` is the true and actionable half
+/// either way. Recorded on [ADR-0005's amendments volume 2]; widening this
+/// number to close the gap is a separate decision and is not taken here.
 ///
 /// [ADR Workflow]: https://100monkeys-ai.cortex.page/zaru/p/operations/adr-workflow
+/// [ADR-0005's amendments volume 2]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates-2
+/// [`STRIP_ROWS`]: crate::shell::STRIP_ROWS
+/// [`render::fitted`]: crate::composer::render
 pub const MATCH_LIMIT: usize = 8;
+
+/// The retrieval budget exceeds the rendering budget, checked at compile time.
+///
+/// **This is the reconciliation nobody performed.** Both constants were
+/// drafted under delegated rulings, each correct about its own surface, and
+/// neither named the other — so the only thing that could have caught eight
+/// matches arriving at a six-row strip was a person reading two files. Now
+/// lowering [`MATCH_LIMIT`] to [`STRIP_ROWS`], or raising `STRIP_ROWS` to
+/// meet it, does not compile.
+const _: () = assert!(
+    MATCH_LIMIT > crate::shell::STRIP_ROWS as usize,
+    "the strip's retrieval budget must exceed the rows it paints, or a full strip cannot say that \
+     anything was left out"
+);
 
 /// What a newline in the prompt paints as, in the one row [ADR-0005] D2 fixes.
 ///
@@ -605,37 +650,20 @@ impl Composer {
                     StripContent::Collapsed
                 }
             }
-            // The picker's rows page by prefix rather than scroll: where the
-            // narrowed set does not fit the strip's rows, the last row says how
-            // many are not shown rather than dropping them silently. The
-            // budget is the shell's own `STRIP_ROWS` read here rather than a
-            // second number, so the strip cannot be handed more rows than it
-            // paints — which is the defect this surface is deliberately not
-            // reproducing.
-            Intent::Command { .. } => {
-                let rows = usize::from(crate::shell::STRIP_ROWS);
-                // The two corpora page as one list, namespaces first. Paging
-                // them separately would let a narrowed command fall off a
-                // strip that still had a namespace row to spare, and the
-                // closing line would then be counting one corpus while the
-                // rows showed two.
-                let total = self.commands.len() + self.extensions.len();
-                if total <= rows {
-                    StripContent::Command {
-                        matches: self.commands.clone(),
-                        extensions: self.extensions.clone(),
-                        beyond: 0,
-                    }
-                } else {
-                    let shown = rows.saturating_sub(1);
-                    let namespaces = shown.min(self.commands.len());
-                    StripContent::Command {
-                        matches: self.commands[..namespaces].to_vec(),
-                        extensions: self.extensions[..shown - namespaces].to_vec(),
-                        beyond: total - shown,
-                    }
-                }
-            }
+            // **The paging is not here.** It was, from 2026-09-15 until later
+            // the same day, and it was the only corpus that had any — which
+            // is how the strip came to hand `strip_lines` eight matches for
+            // an area of six. `render::fitted` is now the one pager and every
+            // arm goes through it, so this arm hands over what the prefix
+            // narrowed to and nothing else. The two corpora still page as one
+            // list, namespaces first, because paging them separately would
+            // let a narrowed command fall off a strip that still had a
+            // namespace row to spare while the closing line counted one
+            // corpus and the rows showed two.
+            Intent::Command { .. } => StripContent::Command {
+                matches: self.commands.clone(),
+                extensions: self.extensions.clone(),
+            },
             Intent::Picker { kind, filter } => StripContent::Picker {
                 kind,
                 filter,
