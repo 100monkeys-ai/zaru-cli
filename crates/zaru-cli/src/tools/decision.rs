@@ -398,7 +398,21 @@ impl TranscriptEntry {
     /// function.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut line = format!("{} {}", self.tool, self.subject);
+        let mut line = format!("{}", self.tool);
+        // **D4's class goes before the subject, since 2026-09-14.** It was
+        // appended after the resolved absolute path from the day the tool
+        // surface landed, and `narrative-rendering` recorded on 2026-09-05
+        // that a deep enough path pushed it off a narrow frame. The *loss* is
+        // closed by wrapping -- the pane has wrapped since `pane-text` and the
+        // question does now too -- so this moves on **prominence** rather than
+        // on loss, which is the weaker of the two arguments that finding
+        // offered and is said here rather than rounded up: a class a reader
+        // must see to answer correctly should not arrive after three rows of
+        // path. The position was a shape no record gave; it is one now.
+        //
+        // It costs the persisted `ToolCall.line` its old spelling and costs
+        // D3's matching nothing: the allowlist compares
+        // `Invocation::subject_text`, never this.
         if let Some(placement) = self.placement
             && placement.is_out_of_tree()
         {
@@ -411,6 +425,8 @@ impl TranscriptEntry {
             line.push_str(DESTRUCTIVE_MARKING);
             line.push(']');
         }
+        line.push(' ');
+        line.push_str(&self.subject);
         line
     }
 }

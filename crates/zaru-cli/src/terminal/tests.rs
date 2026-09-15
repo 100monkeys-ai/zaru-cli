@@ -5943,3 +5943,106 @@ fn corpus_a_control_character_in_a_refused_alias_reaches_no_line_the_pane_is_giv
          not:\n{shown}",
     );
 }
+
+/// [ADR-0011] D4's marking is on the **question** at 72 columns, and it is
+/// there before the path.
+///
+/// # The half `narrative-rendering` left open, measured
+///
+/// That arc recorded on 2026-09-05 that "a deep enough path hides D4's marking
+/// from a narrow terminal", and
+/// [`corpus_an_out_of_tree_marking_survives_a_pane_too_narrow_for_the_line`]
+/// closed it **for the transcript row** once `pane-text` made the pane wrap.
+/// It was never closed for the question. From the release binary at `a8eedf7`
+/// over a pseudo-terminal at 40 columns, the standing question read `Allow
+/// fs.read /etc/hostname  [OUTSIDE th` while, two beats later in the same
+/// session, the transcript row for that same call wrapped whole across two
+/// rows. The question is the surface the clause is actually about: a person
+/// answering it is deciding, and a class cut mid-word is a class they did not
+/// read.
+///
+/// **Two properties, because the wrap alone is not the whole ruling.** The
+/// marking must be on the frame, and it must come *before* the resolved path
+/// rather than after it — so that a reader meets the class before three rows
+/// of absolute path rather than after them. The needle is `Placement::as_str`
+/// itself, so renaming the marking moves this check with it.
+///
+/// **The accepting sibling** is an ordinary in-tree call, whose question must
+/// carry no marking at all: an assertion that only looked for the marking
+/// would be satisfied by a renderer that marked everything.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn corpus_the_out_of_tree_marking_is_on_the_question_at_72_columns_and_before_the_path() {
+    use crate::tools::decision::{Assessment, Decision, Invocation};
+    use crate::tools::fixtures::ScratchTree;
+    use crate::tools::mode::Mode;
+    use crate::tools::name::ToolName;
+    use crate::tools::tree::{Placement, WorkingDirectory};
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let marking = Placement::OutOfTree.as_str();
+
+    let question_for = |candidate: &str| {
+        let target = working.classify(candidate);
+        let decision = Decision::reach(
+            Mode::Ask,
+            &Invocation::on_path(ToolName::FsRead, &target).expect("addresses a path"),
+            Assessment::default(),
+        );
+        let question = decision
+            .question()
+            .expect("an out-of-tree read prompts in `ask`, and so does nothing else here");
+        (target.resolved().display().to_string(), question)
+    };
+
+    // The out-of-tree arm, at the 72 columns the finding was measured at.
+    let (resolved, question) = question_for("../elsewhere/secret");
+    assert!(
+        question.statement.contains(marking),
+        "the staged question is not marked at all, so nothing below is about the frame"
+    );
+    let at = question
+        .statement
+        .find(marking)
+        .expect("the marking is in the statement");
+    let path_at = question
+        .statement
+        .find(&resolved)
+        .expect("the resolved path is in the statement");
+    assert!(
+        at < path_at,
+        "D4's marking comes after the resolved path, so a reader meets the class only once they \
+         have read the whole of a path that may take three rows: {:?}",
+        question.statement
+    );
+
+    let mut asking = shell();
+    asking.ask(crate::terminal::driver::question_for_the_shell(&question));
+    let painted = painted_at(&asking, 72, 24).join("\n");
+    assert!(
+        painted.contains(marking),
+        "at 72 columns D4's marking is not on the frame of the standing question, so a person is \
+         answering without having been shown that the target left the working directory:\n{painted}"
+    );
+
+    // The accepting sibling: an in-tree write prompts too, and carries none.
+    let target = working.classify("notes.txt");
+    let decision = Decision::reach(
+        Mode::Ask,
+        &Invocation::writing(&target, "alpha\n"),
+        Assessment::default(),
+    );
+    let ordinary = decision
+        .question()
+        .expect("an in-tree write prompts in `ask`");
+    let mut asking = shell();
+    asking.ask(crate::terminal::driver::question_for_the_shell(&ordinary));
+    let painted = painted_at(&asking, 72, 24).join("\n");
+    assert!(
+        !painted.contains(marking),
+        "an ordinary in-tree call's question was marked as having left the tree, so the marking \
+         says nothing:\n{painted}"
+    );
+}
