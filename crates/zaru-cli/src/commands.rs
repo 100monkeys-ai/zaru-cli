@@ -1,8 +1,9 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! [ADR-0015] D1's **Command**: a named prompt template with arguments, which
-//! cannot execute anything.
+//! [ADR-0015] D1's two file-borne extension kinds: the **Command**, "a named
+//! prompt template with arguments", which cannot execute anything, and the
+//! **Skill**, "a named procedure: instructions plus optional validators".
 //!
 //! # What this module is, in the record's own words
 //!
@@ -17,6 +18,14 @@
 //! **body of text**; there is no field on it, and none on
 //! [`Expanded`], that a tool name could ride. The
 //! expansion is a `String`, and its one consumer is the task a turn runs.
+//!
+//! **A skill's validators are not an exception to that and are not part of
+//! the expansion.** They are [ADR-0009] D1 declarations, parsed by that
+//! record's own reader, and what runs them is the iteration loop a project's
+//! `zaru.toml` already runs — see [`skill`] for what that does and does not
+//! mean about D1's "only through existing tools".
+//!
+//! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 //!
 //! # The two locations, and the third that is not here
 //!
@@ -58,6 +67,7 @@
 //! | [`load`] | the two locations, the precedence, and clause 5's collision |
 //! | [`admission`] | D4's record, `~/.zaru/admissions.jsonl` |
 //! | [`date`] | the civil date an admission is stamped with, without a dependency |
+//! | [`skill`] | D1's second file-borne kind: `<name>.skill.md` and its `[[validator]]` blocks |
 //!
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
@@ -68,6 +78,7 @@ pub mod document;
 pub mod front_matter;
 pub mod load;
 pub mod placeholder;
+pub mod skill;
 
 #[cfg(test)]
 pub(crate) mod fixtures;
@@ -77,6 +88,6 @@ mod tests;
 pub use admission::{ADMISSIONS_FILE, Admission, AdmissionError, Admissions};
 pub use document::{
     ADMISSION_STATEMENT, COMMAND_EXTENSION, COMMANDS_DIRECTORY, Command, CommandRefused, Expanded,
-    Source,
+    Kind, Source, VALIDATOR_TABLE, origin_words,
 };
 pub use load::{Loaded, Offer, load_from};

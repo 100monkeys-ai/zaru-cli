@@ -32,6 +32,7 @@
 use crate::config::file::FileRefused;
 use core::fmt;
 use std::path::{Path, PathBuf};
+use zaru_core::iteration::validator::Declared;
 
 /// The directory a command file sits in, under both of D3's built locations.
 pub const COMMANDS_DIRECTORY: &str = "commands";
@@ -110,16 +111,93 @@ impl fmt::Display for Source {
     }
 }
 
-/// One loaded command.
+/// Which of [ADR-0015] D1's two file-borne extension kinds a file is.
+///
+/// D1's table gives three kinds and two of them are files: a **command**, "a
+/// named prompt template with arguments", and a **skill**, "a named
+/// procedure: instructions plus optional validators". The third is an MCP
+/// server, which is a process rather than a file and has no variant here for
+/// the reason [`Source`] has no `Served` variant.
+///
+/// **The word is D1's own**, so a rendered `(skill)` authors nothing: it is
+/// the name the record gives the kind.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Kind {
+    /// `<name>.md`. Expands to text and declares nothing.
+    Command,
+    /// `<name>.skill.md`. May carry [ADR-0009] D3's `expect` clauses in
+    /// `[[validator]]` blocks, and runs inside the iteration loop when it
+    /// does.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    Skill,
+}
+
+impl Kind {
+    /// D1's own word for this kind.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Skill => "skill",
+        }
+    }
+
+    /// The front-matter keys a file of this kind may carry.
+    ///
+    /// Walked rather than matched against literals at each site, so a key
+    /// arrives here or nowhere — [Verification lessons] §17.
+    ///
+    /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+    #[must_use]
+    pub const fn keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Command => &["description", "name"],
+            Self::Skill => &["description", "name", VALIDATOR_TABLE],
+        }
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.word())
+    }
+}
+
+/// The array of tables a skill declares its validators in.
+///
+/// **It is `[[validator]]`, which is the manifest's own spelling**, read from
+/// [`crate::manifest::VALIDATOR_TABLE`] rather than typed here so the two
+/// cannot drift. [ADR-0015] D5 says a skill "may carry `expect` clauses in
+/// the vocabulary of [ADR-0009] D3"; D3's vocabulary is the four `expect`
+/// **kinds**, and the table those clauses are written in is [ADR-0009] D1's
+/// `[[validator]]`, whose fields are `name`, `run`, `expect` and `after`. An
+/// array named for one of its own fields would be two spellings of one thing.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+pub const VALIDATOR_TABLE: &str = crate::manifest::VALIDATOR_TABLE;
+
+/// One loaded command or skill.
 ///
 /// The body is **text** and nothing else; see this module tree's own
-/// documentation for why that is the whole of D1's inertness.
+/// documentation for why that is the whole of D1's inertness. A skill's
+/// [`Command::validators`] are not part of the body and are never expanded —
+/// they are [ADR-0009] D1 declarations the iteration loop runs, which is the
+/// only thing D1's table lets a skill do that a command cannot.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
     name: String,
     description: Option<String>,
     body: String,
     source: Source,
+    kind: Kind,
+    validators: Vec<Declared>,
+    file: String,
     path: PathBuf,
 }
 
@@ -140,13 +218,35 @@ impl Command {
         source: Source,
         path: impl Into<PathBuf>,
     ) -> Self {
+        let body = body.into();
+        let file = body.clone();
         Self {
             name: name.into(),
             description,
-            body: body.into(),
+            body,
             source,
+            kind: Kind::Command,
+            validators: Vec::new(),
+            file,
             path: path.into(),
         }
+    }
+
+    /// Declare this file's kind, its validators and the bytes it was read
+    /// from.
+    ///
+    /// `file` is the **whole file**, front matter and fences included, which
+    /// is what [ADR-0015] D4's record stores: a rewritten `description` or a
+    /// rewritten `run` line is a change to what the user admitted exactly as
+    /// a rewritten body is, and only the whole file says so.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[must_use]
+    pub fn of(mut self, kind: Kind, validators: Vec<Declared>, file: impl Into<String>) -> Self {
+        self.kind = kind;
+        self.validators = validators;
+        self.file = file.into();
+        self
     }
 
     /// The command's name, without a leading slash.
@@ -171,6 +271,73 @@ impl Command {
     #[must_use]
     pub fn body(&self) -> &str {
         &self.body
+    }
+
+    /// Which of D1's two file-borne kinds this is.
+    #[must_use]
+    pub const fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// [ADR-0009] D1 validators this skill declares, in declaration order.
+    ///
+    /// Always empty for a [`Kind::Command`], which has no key to declare one
+    /// in.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    #[must_use]
+    pub fn validators(&self) -> &[Declared] {
+        &self.validators
+    }
+
+    /// The whole file as it was read, front matter and fences included.
+    ///
+    /// This is what [ADR-0015] D4's admission record stores and compares. See
+    /// [`Command::of`].
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[must_use]
+    pub fn file(&self) -> &str {
+        &self.file
+    }
+
+    /// The word [ADR-0015] D6's attribution line names this file's origin
+    /// with.
+    ///
+    /// `project` or `user` for a command, and `project skill` or `user skill`
+    /// for a skill. **Neither half is authored**: [`Source::word`] is D6's own
+    /// example's word and [`Kind::word`] is D1's table's.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[must_use]
+    pub fn origin(&self) -> String {
+        origin_words(self.source, self.kind)
+    }
+
+    /// The rows [ADR-0015] D4's question shows this file as, under its
+    /// statement.
+    ///
+    /// The slash spelling, with `(skill)` after it where the kind is one, and
+    /// then **one row per declared validator carrying its `run` line
+    /// verbatim**, indented. That last part is what makes the gate informed
+    /// rather than nominal: a skill's validator command is the one thing in
+    /// either file that will actually be executed, and D4's own words are
+    /// that "the harness **reports what the project offers**".
+    ///
+    /// **No sentence is authored here.** `skill` is [`Kind::word`]'s and the
+    /// run text is the file's.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[must_use]
+    pub fn offered_rows(&self) -> Vec<String> {
+        let mut rows = match self.kind {
+            Kind::Command => vec![self.slash()],
+            Kind::Skill => vec![format!("{} ({})", self.slash(), self.kind.word())],
+        };
+        for validator in &self.validators {
+            rows.push(format!("  {}", validator.run.as_str()));
+        }
+        rows
     }
 
     /// Which of D3's locations it came from.
@@ -205,6 +372,8 @@ pub struct Expanded {
     pub name: String,
     /// Which of D3's locations it came from.
     pub source: Source,
+    /// Which of D1's two file-borne kinds it is.
+    pub kind: Kind,
     /// The date the user admitted it, or `None` for a user command, which
     /// needs no admission.
     pub admitted: Option<String>,
@@ -229,7 +398,27 @@ impl Expanded {
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     #[must_use]
     pub fn attribution(&self) -> String {
-        attribution_line(&self.name, self.source.word(), self.admitted.as_deref())
+        attribution_line(
+            &self.name,
+            &origin_words(self.source, self.kind),
+            self.admitted.as_deref(),
+        )
+    }
+}
+
+/// [ADR-0015] D6's origin words for one location and one kind.
+///
+/// The one place the two are joined, so the pane, the transcript record and
+/// the `--resume` replay cannot come to spell them differently. **Neither
+/// word is authored**: `project`/`user` is D6's own example's and
+/// `skill` is D1's table's.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[must_use]
+pub fn origin_words(source: Source, kind: Kind) -> String {
+    match kind {
+        Kind::Command => source.word().to_owned(),
+        Kind::Skill => format!("{} {}", source.word(), kind.word()),
     }
 }
 
@@ -317,6 +506,42 @@ pub enum CommandRefused {
         /// The file, as it was named. Never what it resolved to.
         path: PathBuf,
     },
+    /// A `[[validator]]` block did not parse, or one of its fields is
+    /// unusable.
+    ///
+    /// Carried whole from [`crate::manifest::ManifestNotRead`] rather than
+    /// re-rendered, because the manifest's own parser is the one that read
+    /// it: the position it names is the position inside this file's front
+    /// matter, and the path this variant carries is what tells a reader which
+    /// file that position is in.
+    Validator {
+        /// The file.
+        path: PathBuf,
+        /// The manifest reader's own refusal.
+        source: crate::manifest::ManifestNotRead,
+    },
+    /// A `<name>.md` carries a `[[validator]]`, which is a skill's key.
+    ValidatorInACommand {
+        /// The file.
+        path: PathBuf,
+        /// The name it would have to be called to declare one.
+        skill: String,
+    },
+    /// Two files in one directory claim one name.
+    ///
+    /// The only collision the filesystem cannot prevent: a stem is unique
+    /// inside a directory, and `<name>.md` and `<name>.skill.md` are two
+    /// stems naming one command. Neither loads, because which of them wins
+    /// would be exactly the "behaviour that depends on load order" D2's
+    /// shadowing rule exists to prevent.
+    NameCollision {
+        /// The `<name>.md`.
+        command: PathBuf,
+        /// The `<name>.skill.md`.
+        skill: PathBuf,
+        /// The name they both claim.
+        name: String,
+    },
     /// The name is one of [ADR-0015] D2's namespaces, or the shell's own
     /// leave word.
     ///
@@ -344,7 +569,10 @@ impl CommandRefused {
             | Self::NotAString { path, .. }
             | Self::UnknownPlaceholder { path, .. }
             | Self::OutsideTheWorkingDirectory { path }
+            | Self::Validator { path, .. }
+            | Self::ValidatorInACommand { path, .. }
             | Self::Shadows { path, .. } => path,
+            Self::NameCollision { command, .. } => command,
         }
     }
 }
@@ -397,6 +625,26 @@ impl fmt::Display for CommandRefused {
                  link out of the tree it came with",
                 path.display()
             ),
+            Self::Validator { path, source } => {
+                write!(f, "{}: {source}", path.display())
+            }
+            Self::ValidatorInACommand { path, skill } => write!(
+                f,
+                "{} declares `{VALIDATOR_TABLE}`, which only a skill may declare; rename it \
+                 `{skill}` to run its validators in the iteration loop",
+                path.display()
+            ),
+            Self::NameCollision {
+                command,
+                skill,
+                name,
+            } => write!(
+                f,
+                "{} and {} would both name `{name}`, and one name is one file; rename or remove \
+                 one of them",
+                command.display(),
+                skill.display()
+            ),
             Self::Shadows {
                 path,
                 name,
@@ -416,12 +664,15 @@ impl std::error::Error for CommandRefused {
         match self {
             Self::File(refused) => Some(refused),
             Self::NotListed { source, .. } => Some(source),
+            Self::Validator { source, .. } => Some(source),
             Self::NoFrontMatter { .. }
             | Self::NameDisagrees { .. }
             | Self::UnknownKey { .. }
             | Self::NotAString { .. }
             | Self::UnknownPlaceholder { .. }
             | Self::OutsideTheWorkingDirectory { .. }
+            | Self::ValidatorInACommand { .. }
+            | Self::NameCollision { .. }
             | Self::Shadows { .. } => None,
         }
     }

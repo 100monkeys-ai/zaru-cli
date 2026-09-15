@@ -6226,7 +6226,13 @@ fn a_project_that_offers_commands_is_asked_about_once_at_the_door() {
     let entries = admissions.entries().expect("the file parses");
     assert_eq!(entries.len(), 1, "one admission, written once");
     assert_eq!(entries[0].name, "deploy-check");
-    assert_eq!(entries[0].body, "Check $1.\n");
+    // The **whole file**, front matter and fences included, since 2026-09-15.
+    // See `commands::admission::Admission::file` for why the body alone was
+    // not enough once a skill's `run` line lived in the front matter.
+    assert_eq!(
+        entries[0].file,
+        crate::commands::fixtures::file("", "Check $1.\n")
+    );
 }
 
 /// The same door, declined: nothing is written and nothing loads, so the

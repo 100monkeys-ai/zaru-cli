@@ -366,7 +366,34 @@ impl ManifestFile {
     /// [`Plan::from_declared`](zaru_core::iteration::validator::Plan::from_declared)'s
     /// to derive, and deriving it here as well would be two orderings that can
     /// disagree.
-    fn validators(value: &Value) -> Result<Vec<Declared>, ManifestNotRead> {
+    /// Every `[[validator]]` block in one array of tables, in declaration
+    /// order.
+    ///
+    /// # Two callers, and why the second one is here rather than beside it
+    ///
+    /// This reader and the one
+    /// [ADR-0015](https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility)
+    /// D5's skill needs are one reader. That record says a skill "may carry
+    /// `expect` clauses in the vocabulary of [ADR-0009] D3", and D3's
+    /// vocabulary is the four kinds this function already reads — so a
+    /// skill's `[[validator]]` block is byte-identical to a manifest's and is
+    /// refused in the same words. A second parser in `commands::skill` would
+    /// be two readings of one grammar, which is the drift this module refuses
+    /// for a manifest's own tables.
+    ///
+    /// It takes no `self` and never has: everything it needs is in the
+    /// value it is handed, so the second caller costs a visibility and
+    /// nothing else. What that caller adds is the **path**, because this
+    /// refusal names a position and not a file
+    /// ([`CommandRefused::Validator`](crate::commands::CommandRefused::Validator)).
+    ///
+    /// # Errors
+    ///
+    /// [`ManifestNotRead::ValidatorsNotAList`] when the key is not an array
+    /// of tables, and whatever [`Self::validator`] refuses for any entry.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    pub(crate) fn validators(value: &Value) -> Result<Vec<Declared>, ManifestNotRead> {
         let Value::Array(entries) = value else {
             return Err(ManifestNotRead::ValidatorsNotAList {
                 found: value.shape(),

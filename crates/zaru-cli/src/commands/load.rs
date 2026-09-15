@@ -48,19 +48,22 @@
 use crate::cli::namespace::Namespace;
 use crate::commands::admission::Admissions;
 use crate::commands::document::{
-    COMMAND_EXTENSION, COMMANDS_DIRECTORY, Command, CommandRefused, Expanded, Source,
+    COMMAND_EXTENSION, COMMANDS_DIRECTORY, Command, CommandRefused, Expanded, Kind, Source,
 };
-use crate::commands::{front_matter, placeholder};
+use crate::commands::{front_matter, placeholder, skill};
 use crate::config::file::{SizeCeiling, TomlFile, text};
 use crate::config::{Table, Value};
 use crate::tools::WorkingDirectory;
 use std::path::{Path, PathBuf};
 
-/// The two keys a command file's front matter may carry.
+/// The keys a command file's front matter may carry.
 ///
 /// Walked rather than matched against literals at each site, so a third key
-/// arrives here or nowhere.
-pub const KEYS: [&str; 2] = ["description", "name"];
+/// arrives here or nowhere. **A skill has one more**, and the set is
+/// [`Kind::keys`]'s rather than this constant's wherever the kind is known;
+/// this is the command's, kept as the name the refusal's nearest-match is
+/// computed over when there is no kind to ask.
+pub const KEYS: &[&str] = Kind::Command.keys();
 
 /// The word the shell leaves on, without its slash.
 ///
@@ -114,6 +117,20 @@ impl Loaded {
         self.commands.iter().find(|command| command.name() == name)
     }
 
+    /// [ADR-0009] D1 validators the command this name spells declares.
+    ///
+    /// Empty for a command, for a skill that declares none, and for a name
+    /// nothing loaded — which are three different facts with one consequence,
+    /// because [ADR-0015] D5's "one without runs as instructions" is exactly
+    /// the turn a project with no manifest already runs.
+    ///
+    /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[must_use]
+    pub fn validators_of(&self, name: &str) -> &[zaru_core::iteration::validator::Declared] {
+        self.named(name).map_or(&[], Command::validators)
+    }
+
     /// The date `name` was admitted, where it needed admitting.
     #[must_use]
     pub fn admitted_on(&self, name: &str) -> Option<&str> {
@@ -141,6 +158,7 @@ impl Loaded {
         Some(Expanded {
             name: command.name().to_owned(),
             source: command.source(),
+            kind: command.kind(),
             admitted: self.admitted_on(name).map(ToOwned::to_owned),
             typed: typed.to_owned(),
             task: command.expand(tail),
@@ -207,7 +225,7 @@ pub fn load_from(
     let mut admitted = Vec::new();
     if let Some(here) = here {
         for command in &project {
-            if let Ok(Some(date)) = admissions.admitted_on(here, command.name(), command.body()) {
+            if let Ok(Some(date)) = admissions.admitted_on(here, command.name(), command.file()) {
                 admitted.push((command.name().to_owned(), date));
             }
         }
@@ -281,7 +299,43 @@ fn read_directory(
             Err(refused) => refusals.push(refused),
         }
     }
+    refuse_a_collision(&mut commands, refusals);
     commands
+}
+
+/// Drop every name two files in one directory both claim, naming both.
+///
+/// **Both go, rather than one winning.** `<name>.md` and `<name>.skill.md`
+/// are two stems spelling one name, so which of them ran would depend on the
+/// order a directory was read in — "behaviour that depends on load order,
+/// which is unexplainable at the moment it matters", which is D2's own reason
+/// for the shadowing rule one paragraph up from this one.
+///
+/// The paths are sorted before this runs, so `<name>.md` is always the
+/// command and `<name>.skill.md` always the skill, and the refusal names them
+/// in that order however the filesystem listed them.
+fn refuse_a_collision(commands: &mut Vec<Command>, refusals: &mut Vec<CommandRefused>) {
+    let mut colliding: Vec<String> = Vec::new();
+    for (at, command) in commands.iter().enumerate() {
+        if let Some(other) = commands
+            .iter()
+            .skip(at + 1)
+            .find(|later| later.name() == command.name())
+        {
+            let (first, second) = if command.kind() == Kind::Command {
+                (command, other)
+            } else {
+                (other, command)
+            };
+            refusals.push(CommandRefused::NameCollision {
+                command: first.path().to_path_buf(),
+                skill: second.path().to_path_buf(),
+                name: command.name().to_owned(),
+            });
+            colliding.push(command.name().to_owned());
+        }
+    }
+    commands.retain(|command| !colliding.iter().any(|name| name == command.name()));
 }
 
 /// One file, read, parsed and checked.
@@ -302,10 +356,28 @@ fn read_file(
             declared: String::new(),
         });
     };
-    let stem = stem.to_owned();
+    // The stem decides the name **and** the kind: `triage.skill.md` stems to
+    // `triage.skill`, which is the command `triage` written as a skill. See
+    // `commands::skill` for why that spelling had to be claimed rather than
+    // added.
+    let (name, kind) = skill::of_stem(stem);
+    if name.is_empty() {
+        // `.skill.md` names nothing. Refused as a name disagreement for the
+        // reason a non-UTF-8 stem is: what a reader can act on is the
+        // filename.
+        return Err(CommandRefused::NameDisagrees {
+            path: path.to_path_buf(),
+            stem: stem.to_owned(),
+            declared: String::new(),
+        });
+    }
+    let stem = name.to_owned();
 
     // Clause 5, before the file is even opened: a shadowing name is rejected
-    // at load however well-formed the file behind it is.
+    // at load however well-formed the file behind it is. It is checked
+    // against the **name**, not the file stem, so `session.skill.md` collides
+    // exactly as `session.md` does -- a skill and a command share one
+    // namespace and D2's reason does not care which kind shadowed.
     if let Some(spelling) = shadowed(&stem) {
         return Err(CommandRefused::Shadows {
             path: path.to_path_buf(),
@@ -352,15 +424,25 @@ fn read_file(
             declared,
         });
     }
-    if let Some((offered, _)) = head.iter().find(|(key, _)| !KEYS.contains(&key.as_str())) {
+    // A `[[validator]]` in a `<name>.md` is answered before the key walk, so
+    // the reader is told what to rename rather than which key is nearest.
+    if kind == Kind::Command {
+        skill::refuse_a_validator_in_a_command(&head, &stem, path)?;
+    }
+    let keys = kind.keys();
+    if let Some((offered, _)) = head.iter().find(|(key, _)| !keys.contains(&key.as_str())) {
         return Err(CommandRefused::UnknownKey {
             path: path.to_path_buf(),
             offered: offered.clone(),
             // The same metric ADR-0014 D5's nearest match uses, over this
             // schema's own keys rather than a list typed here.
-            nearest: crate::config::nearest::nearest(KEYS, offered).unwrap_or(KEYS[0]),
+            nearest: crate::config::nearest::nearest(keys.iter().copied(), offered)
+                .unwrap_or(keys[0]),
         });
     }
+
+    // D5's `expect` clauses, through the manifest's own reader.
+    let validators = skill::validators_of(&head, path)?;
 
     if let Some(spelling) = placeholder::unknown(split.body) {
         return Err(CommandRefused::UnknownPlaceholder {
@@ -369,7 +451,7 @@ fn read_file(
         });
     }
 
-    Ok(Command::new(stem, description, split.body, source, path))
+    Ok(Command::new(stem, description, split.body, source, path).of(kind, validators, raw))
 }
 
 /// One string key, or `None` when it is absent.

@@ -34,22 +34,25 @@
 //!
 //! # What an admission covers, and why the body is stored verbatim
 //!
-//! One line per **admitted command**, carrying the directory, the name, the
-//! date and **the body as it stood when the user said yes**. So a new name in
-//! an admitted project asks again, and a *changed body* of an admitted name
-//! asks again, which is the half that matters: a command admitted today whose
-//! body is rewritten by tomorrow's `git pull` is exactly the supply-chain
-//! shape D4 exists to gate.
+//! One line per **admitted command or skill**, carrying the directory, the
+//! name, the date and **the whole file as it stood when the user said yes**.
+//! So a new name in an admitted project asks again, and a *changed file* of
+//! an admitted name asks again, which is the half that matters: a command
+//! admitted today whose body is rewritten by tomorrow's `git pull` is exactly
+//! the supply-chain shape D4 exists to gate — and with [ADR-0015] D5's
+//! skills, so is a rewritten `[[validator]]` `run` line, which lives in the
+//! front matter and which the body alone did not cover. See
+//! [`Admission::file`].
 //!
-//! **The body rather than a digest, decided 2026-09-15 and open to veto.** A
+//! **The file rather than a digest, decided 2026-09-15 and open to veto.** A
 //! digest would need a cryptographic hash — a forgeable one is no gate at all
 //! when the threat model is somebody who edits the body — and no hash is in
 //! [ADR-0003] D2's table. Storing the body needs nothing, admits no collision
 //! question whatever, and gives [ADR-0010] D5's `cat` its strongest reading:
 //! the file says what you admitted **in the words you admitted**, rather than
 //! in a digest a person cannot check. The cost is stated rather than
-//! discovered: a line is as long as the body it records, bounded only by the
-//! one-mebibyte ceiling that already applies to the file it was read from.
+//! discovered: a line is as long as the file it records, bounded only by the
+//! one-mebibyte ceiling that already applies to that file.
 //!
 //! # A decline writes nothing
 //!
@@ -92,13 +95,32 @@ pub struct Admission {
     /// `YYYY-MM-DD`, the date [ADR-0015](https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility)
     /// D6's attribution line shows.
     pub admitted: String,
-    /// The body as it stood when the user said yes.
-    pub body: String,
+    /// **The whole file** as it stood when the user said yes, front matter
+    /// and fences included.
+    ///
+    /// # It was the body alone until 2026-09-15, and that was not enough
+    ///
+    /// A command's body is the text *after* the front matter, so a
+    /// `description` rewritten by tomorrow's `git pull` did not ask again —
+    /// and with [ADR-0015] D5's skills the front matter is where a
+    /// `[[validator]]`'s `run` line lives, which is the one thing in either
+    /// file that is actually executed. A gate that re-asks about the prose
+    /// and not about the command was a gate about the wrong half.
+    ///
+    /// **An admission recorded before that change asks once more**, which is
+    /// this field's `default`: an older line carries `body` and no `file`, so
+    /// it deserialises with an empty `file`, matches no real file, and the
+    /// project's question stands again. That is the intended cost and it is
+    /// paid once per project.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[serde(default)]
+    pub file: String,
 }
 
 /// Something went wrong with the admissions file.
 ///
-/// **No variant carries a body.** A refusal is the text that gets pasted into
+/// **No variant carries a file's contents.** A refusal is the text that gets pasted into
 /// a bug report, which is [`crate::session::history`]'s own rule for the same
 /// reason.
 #[derive(Debug)]
@@ -225,7 +247,7 @@ impl Admissions {
             .collect()
     }
 
-    /// The date `name` was admitted in `directory` with exactly this `body`,
+    /// The date `name` was admitted in `directory` with exactly this `file`,
     /// or `None` where it was not.
     ///
     /// **The latest such line wins**, because a re-admission after a change
@@ -238,17 +260,17 @@ impl Admissions {
         &self,
         directory: &Path,
         name: &str,
-        body: &str,
+        file: &str,
     ) -> Result<Option<String>, AdmissionError> {
         Ok(self
             .entries()?
             .into_iter()
-            .rfind(|entry| entry.directory == directory && entry.name == name && entry.body == body)
+            .rfind(|entry| entry.directory == directory && entry.name == name && entry.file == file)
             .map(|entry| entry.admitted))
     }
 
     /// Whether every one of `offered` is already admitted in `directory`,
-    /// body and all.
+    /// the whole file and all.
     ///
     /// An empty offer is covered: a project with no commands asks nothing,
     /// which is [ADR-0002](https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output)
@@ -263,7 +285,7 @@ impl Admissions {
             entries.iter().any(|entry| {
                 entry.directory == directory
                     && entry.name == command.name()
-                    && entry.body == command.body()
+                    && entry.file == command.file()
             })
         }))
     }
@@ -275,7 +297,7 @@ impl Admissions {
     /// `append`, each line and its newline go out in **one** `write_all` so a
     /// kill cannot split them, then `flush`, then `sync_data`.
     ///
-    /// An already-admitted command with an unchanged body is appended again
+    /// An already-admitted command with an unchanged file is appended again
     /// rather than skipped, and that is deliberate: the file is a log of what
     /// the user was asked and answered, and `covers` reads the set rather
     /// than the count.
@@ -299,7 +321,7 @@ impl Admissions {
                 directory: directory.to_path_buf(),
                 name: command.name().to_owned(),
                 admitted: today.to_owned(),
-                body: command.body().to_owned(),
+                file: command.file().to_owned(),
             };
             let line =
                 serde_json::to_string(&entry).map_err(|error| AdmissionError::NotSerialisable {
