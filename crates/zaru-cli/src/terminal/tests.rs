@@ -154,6 +154,7 @@ fn pump_staged_painting(
         trie,
         &Vocabulary,
         &mut turns,
+        None,
     ))
     .expect("the recording terminal never fails");
     assert_eq!(
@@ -1686,6 +1687,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         &NotesTrie::nothing_cached(WORKSPACE),
         &Vocabulary,
         &mut Turnable::Cannot(Vec::new()),
+        None,
     ))
     .expect("pump");
 
@@ -1745,6 +1747,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     }));
     let _ = accepting.key(
         press(Key::Char('y')),
+        ratatui::layout::Rect::new(0, 0, 80, 10),
         core::time::Duration::from_millis(1),
         &NotesTrie::nothing_cached(WORKSPACE),
         &Vocabulary,
@@ -1762,6 +1765,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     }));
     let _ = declining.key(
         press(Key::Enter),
+        ratatui::layout::Rect::new(0, 0, 80, 10),
         core::time::Duration::from_millis(1),
         &NotesTrie::nothing_cached(WORKSPACE),
         &Vocabulary,
@@ -5186,6 +5190,7 @@ fn a_queued_task_runs_when_the_turn_ends_with_no_keystroke() {
         &trie,
         &Vocabulary,
         &mut turns,
+        None,
     ))
     .expect("the recording terminal never fails");
 

@@ -73,6 +73,7 @@ pub use port::{
 
 use crate::composer::{Composer, Entries};
 use core::time::Duration;
+use ratatui::layout::Rect;
 
 /// The backend-agnostic keystroke the shell reads, re-exported.
 ///
@@ -219,6 +220,55 @@ pub const STRIP_ROWS: u16 = 6;
 #[must_use]
 pub const fn transcript_floor(pane: u16) -> u16 {
     pane / 2
+}
+
+/// Where the pane's window sits: the tail, or a row it is held at.
+///
+/// # Why the held state is a row index and not a distance from the tail
+///
+/// A distance from the tail is the natural spelling and is wrong. The pane's
+/// rows grow at the end, so `len - offset` moves every time a row is appended
+/// — a pane held one page back would slide downward under arriving output,
+/// which is the opposite of the property the held state exists for. A row
+/// index is stable under an append: rows before it do not move, so the window
+/// stays over the same rows and new output arrives below them.
+///
+/// **[`Viewing::Tail`] is a state rather than an index for the same reason.**
+/// A tail spelled as `At(len - height)` would have to be recomputed on every
+/// append by whoever appended, and a pane that missed one would stop
+/// following with nothing on the screen to say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Viewing {
+    /// The pane follows: it shows the last rows, as it has since it existed.
+    #[default]
+    Tail,
+    /// The pane is held, with this row of the pane's rows at the top of it.
+    At(usize),
+}
+
+/// What a held pane says about the rows it is no longer showing.
+///
+/// **Drafted under a delegated coordinator ruling of 2026-09-15, open to
+/// Jeshua's veto**, in the same shape as [`STRIP_ROWS`], [`QUEUED`],
+/// [`transcript_floor`] and the seven register glyphs: no record names a
+/// sentence and one is needed, so it is named once here with its reasoning
+/// rather than typed at a call site. It is recorded on [ADR-0005's amendments
+/// volume 2].
+///
+/// # Why a count and a key rather than a scrollbar
+///
+/// A pane that stops following while output arrives is a thing that happened
+/// which nothing on the screen said — row 12 of [the look-and-feel survey] in
+/// its general form. What a reader needs is how much they are not seeing and
+/// how to get back, and both fit in the width a 40-column terminal has. A
+/// scrollbar column would spend a column of every row on a proportion, which
+/// is a worse answer to the second question and no answer to the first.
+///
+/// [ADR-0005's amendments volume 2]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates-2
+/// [the look-and-feel survey]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
+#[must_use]
+pub fn below(rows: usize) -> String {
+    format!("\u{2026} {rows} more below \u{b7} End")
 }
 
 /// How many rows the composer's area occupies, at the foot of the screen.
@@ -802,6 +852,38 @@ pub struct Shell {
     secret_given: Option<String>,
     /// The one task waiting for the running turn to end, if there is one.
     queued: Option<Queued>,
+    /// Where the pane's window sits. See [`Viewing`].
+    viewing: Viewing,
+    /// What has been submitted in this directory, and where a walk of it is.
+    walk: Walk,
+    /// The last line submitted, until a host takes it to record it.
+    ///
+    /// **`Option` rather than a callback**, and taken rather than read, for
+    /// the reason [`Shell::take_queued`] is: a host that drains this cannot
+    /// record the same line twice however it is written, and this crate stays
+    /// free of the filesystem the line is going to.
+    submitted: Option<String>,
+}
+
+/// The history of submitted lines, and where a walk of it stands.
+///
+/// Private, because the two fields are an invariant rather than data: `at` is
+/// an index into `lines` and `placed` is the line `at` put in the composer, so
+/// a caller that could set one without the other could make the walk think it
+/// had placed something it had not.
+#[derive(Debug, Default)]
+struct Walk {
+    /// Oldest first, as the file holds them, plus this session's own.
+    lines: Vec<String>,
+    /// Which line the walk is standing on, or `None` at the newest end.
+    at: Option<usize>,
+    /// The text the walk last put in the composer.
+    ///
+    /// **This is what makes "a typed edit ends the walk" a comparison rather
+    /// than a flag.** A flag has to be cleared by every path that changes the
+    /// composer, and the path that forgets is invisible; comparing the prompt
+    /// against what the walk placed cannot be forgotten by anybody.
+    placed: Option<String>,
 }
 
 impl Shell {
@@ -819,6 +901,9 @@ impl Shell {
             secret_answered: None,
             secret_given: None,
             queued: None,
+            viewing: Viewing::Tail,
+            walk: Walk::default(),
+            submitted: None,
         }
     }
 
@@ -1061,6 +1146,240 @@ impl Shell {
         lines
     }
 
+    /// Where the pane's window sits.
+    #[must_use]
+    pub const fn viewing(&self) -> Viewing {
+        self.viewing
+    }
+
+    /// How many rows the pane holds at this width.
+    ///
+    /// Rows rather than lines, and a width rather than a count, for
+    /// [`Shell::visible`]'s reasons: a row count is a function of the width.
+    fn rows(&self, width: u16) -> usize {
+        self.pane_lines()
+            .iter()
+            .map(|line| line.rows(width).len())
+            .sum()
+    }
+
+    /// The row the window starts at, with [`Viewing::Tail`] resolved and a
+    /// held index clamped to what there is.
+    ///
+    /// **Clamped here rather than only where it is set**, because a resize
+    /// re-wraps every line and changes how many rows there are: an index that
+    /// was inside the pane at one width can be past the end at another, and
+    /// the alternative to clamping at the moment of painting is a blank pane
+    /// after a drag of the terminal's corner.
+    fn first(&self, height: u16, width: u16) -> usize {
+        let last = self.rows(width).saturating_sub(usize::from(height));
+        match self.viewing {
+            Viewing::Tail => last,
+            Viewing::At(first) => first.min(last),
+        }
+    }
+
+    /// How many rows lie below the window. Zero while the pane is following.
+    #[must_use]
+    pub fn rows_below(&self, height: u16, width: u16) -> usize {
+        match self.viewing {
+            Viewing::Tail => 0,
+            Viewing::At(_) => self
+                .rows(width)
+                .saturating_sub(self.first(height, width) + usize::from(height)),
+        }
+    }
+
+    /// Hold the window a page further back.
+    ///
+    /// A page is the pane's own height, so what leaves the top of the screen
+    /// is what arrives at the bottom of it.
+    pub fn page_up(&mut self, height: u16, width: u16) {
+        let first = self.first(height, width);
+        self.viewing = Viewing::At(first.saturating_sub(usize::from(height)));
+    }
+
+    /// Move the window a page forward, and **follow again when it reaches the
+    /// end**.
+    ///
+    /// The collapse to [`Viewing::Tail`] is the load-bearing half. A window
+    /// left at the last page would show exactly what the tail shows and would
+    /// stop following the moment the next row arrived — a pane that looks
+    /// like it is following and is not, which is the state a reader has no
+    /// way to tell apart from the one they asked for.
+    pub fn page_down(&mut self, height: u16, width: u16) {
+        let last = self.rows(width).saturating_sub(usize::from(height));
+        let first = self.first(height, width) + usize::from(height);
+        if first >= last {
+            self.viewing = Viewing::Tail;
+        } else {
+            self.viewing = Viewing::At(first);
+        }
+    }
+
+    /// Hold the window at the first row of the transcript.
+    pub const fn to_top(&mut self) {
+        self.viewing = Viewing::At(0);
+    }
+
+    /// Follow again.
+    pub const fn to_tail(&mut self) {
+        self.viewing = Viewing::Tail;
+    }
+
+    /// Give the shell what was typed in this directory before, oldest first.
+    ///
+    /// Called once, at session open, by the host that read the file. The
+    /// shell never opens it: this crate has no filesystem, which is the same
+    /// reason the transcript arrives through [`TranscriptSource`].
+    pub fn recall(&mut self, lines: Vec<String>) {
+        self.walk = Walk {
+            lines,
+            at: None,
+            placed: None,
+        };
+    }
+
+    /// What this session has submitted, oldest first, including what it was
+    /// given at open.
+    #[must_use]
+    pub fn recalled(&self) -> &[String] {
+        &self.walk.lines
+    }
+
+    /// Take the line last submitted, leaving none.
+    ///
+    /// Taking it is what empties it, so a host that records history cannot
+    /// record one line twice — the shape [`Shell::take_queued`] already uses.
+    pub fn take_submitted(&mut self) -> Option<String> {
+        self.submitted.take()
+    }
+
+    /// Whether the composer holds nothing but what a walk put there.
+    ///
+    /// An empty prompt is walkable because there is nothing to lose; a prompt
+    /// holding exactly what the walk placed is walkable because replacing it
+    /// loses nothing either. Anything else is something a person typed, and
+    /// the walk does not reach it.
+    fn walkable(&self) -> bool {
+        let text = self.composer.text();
+        text.is_empty() || self.walk.placed.as_deref() == Some(text.as_str())
+    }
+
+    /// Put a recalled line in the composer, and remember that the walk did it.
+    fn place(
+        &mut self,
+        text: &str,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) {
+        self.composer = Composer::new();
+        if !text.is_empty() {
+            self.composer.paste(text, now, entries, vocabulary);
+        }
+        self.walk.placed = Some(text.to_owned());
+    }
+
+    /// Walk one line back into the history.
+    fn walk_back(
+        &mut self,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) {
+        let next = match self.walk.at {
+            None => self.walk.lines.len().checked_sub(1),
+            Some(0) => Some(0),
+            Some(at) => Some(at - 1),
+        };
+        if let Some(at) = next {
+            let line = self.walk.lines[at].clone();
+            self.place(&line, now, entries, vocabulary);
+            self.walk.at = Some(at);
+        }
+    }
+
+    /// Walk one line forward, and past the newest to an empty prompt.
+    fn walk_forward(
+        &mut self,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) {
+        match self.walk.at {
+            None => {}
+            Some(at) if at + 1 < self.walk.lines.len() => {
+                let line = self.walk.lines[at + 1].clone();
+                self.place(&line, now, entries, vocabulary);
+                self.walk.at = Some(at + 1);
+            }
+            Some(_) => {
+                self.place("", now, entries, vocabulary);
+                self.walk.at = None;
+            }
+        }
+    }
+
+    /// Apply one keystroke that moves the pane's window or walks the history,
+    /// and say whether it was one.
+    ///
+    /// # One table, two callers, and that is why it is not inside [`Self::key`]
+    ///
+    /// A key struck while a turn is running does not reach [`Self::key`] at
+    /// all — `terminal::driver::read_while_busy` hands it to the composer
+    /// directly, because `Enter` queues there instead of submitting. A pane
+    /// that could only be scrolled between turns would be unscrollable in
+    /// exactly the moment it fills up, so both callers consult this.
+    ///
+    /// # Which keys, and the two that are conditional
+    ///
+    /// `PageUp` and `PageDown` always move the pane. Nothing is taken from
+    /// the composer by that: `tui-textarea` reads them as its own viewport's
+    /// scrolling, and this composer stopped painting through that widget on
+    /// 2026-09-13, when [`Composer::input_row`] began composing its one row.
+    ///
+    /// `Home` and `End` move the pane **only while the composer is empty**,
+    /// and are the text area's line-head and line-end everywhere else. They
+    /// are not the dead keys [the look-and-feel survey]'s row 8 recorded:
+    /// measured from the release binary at `828a255`, `Home` on the prompt
+    /// `/` puts the caret before the slash, so the next character typed makes
+    /// `n/` rather than `/n`. Taking them unconditionally would delete the
+    /// only way to reach the head of a prompt longer than the terminal, which
+    /// `a_block_wider_than_the_frame_paints_the_window_the_caret_is_in` is
+    /// about. The condition is the one the ruling already states for `Up` and
+    /// `Down`, applied to the pair beside them.
+    ///
+    /// `Up` and `Down` walk the history only while the composer is empty or
+    /// holds exactly what the walk put there -- `walkable`, named in prose
+    /// because it is private and rustdoc is right to refuse a public page
+    /// pointing at something a reader of that page cannot open, which is the
+    /// same reason `pane_and_stream` is named in prose one module over.
+    ///
+    /// [the look-and-feel survey]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
+    pub fn moved(
+        &mut self,
+        input: &Input,
+        pane: Rect,
+        now: Duration,
+        entries: &dyn Entries,
+        vocabulary: &dyn CommandVocabulary,
+    ) -> bool {
+        if input.ctrl || input.alt {
+            return false;
+        }
+        match &input.key {
+            Key::PageUp => self.page_up(pane.height, pane.width),
+            Key::PageDown => self.page_down(pane.height, pane.width),
+            Key::Home if self.composer.text().is_empty() => self.to_top(),
+            Key::End if self.composer.text().is_empty() => self.to_tail(),
+            Key::Up if self.walkable() => self.walk_back(now, entries, vocabulary),
+            Key::Down if self.walkable() => self.walk_forward(now, entries, vocabulary),
+            _ => return false,
+        }
+        true
+    }
+
     /// Put a question to the user. [ADR-0011] D3's `ask`.
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
@@ -1193,6 +1512,7 @@ impl Shell {
     pub fn key(
         &mut self,
         input: Input,
+        pane: Rect,
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
@@ -1232,6 +1552,13 @@ impl Shell {
             return Action::Leave(leaving);
         }
 
+        // The pane's window and the history walk, before the composer sees
+        // the key. `moved` is the whole table and its one other caller is the
+        // read that happens while a turn runs.
+        if self.moved(&input, pane, now, entries, vocabulary) {
+            return Action::Idle;
+        }
+
         if input.key != Key::Enter {
             self.composer.key(input, now, entries, vocabulary);
             return Action::Idle;
@@ -1249,12 +1576,13 @@ impl Shell {
     pub fn struck(
         &mut self,
         struck: Struck,
+        pane: Rect,
         now: Duration,
         entries: &dyn Entries,
         vocabulary: &dyn CommandVocabulary,
     ) -> Action {
         match struck {
-            Struck::Key(input) => self.key(input, now, entries, vocabulary),
+            Struck::Key(input) => self.key(input, pane, now, entries, vocabulary),
             Struck::Pasted(text) => {
                 self.pasted(&text, now, entries, vocabulary);
                 Action::Idle
@@ -1315,6 +1643,21 @@ impl Shell {
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     /// [ADR-0015's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility-updates
     pub fn submit(&mut self, line: &str, vocabulary: &dyn CommandVocabulary) -> Action {
+        // **History is recorded here because this is the one path.** The
+        // `Enter` arm above reaches it and so does the host draining a task
+        // queued during a turn, so a line is recorded once however it was
+        // submitted, and a second entry point would have to be a second
+        // grammar first. A blank line is not a submission: `Typed::Nothing`
+        // is what it becomes, and a history of blanks is a history of
+        // nothing. **A slash command is recorded, because it was typed** --
+        // the same reading that puts a refused command's own sentence on the
+        // pane rather than swallowing it.
+        if !line.trim().is_empty() {
+            self.walk.lines.push(line.to_owned());
+            self.walk.at = None;
+            self.walk.placed = None;
+            self.submitted = Some(line.to_owned());
+        }
         match command::read(line, vocabulary) {
             Typed::Nothing => Action::Idle,
             Typed::Leave => Action::Leave(Leaving::Word),

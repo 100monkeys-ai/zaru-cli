@@ -23,6 +23,7 @@ use crate::session::Resumed;
 use crate::terminal::source::{Pace, Source, Taken};
 use crate::tools::port::Question;
 use core::time::Duration;
+use ratatui::layout::Rect;
 use zaru_core::iteration::Interruption;
 use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::Start;
@@ -51,6 +52,20 @@ pub trait Restore {
 pub trait Surface: Restore {
     /// Paint the shell.
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()>;
+
+    /// How big the terminal is right now.
+    ///
+    /// **The surface is asked rather than the shell remembering**, because a
+    /// key that moves the pane by a page needs to know how tall a page is and
+    /// the shell has no terminal — a remembered number is a number that is
+    /// wrong for one keystroke after every resize. The pump turns this into
+    /// the pane's own region with [`Shell::regions`], which is what that
+    /// function is public for.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the terminal said when it was asked for its size.
+    fn area(&self) -> std::io::Result<Rect>;
 }
 
 /// Holds a restorer and gives the terminal back on drop.
@@ -798,7 +813,16 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                 }
             };
             now += Duration::from_millis(1);
-            let acted = pane.shell.key(input, now, &NoEntries, &NoVocabulary);
+            // A standing secret question takes every key before the table
+            // this passes reaches anything, so the region is never read here
+            // -- it is passed because the signature takes one.
+            let region = pane
+                .surface
+                .area()
+                .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
+            let acted = pane
+                .shell
+                .key(input, region, now, &NoEntries, &NoVocabulary);
             pane.paint();
             // A question is not a prompt a user can leave past either: this
             // call is what a tool is waiting on and there is nowhere for a
@@ -1678,12 +1702,49 @@ fn read_while_busy<S: Surface + Send>(
             pane.paint();
         }
         Struck::Key(input) => {
-            pane.shell
-                .composer_mut()
-                .key(input, now, entries, vocabulary);
+            // The pane's window and the history walk, through the shell's own
+            // table rather than a second copy of it. **This is the moment
+            // scrolling matters most** -- an answer is arriving and the rows
+            // a person wants are going off the top -- so a pane that could
+            // only be scrolled between turns would be unscrollable exactly
+            // when it fills up.
+            let moved = match pane.surface.area() {
+                // A terminal that cannot say how big it is cannot be paged
+                // through; the key reaches the composer, which is what it did
+                // before a window existed.
+                Err(_) => false,
+                Ok(area) => {
+                    let region = Shell::regions(area)[1];
+                    pane.shell.moved(&input, region, now, entries, vocabulary)
+                }
+            };
+            if !moved {
+                pane.shell
+                    .composer_mut()
+                    .key(input, now, entries, vocabulary);
+            }
             pane.paint();
         }
     }
+}
+
+/// Where a submitted line is recorded, and which directory's history it is.
+///
+/// **A pair rather than two arguments**, because neither is any use without
+/// the other: a history with no directory cannot be keyed and a directory
+/// with no history has nowhere to go. `None` at the call site is a session
+/// whose home directory could not be resolved, which is a machine the harness
+/// cannot store anything on at all.
+#[derive(Debug, Clone, Copy)]
+pub struct Recording<'a> {
+    /// The file. [ADR-0010] D1's sixth thing under `~/.zaru/`.
+    ///
+    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    pub history: &'a crate::session::History,
+    /// [ADR-0011] D4's canonical root, the value `meta.toml` records.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub directory: &'a std::path::Path,
 }
 
 /// Run the shell against a terminal until the user leaves.
@@ -1701,10 +1762,10 @@ fn read_while_busy<S: Surface + Send>(
 #[allow(
     clippy::too_many_arguments,
     reason = "\
-    the pump wants eight distinct capabilities and each is a port or a value \
+    the pump wants nine distinct capabilities and each is a port or a value \
     some record owns -- the shell, the surface it paints on, the terminal's \
     keys, the beat, the command runner, the composer's entries, the \
-    vocabulary and the session's turns. Bundling them would be a second name \
+    vocabulary, the session's turns and where a submitted line is recorded. Bundling them would be a second name \
     for the same list, which is the argument `compose::turn::run_one` already \
     makes for its own"
 )]
@@ -1717,6 +1778,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
     turns: &mut Turnable<'_>,
+    recording: Option<Recording<'_>>,
 ) -> std::io::Result<Pump> {
     let mut now = Duration::ZERO;
     surface.draw(shell)?;
@@ -1753,9 +1815,29 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // debounce to be ordered and is not a wall clock -- ADR-0005's
                 // whole reason for taking `now` as an argument.
                 now += Duration::from_millis(1);
-                shell.struck(struck, now, entries, vocabulary)
+                // The pane's own region, from the surface that knows the
+                // terminal's size. `Shell::regions` is the one place the
+                // three regions are decided, so the page a key moves by is
+                // the region a row is painted in.
+                let region = surface
+                    .area()
+                    .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
+                shell.struck(struck, region, now, entries, vocabulary)
             }
         };
+
+        // ADR-0010 D1's sixth thing, written where the one submission path
+        // has just run. **Taken rather than read**, so a line cannot be
+        // recorded twice, and taken whether or not there is anywhere to put
+        // it, so a session with no history does not accumulate one in memory.
+        // A failure to write it is a line on the pane and never the end of
+        // the session: a person's history is not what they are here for.
+        let submitted = shell.take_submitted();
+        if let (Some(recording), Some(line)) = (recording, submitted)
+            && let Err(failure) = recording.history.append(recording.directory, &line)
+        {
+            shell.notice(Line::new(Register::Failed, failure.to_string()));
+        }
 
         match action {
             Action::Idle => {}
@@ -2837,7 +2919,13 @@ pub async fn ask_for_a_secret<S: Surface + Send>(
             return Ok(Asked::Ended);
         };
         now += Duration::from_millis(1);
-        shell.struck(struck, now, &NoEntries, &NoVocabulary);
+        // A standing secret question takes every key before the pane's own
+        // table is consulted, so this region is never read; it is passed
+        // because the signature takes one.
+        let region = surface
+            .area()
+            .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
+        shell.struck(struck, region, now, &NoEntries, &NoVocabulary);
         surface.draw(shell)?;
 
         match shell.secret_answer() {
@@ -3120,5 +3208,10 @@ impl Surface for Crossterm {
         self.terminal
             .draw(|frame| shell.render(frame, frame.area(), palette))?;
         Ok(())
+    }
+
+    fn area(&self) -> std::io::Result<Rect> {
+        let size = self.terminal.size()?;
+        Ok(Rect::new(0, 0, size.width, size.height))
     }
 }

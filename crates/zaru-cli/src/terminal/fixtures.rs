@@ -121,6 +121,11 @@ impl Surface for Recording {
         );
         Ok(())
     }
+
+    fn area(&self) -> std::io::Result<ratatui::layout::Rect> {
+        let size = self.terminal.size()?;
+        Ok(ratatui::layout::Rect::new(0, 0, size.width, size.height))
+    }
 }
 
 /// A beat that returns at once and counts, so no check waits on a clock.

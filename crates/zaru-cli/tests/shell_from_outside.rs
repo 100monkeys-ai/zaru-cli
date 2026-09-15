@@ -193,6 +193,11 @@ impl Surface for Recorded {
         );
         Ok(())
     }
+
+    fn area(&self) -> std::io::Result<ratatui::layout::Rect> {
+        let size = self.terminal.size()?;
+        Ok(ratatui::layout::Rect::new(0, 0, size.width, size.height))
+    }
 }
 
 fn press(key: Key) -> Input {
@@ -261,6 +266,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
             &trie,
             &Vocabulary,
             &mut Turnable::Cannot(Vec::new()),
+            None,
         ))
         .expect("the pump");
     assert_eq!(
@@ -512,6 +518,7 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
                 &trie,
                 &Vocabulary,
                 &mut Turnable::Cannot(Vec::new()),
+                None,
             ))
             .expect("the pump");
 
@@ -1754,6 +1761,7 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
             &trie,
             &Vocabulary,
             &mut Turnable::Cannot(Vec::new()),
+            None,
         ))
         .expect("the pump");
 
@@ -2325,6 +2333,7 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
             &trie,
             &Vocabulary,
             &mut Turnable::Cannot(Vec::new()),
+            None,
         ))
         .expect("the pump");
 
@@ -2355,4 +2364,96 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
         !said.iter().any(|line| line.starts_with("no tokens.")),
         "`/notes tokens add …` ran the listing instead of refusing: {said:#?}"
     );
+}
+
+/// A masked answer never reaches the history file, and the reason is that it
+/// never reaches the composer.
+///
+/// **The security corpus case for ADR-0010's amendment of 2026-09-15.** The
+/// two calls below are exactly the two the pump makes — `Shell::key` for each
+/// keystroke and `History::append` for whatever `take_submitted` yields — so
+/// this asserts the path rather than a re-statement of it, and it reads the
+/// file off the filesystem with `std::fs`.
+///
+/// **The accepting sibling is in the same check**: an ordinary line submitted
+/// after the masked one *is* in the file. Without it an implementation that
+/// wrote nothing at all would pass the absence.
+///
+/// The mutant: routing the secret question's keys through the composer, which
+/// puts the nonce in the prompt, then in `take_submitted`, then in the file.
+#[test]
+fn corpus_a_masked_answer_is_absent_from_the_history_file() {
+    const TYPED_SECRET: &str = "nn_mcp_planted_9f2c1e7a4b";
+    let root = std::env::temp_dir().join(format!(
+        "pn-history-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after the epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("the scratch root");
+    let here = root.join("checkout");
+    let history = zaru_cli::session::History::under(&root);
+
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    let pane = Shell::regions(ratatui::layout::Rect::new(0, 0, 100, 30))[1];
+    shell.ask_secret(zaru_tui::shell::SecretRequest::new(
+        "paste the token",
+        "Enter stores it",
+    ));
+    for key in typed(TYPED_SECRET) {
+        let _ = shell.key(
+            key,
+            pane,
+            core::time::Duration::from_millis(1),
+            &NotesTrie::nothing_cached("docs"),
+            &Vocabulary,
+        );
+        if let Some(line) = shell.take_submitted() {
+            history.append(&here, &line).expect("append");
+        }
+    }
+    assert!(
+        shell.take_secret().is_some(),
+        "the question took the bytes, which is what makes the absence meaningful"
+    );
+
+    // The accepting sibling, through the same two calls.
+    for key in typed("an ordinary task") {
+        let _ = shell.key(
+            key,
+            pane,
+            core::time::Duration::from_millis(1),
+            &NotesTrie::nothing_cached("docs"),
+            &Vocabulary,
+        );
+        if let Some(line) = shell.take_submitted() {
+            history.append(&here, &line).expect("append");
+        }
+    }
+
+    let mut read = 0_usize;
+    let mut carrying: Vec<String> = Vec::new();
+    let mut accepting = false;
+    for entry in std::fs::read_dir(&root).expect("the scratch root is readable") {
+        let path = entry.expect("an entry").path();
+        if path.is_file() {
+            read += 1;
+            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            if raw.contains(TYPED_SECRET) {
+                carrying.push(path.display().to_string());
+            }
+            accepting |= raw.contains("an ordinary task");
+        }
+    }
+    assert!(read > 0, "this walk read no file, so it asserted nothing");
+    assert!(
+        carrying.is_empty(),
+        "a masked answer reached the history: {carrying:?}"
+    );
+    assert!(
+        accepting,
+        "the accepting sibling is missing, so the absence above proves nothing"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

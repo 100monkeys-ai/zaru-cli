@@ -14,6 +14,15 @@ use tui_textarea::{Input, Key};
 
 const WIDTH: u16 = 60;
 const HEIGHT: u16 = 16;
+
+/// The pane's own region at this check module's size, as the pump computes it.
+///
+/// Taken from `Shell::regions` rather than written out, so a check cannot
+/// disagree with the renderer about where the pane is -- which is what that
+/// function is public for.
+fn pane() -> ratatui::layout::Rect {
+    Shell::regions(ratatui::layout::Rect::new(0, 0, WIDTH, HEIGHT))[1]
+}
 const NOW: Duration = Duration::from_millis(10);
 
 /// The answers line a check hands the shell.
@@ -72,6 +81,7 @@ fn key(shell: &mut Shell, key: Key) -> Action {
             alt: false,
             shift: false,
         },
+        pane(),
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
@@ -1037,6 +1047,7 @@ fn both_ways_of_leaving_exit_zero() {
             alt: false,
             shift: false,
         },
+        pane(),
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
@@ -1122,7 +1133,7 @@ fn the_leave_rule_has_one_spelling_and_the_shell_uses_it() {
                     );
 
                     let mut shell = shell();
-                    let acted = shell.key(input, NOW, &TrieOf::new(0), &StagedVocabulary);
+                    let acted = shell.key(input, pane(), NOW, &TrieOf::new(0), &StagedVocabulary);
                     let acted_leave = match acted {
                         Action::Leave(leaving) => Some(leaving),
                         Action::Idle | Action::Run(_) | Action::Task(_) => None,
@@ -1167,6 +1178,7 @@ fn an_interrupt_leaves_from_the_middle_of_a_line() {
             alt: false,
             shift: false,
         },
+        pane(),
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
@@ -3326,7 +3338,7 @@ fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
     ] {
         let mut shell = asking_for_a_secret();
         type_the_secret(&mut shell);
-        let acted = shell.key(input, NOW, &TrieOf::new(0), &StagedVocabulary);
+        let acted = shell.key(input, pane(), NOW, &TrieOf::new(0), &StagedVocabulary);
         assert_eq!(
             acted,
             Action::Idle,
@@ -3358,6 +3370,7 @@ fn a_confirmation_still_ignores_ctrl_c() {
             alt: false,
             shift: false,
         },
+        pane(),
         NOW,
         &TrieOf::new(0),
         &StagedVocabulary,
@@ -3409,4 +3422,485 @@ fn a_second_question_replaces_the_first_and_two_never_stand() {
     ));
     assert!(shell.asking().is_none());
     assert!(shell.asking_secret().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// The pane's window, the held notice, and the history walk. `pane-navigation`,
+// 2026-09-15, under the coordinator ruling of 02:21:47Z. Every check here
+// drives `ratatui`'s `TestBackend` at 100 and at 40 columns and reads cells
+// out of the buffer.
+// ---------------------------------------------------------------------------
+
+/// The two widths every check in this stretch runs at, with a height each.
+///
+/// 100 × 30 and 40 × 24 are the sizes the release binary was measured at over
+/// a pseudo-terminal, so a frame asserted here and a frame captured there are
+/// about the same geometry.
+const SIZES: [(u16, u16); 2] = [(100, 30), (40, 24)];
+
+/// One keystroke, with no modifier.
+fn press(key: Key) -> Input {
+    Input {
+        key,
+        ctrl: false,
+        alt: false,
+        shift: false,
+    }
+}
+
+/// A shell holding `n` numbered transcript lines, longest-line-free so that
+/// no row wraps and a row index is a line index.
+fn shell_of(n: usize) -> Shell {
+    let mut shell = shell();
+    for at in 1..=n {
+        shell.notice(Line::new(Register::Plain, format!("line {at}")));
+    }
+    shell
+}
+
+/// The pane's own region at a size, as the pump computes it.
+fn region(width: u16, height: u16) -> ratatui::layout::Rect {
+    Shell::regions(ratatui::layout::Rect::new(0, 0, width, height))[1]
+}
+
+/// A pane at the tail follows: what arrives is what is on the screen.
+///
+/// **The mutant**: `visible`'s `Tail` arm painting `window(.., 0, ..)` — the
+/// slip of adding the window and forgetting to resolve the tail — which
+/// printed *"a following pane shows the newest row at 100x30"* with
+/// `Some("  line 22")` against `Some("  line 60")`.
+#[test]
+fn the_pane_follows_new_output_while_the_offset_is_at_the_tail() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        let before = pane_rows(&shell, width, height);
+        assert_eq!(
+            before.last().map(String::as_str),
+            Some("  line 60"),
+            "a following pane shows the newest row at {width}x{height}"
+        );
+        shell.notice(Line::new(Register::Plain, "line 61"));
+        let after = pane_rows(&shell, width, height);
+        assert_eq!(
+            after.last().map(String::as_str),
+            Some("  line 61"),
+            "a following pane must move with the output at {width}x{height}"
+        );
+    }
+}
+
+/// A held pane holds still, and the rows arriving go below it.
+///
+/// **The mutant**: storing the offset as rows from the tail rather than as a
+/// row index — the window slides down by however many rows arrived.
+#[test]
+fn a_held_pane_does_not_move_when_output_arrives_below_it() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        let pane = region(width, height);
+        shell.page_up(pane.height, pane.width);
+        let before = pane_rows(&shell, width, height);
+        for at in 61..=80 {
+            shell.notice(Line::new(Register::Plain, format!("line {at}")));
+        }
+        let after = pane_rows(&shell, width, height);
+        // Every row but the last, which is the notice: the rows hold still
+        // and the count is the one thing that moves, because twenty rows
+        // arrived below them.
+        assert_eq!(
+            before[..before.len() - 1],
+            after[..after.len() - 1],
+            "a held pane must not move when output arrives below it, at {width}x{height}"
+        );
+        assert_ne!(
+            before.last(),
+            after.last(),
+            "and the count below it must say that twenty rows arrived, at {width}"
+        );
+    }
+}
+
+/// A page back and a page forward, and the forward one lands on the tail.
+///
+/// **The mutant**: dropping the collapse to `Viewing::Tail` on the last page
+/// down — the pane looks like it is following and is not, which
+/// `the_pane_follows_new_output_while_the_offset_is_at_the_tail` then fails.
+#[test]
+fn page_up_and_page_down_move_by_one_page_and_land_back_at_the_tail() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        let pane = region(width, height);
+        let tail = pane_rows(&shell, width, height);
+
+        shell.page_up(pane.height, pane.width);
+        let back = pane_rows(&shell, width, height);
+        assert_ne!(tail, back, "a page up must move the window at {width}");
+        assert_eq!(
+            back.len(),
+            tail.len(),
+            "a page holds as many rows as the pane does at {width}"
+        );
+
+        shell.page_down(pane.height, pane.width);
+        assert_eq!(
+            shell.viewing(),
+            crate::shell::Viewing::Tail,
+            "a page down from one page back must follow again at {width}"
+        );
+        assert_eq!(
+            pane_rows(&shell, width, height),
+            tail,
+            "and paint what the tail paints at {width}"
+        );
+    }
+}
+
+/// `Home` shows the first row of the transcript and `End` the last.
+///
+/// **The mutant**: `to_top` setting `At(1)` — the first row is missing.
+#[test]
+fn home_shows_the_first_row_of_the_transcript_and_end_shows_the_last() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        shell.to_top();
+        let top = pane_rows(&shell, width, height);
+        assert_eq!(
+            top.first().map(String::as_str),
+            Some("  line 1"),
+            "Home must show the first row at {width}x{height}"
+        );
+        shell.to_tail();
+        let end = pane_rows(&shell, width, height);
+        assert_eq!(
+            end.last().map(String::as_str),
+            Some("  line 60"),
+            "End must show the last row at {width}x{height}"
+        );
+    }
+}
+
+/// The notice counts the rows below the window, and appears only when held.
+///
+/// **The mutant**: counting `rows - first` instead of `rows - (first +
+/// height)` — the count is one pane too high.
+#[test]
+fn the_notice_counts_the_rows_below_and_appears_only_while_the_pane_is_held() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        assert!(
+            !pane_rows(&shell, width, height)
+                .iter()
+                .any(|row| row.contains("more below")),
+            "a following pane says nothing about rows below it at {width}"
+        );
+
+        shell.to_top();
+        let rows = pane_rows(&shell, width, height);
+        // One row of the pane's region is the notice, so the window holds one
+        // fewer than the region and everything after it is below.
+        let shown = rows.len() - 1;
+        let expected = crate::shell::below(60 - shown);
+        assert_eq!(
+            rows.last().map(|row| row.trim_start()),
+            Some(expected.as_str()),
+            "the held pane must count the rows below it at {width}x{height}"
+        );
+    }
+}
+
+/// ADR-0005 clause 5's fourth producer: the input row does not move because
+/// the pane is doing something.
+///
+/// **The mutant**: taking the notice row off the **head of the composer's
+/// area** instead of the foot of the pane's, which printed *"the input row
+/// moved when the pane was held at 100x30"* with the composed line on one
+/// side and a blank row on the other.
+#[test]
+fn the_input_row_is_byte_identical_whatever_the_pane_is_doing() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        typing(
+            shell.composer_mut(),
+            "a task being composed",
+            NOW,
+            &TrieOf::new(0),
+        );
+        let (following, at_tail) = painted(&shell, width, height);
+        let input = usize::from(height - COMPOSER_ROWS);
+
+        let pane = region(width, height);
+        shell.page_up(pane.height, pane.width);
+        let (held, held_caret) = painted(&shell, width, height);
+        assert_eq!(
+            following[input], held[input],
+            "the input row moved when the pane was held at {width}x{height}"
+        );
+        assert_eq!(at_tail, held_caret, "the caret moved with it at {width}");
+
+        shell.to_top();
+        let (topped, top_caret) = painted(&shell, width, height);
+        assert_eq!(
+            following[input], topped[input],
+            "the input row moved when the pane went to the top at {width}"
+        );
+        assert_eq!(at_tail, top_caret, "the caret moved with it at {width}");
+    }
+}
+
+/// `PageUp` is the pane's unconditionally; `Home` is the pane's only while the
+/// composer is empty.
+///
+/// **The mutant**: taking `Home` and `End` unconditionally — the second arm
+/// finds the window moved and the composer's caret keys gone.
+#[test]
+fn home_and_end_reach_the_pane_only_while_the_composer_is_empty() {
+    let pane = region(100, 30);
+    let mut empty = shell_of(60);
+    assert!(
+        empty.moved(
+            &press(Key::Home),
+            pane,
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary
+        ),
+        "Home on an empty composer is the pane's"
+    );
+    assert_eq!(empty.viewing(), crate::shell::Viewing::At(0));
+
+    let mut typed = shell_of(60);
+    typing(typed.composer_mut(), "/", NOW, &TrieOf::new(0));
+    assert!(
+        !typed.moved(
+            &press(Key::Home),
+            pane,
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary
+        ),
+        "Home on a composer holding text belongs to the text area"
+    );
+    assert_eq!(
+        typed.viewing(),
+        crate::shell::Viewing::Tail,
+        "and the pane did not move"
+    );
+    assert!(
+        typed.moved(
+            &press(Key::PageUp),
+            pane,
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary
+        ),
+        "PageUp is the pane's whatever the composer holds"
+    );
+}
+
+/// `Up` walks what was submitted, oldest last, and `Down` walks back out of it.
+///
+/// **The mutant**: `walk_back` starting at `lines.len()` — the first `Up`
+/// recalls nothing.
+#[test]
+fn up_walks_the_history_and_down_walks_back_out_of_it() {
+    let pane = region(100, 30);
+    let mut shell = shell();
+    shell.recall(vec!["first task".to_owned(), "second task".to_owned()]);
+
+    assert!(shell.moved(
+        &press(Key::Up),
+        pane,
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary
+    ));
+    assert_eq!(
+        shell.composer().text(),
+        "second task",
+        "Up recalls the newest"
+    );
+    assert!(shell.moved(
+        &press(Key::Up),
+        pane,
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary
+    ));
+    assert_eq!(
+        shell.composer().text(),
+        "first task",
+        "a second Up goes older"
+    );
+    assert!(shell.moved(
+        &press(Key::Up),
+        pane,
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary
+    ));
+    assert_eq!(
+        shell.composer().text(),
+        "first task",
+        "and the oldest is where the walk stops"
+    );
+
+    assert!(shell.moved(
+        &press(Key::Down),
+        pane,
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary
+    ));
+    assert_eq!(shell.composer().text(), "second task");
+    assert!(shell.moved(
+        &press(Key::Down),
+        pane,
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary
+    ));
+    assert_eq!(
+        shell.composer().text(),
+        "",
+        "past the newest is the empty prompt the walk started from"
+    );
+}
+
+/// A typed edit ends the walk, and the edit survives.
+///
+/// **The mutant**: comparing the prompt against the placed line by prefix —
+/// the edit is swallowed and the walk overwrites what was typed.
+#[test]
+fn the_walk_stops_at_an_edited_composer() {
+    let pane = region(100, 30);
+    let mut shell = shell();
+    shell.recall(vec!["first task".to_owned()]);
+    assert!(shell.moved(
+        &press(Key::Up),
+        pane,
+        NOW,
+        &TrieOf::new(0),
+        &StagedVocabulary
+    ));
+    typing(shell.composer_mut(), "!", NOW, &TrieOf::new(0));
+    assert_eq!(shell.composer().text(), "first task!");
+
+    assert!(
+        !shell.moved(
+            &press(Key::Up),
+            pane,
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary
+        ),
+        "a walk does not reach a composer somebody has typed into"
+    );
+    assert_eq!(
+        shell.composer().text(),
+        "first task!",
+        "and what was typed is still there"
+    );
+}
+
+/// A submitted line is what the host is handed, once, and a slash command is
+/// one of them.
+///
+/// **The mutant**: recording in `Shell::key`'s `Enter` arm rather than in
+/// `submit` — the queued drain records nothing and the command line is absent.
+#[test]
+fn every_submitted_line_is_handed_over_once_and_a_command_is_one_of_them() {
+    let mut shell = shell();
+    let _ = shell.submit("a task", &StagedVocabulary);
+    assert_eq!(shell.take_submitted().as_deref(), Some("a task"));
+    assert_eq!(shell.take_submitted(), None, "taking it is what empties it");
+
+    let _ = shell.submit("/help", &StagedVocabulary);
+    assert_eq!(
+        shell.take_submitted().as_deref(),
+        Some("/help"),
+        "a slash command is history too, because it was typed"
+    );
+
+    let _ = shell.submit("   ", &StagedVocabulary);
+    assert_eq!(
+        shell.take_submitted(),
+        None,
+        "a blank line is not a submission"
+    );
+
+    assert_eq!(
+        shell.recalled(),
+        ["a task", "/help"],
+        "and the walk sees this session's own lines"
+    );
+}
+
+/// A secret typed at a masked question reaches neither the composer nor the
+/// submission the host records.
+///
+/// **The mutant**: routing the secret arm through the composer — the nonce
+/// lands in the prompt and then in what the host is handed.
+#[test]
+fn a_masked_answer_never_becomes_a_submitted_line() {
+    let pane = region(100, 30);
+    let mut shell = shell();
+    shell.ask_secret(crate::shell::SecretRequest::new(
+        "paste the key",
+        "Enter stores it",
+    ));
+    for character in SECRET_NONCE.chars() {
+        let _ = shell.key(
+            Input {
+                key: Key::Char(character),
+                ctrl: false,
+                alt: false,
+                shift: false,
+            },
+            pane,
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary,
+        );
+    }
+    assert_eq!(shell.composer().text(), "", "the composer saw none of it");
+    let _ = key(&mut shell, Key::Enter);
+    assert_eq!(
+        shell.take_submitted(),
+        None,
+        "and a masked answer is never a submitted line"
+    );
+    assert_eq!(shell.recalled(), [] as [String; 0], "nor a recallable one");
+    // The accepting sibling: an ordinary line after it still is one.
+    let _ = shell.submit("an ordinary task", &StagedVocabulary);
+    assert_eq!(shell.take_submitted().as_deref(), Some("an ordinary task"));
+}
+
+/// A held pane is not split for a streaming answer, and a following one is.
+///
+/// **The mutant**: dropping the held guard in `pane_and_stream` — the window
+/// a person froze is cut in two and its rows move.
+#[test]
+fn a_held_pane_is_not_split_by_a_streaming_answer() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        let pane = region(width, height);
+        shell.page_up(pane.height, pane.width);
+        let held = pane_rows(&shell, width, height);
+        for _ in 0..40 {
+            shell.stream_delta("an answer arriving\n");
+        }
+        let arriving = pane_rows(&shell, width, height);
+        assert_eq!(
+            arriving[..arriving.len() - 1],
+            held[..held.len() - 1],
+            "a held pane must not be split or moved by an answer at {width}x{height}"
+        );
+        shell.to_tail();
+        assert!(
+            pane_rows(&shell, width, height)
+                .iter()
+                .any(|row| row.contains("an answer arriving")),
+            "and following again shows the answer at {width}x{height}"
+        );
+    }
 }

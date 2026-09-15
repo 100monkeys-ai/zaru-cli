@@ -51,7 +51,7 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
-use crate::shell::{COMPOSER_ROWS, Line, Palette, Row, Shell, transcript_floor};
+use crate::shell::{COMPOSER_ROWS, Line, Palette, Row, Shell, Viewing, below, transcript_floor};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -82,6 +82,20 @@ fn tail(lines: &[Line], height: u16, width: u16) -> Vec<Row> {
     let rows: Vec<Row> = lines.iter().flat_map(|line| line.rows(width)).collect();
     let start = rows.len().saturating_sub(usize::from(height));
     rows[start..].to_vec()
+}
+
+/// The `height` rows `lines` paint as from row `first`, in a pane `width`
+/// columns wide.
+///
+/// The held counterpart of [`tail`], and deliberately the same shape: one
+/// flattening, one slice. `first` is clamped by the caller, which is the one
+/// place that knows how many rows there are.
+fn window(lines: &[Line], first: usize, height: u16, width: u16) -> Vec<Row> {
+    let rows: Vec<Row> = lines.iter().flat_map(|line| line.rows(width)).collect();
+    let end = first.saturating_add(usize::from(height)).min(rows.len());
+    rows.get(first..end)
+        .map(<[Row]>::to_vec)
+        .unwrap_or_default()
 }
 
 /// What one character typed at a [`SecretRequest`] paints as.
@@ -198,9 +212,17 @@ impl Shell {
     /// of the transcript fits genuinely depends on how wide the terminal is.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+    /// **Since 2026-09-15 the tail is where the window sits by default and
+    /// not the only place it can sit.** [`Viewing::Tail`] takes the same
+    /// `tail` call this made before a window existed — the branch rather than
+    /// an equivalent of it, so a session where nobody presses a key paints
+    /// what it painted — and [`Viewing::At`] takes the rows from there.
     #[must_use]
     pub fn visible(&self, height: u16, width: u16) -> Vec<Row> {
-        tail(&self.pane_lines(), height, width)
+        match self.viewing() {
+            Viewing::Tail => tail(&self.pane_lines(), height, width),
+            Viewing::At(_) => window(&self.pane_lines(), self.first(height, width), height, width),
+        }
     }
 
     /// What the composer's area shows: the prompt, or a standing question.
@@ -321,7 +343,53 @@ impl Shell {
     /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    /// The region the pane's rows get, and the row the held notice gets.
+    ///
+    /// # Why the row comes out of the pane and never out of the composer
+    ///
+    /// [ADR-0005] D2's input row is a function of the terminal's size alone,
+    /// and the shell keeps that true by giving the composer a **fixed** area.
+    /// A notice that borrowed a strip row would move the input row the moment
+    /// a person scrolled, which is that record's clause-5 mutant arriving
+    /// through a different door. `pane_and_queue` settled the same question
+    /// for a queued task on 2026-09-13 and this is its shape, not a second
+    /// one.
+    ///
+    /// **It fires only while the pane is held and something is below it.** A
+    /// following pane returns `(pane, None)` — the branch that existed before
+    /// this did — so nothing about an ordinary frame changes, and a window
+    /// held at the bottom of a short transcript says nothing, because there
+    /// is nothing to say.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    fn pane_and_notice(&self, pane: Rect) -> (Rect, Option<Rect>) {
+        if self.viewing() == Viewing::Tail || pane.height == 0 {
+            return (pane, None);
+        }
+        // Counted against the rows the pane will actually get, which is one
+        // fewer than it has: a count taken against the whole region and
+        // painted beside a shorter one would be off by exactly the row it is
+        // painted on.
+        let rows = pane.height.saturating_sub(1);
+        if self.rows_below(rows, pane.width) == 0 {
+            return (pane, None);
+        }
+        let [above, notice] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(pane);
+        (above, Some(notice))
+    }
+
     fn pane_and_stream(&self, pane: Rect) -> (Rect, Option<Rect>) {
+        // **A held pane is never split.** The split below exists so that the
+        // newest narration and the newest text of an answer are both on the
+        // screen while the pane is *following*, which is the state ADR-0028
+        // D5's "as the work proceeds" is about and the state it was measured
+        // in. A person who held the window asked for these rows and not for
+        // the newest ones, and moving rows around inside a frozen window is
+        // the reflow that whole decision is written against.
+        if self.viewing() != Viewing::Tail {
+            return (pane, None);
+        }
         let Some(streamed) = self.streamed_line() else {
             return (pane, None);
         };
@@ -357,6 +425,7 @@ impl Shell {
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect, palette: Palette) {
         let [status, pane, composer] = Self::regions(area);
         let (pane, queued) = self.pane_and_queue(pane);
+        let (pane, held) = self.pane_and_notice(pane);
         let (pane, arriving) = self.pane_and_stream(pane);
 
         frame.render_widget(
@@ -406,6 +475,23 @@ impl Shell {
             if !streaming.is_empty() {
                 frame.render_widget(Paragraph::new(streaming), area);
             }
+        }
+
+        // The held pane's own row, at the foot of the pane's region and above
+        // whatever `pane_and_queue` pinned. Painted through `Line::rows` like
+        // the queued row, so the register, the glyph and the width
+        // measurement are the pane's and the only thing authored here is the
+        // sentence `below` carries.
+        if let Some(area) = held {
+            let row = crate::shell::port::Line::new(
+                crate::shell::port::Register::Plain,
+                below(self.rows_below(pane.height, pane.width)),
+            )
+            .rows(area.width)
+            .first()
+            .map(crate::shell::port::Row::joined)
+            .unwrap_or_default();
+            frame.render_widget(Paragraph::new(TextLine::from(row)), area);
         }
 
         // The queued task, on its own row immediately above the composer. It
