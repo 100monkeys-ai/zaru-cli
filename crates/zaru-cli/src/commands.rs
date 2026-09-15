@@ -70,6 +70,8 @@ pub mod load;
 pub mod placeholder;
 
 #[cfg(test)]
+pub(crate) mod fixtures;
+#[cfg(test)]
 mod tests;
 
 pub use admission::{Admission, AdmissionError, Admissions, ADMISSIONS_FILE};
