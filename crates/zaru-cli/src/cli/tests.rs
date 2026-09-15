@@ -1845,7 +1845,7 @@ fn adr_0007_d6s_measured_scope_reaches_the_entry_and_both_things_that_render_it(
     let secret = crate::credentials::Secret::notes("nn_mcp_not-a-real-token")
         .expect("an nn_mcp_ value is a Nuclear Notes secret");
     let alias = crate::credentials::Alias::new("work").expect("a usable alias");
-    let scope = crate::credentials::ToolScope::new(vec![
+    let scope = crate::credentials::ToolScope::of_names(vec![
         "pages.read".to_owned(),
         "pages.list".to_owned(),
         "search.global".to_owned(),
@@ -1875,7 +1875,7 @@ fn adr_0007_d6s_measured_scope_reaches_the_entry_and_both_things_that_render_it(
 /// The sibling: the word `apex` changes the reach and nothing else.
 #[test]
 fn adr_0007_d8s_reach_follows_the_word_and_the_scope_is_carried_either_way() {
-    let scope = crate::credentials::ToolScope::new(vec!["pages.read".to_owned()]);
+    let scope = crate::credentials::ToolScope::of_names(vec!["pages.read".to_owned()]);
     let locked = crate::cli::run::notes_entry(
         &crate::credentials::Alias::new("locked").expect("a usable alias"),
         "cortex.page",

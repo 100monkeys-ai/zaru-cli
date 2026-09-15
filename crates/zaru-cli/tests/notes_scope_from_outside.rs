@@ -402,7 +402,9 @@ impl Wired {
             .record(&self.alias)
             .expect("the token is stored")
             .tools()
-            .to_vec()
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect()
     }
 
     fn projected_names(&self) -> Vec<String> {
@@ -412,6 +414,9 @@ impl Wired {
             .find(|namespace| namespace.name.ends_with(self.alias.as_str()))
             .expect("the token projects a namespace")
             .tools
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect()
     }
 }
 
@@ -439,7 +444,7 @@ async fn wire() -> Wired {
                 Reach::InstanceLocked(TokenInstance::new("100monkeys-ai.cortex.page")),
             )
             .expect("an nn_ value builds a Nuclear Notes entry")
-            .with_tools(ToolScope::new(STALE_SCOPE))
+            .with_tools(ToolScope::of_names(STALE_SCOPE))
             .with_workspace("zaru"),
             &keys,
             None,

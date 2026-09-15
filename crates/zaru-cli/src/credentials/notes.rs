@@ -62,7 +62,7 @@
 //! [`Secret::expose_for_dispatch`]: super::Secret::expose_for_dispatch
 
 use crate::credentials::alias::Alias;
-use crate::credentials::entry::{ToolScope, Ttl};
+use crate::credentials::entry::{CachedTool, ToolScope, Ttl};
 use crate::credentials::secret::Secret;
 use crate::credentials::store::{CredentialStore, StoreError};
 use core::fmt;
@@ -283,11 +283,14 @@ impl CredentialStore {
         clock: &dyn Clock,
     ) -> Result<Cached, ScopeError> {
         let at = clock.now();
-        let names = session.tools().await.map_err(|source| ScopeError::Read {
-            alias: alias.clone(),
-            source,
-        })?;
-        let scope = ToolScope::new(names);
+        let declared = session
+            .tool_declarations()
+            .await
+            .map_err(|source| ScopeError::Read {
+                alias: alias.clone(),
+                source,
+            })?;
+        let scope = ToolScope::new(declared.into_iter().map(cached));
         self.replace_tools(alias, &scope)
             .map_err(ScopeError::Store)?;
         Ok(Cached { scope, at })
@@ -390,11 +393,28 @@ pub async fn tool_scope_at(host: &str, secret: &Secret) -> Result<ToolScope, Rea
     )
     .await
     .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
-    let names = session
-        .tools()
+    let declared = session
+        .tool_declarations()
         .await
         .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
-    Ok(ToolScope::new(names))
+    Ok(ToolScope::new(declared.into_iter().map(cached)))
+}
+
+/// One `tools/list` declaration as [ADR-0007] D6's cache keeps it.
+///
+/// The one place this crate turns `zaru-notes`' reading into this crate's, so
+/// the two halves of D6's cross-crate contract meet in a named function rather
+/// than at three call sites — the shape
+/// [`bearer_for_dispatch`] already has for
+/// the other direction.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+fn cached(declared: zaru_notes::session::ToolDeclaration) -> CachedTool {
+    CachedTool::declared(
+        declared.name,
+        declared.description,
+        declared.input_schema,
+    )
 }
 
 /// Which shape of [`ReachFailure`] a client error is, and it turns on one

@@ -855,7 +855,7 @@ fn held_from_a_store(scratch: &Scratch, value: &str) -> HeldSecrets {
         Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
     )
     .expect("an nn_ value builds a Nuclear Notes entry")
-    .with_tools(ToolScope::new(["pages.read"]));
+    .with_tools(ToolScope::of_names(["pages.read"]));
     store.add(entry, &keys, None).expect("the entry is stored");
     let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");
     assert_eq!(held.len(), 1, "the store held nothing to redact");

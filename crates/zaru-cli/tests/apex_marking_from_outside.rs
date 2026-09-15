@@ -111,7 +111,7 @@ fn store_with(root: &PathBuf, reach: Reach, role: bool) -> CredentialStore {
                 reach,
             )
             .expect("an nn_ value builds a Nuclear Notes entry")
-            .with_tools(ToolScope::new(COMPOSER_SCOPE.iter().copied())),
+            .with_tools(ToolScope::of_names(COMPOSER_SCOPE.iter().copied())),
             &keys,
             Some(&AlwaysConfirms),
         )
@@ -329,7 +329,7 @@ fn corpus_a_description_that_would_forge_a_tier_claim_cannot_reach_the_row() {
                     Reach::Apex,
                 )
                 .expect("an nn_ value builds a Nuclear Notes entry")
-                .with_tools(ToolScope::new(COMPOSER_SCOPE.iter().copied())),
+                .with_tools(ToolScope::of_names(COMPOSER_SCOPE.iter().copied())),
                 &keys,
                 Some(&AlwaysConfirms),
             )

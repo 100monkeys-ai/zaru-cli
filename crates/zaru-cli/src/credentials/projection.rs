@@ -26,7 +26,7 @@
 //! The absence is the mechanism; a check searches for one and expects to find
 //! nothing.
 
-use crate::credentials::entry::{Reach, Role};
+use crate::credentials::entry::{CachedTool, Reach, Role};
 use crate::credentials::store::{CredentialStore, Record, StoredReach};
 
 /// The prefix ADR-0007 D5 gives every projected server.
@@ -43,8 +43,17 @@ pub struct Namespace {
     pub name: String,
     /// What the token is for, plus D8's apex marking when it applies.
     pub description: String,
-    /// The tool names this token grants.
-    pub tools: Vec<String>,
+    /// The tools this token grants, as much of each as D6's cache holds.
+    ///
+    /// **Widened from `Vec<String>` on 2026-09-15 and the field count is
+    /// unchanged, which is what keeps ADR-0007 clause 5 satisfied.** That
+    /// clause's mechanism is the exhaustive destructure in
+    /// `what_the_agent_sees_is_three_fields_and_a_fourth_would_not_compile`:
+    /// it names three fields, so a *fourth* stops it compiling. Changing what
+    /// the third field holds does not add one — a tool list carrying each
+    /// tool's own declaration is still a tool list, and it is still the only
+    /// three things D3 says the agent sees.
+    pub tools: Vec<CachedTool>,
 }
 
 impl CredentialStore {

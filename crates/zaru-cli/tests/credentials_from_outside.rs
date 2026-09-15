@@ -102,7 +102,7 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
                 Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
             )
             .expect("an nn_ value builds a Nuclear Notes entry")
-            .with_tools(ToolScope::new(["pages.read", "search.global"]))
+            .with_tools(ToolScope::of_names(["pages.read", "search.global"]))
             .with_workspace("zaru"),
             &keys,
             None,
@@ -121,7 +121,7 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
                 Reach::Apex,
             )
             .expect("an nn_ value builds a Nuclear Notes entry")
-            .with_tools(ToolScope::new(["pages.read", "pages.apply_patch"])),
+            .with_tools(ToolScope::of_names(["pages.read", "pages.apply_patch"])),
             &keys,
             Some(&AlwaysConfirms),
         )

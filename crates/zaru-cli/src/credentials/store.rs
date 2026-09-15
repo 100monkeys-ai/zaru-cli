@@ -50,7 +50,7 @@ compile_error!(
 );
 
 use crate::credentials::alias::Alias;
-use crate::credentials::entry::{Description, Entry, Held, Reach, Role, ToolScope};
+use crate::credentials::entry::{CachedTool, Description, Entry, Held, Reach, Role, ToolScope};
 use crate::credentials::family::Family;
 use crate::credentials::port::Confirm;
 use crate::credentials::sealing::blob::Sealed;
@@ -273,8 +273,12 @@ pub enum StoredHeld {
         /// D2's `role`. `None` is D2's "unset". Only a Notes token can carry
         /// one: ADR-0007 D4's composer role is a Nuclear Notes pointer's.
         role: Option<String>,
-        /// D6's cached tool names.
-        tools: Vec<String>,
+        /// D6's cached tools, as much of each as the cache holds.
+        ///
+        /// Names alone until 2026-09-15, whole declarations since — see
+        /// [`CachedTool`](super::entry::CachedTool), which is also why a tool
+        /// here can still be a bare string.
+        tools: Vec<CachedTool>,
         /// D2's `workspace`, "informational only".
         workspace: Option<String>,
     },
@@ -340,7 +344,7 @@ impl Record {
 
     /// D6's cached tool names, which only a Notes token has.
     #[must_use]
-    pub fn tools(&self) -> &[String] {
+    pub fn tools(&self) -> &[CachedTool] {
         match &self.held {
             StoredHeld::Notes { tools, .. } => tools,
             StoredHeld::Provider { .. } => &[],
@@ -645,7 +649,7 @@ impl CredentialStore {
                     Reach::Apex => StoredReach::Apex,
                 },
                 role: None,
-                tools: tools.names().to_vec(),
+                tools: tools.tools().to_vec(),
                 workspace: workspace.clone(),
             },
             Held::Provider { kind } => StoredHeld::Provider {
@@ -1010,7 +1014,7 @@ impl CredentialStore {
             .expect("the alias was found above")
             .held
         {
-            StoredHeld::Notes { tools, .. } => *tools = scope.names().to_vec(),
+            StoredHeld::Notes { tools, .. } => *tools = scope.tools().to_vec(),
             StoredHeld::Provider { .. } => {
                 return Err(StoreError::UnknownAlias {
                     alias: alias.clone(),

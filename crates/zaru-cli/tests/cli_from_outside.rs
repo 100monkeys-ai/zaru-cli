@@ -967,7 +967,7 @@ fn adr_0007_d7s_listing_shows_the_composer_role_and_marks_an_apex_token() {
                 Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
             )
             .expect("an nn_ value builds a Nuclear Notes entry")
-            .with_tools(ToolScope::new(["pages.read", "search.global"]))
+            .with_tools(ToolScope::of_names(["pages.read", "search.global"]))
             .with_workspace("zaru"),
             &keys,
             None,
@@ -982,7 +982,7 @@ fn adr_0007_d7s_listing_shows_the_composer_role_and_marks_an_apex_token() {
                 Reach::Apex,
             )
             .expect("an nn_ value builds a Nuclear Notes entry")
-            .with_tools(ToolScope::new(["pages.read"])),
+            .with_tools(ToolScope::of_names(["pages.read"])),
             &keys,
             Some(&AlwaysConfirms),
         )

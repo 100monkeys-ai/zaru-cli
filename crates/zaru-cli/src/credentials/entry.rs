@@ -234,32 +234,68 @@ impl Ttl {
 /// [`CredentialStore::refresh_tool_scope`]: super::store::CredentialStore::refresh_tool_scope
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ToolScope {
-    names: Vec<String>,
+    tools: Vec<CachedTool>,
 }
 
 impl ToolScope {
     /// Take a cached scope.
     #[must_use]
-    pub fn new<I, S>(names: I) -> Self
+    pub fn new<I>(tools: I) -> Self
+    where
+        I: IntoIterator<Item = CachedTool>,
+    {
+        Self {
+            tools: tools.into_iter().collect(),
+        }
+    }
+
+    /// Take a cached scope from names alone.
+    ///
+    /// **What this produces is a scope that cannot be projected**, because
+    /// ADR-0007 D5 declares a name, a description and a schema and this has
+    /// only the first. It is kept for the one caller that has nothing else to
+    /// give — a check staging a scope to compare against ADR-0006 D4's set,
+    /// where the comparison is over names and a schema would be noise.
+    #[must_use]
+    pub fn of_names<I, S>(names: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
         Self {
-            names: names.into_iter().map(Into::into).collect(),
+            tools: names.into_iter().map(CachedTool::name_only).collect(),
         }
+    }
+
+    /// The cached tools, in the order the server reported them.
+    #[must_use]
+    pub fn tools(&self) -> &[CachedTool] {
+        &self.tools
     }
 
     /// The tool names, in the order the server reported them.
     #[must_use]
-    pub fn names(&self) -> &[String] {
-        &self.names
+    pub fn names(&self) -> Vec<&str> {
+        self.tools.iter().map(CachedTool::name).collect()
+    }
+
+    /// Whether every cached tool carries the schema a declaration needs.
+    ///
+    /// **The reading ADR-0007 D6's refresh rule is applied to by
+    /// [`crate::credentials::projection`]**: a scope cached before the
+    /// descriptor widened carries names and no schemas, and such a scope is
+    /// refreshed once — one `tools/list`, under D6's own rule — at the first
+    /// session that grants any of its tools. An empty scope is declarable,
+    /// vacuously: there is nothing in it missing a schema.
+    #[must_use]
+    pub fn is_declarable(&self) -> bool {
+        self.tools.iter().all(|tool| tool.input_schema().is_some())
     }
 
     /// How many tools this token grants. What ADR-0007 D7's listing shows.
     #[must_use]
     pub fn count(&self) -> usize {
-        self.names.len()
+        self.tools.len()
     }
 
     /// The first tool here that ADR-0006 D4 does not put in the composer's
@@ -273,10 +309,98 @@ impl ToolScope {
     /// there.
     #[must_use]
     pub fn outside_composer_scope(&self) -> Option<&str> {
-        self.names
+        self.tools
             .iter()
-            .find(|name| !COMPOSER_SCOPE.contains(&name.as_str()))
-            .map(String::as_str)
+            .map(CachedTool::name)
+            .find(|name| !COMPOSER_SCOPE.contains(name))
+    }
+}
+
+/// One tool in a cached scope, as much of it as the cache holds.
+///
+/// # Two shapes, and the second is the one that can be declared
+///
+/// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+/// D6 cached tool **names** until 2026-09-15, because the only consumers were
+/// D7's tool count and ADR-0006 D4's composer-scope comparison, and a name is
+/// enough for both. D5's projection is not a third consumer of the same
+/// reading: a model is offered a name, a description and a parameter schema,
+/// and a declaration missing the schema is not JSON.
+///
+/// So the cache now holds the whole declaration — and a store written before
+/// that widening holds names. **[`CachedTool::NameOnly`] is that store's
+/// entries and nothing else**, and it is the reason a scope can be
+/// un-declarable: see [`ToolScope::is_declarable`], which is what decides that
+/// such an entry gets D6's one refresh at the first session that grants a tool
+/// from it. It is not a compatibility path kept open — it is a state the cache
+/// can be in, which the refresh rule already owns the remedy for, and it
+/// disappears from a store the first time that refresh runs.
+///
+/// Serialised untagged, so the file says which entries have been refreshed: a
+/// name-only tool is a JSON string and a declared one a JSON object.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum CachedTool {
+    /// A name with no declaration behind it. See the type documentation.
+    NameOnly(String),
+    /// A whole `tools/list` declaration.
+    Declared {
+        /// What the tool is called, as the server spells it.
+        name: String,
+        /// What it is for, where the server said.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// The JSON Schema its arguments take, as the server's own bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_schema: Option<String>,
+    },
+}
+
+impl CachedTool {
+    /// A name with nothing behind it.
+    #[must_use]
+    pub fn name_only(name: impl Into<String>) -> Self {
+        Self::NameOnly(name.into())
+    }
+
+    /// A whole declaration.
+    #[must_use]
+    pub fn declared(
+        name: impl Into<String>,
+        description: Option<String>,
+        input_schema: impl Into<String>,
+    ) -> Self {
+        Self::Declared {
+            name: name.into(),
+            description,
+            input_schema: Some(input_schema.into()),
+        }
+    }
+
+    /// What the tool is called.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::NameOnly(name) | Self::Declared { name, .. } => name,
+        }
+    }
+
+    /// What it is for, where the cache knows.
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            Self::NameOnly(_) => None,
+            Self::Declared { description, .. } => description.as_deref(),
+        }
+    }
+
+    /// The schema its arguments take, where the cache knows.
+    #[must_use]
+    pub fn input_schema(&self) -> Option<&str> {
+        match self {
+            Self::NameOnly(_) => None,
+            Self::Declared { input_schema, .. } => input_schema.as_deref(),
+        }
     }
 }
 

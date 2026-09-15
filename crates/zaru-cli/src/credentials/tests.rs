@@ -282,7 +282,7 @@ fn a_description_that_is_not_one_renderable_line_is_refused() {
 // The store on disk.
 // ---------------------------------------------------------------------------
 
-use crate::credentials::entry::{Entry, Instance, Reach, ToolScope};
+use crate::credentials::entry::{CachedTool, Entry, Instance, Reach, ToolScope};
 use crate::credentials::family::Family;
 use crate::credentials::fixtures::{ScratchRoot, StagedConfirmer};
 use crate::credentials::sealing::blob::Sealed;
@@ -302,7 +302,7 @@ fn staged_entry(label: &str) -> (Entry, String) {
         Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
     )
     .expect("an nn_ value builds a Nuclear Notes entry")
-    .with_tools(ToolScope::new(["pages.read", "search.global"]))
+    .with_tools(ToolScope::of_names(["pages.read", "search.global"]))
     .with_workspace("zaru");
     (entry, secret_value)
 }
@@ -466,7 +466,7 @@ fn no_reader_ever_sees_a_partly_written_credential_store() {
     // Long enough that a truncate-then-fill has a window a reader can land in.
     for index in 0..40 {
         let (entry, _) = staged_entry(&format!("bulk-{index}"));
-        let entry = entry.with_tools(ToolScope::new(
+        let entry = entry.with_tools(ToolScope::of_names(
             (0..40).map(|tool| format!("pages.read.{index}.{tool}")),
         ));
         store.add(entry, &keys, None).expect("an entry is added");
@@ -684,7 +684,7 @@ fn an_apex_confirmation_states_the_scope_the_entry_carries_and_zero_when_it_carr
         Reach::Apex,
     )
     .expect("an nn_ value builds a Nuclear Notes entry")
-    .with_tools(ToolScope::new(vec![
+    .with_tools(ToolScope::of_names(vec![
         "pages.read".to_owned(),
         "pages.apply_patch".to_owned(),
         "workspaces.create".to_owned(),
@@ -823,7 +823,11 @@ fn what_the_store_wrote_is_what_it_reads_back() {
         .expect("the entry survived the round trip");
     assert_eq!(record.description, description);
     assert_eq!(record.kind(), "personal");
-    assert_eq!(record.tools(), vec!["pages.read", "search.global"]);
+    assert_eq!(record.tools().len(), 2);
+    assert_eq!(
+        record.tools().iter().map(CachedTool::name).collect::<Vec<_>>(),
+        vec!["pages.read", "search.global"]
+    );
     assert_eq!(record.workspace(), Some("zaru"));
     assert_eq!(record.role(), None);
 
@@ -882,7 +886,11 @@ fn a_description_is_replaced_and_survives_a_reopen() {
     // What `describe` must not touch: it edits one line of metadata, and a
     // credential whose secret or scope moved with its description would be a
     // different credential under the same name.
-    assert_eq!(record.tools(), vec!["pages.read", "search.global"]);
+    assert_eq!(record.tools().len(), 2);
+    assert_eq!(
+        record.tools().iter().map(CachedTool::name).collect::<Vec<_>>(),
+        vec!["pages.read", "search.global"]
+    );
     assert_eq!(record.workspace(), Some("zaru"));
     assert_eq!(record.kind(), "personal");
 }
@@ -1086,7 +1094,7 @@ fn staged_pair() -> (ScratchRoot, StagedKey, CredentialStore, Alias, Alias) {
         composer.reach().expect("a Notes entry has a reach").clone(),
     )
     .expect("an nn_ value builds a Nuclear Notes entry")
-    .with_tools(ToolScope::new(["pages.read", "search.global"]));
+    .with_tools(ToolScope::of_names(["pages.read", "search.global"]));
 
     let (agent, _) = staged_entry("agent");
     let agent_alias = agent.alias().clone();
@@ -1155,8 +1163,8 @@ fn what_the_agent_sees_is_three_fields_and_a_fourth_would_not_compile() {
     assert!(name.starts_with(&format!("{NAMESPACE_PREFIX}:")));
     assert!(!description.is_empty());
     assert_eq!(
-        tools,
-        &vec!["pages.read".to_owned(), "search.global".to_owned()]
+        tools.iter().map(CachedTool::name).collect::<Vec<_>>(),
+        vec!["pages.read", "search.global"]
     );
 }
 
@@ -1217,7 +1225,7 @@ fn the_composer_role_is_refused_when_the_cached_scope_leaves_adr_0006_d4s_set() 
         base.reach().expect("a Notes entry has a reach").clone(),
     )
     .expect("an nn_ value builds a Nuclear Notes entry")
-    .with_tools(ToolScope::new([
+    .with_tools(ToolScope::of_names([
         "pages.read",
         "search.global",
         "pages.apply_patch",
@@ -1263,7 +1271,7 @@ fn every_tool_adr_0006_d4_names_may_hold_the_composer_role() {
         base.reach().expect("a Notes entry has a reach").clone(),
     )
     .expect("an nn_ value builds a Nuclear Notes entry")
-    .with_tools(ToolScope::new(
+    .with_tools(ToolScope::of_names(
         crate::credentials::entry::COMPOSER_SCOPE.iter().copied(),
     ));
     store.add(entry, &keys, None).expect("it is stored");
@@ -1373,7 +1381,7 @@ use crate::credentials::store::{Record, StoredHeld, StoredReach};
 #[test]
 fn the_ttl_backstop_uses_the_window_the_store_validated_and_nothing_else() {
     let cached = Cached {
-        scope: ToolScope::new(["pages.read"]),
+        scope: ToolScope::of_names(["pages.read"]),
         at: Duration::from_secs(100),
     };
     let ttl = Ttl::new(Duration::from_secs(300)).expect("a non-zero window");
@@ -1420,7 +1428,7 @@ fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
             kind: "personal".to_owned(),
             reach: StoredReach::Apex,
             role: None,
-            tools: vec!["pages.read".to_owned()],
+            tools: vec![CachedTool::name_only("pages.read")],
             workspace: None,
         },
         sealed: Sealed::seal(
@@ -1454,7 +1462,10 @@ fn a_records_fields_are_adr_0007_d2s_and_a_clock_reading_is_not_among_them() {
     assert_eq!(kind, "personal");
     assert_eq!(reach, StoredReach::Apex);
     assert_eq!(role, None);
-    assert_eq!(tools, vec!["pages.read".to_owned()]);
+    assert_eq!(
+        tools.iter().map(CachedTool::name).collect::<Vec<_>>(),
+        vec!["pages.read"]
+    );
     assert_eq!(workspace, None);
     // The seventh field is the one this arc added, and it is not optional: a
     // record without a sealed value does not exist as a type.
@@ -1479,14 +1490,16 @@ fn a_replaced_scope_reaches_the_agents_namespace_projection_in_the_same_read() {
         .record(&agent_alias)
         .expect("the agent token is stored")
         .tools()
-        .to_vec();
+        .iter()
+        .map(|tool| tool.name().to_owned())
+        .collect();
     assert!(
         !before.contains(&"kg.list_cross_links".to_owned()),
         "the tool this check is about was already cached, so the assertion below asserts nothing: \
          {before:?}"
     );
 
-    let refreshed = ToolScope::new(["pages.read", "search.global", "kg.list_cross_links"]);
+    let refreshed = ToolScope::of_names(["pages.read", "search.global", "kg.list_cross_links"]);
     store
         .replace_tools(&agent_alias, &refreshed)
         .expect("a stored alias takes a scope");
@@ -1499,7 +1512,10 @@ fn a_replaced_scope_reaches_the_agents_namespace_projection_in_the_same_read() {
         .into_iter()
         .find(|ns| ns.name == format!("{NAMESPACE_PREFIX}:{agent_alias}"))
         .expect("the agent token projects a namespace")
-        .tools;
+        .tools
+        .iter()
+        .map(|tool| tool.name().to_owned())
+        .collect();
     assert_eq!(
         projected,
         vec![
@@ -1515,7 +1531,10 @@ fn a_replaced_scope_reaches_the_agents_namespace_projection_in_the_same_read() {
         reopened
             .record(&agent_alias)
             .expect("the entry survived")
-            .tools(),
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect::<Vec<_>>(),
         projected,
         "the refreshed scope was not written through to the file"
     );
@@ -1528,7 +1547,7 @@ fn a_scope_offered_for_an_unknown_alias_is_refused_rather_than_creating_one() {
     let before = store.len();
 
     let refusal = store
-        .replace_tools(&stranger, &ToolScope::new(["pages.read"]))
+        .replace_tools(&stranger, &ToolScope::of_names(["pages.read"]))
         .expect_err("nothing answers to that alias");
     assert!(
         matches!(refusal, StoreError::UnknownAlias { .. }),
@@ -2021,7 +2040,7 @@ fn staged_notes(label: &str, tools: Vec<&str>, apex: bool) -> Entry {
         },
     )
     .expect("an nn_ value builds a Nuclear Notes entry")
-    .with_tools(ToolScope::new(tools))
+    .with_tools(ToolScope::of_names(tools))
 }
 
 /// D4's role wins, one token serves, several serve nothing.
@@ -2216,5 +2235,156 @@ fn adr_0007_d7s_use_moves_the_role_and_a_refused_move_leaves_the_incumbent_holdi
             .to_string()
             .contains("already carries the composer role"),
         "grant_composer_role stopped refusing a second grant: {second_grant}"
+    );
+}
+
+// --- ADR-0007 D6's cache holds a declaration, D5 needs one ------------------
+//
+// D6 cached tool *names* until 2026-09-15 and D5 projects that cache to the
+// agent as an MCP server. A model is offered a name, a description and a
+// parameter schema, so names alone could not be projected -- `descriptors`'
+// own comment records what an absent schema costs: it "is **not JSON**, so the
+// first provider client to be handed these seven would have refused all
+// seven". These three checks are the store half.
+
+/// The mutant: make `replace_tools` write `scope.names()` back as names.
+#[test]
+fn adr_0007_d6_a_cached_declaration_survives_the_file_whole() {
+    let (scratch, _keys, mut store, _composer_alias, agent_alias) = staged_pair();
+
+    let declared = ToolScope::new([
+        CachedTool::declared(
+            "pages.read",
+            Some("Read a page by path or UUID.".to_owned()),
+            r#"{"type":"object","properties":{"pathOrId":{"type":"string"}}}"#,
+        ),
+        CachedTool::declared("search.global", None, r#"{"type":"object"}"#),
+    ]);
+    store
+        .replace_tools(&agent_alias, &declared)
+        .expect("a stored alias takes a scope");
+
+    // Read back through a store reopened from the bytes on disk, which is a
+    // reader that does not share this store's in-memory map.
+    let reopened = CredentialStore::open(scratch.store_root()).expect("the written root reopens");
+    let tools = reopened
+        .record(&agent_alias)
+        .expect("the entry survived")
+        .tools()
+        .to_vec();
+
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0].name(), "pages.read");
+    assert_eq!(
+        tools[0].description(),
+        Some("Read a page by path or UUID."),
+        "ADR-0007 D6: what the cache holds is what the server said, and D5 declares it"
+    );
+    assert_eq!(
+        tools[0].input_schema(),
+        Some(r#"{"type":"object","properties":{"pathOrId":{"type":"string"}}}"#),
+        "a declaration with no schema is not JSON, and a provider handed one refuses the surface"
+    );
+    assert_eq!(
+        tools[1].description(),
+        None,
+        "the protocol makes a description optional, so a server that gave none is carried as none"
+    );
+    assert!(
+        tools[1].input_schema().is_some(),
+        "every MCP tool carries a schema, so the second one has one too"
+    );
+}
+
+/// The mutant: make `ToolScope::is_declarable` answer `true` unconditionally.
+#[test]
+fn adr_0007_d6_a_scope_cached_before_the_descriptor_widened_is_not_declarable() {
+    // The refusing arm: a name-only scope is what a store written before
+    // 2026-09-15 holds, and it cannot be declared to a model.
+    let names = ToolScope::of_names(["pages.read", "search.global"]);
+    assert!(
+        !names.is_declarable(),
+        "a scope of names carries no schemas, so D5 has nothing to declare and D6's refresh rule \
+         owns the remedy"
+    );
+
+    // The accepting sibling, so an always-false implementation cannot pass.
+    let declared = ToolScope::new([CachedTool::declared(
+        "pages.read",
+        Some("Read a page.".to_owned()),
+        r#"{"type":"object"}"#,
+    )]);
+    assert!(
+        declared.is_declarable(),
+        "a scope whose every tool carries a schema is declarable"
+    );
+
+    // A mixed scope follows the weaker half: one tool without a schema is one
+    // tool a model could be offered and could not call.
+    let mixed = ToolScope::new([
+        CachedTool::declared("pages.read", None, r#"{"type":"object"}"#),
+        CachedTool::name_only("search.global"),
+    ]);
+    assert!(
+        !mixed.is_declarable(),
+        "one tool without a schema makes the whole scope owed a refresh"
+    );
+
+    // And the vacuous case is stated rather than left to be discovered: an
+    // empty scope has nothing in it missing a schema.
+    assert!(
+        ToolScope::default().is_declarable(),
+        "an empty scope is declarable vacuously, and declares nothing"
+    );
+}
+
+/// The mutant: give `CachedTool` an internally-tagged representation, so both
+/// shapes write as objects and the file stops saying which is which.
+#[test]
+fn adr_0007_d6_the_file_says_which_entries_have_been_refreshed() {
+    let (scratch, _keys, mut store, _composer_alias, agent_alias) = staged_pair();
+
+    store
+        .replace_tools(&agent_alias, &ToolScope::of_names(["pages.read"]))
+        .expect("a stored alias takes a scope");
+    let before = std::fs::read_to_string(scratch.store_root().join(crate::credentials::STORE_FILE))
+        .expect("the store file is readable");
+    assert!(
+        before.contains(r#""pages.read""#) && !before.contains(r#""name": "pages.read""#),
+        "a name-only tool is a JSON string on disk, so a reader can see it is owed a refresh: \
+         {before}"
+    );
+
+    store
+        .replace_tools(
+            &agent_alias,
+            &ToolScope::new([CachedTool::declared(
+                "pages.read",
+                Some("Read a page.".to_owned()),
+                r#"{"type":"object"}"#,
+            )]),
+        )
+        .expect("a stored alias takes a scope");
+    let after = std::fs::read_to_string(scratch.store_root().join(crate::credentials::STORE_FILE))
+        .expect("the store file is readable");
+    assert!(
+        after.contains(r#""name": "pages.read""#),
+        "a refreshed tool is a JSON object on disk: {after}"
+    );
+    assert!(
+        after.contains("input_schema"),
+        "and it carries the schema D5 declares: {after}"
+    );
+
+    // And it reads back as the thing it was written as, in both directions.
+    let reopened = CredentialStore::open(scratch.store_root()).expect("the written root reopens");
+    assert!(
+        reopened
+            .record(&agent_alias)
+            .expect("the entry survived")
+            .tools()
+            .iter()
+            .all(|tool| tool.input_schema().is_some()),
+        "the declared form round-trips through the file"
     );
 }
