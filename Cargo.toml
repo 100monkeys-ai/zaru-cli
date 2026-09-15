@@ -350,6 +350,56 @@ regex = { version = "1.13.1", default-features = false, features = [
 # arrive in this tree without a decision.
 boon = { version = "0.6.1", default-features = false }
 
+# `pulldown-cmark` is D2's row for the CommonMark parser the transcript pane
+# renders an answer's text with, accepted 2026-09-15 as amendment 6, and this
+# is the arc that gives it a caller. It closes the markdown half of row 4 of
+# the look-and-feel survey, whose colour half `colour-registers` closed on
+# 2026-09-14 saying the remainder "needs a record, because it decides a
+# dependency (ADR-0003 D2's table)".
+#
+# **A pull parser rather than a tree.** The renderer walks events, which is
+# what lets a partially-arrived answer be parsed on the beat: a tree would
+# have to be rebuilt and re-walked from the root for every delta, and the
+# pane repaints on a 100 ms tick.
+#
+# **Both instruments, measured on `a8eedf7` against a 317-package lock.**
+# `Cargo.lock` gains **two** packages -- this crate and `unicase` 2.9.0,
+# which has no dependencies of its own -- and `cargo tree -p pulldown-cmark
+# --edges normal` gives the whole closure as `bitflags 2.13.1`, `memchr
+# 2.8.3` and `unicase 2.9.0`, the first two already resolved here for
+# `ratatui` and `regex-automata`. That is the smallest addition this table
+# has taken since `regex`, which cost none.
+#
+# **`default-features = false` is load-bearing and the default is
+# `["getopts", "html"]`.** `html` pulls `pulldown-cmark-escape`, an HTML
+# renderer, which is the one thing a terminal pane must not carry -- refusing
+# it is what keeps this a *parser* row. `getopts` exists only for the crate's
+# own `[[bin]]`, declared `required-features = ["getopts"]`, which nothing
+# here runs. `serde` is off.
+#
+# **`simd` is off and that is the security-relevant one.** The crate carries
+# `#![cfg_attr(not(feature = "simd"), forbid(unsafe_code))]`, so with the
+# features taken here it **forbids** `unsafe` -- this workspace's own
+# `[workspace.lints.rust] unsafe_code = "deny"` posture arriving in a
+# dependency by construction rather than by hope.
+#
+# **No build-time toolchain arrives.** The crate has a `build.rs` and its
+# body is behind `#[cfg(feature = "gen-tests")]`, so without that feature it
+# compiles to nothing: no C compiler and no `cmake` beyond what `ring`
+# already asks for.
+#
+# **MIT, and it is the only row in this table that is not dual-licensed.**
+# Permissive, one-way compatible into Apache-2.0 distribution, and it scans
+# clean, so D3's licence and D7's clean-scan argument are untouched. What it
+# does not carry is an express patent grant, which Apache-2.0 does -- named
+# here rather than discovered later, and batched for Jeshua.
+#
+# **No syntax highlighter.** `syntect`, `two-face` and `bat` are refused: a
+# highlighter needs a grammar set, the grammar set is the dependency, and a
+# pane that colours code by a grammar it shipped is asserting a language it
+# may have guessed wrong. A fenced block is indented and left alone.
+pulldown-cmark = { version = "0.13.4", default-features = false }
+
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
 # turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-

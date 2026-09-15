@@ -16,3 +16,4 @@ workspace = true
 zaru-core = { path = "../zaru-core" }
 ratatui = { workspace = true }
 tui-textarea = { workspace = true }
+pulldown-cmark = { workspace = true }
