@@ -303,7 +303,12 @@ pub struct Prepared {
     keyring: OsKeyring,
     /// The whole surface this session offers the model: D1's seven, then
     /// D5's projected tools, filtered to what was granted.
-    declared: Vec<zaru_core::tool_call::ToolDescriptor>,
+    ///
+    /// **Named `declared_tools` rather than `declared`**, because `declared`
+    /// is already this struct's field for [ADR-0009](https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators)
+    /// D3's validator declarations and the two are different things a turn
+    /// declares.
+    declared_tools: Vec<zaru_core::tool_call::ToolDescriptor>,
     /// [ADR-0012] D3's window for the kind that answered, in tokens.
     ///
     /// Not `Option`: `prepare` refuses a kind that could not state one, so a
@@ -1012,14 +1017,14 @@ pub fn prepare(
     // would put the harness's own number below the provider's -- the defect
     // `context-window` measured on 2026-09-14 and fixed by counting the whole
     // request.
-    let declared = match projected_surface(&store, resolution) {
+    let declared_tools = match projected_surface(&store, resolution) {
         Ok(declared) => declared,
         Err(failure) => {
             return Err(Box::new(Ran::refused(Surface::projection(&failure))));
         }
     };
 
-    let reserved = match client.tool_surface_bytes(&declared) {
+    let reserved = match client.tool_surface_bytes(&declared_tools) {
         Ok(bytes) => bytes,
         Err(failure) => {
             return Err(Box::new(Ran::refused(Surface::provider(&failure))));
@@ -1060,7 +1065,7 @@ pub fn prepare(
         store_root,
         store,
         keyring,
-        declared,
+        declared_tools,
         window,
         reserved,
         session_grants: crate::tools::grants::SessionGrants::none(),
@@ -1139,6 +1144,7 @@ pub fn plan_for_the_turn(
     let mut declared = project.to_vec();
     declared.extend_from_slice(skill.validators);
     zaru_core::iteration::validator::Plan::from_declared(declared).map(Some)
+}
 
 /// What the model is offered, for this session, over this store.
 ///
@@ -1451,7 +1457,7 @@ async fn ran(
         subprocess: &spawn,
         fetch: &fetch,
         projected: &projection,
-        declared: &prepared.declared,
+        declared: &prepared.declared_tools,
     };
 
     // --- ADR-0015 D5's skill, if this turn is one --------------------------
@@ -1486,7 +1492,7 @@ async fn ran(
         // why sharing the value rather than building a second one is what
         // makes "a candidate cannot do what a turn cannot" a property.
         let tool_surface = tokio::sync::Mutex::new(executor);
-        let mut tools = crate::compose::Shared::over(&tool_surface, &prepared.declared);
+        let mut tools = crate::compose::Shared::over(&tool_surface, &prepared.declared_tools);
 
         // --- ADR-0009 D4's inner loop, over the same surface ---------------
         //
