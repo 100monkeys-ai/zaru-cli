@@ -190,14 +190,14 @@ pub enum AllowlistRefused {
     NoTarget {
         /// Which entry, counting from one.
         position: usize,
-        /// The entry as it was written, escaped.
+        /// The entry as it was written.
         offered: String,
     },
     /// An entry's first word is not one of ADR-0011 D1's seven built-ins.
     NoSuchTool {
         /// Which entry, counting from one.
         position: usize,
-        /// The word that was offered, escaped.
+        /// The word that was offered.
         offered: String,
     },
 }
@@ -287,19 +287,19 @@ impl Entry {
         let Some((word, target)) = offered.split_once(' ') else {
             return Err(AllowlistRefused::NoTarget {
                 position,
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             });
         };
         let Some(tool) = ToolName::ALL.into_iter().find(|tool| tool.as_str() == word) else {
             return Err(AllowlistRefused::NoSuchTool {
                 position,
-                offered: word.escape_debug().to_string(),
+                offered: word.to_string(),
             });
         };
         if target.is_empty() {
             return Err(AllowlistRefused::NoTarget {
                 position,
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             });
         }
         Ok(Self {

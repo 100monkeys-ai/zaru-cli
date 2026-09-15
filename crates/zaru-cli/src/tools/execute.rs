@@ -98,7 +98,7 @@ use zaru_core::tool_call::{
 pub enum NotACall {
     /// The name is not one of ADR-0011 D1's seven.
     NoSuchTool {
-        /// What was asked for, escaped.
+        /// What was asked for.
         asked: String,
     },
     /// A projected call carried a value the credential store holds.
@@ -115,12 +115,12 @@ pub enum NotACall {
     /// not name is which credential matched, because that is a fact about the
     /// store and this sentence reaches the model.
     CarriedAHeldValue {
-        /// The declared name that was asked for, escaped.
+        /// The declared name that was asked for.
         asked: String,
     },
     /// A projected call carried no arguments at all.
     CarriedNoArguments {
-        /// The declared name that was asked for, escaped.
+        /// The declared name that was asked for.
         asked: String,
     },
     /// The arguments carried no target.
@@ -422,7 +422,7 @@ where
             let arguments = request.arguments.trim();
             if arguments.is_empty() {
                 return Err(NotACall::CarriedNoArguments {
-                    asked: request.name.escape_debug().to_string(),
+                    asked: request.name.to_string(),
                 });
             }
             // ADR-0007 D3, at the one surface that could carry a value out.
@@ -433,7 +433,7 @@ where
             // store, and never holds a secret to compare against.
             if matches!(self.redactor.redact(arguments), std::borrow::Cow::Owned(_)) {
                 return Err(NotACall::CarriedAHeldValue {
-                    asked: request.name.escape_debug().to_string(),
+                    asked: request.name.to_string(),
                 });
             }
             return Ok(Requested::Projected {
@@ -447,7 +447,7 @@ where
             .into_iter()
             .find(|tool| tool.as_str() == request.name)
             .ok_or_else(|| NotACall::NoSuchTool {
-                asked: request.name.escape_debug().to_string(),
+                asked: request.name.to_string(),
             })?;
         let arguments = request.arguments.trim();
         // Kept as its own refusal rather than folded into the parser's
