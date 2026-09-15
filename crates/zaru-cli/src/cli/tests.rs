@@ -2578,7 +2578,7 @@ fn refusals_that_stop_a_session_opening() -> Vec<(&'static str, Classified)> {
     // A checkpoint that parses as JSON and is not what this harness writes,
     // refused by the one place the document is interpreted.
     let error = crate::compose::SessionContext::restored(
-        crate::compose::prefix_for(),
+        crate::compose::prefix_for(None),
         crate::terminal::open::context_shape_of(None),
         &serde_json::json!({ "exchanges": "not what this harness writes" }),
     )

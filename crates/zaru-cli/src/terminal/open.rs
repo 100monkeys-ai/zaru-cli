@@ -623,8 +623,9 @@ pub fn restored_context(
     classify: &Classify,
     evidence: SessionEvidence,
     shape: crate::compose::ContextShape,
+    persona: Option<&str>,
 ) -> Result<crate::compose::SessionContext, Box<Exit>> {
-    let prefix = crate::compose::prefix_for();
+    let prefix = crate::compose::prefix_for(persona);
     match &resumed.checkpoint {
         Some(checkpoint) => crate::compose::SessionContext::restored(prefix, shape, checkpoint)
             .map_err(|error| {
@@ -740,6 +741,13 @@ pub fn mint(
     // that cannot run a turn carries instead.
     let shape = context_shape_of(prepared.as_ref());
     let workspace = crate::manifest::attached_workspace(&resolution);
+    // ADR-0027 D1's persona, resolved before the prefix exists -- see
+    // `crate::compose::persona` for why it cannot arrive afterwards. The
+    // refresh is dropped here rather than spawned: this function mints a
+    // session and returns, and `one_session` opens the same session moments
+    // later with its own runtime and starts the refresh there.
+    let mut serving = crate::compose::persona::for_session(&resolution, workspace.as_deref());
+    drop(serving.take_refreshing());
     let (session, _) = crate::compose::turn::start(
         root,
         tier,
@@ -747,6 +755,7 @@ pub fn mint(
         workspace,
         here.root(),
         shape,
+        serving.body(),
         &classify,
     )
     .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
@@ -923,12 +932,41 @@ fn one_session(
     // D5's `70`, so what a person lost while the binary returned past its own
     // writers was the report URL: exit 70, the alternate screen entered and
     // left, and not one byte saying a bug had been found. It reaches them now.
+    // ADR-0027 D1's persona, resolved **before** the prefix this session
+    // restores -- `SessionContext::restored` rebuilds layers 1 to 4 from
+    // `prefix_for` rather than reading them out of `context.json`, which holds
+    // only `exchanges`, so a resumed session re-assembles layer 1 and reads
+    // the cache again. The workspace is this session's own `meta.toml`, not a
+    // second reading of the process, for the reason `attached_workspace`
+    // exists at all.
+    let pinned = attached_workspace(&store.sessions_directory().join(id.as_str()));
+    let mut serving = crate::compose::persona::for_session(&resolution, Some(pinned.as_str()));
     let context = restored_context(
         &resumed,
         &classify,
         session.evidence(),
         context_shape_of(prepared.as_ref().ok()),
+        serving.body(),
     )?;
+
+    // The refresh, on the runtime this shell already holds, **for the next
+    // session only**. It cannot reach the prefix built two statements above:
+    // `StablePrefix` has no method that changes it, which is ADR-0013 trigger
+    // clause 1 held by the type. `None` where the cache missed, because the
+    // page was read on this thread a moment ago and reading it twice would
+    // spend a rate budget against an instance that has already answered.
+    //
+    // A refusal, an unreachable instance and a file that will not be written
+    // are all silent here, and that is the same decision `Populating::refresh`
+    // records for itself: the persona is in hand, the session is unaffected,
+    // and there is nowhere on the pane to put a sentence about it that would
+    // not be a sentence about the persona -- which ADR-0027's absence line
+    // question reserves to Jeshua.
+    if let Some(refreshing) = serving.take_refreshing() {
+        runtime.spawn(async move {
+            drop(refreshing.refresh().await);
+        });
+    }
 
     let mut turns = match &prepared {
         Ok(prepared) => Turnable::Ready(Box::new(Turns {

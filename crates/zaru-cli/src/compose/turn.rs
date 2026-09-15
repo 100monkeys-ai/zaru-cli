@@ -1678,6 +1678,19 @@ async fn ran(
 /// cannot be minted, or a `meta.toml` or checkpoint that cannot be written.
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+#[allow(
+    clippy::too_many_arguments,
+    reason = "\
+    the seventh argument is ADR-0027 D1's persona, and it is an argument \
+    rather than something this function resolves for itself because that is \
+    ADR-0013 trigger clause 1: the persona has to be in hand *before* the \
+    prefix exists, so resolving it here would put a network call inside the \
+    one function that must not have one. Each of the eight is a value some \
+    record owns -- the tier, the provider, the workspace pin, the working \
+    directory, the window, the persona -- and bundling them would be a second \
+    name for the same list, which is the argument `one_session` and \
+    `driver::run` both already make for their own"
+)]
 pub fn start(
     root: std::path::PathBuf,
     tier: ResolvedTier,
@@ -1685,6 +1698,7 @@ pub fn start(
     workspace: Option<String>,
     here: &std::path::Path,
     shape: crate::compose::ContextShape,
+    persona: Option<&str>,
     surface: &Surface<'_>,
 ) -> Result<(crate::session::Session, SessionContext), Box<crate::failure::Classified>> {
     let session_store = SessionStore::open(root).map_err(|failure| surface.session(&failure))?;
@@ -1717,7 +1731,7 @@ pub fn start(
     MetaFile::at(session.meta_path())
         .write(&meta)
         .map_err(|failure| Box::new(Surface::meta(&failure, evidence.clone())))?;
-    let context = SessionContext::opened(context::prefix_for(), shape);
+    let context = SessionContext::opened(context::prefix_for(persona), shape);
     Checkpoint::at(session.checkpoint_path())
         .write(&context.checkpoint())
         .map_err(|failure| Box::new(Surface::checkpoint(&failure, evidence.clone())))?;
@@ -1762,14 +1776,33 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         crate::compose::tips::enabled(resolution),
     );
 
+    // --- ADR-0027 D1's persona, resolved before the prefix exists ----------
+    //
+    // **Before `start`, and on this thread**, which is ADR-0013 trigger
+    // clause 1: layers 1 to 4 are byte-identical across every turn, held by
+    // `StablePrefix` having no method that changes it, so a value that
+    // arrived later could not reach layer 1 without breaking it. See
+    // `crate::compose::persona`.
+    //
+    // **The refresh is dropped on this path and that is stated rather than
+    // hidden**: `zaru "<task>"` runs one turn and exits, so there is no
+    // runtime that outlives this prefix and a task spawned here would be a
+    // silent no-op rather than a refresh. A person who only runs one-shot
+    // tasks sees a persona change on their next terminal session. That is the
+    // corpus's own shape -- this path touches `corpus.jsonl` not at all.
+    let workspace = crate::manifest::attached_workspace(resolution);
+    let mut serving = crate::compose::persona::for_session(resolution, workspace.as_deref());
+    drop(serving.take_refreshing());
+
     // --- ADR-0010 D1's session, and the first `meta.toml` a product writes --
     let (session, mut context) = match start(
         prepared.store_root.clone(),
         prepared.tier,
         Some(prepared.kind),
-        crate::manifest::attached_workspace(resolution),
+        workspace,
         prepared.here.root(),
         prepared.context_shape(),
+        serving.body(),
         &surface,
     ) {
         Ok(started) => started,

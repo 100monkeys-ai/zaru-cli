@@ -113,7 +113,7 @@ fn a_turn_fetches_through_the_real_client_with_the_binary_s_own_bounds() {
 fn the_stable_prefix_says_that_no_persona_was_supplied() {
     use zaru_core::context::Layer;
 
-    let prefix = context::prefix_for();
+    let prefix = context::prefix_for(None);
     assert!(
         prefix.as_str().contains(prose::NO_PERSONA),
         "ADR-0027's decision is that the absence is visible rather than inferred, and the \
@@ -170,7 +170,7 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
         PressureThreshold::new(256).expect("not zero"),
     )
     .expect("the threshold is below the window");
-    let context = Context::opened(context::prefix_for(), limits, 0);
+    let context = Context::opened(context::prefix_for(None), limits, 0);
     let held = HeldSecrets::none();
     let policy = TurnContext::over(&context, &held, false);
 
@@ -188,10 +188,10 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
             // not hold the prefix on its own would make every implementation
             // refuse, and this check would be about nothing.
             assert!(
-                (context::prefix_for().as_str().len() as u64) < window,
+                (context::prefix_for(None).as_str().len() as u64) < window,
                 "the prefix alone does not fit this window, so the refusal says nothing about the \
                  tail: {} against {window}",
-                context::prefix_for().as_str().len()
+                context::prefix_for(None).as_str().len()
             );
             assert!(
                 needed > window,
@@ -213,7 +213,7 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
 #[test]
 fn a_turn_that_fits_carries_the_prefix_and_then_the_task() {
     let context = Context::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::cli::layers::context_limits(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
         0,
     );
@@ -827,7 +827,7 @@ impl zaru_core::context::Summariser for Failing {
 fn a_turn_boundary_under_the_threshold_spends_nothing() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(tight_limits(100_000, 75_000), 0),
     );
     session.record(zaru_core::context::Exchange::verbatim("a short exchange"));
@@ -856,7 +856,7 @@ fn a_turn_boundary_under_the_threshold_spends_nothing() {
 fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
     );
     for nth in 0..8 {
@@ -944,7 +944,7 @@ fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() 
 fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
     );
     for nth in 0..8 {
@@ -989,7 +989,7 @@ fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
 fn a_summary_is_compacted_again_like_any_other_exchange() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(tight_limits(8_000, 900), 0),
     );
     for nth in 0..8 {
@@ -1042,7 +1042,7 @@ fn a_summary_is_compacted_again_like_any_other_exchange() {
 fn the_checkpoint_carries_layer_six_and_a_resumed_session_reads_it_back() {
     let limits = tight_limits(100_000, 75_000);
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(limits, 0),
     );
     session.record(zaru_core::context::Exchange::of_turn(
@@ -1054,7 +1054,7 @@ fn the_checkpoint_carries_layer_six_and_a_resumed_session_reads_it_back() {
 
     let stored = session.checkpoint();
     let restored = crate::compose::SessionContext::restored(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(limits, 0),
         &stored,
     )
@@ -1087,7 +1087,7 @@ fn the_checkpoint_carries_layer_six_and_a_resumed_session_reads_it_back() {
     // empty conversation, which would drop a session's history and look
     // exactly like a session that had none.
     crate::compose::SessionContext::restored(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(limits, 0),
         &serde_json::json!({ "exchanges": "not a list" }),
     )
@@ -1141,7 +1141,7 @@ fn one_turn_in_layer_six_carries_the_task_the_tool_results_and_the_answer() {
 #[test]
 fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     // let held = HeldSecrets::none();
-    // let mut session = SessionContext::opened(context::prefix_for(), limits);
+    // let mut session = SessionContext::opened(context::prefix_for(None), limits);
     // let policy = session.policy(&held, false);
     // futures_lite_block_on(session.at_turn_boundary(&Failing, &held));  // E0502
     // drop(policy);
@@ -1151,7 +1151,7 @@ fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     // possible at all rather than a context nobody can ever compact.
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
     );
     {
@@ -1316,7 +1316,7 @@ fn adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers() {
         .expect("the scratch directory takes a mode");
 
     let context = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
             0,
@@ -1587,7 +1587,7 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
 
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(
                 crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
@@ -1704,7 +1704,7 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
 
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(),
+        context::prefix_for(None),
         crate::compose::ContextShape::of(limits, reserved),
     );
 

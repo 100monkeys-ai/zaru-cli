@@ -35,9 +35,9 @@
 //!
 //! | Layer | This composition |
 //! | --- | --- |
-//! | 1 system prompt and persona | [`prose::NO_PERSONA`], because ADR-0027's fetch does not exist — see below |
+//! | 1 system prompt and persona | [ADR-0027]'s served page where one was read, [`prose::NO_PERSONA`] where none was — see below |
 //! | 2 grounding, session-start | empty: [ADR-0006]'s client reaches no network, so nothing is read at session start |
-//! | 3 relationship memory | empty: [ADR-0031] D3 delivers it *inside* the served prompt and forbids a second fetch path, so it is absent exactly when layer 1 is |
+//! | 3 relationship memory | empty, and **for a new reason since 2026-09-15**: [ADR-0031] D3 delivers it *inside* the served prompt and forbids a second fetch path, so now that layer 1 has a page it rides that page — see below |
 //! | 4 project manifest summary | empty: no record says what a manifest summary is, and inventing a shape would settle it |
 //! | 5 user attachments | empty: [ADR-0005] D5's attachments are not built and the trie is `zaru-notes`' |
 //! | 6 conversation and tool results | empty on the first turn; the turn's own results ride on `ModelRequest.results` rather than here, which is [ADR-0013] D7 as `tool_call::run` reads it, and a finished turn joins it through [`Exchange::of_turn`](zaru_core::context::Exchange::of_turn) at the boundary |
@@ -49,6 +49,30 @@
 //! actually receives is the one absence line and the task. That is a small
 //! prompt and it is an honest one; the layers exist, they are reached, and
 //! what fills them is other records' work.
+//!
+//! **Dated 2026-09-15, beside the paragraph above rather than in it.** Layer 1
+//! can now hold a page, so on a machine with a pinned workspace, a stored
+//! token and a persona page the count is five empty rather than six and the
+//! prefix is the page. **Where any of those three is missing it is exactly
+//! what the paragraph above describes**, which is every machine that has not
+//! set `persona.path` and every machine with no cortex at all.
+//!
+//! # Layer 3 is empty under a page, and the reason changed
+//!
+//! [ADR-0031] D3 appends the relationship memory to the served prompt **before
+//! it is returned**, and that record forbids the harness a second fetch — "a
+//! second fetch path is a second thing that can disagree". Under a served
+//! *page*, the memory therefore arrives **inside layer 1's body**, appended by
+//! whatever serves the page, and the harness's fetch count stays one.
+//!
+//! **The cost is that layer 3 stays empty for ever under this default, and it
+//! is stated rather than left to be found.** Filling it would need either a
+//! section grammar over a document this harness does not own — an authored
+//! parse of somebody else's prose — or a second read, which ADR-0031 forbids
+//! in as many words. So layer 3's emptiness is no longer "absent exactly when
+//! layer 1 is"; it is "the memory is in layer 1 when it exists at all", which
+//! is a different fact about the same empty string and is on [ADR-0013]'s
+//! amendments page.
 //!
 //! Layer 7's line said "no iteration runs, because there is no inner loop"
 //! until 2026-09-05, and the `iteration-wiring` arc's landing made it false
@@ -84,16 +108,43 @@ use zaru_core::redaction::Redactor;
 /// [ADR-0013] D1's layers 1 to 4 for a session this harness can actually
 /// assemble.
 ///
-/// Layer 1 carries [`prose::NO_PERSONA`] and the other three are empty — see
+/// Layer 1 carries the served persona where `persona` is `Some`, and
+/// [`prose::NO_PERSONA`] where it is `None`; the other three are empty — see
 /// the module documentation for what each is waiting on. The prefix is built
 /// **once** and has no method that changes it, which is that record's trigger
 /// clause 1 held by the type rather than by a rule anybody keeps.
 ///
+/// # The argument is taken here rather than fetched here, and that is clause 1
+///
+/// [ADR-0013] trigger clause 1 — "layers 1 to 4 are byte-identical across
+/// every turn of a long session" — is satisfied, and its two checks were
+/// **watched red by rewriting the prefix mid-session**. So this function takes
+/// a value that has already been resolved: the resolution happens before the
+/// prefix exists, on the caller's own thread, and nothing after it can reach
+/// back in. A fetch *inside* here, or a background task that landed in layer 1
+/// afterwards, would be exactly the mutation that clause forbids and would
+/// destroy the prompt caching [ADR-0013] D1 calls "an architectural constraint
+/// rather than an optimisation". See [`crate::compose::persona`].
+///
+/// # An empty body is not a persona
+///
+/// `Some("")` would put an empty layer 1 in the prefix, which renders as no
+/// layer at all — so a model would receive neither a persona nor the line
+/// saying it has none, and a reader could not tell the two apart. A page that
+/// came back empty is therefore [`prose::NO_PERSONA`], the same as no page:
+/// **the absence is the same absence however it arose**, which is the whole of
+/// what [ADR-0027]'s 2026-09-05 Update decided.
+///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 #[must_use]
-pub fn prefix_for() -> StablePrefix {
+pub fn prefix_for(persona: Option<&str>) -> StablePrefix {
+    let layer_one = match persona {
+        Some(served) if !served.is_empty() => served.to_owned(),
+        _ => prose::NO_PERSONA.to_owned(),
+    };
     StablePrefix::assembled_once(PrefixParts {
-        system_prompt_and_persona: prose::NO_PERSONA.to_owned(),
+        system_prompt_and_persona: layer_one,
         grounding: String::new(),
         relationship_memory: String::new(),
         project_manifest_summary: String::new(),

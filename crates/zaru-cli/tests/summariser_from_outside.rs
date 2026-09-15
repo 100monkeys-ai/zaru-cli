@@ -201,7 +201,7 @@ fn tight() -> ContextLimits {
 /// Stage enough layer 6 to cross the threshold, with `planted` inside it.
 fn session_carrying(planted: &str) -> SessionContext {
     let mut session = SessionContext::opened(
-        prefix_for(),
+        prefix_for(None),
         zaru_cli::compose::ContextShape::of(tight(), 0),
     );
     session.record(Exchange::of_turn(
@@ -451,7 +451,7 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
     let held = held_secrets_for_redaction(&store, &keys).expect("the store reopens what it sealed");
 
     let mut session = SessionContext::opened(
-        prefix_for(),
+        prefix_for(None),
         zaru_cli::compose::ContextShape::of(tight(), 0),
     );
     let staged = [
@@ -598,7 +598,7 @@ fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
     let expected = saved.usage(&held).used();
 
     let restored = SessionContext::restored(
-        prefix_for(),
+        prefix_for(None),
         zaru_cli::compose::ContextShape::of(tight(), 0),
         &stored,
     )
@@ -637,12 +637,12 @@ fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
     // that returns whatever it likes: a checkpoint with no exchanges must
     // report the prefix alone, and that is a smaller number than the one above.
     let empty = SessionContext::opened(
-        prefix_for(),
+        prefix_for(None),
         zaru_cli::compose::ContextShape::of(tight(), 0),
     );
     assert!(
         SessionContext::restored(
-            prefix_for(),
+            prefix_for(None),
             zaru_cli::compose::ContextShape::of(tight(), 0),
             &empty.checkpoint()
         )
