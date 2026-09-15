@@ -134,6 +134,30 @@ pub enum Request {
     ///
     /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
     Init,
+    /// `zaru inbox` — [ADR-0002] D6's deposit listing.
+    ///
+    /// **It lists nothing and it is not a refusal.** D3 gives a deposit one
+    /// producer, an armed trigger, and its own last paragraph ships every
+    /// trigger but one interrupt disarmed; nothing in this harness can arm
+    /// one. So the command answers [`crate::compose::tips::NO_DEPOSITS`],
+    /// which says that and why.
+    ///
+    /// A sibling of [`Request::Learned`] rather than one request with a
+    /// discriminant: they are two rows of D2's table, they answer to two
+    /// spellings, and the day either grows a listing it grows one of its own.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    Inbox,
+    /// `zaru learned` — [ADR-0002] D6's craft-memory listing.
+    ///
+    /// It answers [`crate::compose::tips::NOTHING_LEARNED`], for the reason
+    /// on that constant: D5's announcements need a writer and
+    /// [ADR-0031](https://100monkeys-ai.cortex.page/zaru/p/adrs/0031-relationship-memory)
+    /// is decision-blocked on which product serves the prompt one would ride
+    /// in.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    Learned,
     /// `zaru sessions list`.
     SessionsList,
     /// `zaru sessions rm <id>` — [ADR-0010] D6.

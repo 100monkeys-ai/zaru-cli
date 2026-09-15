@@ -208,14 +208,26 @@ impl Namespace {
 
     /// Whether this harness implements the namespace's out-of-session half.
     ///
-    /// **Four of the twelve answer `false`, and that is a statement about this
+    /// **Two of the twelve answer `false`, and that is a statement about this
     /// build rather than about D2.** `/stack` needs [ADR-0003] D7's component
-    /// fetch, `/memory` needs [ADR-0031]'s relationship memory, `/learned` and
-    /// `/inbox` need [ADR-0002]'s announcement channel — none of which exists
-    /// anywhere in this workspace. A word that names one of them is refused
-    /// saying so, rather than being placed against the nearest noun, because
-    /// telling a user who typed `stack` that they may have meant `sessions` is
-    /// a worse answer than telling them the truth.
+    /// fetch and `/memory` needs [ADR-0031]'s relationship memory, neither of
+    /// which exists anywhere in this workspace. A word that names one of them
+    /// is refused saying so, rather than being placed against the nearest
+    /// noun, because telling a user who typed `stack` that they may have meant
+    /// `sessions` is a worse answer than telling them the truth.
+    ///
+    /// # It was four until 2026-09-15, and the other two are the harder case
+    ///
+    /// `/learned` and `/inbox` are [ADR-0002] D6's retrieval commands, and
+    /// that record is emphatic that "growth is always available on demand". A
+    /// command whose answer is *nothing* still answers: D3's deposit channel
+    /// has no producer because D3 itself ships every trigger disarmed and
+    /// nothing here can arm one, and D5's craft memory has no writer because
+    /// [ADR-0031] is decision-blocked — **both are facts this harness knows
+    /// and can state**, where `/stack` and `/memory` are surfaces with no
+    /// answer at all to give. The sentences are
+    /// [`crate::compose::tips::NO_DEPOSITS`] and
+    /// [`crate::compose::tips::NOTHING_LEARNED`].
     ///
     /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
     /// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
@@ -230,8 +242,10 @@ impl Namespace {
             | Self::Models
             | Self::Init
             | Self::Providers
+            | Self::Learned
+            | Self::Inbox
             | Self::Help => true,
-            Self::Stack | Self::Memory | Self::Learned | Self::Inbox => false,
+            Self::Stack | Self::Memory => false,
         }
     }
 

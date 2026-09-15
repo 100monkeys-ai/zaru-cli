@@ -180,6 +180,14 @@ impl Run<'_> {
             Request::ConfigExplain { key } => {
                 self.configured(&line.overrides, |resolution| explain(resolution, key))
             }
+            // ADR-0002 D6's two. Each is one line this harness knows to be
+            // true about itself, so neither reads a file, resolves a
+            // configuration or touches the store -- which is also why
+            // neither can fail.
+            Request::Inbox => Outcome::printed(vec![crate::compose::tips::NO_DEPOSITS.to_owned()]),
+            Request::Learned => {
+                Outcome::printed(vec![crate::compose::tips::NOTHING_LEARNED.to_owned()])
+            }
             Request::Init => self.init(),
             Request::SessionsList => self.sessions_list(),
             Request::SessionsRemove { id } => self.sessions_remove(id),

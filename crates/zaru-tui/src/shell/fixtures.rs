@@ -54,10 +54,10 @@ const NAMESPACES: [(&str, &str, bool, &[&str]); 11] = [
     (
         "/learned",
         "what this session wrote to craft memory",
-        false,
+        true,
         &[],
     ),
-    ("/inbox", "deposits", false, &[]),
+    ("/inbox", "deposits", true, &[]),
     (
         "/session",
         "resume, list, remove",

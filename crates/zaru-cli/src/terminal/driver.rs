@@ -3266,6 +3266,11 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
         // reaching the same request and therefore the same lines.
         ("/help", None) => Some(Request::Help),
         ("/models", None) => Some(Request::Models),
+        // ADR-0002 D6's two retrieval commands, in-session. Each reaches the
+        // same request its subcommand reaches, so the two spellings cannot
+        // come to say two things -- ADR-0015 D2's "one operation".
+        ("/inbox", None) => Some(Request::Inbox),
+        ("/learned", None) => Some(Request::Learned),
         ("/init", None) => Some(Request::Init),
         // **`if command.words.is_empty()`, exactly as `/providers keys`
         // below.** Without the guard `/notes tokens add work host` reached

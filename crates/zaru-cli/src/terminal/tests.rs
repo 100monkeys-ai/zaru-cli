@@ -6340,3 +6340,70 @@ fn a_shadowing_file_is_refused_at_the_door_naming_the_collision() {
         "and the neighbour still loads: {painted}"
     );
 }
+
+/// [ADR-0015] D2: "A namespace has two entry points, and they are one
+/// operation."
+///
+/// # What discriminates
+///
+/// The two spellings are asserted to reach the **same `Request`**, and the
+/// lines that request produces are asserted to be the product's own constants
+/// — so a second sentence written for the in-session reader would fail here
+/// rather than at a reading. `in-session-remedy` found four of five places in
+/// this terminal rendering a headline and discarding the projection beside it;
+/// the way that class of defect is prevented for a new command is to have one
+/// request and one answer from the start.
+///
+/// The accepting sibling is the out-of-session half, driven through
+/// `cli::parse` in the same check, so this cannot pass against a binary where
+/// only one of the two works.
+///
+/// The mutant: `request_for`'s `/inbox` arm removed, which sends the slash
+/// spelling to `unavailable` and leaves the subcommand answering.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[test]
+fn adr_0002_d6s_two_commands_answer_the_same_thing_at_both_entry_points() {
+    let runner = crate::cli::Run {
+        version: "0.0.0",
+        report_at: "https://example.invalid",
+    };
+
+    for (namespace, expected) in [
+        (Namespace::Inbox, crate::compose::tips::NO_DEPOSITS),
+        (Namespace::Learned, crate::compose::tips::NOTHING_LEARNED),
+    ] {
+        let inside = request_for(&zaru_tui::shell::Command {
+            slash: namespace.slash(),
+            verb: None,
+            words: Vec::new(),
+        })
+        .unwrap_or_else(|| panic!("{} reaches no request inside a session", namespace.slash()));
+
+        let outside = crate::cli::parse([std::ffi::OsString::from(namespace.subcommand())])
+            .unwrap_or_else(|refusal| {
+                panic!("`zaru {namespace}` was refused outside a session: {refusal}")
+            })
+            .request;
+
+        assert_eq!(
+            inside,
+            outside,
+            "`{}` and `zaru {namespace}` reach two different requests",
+            namespace.slash()
+        );
+
+        let lines = runner
+            .execute(&crate::cli::invocation::CommandLine {
+                request: inside,
+                overrides: Overrides::default(),
+            })
+            .lines;
+        assert_eq!(
+            lines,
+            vec![expected.to_owned()],
+            "`{}` answered something other than its one line",
+            namespace.slash()
+        );
+    }
+}

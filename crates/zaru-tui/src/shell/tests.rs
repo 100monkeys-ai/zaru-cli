@@ -891,18 +891,23 @@ fn a_slash_word_that_names_no_namespace_is_refused_naming_the_nearest() {
     );
 }
 
-/// ADR-0015 D2's four unbuilt namespaces. The out-of-session surface refuses
-/// these saying so rather than placing them against a nearest, "because
-/// telling a user who typed `stack` that they may have meant `sessions` is a
-/// worse answer than the truth", and the in-session surface is the same
-/// operation.
+/// ADR-0015 D2's unbuilt namespaces. The out-of-session surface refuses these
+/// saying so rather than placing them against a nearest, "because telling a
+/// user who typed `stack` that they may have meant `sessions` is a worse
+/// answer than the truth", and the in-session surface is the same operation.
+///
+/// **It was four until 2026-09-15 and is two.** `/learned` and `/inbox` are
+/// [ADR-0002](https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output)
+/// D6's retrieval commands and they answer now; the two that remain are the
+/// two with no answer to give. What this check is about is the *mechanism*,
+/// and it walks the staged vocabulary's own `built` flag — which is why the
+/// fixture moved in the same change rather than this list being left to say
+/// something false about the product it stands in for.
 #[test]
 fn an_unbuilt_namespace_is_refused_saying_so_and_never_placed_against_a_nearest() {
     for (slash, governs) in [
         ("/stack", "AEGIS component fetch and status"),
         ("/memory", "relationship memory"),
-        ("/learned", "what this session wrote to craft memory"),
-        ("/inbox", "deposits"),
     ] {
         let Typed::Refused(refusal) = read(slash, &StagedVocabulary) else {
             panic!("{slash} was not refused");

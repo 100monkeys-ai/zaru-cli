@@ -108,7 +108,13 @@ pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static s
         // prevent; `the_help_row_says_what_the_flag_beside_it_says` holds them
         // equal rather than leaving it to whoever edits one of them next.
         Namespace::Help => &[("help", "print this")],
-        Namespace::Stack | Namespace::Memory | Namespace::Learned | Namespace::Inbox => &[],
+        // [ADR-0002](https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output)
+        // D6's two. The summary says what the command is *for* rather than
+        // what this build has to show, because the row describes the command
+        // and the command's own answer describes the build.
+        Namespace::Inbox => &[("inbox", "print the deposits waiting to be read")],
+        Namespace::Learned => &[("learned", "print what this session wrote to craft memory")],
+        Namespace::Stack | Namespace::Memory => &[],
     }
 }
 

@@ -494,7 +494,15 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
                 nearest: crate::config::nearest::nearest(namespace.verbs().iter().copied(), other),
             }),
         },
-        Namespace::Stack | Namespace::Memory | Namespace::Learned | Namespace::Inbox => {
+        // [ADR-0002](https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output)
+        // D6's two retrieval commands. Each is a whole command on its own --
+        // D2's table gives neither a verb and neither this record nor that one
+        // names one -- and each answers a sentence rather than a listing,
+        // because the thing it would list cannot exist in this build. See
+        // `Namespace::is_built`.
+        Namespace::Inbox => whole(namespace, rest, Request::Inbox),
+        Namespace::Learned => whole(namespace, rest, Request::Learned),
+        Namespace::Stack | Namespace::Memory => {
             Err(CommandRefused::NamespaceNotBuilt { namespace })
         }
     }
