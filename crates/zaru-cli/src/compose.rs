@@ -82,6 +82,7 @@
 pub mod boundary;
 pub mod context;
 pub mod count;
+pub mod emission;
 pub mod iterate;
 pub mod model;
 pub mod prose;
@@ -94,6 +95,7 @@ pub mod turn;
 pub use boundary::{ContextShape, SessionContext};
 pub use context::{TurnContext, prefix_for};
 pub use count::ByteCounter;
+pub use emission::{Cause, Door, Subject, Unprompted, Wording};
 pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrated, Narrator};
 pub use model::Classifying;
 pub use shared::Shared;
