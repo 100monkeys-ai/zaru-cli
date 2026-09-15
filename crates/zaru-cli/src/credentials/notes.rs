@@ -69,8 +69,8 @@ use core::fmt;
 use core::time::Duration;
 use zaru_core::iteration::Clock;
 use zaru_notes::session::{
-    Bearer, Corpus, HttpEndpoint, Instance as NotesInstance, Invalidation, Listed, NotesError,
-    Session, WorkspaceId as NotesWorkspaceId,
+    Bearer, CallRefused, Corpus, HttpEndpoint, Instance as NotesInstance, Invalidation, Listed,
+    NotesError, Session, WorkspaceId as NotesWorkspaceId,
 };
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 
@@ -313,14 +313,42 @@ impl CredentialStore {
 pub enum ReachFailure {
     /// No HTTP client could be built at all.
     Endpoint(String),
-    /// The session did not attach, or `tools/list` did not answer.
+    /// The session did not attach, or a call never came back.
+    ///
+    /// **Everything that is not an answer**: DNS, a refused connection, a
+    /// dropped stream, a shape this client could not read. The instance has
+    /// said nothing, so nothing here licenses a conclusion about what the
+    /// token may reach.
     Session(String),
+    /// The instance **answered**, and its answer was no.
+    ///
+    /// Added 2026-09-15 for [ADR-0005] D8's eviction rule, and the reason is a
+    /// defect this split was found to have: `Endpoint` is only "no HTTP client
+    /// could be built", so a DNS failure, a refused connection and a revoked
+    /// token all arrived as [`ReachFailure::Session`] and were
+    /// indistinguishable. A caller deciding whether to forget a cached corpus
+    /// has to tell "the instance says you may not read this" from "the
+    /// instance is not there", and only [`NotesError::Call`] says the first.
+    ///
+    /// The refusal crosses whole rather than as a sentence, which is the one
+    /// place this type departs from the paragraph above: a caller needs the
+    /// *kind* of failure and not only its words, and `CallRefused` is a
+    /// three-field value with no `NotesError` in it, so the seam stays one
+    /// module wide.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    Refused(CallRefused),
 }
 
 impl fmt::Display for ReachFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Endpoint(detail) | Self::Session(detail) => f.write_str(detail),
+            // `CallRefused`'s own sentence, which is what the strip has printed
+            // for a refusal since `notes-hints-wiring` and is unchanged by the
+            // variant arriving: "the server refused pages.list: You are not a
+            // member of that workspace. (code -32002)".
+            Self::Refused(refused) => write!(f, "{refused}"),
         }
     }
 }
@@ -369,6 +397,24 @@ pub async fn tool_scope_at(host: &str, secret: &Secret) -> Result<ToolScope, Rea
     Ok(ToolScope::new(names))
 }
 
+/// Which shape of [`ReachFailure`] a client error is, and it turns on one
+/// variant.
+///
+/// [`NotesError::Call`] is the instance answering: it carries the tool, the
+/// code and the server's own sentence, and it is the only one of the six that
+/// says anything about what this token may reach. Everything else — no
+/// transport, no session, a dropped stream, an answer this client could not
+/// read, a workspace that would not attach — is silence, and silence is not a
+/// refusal. [ADR-0005] D8's cache turns on exactly that distinction.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+fn reach_failure(failure: NotesError) -> ReachFailure {
+    match failure {
+        NotesError::Call(refused) => ReachFailure::Refused(refused),
+        other => ReachFailure::Session(other.to_string()),
+    }
+}
+
 /// [ADR-0005] D3's corpus for one workspace, over the narrow port.
 ///
 /// # Why this takes the port and not a [`Session`]
@@ -407,14 +453,8 @@ pub async fn corpus_from(
 ) -> Result<Vec<CachedEntry>, ReachFailure> {
     let id = NotesWorkspaceId::new(workspace);
 
-    let pages = source
-        .pages(&id)
-        .await
-        .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
-    let atoms = source
-        .atoms(&id)
-        .await
-        .map_err(|failure| ReachFailure::Session(failure.to_string()))?;
+    let pages = source.pages(&id).await.map_err(reach_failure)?;
+    let atoms = source.atoms(&id).await.map_err(reach_failure)?;
 
     // The workspace on every entry is the slug the caller asked for, not one
     // read back off a row. A listing row carries `path` and `title` and no

@@ -34,6 +34,7 @@
 use zaru_cli::credentials::ReachFailure;
 use zaru_cli::terminal::corpus::stamp;
 use zaru_cli::terminal::{CorpusCache, FROM_CACHE, LOOKING, NotesTrie, Refresh, refresh_from};
+use zaru_notes::session::CallRefused;
 use zaru_notes::trie::{CachedEntry, EntryKind};
 use zaru_tui::composer::Entries;
 
@@ -209,31 +210,43 @@ fn an_instance_that_cannot_be_reached_keeps_the_corpus_and_says_when_it_was_take
         FETCHED,
     ));
 
-    let trie = open_over(&cache, HOST, WORKSPACE);
-    let detail = "error sending request for url (https://play.cortex.page/api/mcp)";
-    match refresh_from(
-        Err(ReachFailure::Endpoint(detail.to_owned())),
-        &cache,
-        HOST,
-        WORKSPACE,
-        FETCHED + 1,
-    ) {
-        Refresh::Unreachable(said) => {
-            assert_eq!(said, detail, "the client's own sentence is not paraphrased");
-            trie.unreachable(said);
+    // **Both silent shapes, because the arm covers both and the one that
+    // actually happens is the second.** `Endpoint` is "no HTTP client could be
+    // built"; a machine with no network answers `Session`, carrying reqwest's
+    // own sentence. Neither is the instance saying anything about this token.
+    for silence in [
+        ReachFailure::Endpoint("could not build an HTTP client".to_owned()),
+        ReachFailure::Session(
+            "could not attach a session: error sending request for url              (https://play.cortex.page/api/mcp): dns error"
+                .to_owned(),
+        ),
+    ] {
+        let trie = open_over(&cache, HOST, WORKSPACE);
+        let detail = silence.to_string();
+        match refresh_from(Err(silence), &cache, HOST, WORKSPACE, FETCHED + 1) {
+            Refresh::Unreachable(said) => {
+                assert_eq!(said, detail, "the client's own sentence is not paraphrased");
+                trie.unreachable(said);
+            }
+            other => panic!("silence is Unreachable; it gave {other:?}"),
         }
-        other => panic!("a transport failure is Unreachable; it gave {other:?}"),
+        assert_eq!(
+            titles(&trie, "hom"),
+            vec!["Home".to_owned()],
+            "a person on a train lost the notes they already had"
+        );
+        assert_eq!(
+            trie.absence(),
+            Some(format!("{FROM_CACHE} {}", stamp(FETCHED))),
+            "and was not told the strip is out of date"
+        );
     }
+    let trie = open_over(&cache, HOST, WORKSPACE);
 
     assert_eq!(
         titles(&trie, "hom"),
         vec!["Home".to_owned()],
-        "a person on a train lost the notes they already had"
-    );
-    assert_eq!(
-        trie.absence(),
-        Some(format!("{FROM_CACHE} {}", stamp(FETCHED))),
-        "and was not told the strip is out of date"
+        "a third session, after two silent refreshes, has lost the corpus"
     );
     assert!(
         cache
@@ -268,9 +281,18 @@ fn a_refusal_evicts_the_entry_and_the_next_session_starts_cold() {
     ));
 
     let trie = open_over(&cache, HOST, WORKSPACE);
-    let detail = "the server refused pages.list: You are not a member of that workspace.";
+    // The instance answering is a `CallRefused`, which is the one shape that
+    // says anything about what this token may reach. It is the exact value
+    // `play.cortex.page` returns for a workspace the token is not a member of,
+    // measured on 2026-09-15.
+    let refused = CallRefused {
+        tool: "pages.list".to_owned(),
+        code: -32002,
+        detail: "You are not a member of that workspace.".to_owned(),
+    };
+    let detail = refused.to_string();
     match refresh_from(
-        Err(ReachFailure::Session(detail.to_owned())),
+        Err(ReachFailure::Refused(refused)),
         &cache,
         HOST,
         WORKSPACE,

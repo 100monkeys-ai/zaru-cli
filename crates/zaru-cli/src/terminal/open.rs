@@ -350,6 +350,14 @@ impl Populating {
 /// the same writes and the same sentences the binary takes — see
 /// `tests/corpus_cache_from_outside.rs`, which drives all three arms.
 ///
+/// **The discriminator is whether the instance answered, and it was wrong
+/// once.** It read `ReachFailure::Endpoint` as "no transport", which that
+/// variant is not: `Endpoint` means no HTTP client could be *built*, so a DNS
+/// failure, a refused connection and a revoked token all arrived as `Session`
+/// and a person on a train would have had their corpus evicted. It is
+/// [`ReachFailure::Refused`](crate::credentials::ReachFailure) that says the
+/// instance answered, and only that arm forgets anything.
+///
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 #[must_use]
 pub fn refresh_from(
@@ -364,23 +372,25 @@ pub fn refresh_from(
             drop(cache.append(host, workspace, &entries, fetched));
             Refresh::Reached(entries)
         }
-        // The instance was never reached, so it has said nothing about this
-        // token's reach. Whatever is cached stays cached.
-        Err(failure @ crate::credentials::ReachFailure::Endpoint(_)) => {
-            Refresh::Unreachable(failure.to_string())
-        }
-        // The instance answered. Its answer is that this token cannot have
-        // this workspace's listings, so the harness stops holding them.
+        // The instance said nothing -- no client, no session, no answer, or an
+        // answer this client could not read. Silence is not a refusal, so
+        // whatever is cached stays cached and the strip says how old it is.
+        Err(
+            failure @ (crate::credentials::ReachFailure::Endpoint(_)
+            | crate::credentials::ReachFailure::Session(_)),
+        ) => Refresh::Unreachable(failure.to_string()),
+        // The instance answered, and its answer is that this token cannot have
+        // this workspace's listings. So the harness stops holding them.
         //
         // **What this cannot tell apart is stated rather than hidden**: a rate
-        // limit or a 5xx arrives through this arm too and costs one cold
-        // session. The alternative -- evict on nothing -- leaves a revoked
-        // token serving its old view of a workspace indefinitely, and there is
-        // no third signal to read, because [ADR-0006] D7 is that the server
-        // does not reveal which gate tripped.
+        // limit or a 5xx that arrives as a JSON-RPC error is an answer too, and
+        // evicting on one costs a cold session. The alternative -- evict on
+        // nothing -- leaves a revoked token serving its old view of a workspace
+        // indefinitely, and there is no finer signal to read, because
+        // [ADR-0006] D7 is that the server does not reveal which gate tripped.
         //
         // [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
-        Err(failure @ crate::credentials::ReachFailure::Session(_)) => {
+        Err(failure @ crate::credentials::ReachFailure::Refused(_)) => {
             drop(cache.evict(host, workspace));
             Refresh::Refused(failure.to_string())
         }
