@@ -6458,9 +6458,11 @@ fn an_expanded_skill_is_attributed_as_a_skill_and_the_door_showed_its_run_line()
 /// A skill is a row in the `/` picker beside the commands and the namespaces,
 /// with its own `description` in the second column.
 ///
-/// **The mutant:** `WithCommands::over` filtering to `Kind::Command` reddens
-/// the assertion, and a project's skills would be unfindable from inside a
-/// session.
+/// **The mutants:** `WithCommands::over` filtering to `Kind::Command` reddens
+/// the first assertion, and a project's skills would be unfindable from
+/// inside a session; the fallback column reading `command.source().word()`
+/// reddens the second, and an undescribed skill would be labelled with a
+/// command's word.
 #[test]
 fn an_admitted_skill_is_a_row_in_the_picker() {
     let scratch = crate::commands::fixtures::Scratch::new();
@@ -6471,11 +6473,19 @@ fn an_admitted_skill_is_a_row_in_the_picker() {
             "Triage issue $1.\n",
         ),
     );
-    let (_, surface, _) = pump_with_commands(&scratch, admitting_then(&["/tri", "/exit"]));
+    scratch.project_command(
+        "tidy.skill",
+        &crate::commands::fixtures::file("", "Tidy $1.\n"),
+    );
+    let (_, surface, _) = pump_with_commands(&scratch, admitting_then(&["/ti", "/exit"]));
 
     let painted = flattened(&surface);
     assert!(
         painted.contains("/triage triage one issue"),
         "the skill narrows to one row carrying its own description: {painted}"
+    );
+    assert!(
+        painted.contains("/tidy project skill"),
+        "and an undescribed one says where it came from and which kind it is: {painted}"
     );
 }
