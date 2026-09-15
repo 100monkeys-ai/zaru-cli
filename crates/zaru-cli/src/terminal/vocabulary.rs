@@ -750,7 +750,7 @@ mod tests {
                 },
                 Duration::ZERO,
                 &NoNotes,
-                &Vocabulary::default(),
+                &Vocabulary,
             );
         }
     }
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn a_bare_slash_offers_this_harnesss_own_twelve_namespaces() {
         assert_eq!(
-            Vocabulary::default().namespaces().len(),
+            Vocabulary.namespaces().len(),
             Namespace::ALL.len(),
             "the port answers a different number of namespaces than D2's table holds"
         );
@@ -834,7 +834,7 @@ mod tests {
         }
         .to_string();
         assert_eq!(
-            zaru_tui::shell::command::read("/stack", &Vocabulary::default()),
+            zaru_tui::shell::command::read("/stack", &Vocabulary),
             zaru_tui::shell::Typed::Refused(zaru_tui::shell::Refused::NotBuilt {
                 slash: "/stack",
                 governs: "AEGIS component fetch and status",

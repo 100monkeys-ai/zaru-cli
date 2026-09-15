@@ -821,7 +821,7 @@ fn one_session(
             // value inside it, because `Entries` is implemented for the trie
             // and not for a smart pointer around it.
             trie.as_ref(),
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut turns,
             here.as_ref()
                 .map(|here| crate::terminal::driver::Recording {

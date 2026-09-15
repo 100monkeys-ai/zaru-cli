@@ -62,7 +62,9 @@ pub fn split(text: &str) -> Option<Split<'_>> {
     // the mark is not something they can see.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let rest = text.strip_prefix(FENCE)?;
-    let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n'))?;
+    let rest = rest
+        .strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'))?;
 
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {

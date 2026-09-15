@@ -243,8 +243,7 @@ impl Admissions {
         Ok(self
             .entries()?
             .into_iter()
-            .filter(|entry| entry.directory == directory && entry.name == name && entry.body == body)
-            .next_back()
+            .rfind(|entry| entry.directory == directory && entry.name == name && entry.body == body)
             .map(|entry| entry.admitted))
     }
 

@@ -6,8 +6,8 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 use crate::commands::document::{Command, CommandRefused, Source};
+use crate::commands::{Admissions, Offer, load_from};
 use crate::commands::{date, fixtures, front_matter, placeholder};
-use crate::commands::{load_from, Admissions, Offer};
 
 /// ADR-0015 D3's file splits into a TOML head and a Markdown body, and the
 /// body keeps its own bytes.
@@ -205,7 +205,11 @@ fn the_civil_date_is_arithmetic_rather_than_a_dependency() {
     assert_eq!(date::civil(0), "1970-01-01", "the epoch");
     assert_eq!(date::civil(19_416), "2023-02-28");
     assert_eq!(date::civil(19_782), "2024-02-29", "a leap day");
-    assert_eq!(date::civil(20_711), "2026-09-15", "the day this was written");
+    assert_eq!(
+        date::civil(20_711),
+        "2026-09-15",
+        "the day this was written"
+    );
     assert_eq!(date::civil(11_016), "2000-02-29", "a leap century");
     assert_eq!(date::civil(-1), "1969-12-31", "a day before the epoch");
 }
@@ -289,7 +293,11 @@ fn an_admission_is_per_directory_and_another_checkout_asks_again() {
     let scratch = fixtures::Scratch::new();
     scratch.project_command("deploy-check", &fixtures::file("", "Check $1.\n"));
     let elsewhere = scratch.elsewhere();
-    scratch.command_in(&elsewhere, "deploy-check", &fixtures::file("", "Check $1.\n"));
+    scratch.command_in(
+        &elsewhere,
+        "deploy-check",
+        &fixtures::file("", "Check $1.\n"),
+    );
     let admissions = Admissions::under(&scratch.home());
 
     let offered = load_from(None, Some(&scratch.project()), &admissions, ceiling());
@@ -374,7 +382,14 @@ fn a_new_name_and_a_changed_body_both_ask_again() {
 #[test]
 fn a_command_named_for_a_built_in_is_refused_at_load_naming_the_collision() {
     let scratch = fixtures::Scratch::new();
-    for name in ["session", "sessions", "help", "exit", "helper", "deploy-check"] {
+    for name in [
+        "session",
+        "sessions",
+        "help",
+        "exit",
+        "helper",
+        "deploy-check",
+    ] {
         scratch.user_command(name, &fixtures::file("", "A body.\n"));
     }
     let admissions = Admissions::under(&scratch.home());
@@ -384,9 +399,9 @@ fn a_command_named_for_a_built_in_is_refused_at_load_naming_the_collision() {
         .refusals
         .iter()
         .filter_map(|refusal| match refusal {
-            CommandRefused::Shadows {
-                name, spelling, ..
-            } => Some((name.clone(), spelling.clone())),
+            CommandRefused::Shadows { name, spelling, .. } => {
+                Some((name.clone(), spelling.clone()))
+            }
             _ => None,
         })
         .collect();
@@ -415,15 +430,15 @@ fn a_command_named_for_a_built_in_is_refused_at_load_naming_the_collision() {
 #[test]
 fn one_refused_file_does_not_disable_its_neighbours() {
     let scratch = fixtures::Scratch::new();
-    scratch.user_command("broken", &fixtures::file("", "the token is hunter2 and $0\n"));
+    scratch.user_command(
+        "broken",
+        &fixtures::file("", "the token is hunter2 and $0\n"),
+    );
     scratch.user_command("fine", &fixtures::file("", "An ordinary body.\n"));
     let admissions = Admissions::under(&scratch.home());
     let loaded = load_from(Some(&scratch.home()), None, &admissions, ceiling());
 
-    assert!(
-        loaded.named("fine").is_some(),
-        "the neighbour still loads"
-    );
+    assert!(loaded.named("fine").is_some(), "the neighbour still loads");
     assert!(loaded.named("broken").is_none());
     let rendered = loaded
         .refusals
@@ -454,10 +469,7 @@ fn the_front_matter_schema_refuses_a_fourth_key_and_a_disagreeing_name() {
         "typo",
         &fixtures::file("descriptio = \"a typo\"\n", "A body.\n"),
     );
-    scratch.user_command(
-        "wrong",
-        &fixtures::file("name = \"right\"\n", "A body.\n"),
-    );
+    scratch.user_command("wrong", &fixtures::file("name = \"right\"\n", "A body.\n"));
     scratch.user_command(
         "agrees",
         &fixtures::file("name = \"agrees\"\ndescription = \"fine\"\n", "A body.\n"),
@@ -590,7 +602,10 @@ fn an_absent_admissions_file_is_no_admissions_and_a_fragment_is_not_a_line() {
     let scratch = fixtures::Scratch::new();
     let admissions = Admissions::under(&scratch.home());
     assert!(
-        admissions.entries().expect("an absent file is empty").is_empty(),
+        admissions
+            .entries()
+            .expect("an absent file is empty")
+            .is_empty(),
         "a machine that has never admitted anything has nothing to report"
     );
 
@@ -611,7 +626,10 @@ fn an_absent_admissions_file_is_no_admissions_and_a_fragment_is_not_a_line() {
     raw.push_str("{\"directory\":\"/half");
     std::fs::write(admissions.path(), raw).expect("the fragment is written");
     assert_eq!(
-        admissions.entries().expect("the complete lines parse").len(),
+        admissions
+            .entries()
+            .expect("the complete lines parse")
+            .len(),
         1,
         "the line in flight when a machine lost power is never counted"
     );

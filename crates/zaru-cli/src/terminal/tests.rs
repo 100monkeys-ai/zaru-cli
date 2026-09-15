@@ -38,7 +38,6 @@ fn no_commands() -> crate::terminal::driver::Extensions<'static> {
     crate::terminal::driver::Extensions::none(admissions)
 }
 
-
 const VERSION: &str = "0.0.0";
 
 /// The workspace the checks below attach their sessions to.
@@ -169,7 +168,7 @@ fn pump_staged_painting(
         &pace,
         &runner,
         trie,
-        &Vocabulary::default(),
+        &Vocabulary,
         &mut turns,
         None,
         &mut no_commands(),
@@ -609,7 +608,7 @@ fn the_terminal_is_restored_exactly_once_when_it_is_also_restored_by_hand() {
 /// lists agreeing: one of the two arms is the enum itself.
 #[test]
 fn the_vocabulary_is_adr_0015_d2s_own_closed_set() {
-    let rows = Vocabulary::default().namespaces();
+    let rows = Vocabulary.namespaces();
     assert_eq!(
         rows.len(),
         Namespace::ALL.len(),
@@ -661,14 +660,14 @@ fn the_nearest_match_is_the_one_the_out_of_session_parser_uses() {
     // Two different answers, so an implementation that always returned one
     // namespace cannot pass. The `-> /session` arm alone was satisfied by
     // returning the nearest to *anything*, which a red-watch found.
-    assert_eq!(Vocabulary::default().nearest("sessoin"), Some("/session"));
-    assert_eq!(Vocabulary::default().nearest("modles"), Some("/models"));
+    assert_eq!(Vocabulary.nearest("sessoin"), Some("/session"));
+    assert_eq!(Vocabulary.nearest("modles"), Some("/models"));
     assert_eq!(
-        Vocabulary::default().nearest_verb("/session", "resmue"),
+        Vocabulary.nearest_verb("/session", "resmue"),
         Some("resume")
     );
     assert_eq!(
-        Vocabulary::default().nearest_verb("/runtime", "anything"),
+        Vocabulary.nearest_verb("/runtime", "anything"),
         None,
         "a namespace that takes no verb offered one anyway"
     );
@@ -695,7 +694,7 @@ fn the_nearest_match_is_the_one_the_out_of_session_parser_uses() {
 #[test]
 fn every_built_namespace_reaches_a_request_from_the_slash_side() {
     let mut unreachable: Vec<(&str, Option<&str>)> = Vec::new();
-    for namespace in Vocabulary::default().namespaces() {
+    for namespace in Vocabulary.namespaces() {
         if !namespace.built {
             continue;
         }
@@ -1723,7 +1722,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         &pace,
         &runner,
         &NotesTrie::nothing_cached(WORKSPACE),
-        &Vocabulary::default(),
+        &Vocabulary,
         &mut Turnable::Cannot(Vec::new()),
         None,
         &mut no_commands(),
@@ -1809,7 +1808,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         ratatui::layout::Rect::new(0, 0, 80, 10),
         core::time::Duration::from_millis(1),
         &NotesTrie::nothing_cached(WORKSPACE),
-        &Vocabulary::default(),
+        &Vocabulary,
     );
     assert_eq!(
         accepting.answer(),
@@ -1829,7 +1828,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         ratatui::layout::Rect::new(0, 0, 80, 10),
         core::time::Duration::from_millis(1),
         &NotesTrie::nothing_cached(WORKSPACE),
-        &Vocabulary::default(),
+        &Vocabulary,
     );
     assert_eq!(
         declining.answer(),
@@ -2741,7 +2740,7 @@ fn the_elapsed_figure_advances_across_the_beats_of_one_turn() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             Some(&meter),
@@ -2813,7 +2812,7 @@ fn the_token_count_changes_when_an_exchange_reports_one_and_not_before() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             Some(&meter),
@@ -2881,7 +2880,7 @@ fn the_context_figure_is_the_same_bytes_on_every_frame_of_one_turn() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             Some(&meter),
@@ -3078,7 +3077,7 @@ fn the_pane_repaints_while_a_turn_is_suspended() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3160,7 +3159,7 @@ fn a_keystroke_during_a_turn_is_painted_and_enter_queues_it_as_the_next_task() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3234,7 +3233,7 @@ fn a_second_enter_during_one_turn_replaces_the_queued_task() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3275,7 +3274,7 @@ fn an_enter_on_an_empty_prompt_during_a_turn_queues_nothing() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3340,7 +3339,7 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -4064,7 +4063,7 @@ fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             Some(&mut deltas),
             None,
@@ -4247,7 +4246,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
             &source,
             &pace,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -5260,7 +5259,7 @@ fn a_queued_task_runs_when_the_turn_ends_with_no_keystroke() {
         &pace,
         &runner,
         &trie,
-        &Vocabulary::default(),
+        &Vocabulary,
         &mut turns,
         None,
         &mut no_commands(),
@@ -6149,7 +6148,7 @@ fn pump_with_commands(
         &pace,
         &runner,
         &trie,
-        &Vocabulary::default(),
+        &Vocabulary,
         &mut turns,
         None,
         &mut extensions,
@@ -6209,10 +6208,7 @@ fn a_project_that_offers_commands_is_asked_about_once_at_the_door() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Check $1.\n"),
     );
-    let (_, surface, admissions) = pump_with_commands(
-        &scratch,
-        admitting_then(&["/exit"]),
-    );
+    let (_, surface, admissions) = pump_with_commands(&scratch, admitting_then(&["/exit"]));
 
     let painted = flattened(&surface);
     assert!(
@@ -6245,10 +6241,7 @@ fn a_declined_project_admits_nothing_and_records_nothing() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Check $1.\n"),
     );
-    let (_, surface, admissions) = pump_with_commands(
-        &scratch,
-        declining_then(&["/d", "/exit"]),
-    );
+    let (_, surface, admissions) = pump_with_commands(&scratch, declining_then(&["/d", "/exit"]));
 
     assert!(
         admissions.entries().expect("the file parses").is_empty(),
@@ -6277,10 +6270,7 @@ fn a_user_command_is_a_picker_row_with_no_admission_at_all() {
             "Check $1.\n",
         ),
     );
-    let (_, surface, admissions) = pump_with_commands(
-        &scratch,
-        typing(&["/de", "/exit"]),
-    );
+    let (_, surface, admissions) = pump_with_commands(&scratch, typing(&["/de", "/exit"]));
 
     assert!(
         admissions.entries().expect("the file parses").is_empty(),
@@ -6306,10 +6296,8 @@ fn an_expanded_command_is_attributed_and_echoes_what_was_typed() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Read the workflow for $1 and say yes or no.\n"),
     );
-    let (_, surface, _) = pump_with_commands(
-        &scratch,
-        admitting_then(&["/deploy-check main", "/exit"]),
-    );
+    let (_, surface, _) =
+        pump_with_commands(&scratch, admitting_then(&["/deploy-check main", "/exit"]));
 
     let painted = flattened(&surface);
     assert!(
@@ -6340,10 +6328,7 @@ fn a_shadowing_file_is_refused_at_the_door_naming_the_collision() {
         "deploy-check",
         &crate::commands::fixtures::file("", "Check $1.\n"),
     );
-    let (_, surface, _) = pump_with_commands(
-        &scratch,
-        typing(&["/d", "/exit"]),
-    );
+    let (_, surface, _) = pump_with_commands(&scratch, typing(&["/d", "/exit"]));
 
     let painted = flattened(&surface);
     assert!(

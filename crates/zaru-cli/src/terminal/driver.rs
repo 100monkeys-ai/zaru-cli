@@ -1827,12 +1827,8 @@ impl Extensions<'_> {
 
     /// Re-read both locations, which is what an admission changes.
     fn reload(&mut self) {
-        self.loaded = crate::commands::load_from(
-            self.home,
-            self.directory,
-            self.admissions,
-            self.ceiling,
-        );
+        self.loaded =
+            crate::commands::load_from(self.home, self.directory, self.admissions, self.ceiling);
     }
 }
 

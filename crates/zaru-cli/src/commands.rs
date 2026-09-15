@@ -74,9 +74,9 @@ pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;
 
-pub use admission::{Admission, AdmissionError, Admissions, ADMISSIONS_FILE};
+pub use admission::{ADMISSIONS_FILE, Admission, AdmissionError, Admissions};
 pub use document::{
-    Command, CommandRefused, Expanded, Source, ADMISSION_STATEMENT, COMMANDS_DIRECTORY,
-    COMMAND_EXTENSION,
+    ADMISSION_STATEMENT, COMMAND_EXTENSION, COMMANDS_DIRECTORY, Command, CommandRefused, Expanded,
+    Source,
 };
-pub use load::{load_from, Loaded, Offer};
+pub use load::{Loaded, Offer, load_from};

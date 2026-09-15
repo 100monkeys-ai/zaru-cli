@@ -48,10 +48,10 @@
 use crate::cli::namespace::Namespace;
 use crate::commands::admission::Admissions;
 use crate::commands::document::{
-    Command, CommandRefused, Expanded, Source, COMMAND_EXTENSION, COMMANDS_DIRECTORY,
+    COMMAND_EXTENSION, COMMANDS_DIRECTORY, Command, CommandRefused, Expanded, Source,
 };
 use crate::commands::{front_matter, placeholder};
-use crate::config::file::{text, SizeCeiling, TomlFile};
+use crate::config::file::{SizeCeiling, TomlFile, text};
 use crate::config::{Table, Value};
 use crate::tools::WorkingDirectory;
 use std::path::{Path, PathBuf};
@@ -343,14 +343,14 @@ fn read_file(
         .map_err(CommandRefused::File)?;
 
     let description = string(&head, "description", path)?;
-    if let Some(declared) = string(&head, "name", path)? {
-        if declared != stem {
-            return Err(CommandRefused::NameDisagrees {
-                path: path.to_path_buf(),
-                stem,
-                declared,
-            });
-        }
+    if let Some(declared) = string(&head, "name", path)?
+        && declared != stem
+    {
+        return Err(CommandRefused::NameDisagrees {
+            path: path.to_path_buf(),
+            stem,
+            declared,
+        });
     }
     if let Some((offered, _)) = head.iter().find(|(key, _)| !KEYS.contains(&key.as_str())) {
         return Err(CommandRefused::UnknownKey {
@@ -358,8 +358,7 @@ fn read_file(
             offered: offered.clone(),
             // The same metric ADR-0014 D5's nearest match uses, over this
             // schema's own keys rather than a list typed here.
-            nearest: crate::config::nearest::nearest(KEYS.into_iter(), offered)
-                .unwrap_or(KEYS[0]),
+            nearest: crate::config::nearest::nearest(KEYS, offered).unwrap_or(KEYS[0]),
         });
     }
 

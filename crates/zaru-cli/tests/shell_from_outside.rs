@@ -52,7 +52,6 @@ fn no_commands() -> zaru_cli::terminal::driver::Extensions<'static> {
     zaru_cli::terminal::driver::Extensions::none(admissions)
 }
 
-
 /// A value planted in the session's transcript, so what is read back could
 /// only have come from the file the check wrote.
 const NONCE: &str = "planted-4d81f";
@@ -280,7 +279,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
             &Instant,
             &runner,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut Turnable::Cannot(Vec::new()),
             None,
             &mut no_commands(),
@@ -533,7 +532,7 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
                 &Instant,
                 &runner,
                 &trie,
-                &Vocabulary::default(),
+                &Vocabulary,
                 &mut Turnable::Cannot(Vec::new()),
                 None,
                 &mut no_commands(),
@@ -693,7 +692,7 @@ fn corpus_an_interrupt_between_two_tool_calls_leaves_at_most_the_event_in_flight
                 &source,
                 &Beats::default(),
                 &trie,
-                &Vocabulary::default(),
+                &Vocabulary,
                 &mut now,
                 None,
                 None,
@@ -762,7 +761,7 @@ fn an_uninterrupted_turn_leaves_a_matched_pair_for_every_call() {
                 &source,
                 &Beats::default(),
                 &trie,
-                &Vocabulary::default(),
+                &Vocabulary,
                 &mut now,
                 None,
                 None,
@@ -830,7 +829,7 @@ fn a_standing_tip_yields_on_the_first_keystroke_during_a_turn() {
                 &source,
                 &Beats::default(),
                 &trie,
-                &Vocabulary::default(),
+                &Vocabulary,
                 &mut now,
                 None,
                 None,
@@ -1297,7 +1296,7 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
                     &source,
                     &Beats::default(),
                     &trie,
-                    &Vocabulary::default(),
+                    &Vocabulary,
                     &mut now,
                     None,
                     None,
@@ -1777,7 +1776,7 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
             &Instant,
             &runner,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut Turnable::Cannot(Vec::new()),
             None,
             &mut no_commands(),
@@ -2350,7 +2349,7 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
             &Instant,
             &runner,
             &trie,
-            &Vocabulary::default(),
+            &Vocabulary,
             &mut Turnable::Cannot(Vec::new()),
             None,
             &mut no_commands(),
@@ -2427,7 +2426,7 @@ fn corpus_a_masked_answer_is_absent_from_the_history_file() {
             pane,
             core::time::Duration::from_millis(1),
             &NotesTrie::nothing_cached("docs"),
-            &Vocabulary::default(),
+            &Vocabulary,
         );
         if let Some(line) = shell.take_submitted() {
             history.append(&here, &line).expect("append");
@@ -2445,7 +2444,7 @@ fn corpus_a_masked_answer_is_absent_from_the_history_file() {
             pane,
             core::time::Duration::from_millis(1),
             &NotesTrie::nothing_cached("docs"),
-            &Vocabulary::default(),
+            &Vocabulary,
         );
         if let Some(line) = shell.take_submitted() {
             history.append(&here, &line).expect("append");
