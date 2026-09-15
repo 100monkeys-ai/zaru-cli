@@ -1026,3 +1026,122 @@ async fn a_search_that_answers_in_another_shape_is_refused_naming_the_expectatio
         "the refusal names neither the tool nor the field that was missing: {rendered}"
     );
 }
+
+// --- ADR-0007 D6's cache holds a declaration, not a name --------------------
+//
+// D5 projects the cache to the agent as an MCP server, and a model is offered
+// a name, a description and a parameter schema. These three checks are the
+// crate half of that: what `tools/list` carries whole, that the two readings
+// are one `tools/list`, and the run-time-named call door D5's projection needs.
+
+#[tokio::test]
+async fn adr_0007_d6_a_declaration_carries_the_name_the_description_and_the_schema() {
+    let attached = attach().await;
+    let declared = attached
+        .session
+        .tool_declarations()
+        .await
+        .expect("tools/list answers");
+
+    assert_eq!(
+        declared.len(),
+        FIRST_SCOPE.len(),
+        "every tool the server reported should carry a declaration"
+    );
+    let first = declared.first().expect("the fixture reports four tools");
+    assert_eq!(first.name, FIRST_SCOPE[0], "the name is the server's");
+    assert_eq!(
+        first.description.as_deref(),
+        Some("a fixture tool"),
+        "ADR-0007 D6: the description is carried as the server wrote it, uninterpreted"
+    );
+    assert_eq!(
+        first.input_schema, r#"{"type":"object"}"#,
+        "the schema is the bytes the server sent, re-serialised rather than re-shaped -- a \
+         declaration with no schema is not JSON and a provider handed one refuses the surface"
+    );
+}
+
+#[tokio::test]
+async fn adr_0007_d6_the_names_and_the_declarations_are_one_tools_list() {
+    let attached = attach().await;
+    let names = attached.session.tools().await.expect("tools/list answers");
+    let declared = attached
+        .session
+        .tool_declarations()
+        .await
+        .expect("tools/list answers");
+
+    assert_eq!(
+        names,
+        declared
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>(),
+        "`tools` is implemented over `tool_declarations`, so the two cannot answer differently \
+         about what a token grants"
+    );
+}
+
+#[tokio::test]
+async fn adr_0007_d5_a_tool_named_at_run_time_is_called_and_its_answer_carried_back() {
+    let attached = attach().await;
+
+    // The accepting arm: a tool the server serves, named as a string the way
+    // a projected call names one, with its arguments as JSON text.
+    let answered = attached
+        .session
+        .call_declared(
+            "workspaces.resolve_slug",
+            r#"{"slug":"zaru","instance":"fixture"}"#,
+        )
+        .await
+        .expect("the fixture answers a tool it serves");
+    assert!(
+        answered.contains(RESOLVED_ID),
+        "the server's own answer is carried back unread: {answered}"
+    );
+
+    // The refusing arm: the server's refusal reaches the caller unchanged
+    // rather than being turned into something this crate invented.
+    let refused = attached
+        .session
+        .call_declared("pages.apply_patch", "{}")
+        .await
+        .expect_err("a tool outside the scope is refused by the server");
+    assert!(
+        matches!(refused, NotesError::Call(_)),
+        "a server refusal is carried out as a refusal: {refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn adr_0007_d5_arguments_that_are_not_a_json_object_are_refused_before_the_wire() {
+    let attached = attach().await;
+
+    for offered in [r#""a string""#, "[1,2,3]", "not json at all", "7"] {
+        let refused = attached
+            .session
+            .call_declared("pages.read", offered)
+            .await
+            .expect_err("arguments that are not an object are not a call");
+        match refused {
+            NotesError::Unreadable { tool, expected } => {
+                assert_eq!(tool, "tools/call");
+                assert_eq!(expected, "arguments that are a JSON object");
+            }
+            other => panic!("{offered} should be unreadable, not {other:?}"),
+        }
+    }
+
+    // The accepting sibling, so a refuse-everything implementation cannot
+    // pass: an object reaches the server.
+    let answered = attached
+        .session
+        .call_declared("pages.read", r#"{"pathOrId":"home","workspace":"w"}"#)
+        .await;
+    assert!(
+        answered.is_ok(),
+        "an object is a call: {answered:?}"
+    );
+}

@@ -52,7 +52,9 @@ pub mod transport;
 pub use address::{Instance, WorkspaceId, WorkspaceSlug};
 pub use attachment::{Attachment, AttachmentRefused};
 pub use bearer::{Bearer, REDACTED};
-pub use client::{GROUND, LIST_ATOMS, LIST_PAGES, Negotiated, SEARCH_GLOBAL, Session};
+pub use client::{
+    GROUND, LIST_ATOMS, LIST_PAGES, Negotiated, SEARCH_GLOBAL, Session, ToolDeclaration,
+};
 pub use corpus::Corpus;
 pub use endpoint::{Endpoint, EndpointFailure};
 pub use error::{CallRefused, NotesError};

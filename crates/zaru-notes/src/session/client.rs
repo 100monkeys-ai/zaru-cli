@@ -113,6 +113,28 @@ pub struct Negotiated {
     pub serves_tools: bool,
 }
 
+/// One tool as `tools/list` declares it: a name, what it is for, and the
+/// schema its arguments take.
+///
+/// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
+/// D6 caches this per token and D5 projects it to the agent. **Three fields,
+/// because three is what a model is offered** — a declaration missing any of
+/// them is not one a provider will accept.
+///
+/// `description` is an `Option` because the protocol makes it one: a server
+/// may declare a tool and say nothing about it. `input_schema` is not, because
+/// MCP requires every tool to carry one, and a tool that arrived without would
+/// have failed to deserialise long before this type saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDeclaration {
+    /// What the tool is called, as the server spells it.
+    pub name: String,
+    /// What it is for, in the server's own words, where the server gave any.
+    pub description: Option<String>,
+    /// The JSON Schema its arguments take, as the bytes the server sent.
+    pub input_schema: String,
+}
+
 /// Receives the notifications a server sends unsolicited.
 ///
 /// Only one of them matters here: [ADR-0007] D6 invalidates a cached tool scope
@@ -255,15 +277,114 @@ impl Session {
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     pub async fn tools(&self) -> Result<Vec<String>, NotesError> {
+        Ok(self
+            .tool_declarations()
+            .await?
+            .into_iter()
+            .map(|declared| declared.name)
+            .collect())
+    }
+
+    /// The same `tools/list`, whole: what each tool is called, what it is for,
+    /// and the schema its arguments take.
+    ///
+    /// # Why this exists beside [`Session::tools`], which returns names
+    ///
+    /// [ADR-0007] D6 caches `tools/list` "once per token at attach", and D5
+    /// projects that cache to the agent as an MCP server. A model is not
+    /// offered a bare name: a declaration is a name, a description and a
+    /// parameter schema, and a schema that is absent is not JSON — a provider
+    /// handed one refuses the whole surface. So the cache D6 describes has to
+    /// hold what D5 needs to declare, and **names alone cannot be projected**.
+    ///
+    /// `tools()` is kept and is implemented over this, so the two cannot
+    /// answer differently and one `tools/list` serves both. Every caller that
+    /// only wants the names — [ADR-0006] D4's composer-scope comparison, D7's
+    /// tool count — still asks for names.
+    ///
+    /// **Nothing here interprets the answer**, which is D6's own instruction:
+    /// "the cache needs no interpretation". The description is carried as the
+    /// server wrote it and the schema is carried as the bytes the server sent,
+    /// re-serialised rather than re-shaped.
+    ///
+    /// # Errors
+    ///
+    /// [`NotesError::Transport`] when the call cannot be made, and
+    /// [`NotesError::Unreadable`] when a tool's schema will not serialise —
+    /// which is a schema this client could not hand a provider, reported
+    /// where it is read rather than where it would later fail.
+    ///
+    /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub async fn tool_declarations(&self) -> Result<Vec<ToolDeclaration>, NotesError> {
         let tools = self
             .service
             .list_all_tools()
             .await
             .map_err(|error| service_failure("tools/list", &error))?;
-        Ok(tools
+        tools
             .into_iter()
-            .map(|tool| tool.name.into_owned())
-            .collect())
+            .map(|tool| {
+                let input_schema = serde_json::to_string(tool.input_schema.as_ref()).map_err(
+                    |_error| NotesError::Unreadable {
+                        tool: "tools/list".to_owned(),
+                        expected: "a tool whose input schema serialises as JSON",
+                    },
+                )?;
+                Ok(ToolDeclaration {
+                    name: tool.name.into_owned(),
+                    description: tool.description.map(std::borrow::Cow::into_owned),
+                    input_schema,
+                })
+            })
+            .collect()
+    }
+
+    /// One call to a tool named at run time, with its arguments as JSON.
+    ///
+    /// # Why this door is public where [`Session::call`] is private
+    ///
+    /// Every other caller in this crate names its tool at compile time —
+    /// `pages.read`, `search.global`, the two listings — because each has a
+    /// typed answer this crate knows how to read. This one does not: the tool
+    /// is whichever one [ADR-0007] D5's projection declared to the model, and
+    /// the answer is whatever that tool returns. So it takes the name and the
+    /// arguments as text and returns the result's first text block as text,
+    /// **reading nothing and interpreting nothing**.
+    ///
+    /// That is the whole difference and it is deliberate. A door that parsed
+    /// the answer would be this crate guessing a shape for ninety-four tools
+    /// it has never seen — the failure `search.global` already produced once,
+    /// where a reader written against a guessed shape refused a live cortex.
+    /// A refusal from the server is carried out unchanged, for the same
+    /// reason: the model asked, and what the server said is the answer.
+    ///
+    /// # Errors
+    ///
+    /// [`NotesError::Unreadable`] when `arguments` is not a JSON object — a
+    /// tool call's arguments are an object in every MCP tool this substrate
+    /// serves, and a string or an array is the model having asked for
+    /// something that is not a call. [`NotesError::Call`] when the server
+    /// refuses, and [`NotesError::Transport`] when the call cannot be made.
+    ///
+    /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+    pub async fn call_declared(
+        &self,
+        tool: &str,
+        arguments: &str,
+    ) -> Result<String, NotesError> {
+        let parsed: Value =
+            serde_json::from_str(arguments).map_err(|_error| NotesError::Unreadable {
+                tool: "tools/call".to_owned(),
+                expected: "arguments that are a JSON object",
+            })?;
+        let Value::Object(object) = parsed else {
+            return Err(NotesError::Unreadable {
+                tool: "tools/call".to_owned(),
+                expected: "arguments that are a JSON object",
+            });
+        };
+        self.call(tool, object).await
     }
 
     /// Resolve a slug to an identifier, per [ADR-0006] D7.
