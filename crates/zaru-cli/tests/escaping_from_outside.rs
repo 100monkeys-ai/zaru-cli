@@ -226,8 +226,8 @@ fn constructions(sources: &[PathBuf]) -> Vec<Construction> {
         let source = read(file);
         let lines: Vec<&str> = source.lines().collect();
         for (at, line) in lines.iter().enumerate() {
-            let escapes = usize::from(line.contains("escape_debug"))
-                + usize::from(formats_with_debug(line));
+            let escapes =
+                usize::from(line.contains("escape_debug")) + usize::from(formats_with_debug(line));
             if escapes == 0 {
                 continue;
             }
@@ -494,8 +494,8 @@ fn the_sentence_a_reader_sees_quotes_what_they_typed() {
 fn every_refusal_this_sweep_touched_carries_the_value_as_offered() {
     use zaru_cli::config::{Key, KeyRefused};
     use zaru_cli::failure::{Statement, StatementRefused};
-    use zaru_cli::session::{SessionId, SessionIdRefused};
     use zaru_cli::providers::{EndpointRefused, ProviderEndpoint};
+    use zaru_cli::session::{SessionId, SessionIdRefused};
     use zaru_core::iteration::validator::{Name, NameRefused};
 
     let offered = "a\tb";
@@ -522,7 +522,10 @@ fn every_refusal_this_sweep_touched_carries_the_value_as_offered() {
     else {
         panic!("a tab in an endpoint is the control refusal");
     };
-    assert_eq!(held, offered, "providers::ProviderEndpoint: {held:?} instead");
+    assert_eq!(
+        held, offered,
+        "providers::ProviderEndpoint: {held:?} instead"
+    );
     carried += 1;
 
     let NameRefused::Control { offered: held } =
