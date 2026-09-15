@@ -1030,7 +1030,7 @@ fn the_turns_events_reach_the_transcript_as_they_occur() {
         "a turn that started emitted nothing, so the sink is not on the loop's slice"
     );
     // The turn began, and the record says which turn of the session and what
-    // its ceiling was -- the two fields a consumer renders "1 of 8" from.
+    // its optional ceiling was -- an absent value means this turn is unlimited.
     //
     // **The turn loop's first record rather than the file's**, since
     // 2026-09-05: ADR-0011 D2's notice is stated at session *start*, before
@@ -1043,8 +1043,8 @@ fn the_turns_events_reach_the_transcript_as_they_occur() {
         .find(|line| line.starts_with("{\"turn_loop\":"))
         .expect("the turn started, so its stream is on disk");
     assert!(
-        first_of_the_loop.contains("\"turn_started\"") && first_of_the_loop.contains("\"of\":8"),
-        "the turn loop's first record is not the turn starting at this binary's ceiling:          {first_of_the_loop}",
+        first_of_the_loop.contains("\"turn_started\"") && first_of_the_loop.contains("\"of\":null"),
+        "the turn loop's first record is not the turn starting unlimited: {first_of_the_loop}",
     );
     // Every line is one JSON object naming its producer, which is what makes
     // the file readable by anything rather than only by this harness.

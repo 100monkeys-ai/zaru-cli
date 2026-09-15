@@ -1,8 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The one number the tool-call loop takes from its caller, and the boundary
-//! that refuses a useless one.
+//! The optional bound the tool-call loop takes from its caller.
 //!
 //! # No record carries this number, and the loop does not invent one
 //!
@@ -12,7 +11,7 @@
 //! tools — and an unbounded outer loop does not terminate, which is not a
 //! property a harness may acquire by omission.
 //!
-//! So the bound arrives as a parameter and is refused at zero, in the shape
+//! So a finite bound arrives as a parameter and is refused at zero, in the shape
 //! [`Ceiling`](crate::iteration::Ceiling),
 //! [`TruncationBudget`](crate::iteration::TruncationBudget), ADR-0007's `Ttl`
 //! and ADR-0011's `OutputBudget` already use here. A budget invented by the
@@ -41,14 +40,20 @@ impl fmt::Display for CeilingIsZero {
 
 impl std::error::Error for CeilingIsZero {}
 
-/// How many times one turn may ask the model before it is exhausted.
+/// Whether one turn may ask the model without an exchange bound, or how many
+/// times it may ask before it is exhausted.
 ///
 /// It bounds **exchanges with the model**, not tool calls, because that is
 /// the thing that repeats: a model may ask for five tools in one answer and
 /// the loop runs all five before asking again. Bounding the calls instead
 /// would make a turn's budget depend on how the provider happened to batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToolCallCeiling(u32);
+pub enum ToolCallCeiling {
+    /// No exchange count ends the turn.
+    Unlimited,
+    /// A positive exchange count ends the turn while it is still calling tools.
+    Limited(u32),
+}
 
 impl ToolCallCeiling {
     /// Take a ceiling from the caller, refusing zero.
@@ -60,13 +65,22 @@ impl ToolCallCeiling {
         if exchanges == 0 {
             return Err(CeilingIsZero);
         }
-        Ok(Self(exchanges))
+        Ok(Self::Limited(exchanges))
     }
 
-    /// The ceiling as a count of exchanges.
+    /// An unbounded exchange limit.
     #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
+    pub const fn unlimited() -> Self {
+        Self::Unlimited
+    }
+
+    /// The finite ceiling as a count of exchanges, if one was configured.
+    #[must_use]
+    pub const fn limit(self) -> Option<u32> {
+        match self {
+            Self::Unlimited => None,
+            Self::Limited(exchanges) => Some(exchanges),
+        }
     }
 }
 
@@ -86,6 +100,7 @@ mod tests {
             ToolCallCeiling::new(1).is_ok(),
             "one exchange is a usable ceiling"
         );
-        assert_eq!(ToolCallCeiling::new(3).expect("three").get(), 3);
+        assert_eq!(ToolCallCeiling::new(3).expect("three").limit(), Some(3));
+        assert_eq!(ToolCallCeiling::unlimited().limit(), None);
     }
 }

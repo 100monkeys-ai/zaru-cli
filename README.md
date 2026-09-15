@@ -126,6 +126,17 @@ as a success or an error. `runtime.max_iterations` sets the ceiling and a
 project may only lower it; where nothing sets it, ADR-0001's per-tier default
 applies, which at `bare` is one.
 
+The outer model-and-tool loop is unlimited by default. Set a finite per-turn
+exchange limit in `zaru.toml` only when a project needs one:
+
+```toml
+[runtime]
+max_tool_exchanges = 32
+```
+
+`runtime.max_tool_exchanges` counts model exchanges rather than individual tool
+calls; it is independent of `runtime.max_iterations`.
+
 The iteration loop and the tool-call loop are in `zaru-core`, headless,
 and **as of 2026-09-05 every port either loop needs has a product
 implementation in `zaru-cli`**. A validator's command runs as a real child

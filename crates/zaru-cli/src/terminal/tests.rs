@@ -357,7 +357,7 @@ fn one_emission_reaches_the_transcript_and_the_pane() {
         let ran = futures_lite_block_on(zaru_core::tool_call::run(
             3,
             Start::Task("say the number"),
-            crate::cli::layers::tool_call_ceiling(),
+            zaru_core::tool_call::ToolCallCeiling::unlimited(),
             witness,
             Ports {
                 model: &model,
@@ -1051,7 +1051,7 @@ fn every_turn_event() -> Vec<zaru_core::tool_call::Event> {
 
     let took = Duration::from_millis(1_250);
     let mut events = vec![
-        Event::TurnStarted { n: 2, of: 8 },
+        Event::TurnStarted { n: 2, of: Some(8) },
         Event::ModelResponded {
             round: 1,
             tokens: 451,
@@ -2247,7 +2247,7 @@ fn a_turns_tool_lines_are_collected_for_layer_six_and_nothing_else_is() {
     let mut collector = crate::compose::ToolLines::default();
     let elapsed = core::time::Duration::from_millis(5);
     for event in [
-        Event::TurnStarted { n: 1, of: 8 },
+        Event::TurnStarted { n: 1, of: Some(8) },
         Event::ModelResponded {
             round: 1,
             tokens: 400,
@@ -2836,7 +2836,7 @@ fn quiet_race(
 
 /// An exchange begins and put a first event on the pane.
 fn turn_started() -> zaru_core::tool_call::Event {
-    zaru_core::tool_call::Event::TurnStarted { n: 1, of: 8 }
+    zaru_core::tool_call::Event::TurnStarted { n: 1, of: Some(8) }
 }
 
 /// [ADR-0028] D5's quiet line is said **once** when an exchange generates
@@ -4887,7 +4887,8 @@ fn adr_0010_d2s_conversation_replays_in_order_above_the_new_turn() {
             text: text.to_owned(),
         })
     };
-    let turn = |n: u32| Record::TurnLoop(zaru_core::tool_call::Event::TurnStarted { n, of: 8 });
+    let turn =
+        |n: u32| Record::TurnLoop(zaru_core::tool_call::Event::TurnStarted { n, of: Some(8) });
 
     let records = vec![
         spoken(1, Voice::User, "count to three"),

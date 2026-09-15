@@ -117,6 +117,45 @@ pub fn field() -> Field {
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub const MAX_ITERATIONS_KEY: &str = "runtime.max_iterations";
 
+/// The optional outer-loop exchange limit. Its absence means unlimited.
+pub const MAX_TOOL_EXCHANGES_KEY: &str = "runtime.max_tool_exchanges";
+
+/// [`MAX_TOOL_EXCHANGES_KEY`] as a configuration key.
+#[must_use]
+pub fn max_tool_exchanges_key() -> Key {
+    Key::new(MAX_TOOL_EXCHANGES_KEY).expect("runtime.max_tool_exchanges is a well-formed key")
+}
+
+/// The project layer may introduce a finite limit or lower one granted above it.
+#[must_use]
+pub fn max_tool_exchanges_field() -> Field {
+    Field::ceiling()
+}
+
+/// Resolve the outer tool-call exchange limit. No supplied value is unlimited.
+///
+/// # Errors
+///
+/// [`CeilingRefused`] when a configured value is not a positive whole number.
+pub fn tool_call_ceiling_for(
+    resolution: &Resolution,
+) -> Result<zaru_core::tool_call::ToolCallCeiling, CeilingRefused> {
+    let key = max_tool_exchanges_key();
+    let Some(value) = resolution.get(&key) else {
+        return Ok(zaru_core::tool_call::ToolCallCeiling::unlimited());
+    };
+    let Some(count) = value.as_integer() else {
+        return Err(CeilingRefused::WrongShape {
+            key,
+            found: value.shape(),
+        });
+    };
+    u32::try_from(count)
+        .ok()
+        .and_then(|count| zaru_core::tool_call::ToolCallCeiling::new(count).ok())
+        .ok_or(CeilingRefused::NotACount { key, found: count })
+}
+
 /// [`MAX_ITERATIONS_KEY`] as a [`Key`].
 ///
 /// # Panics

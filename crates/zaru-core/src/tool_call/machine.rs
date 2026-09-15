@@ -160,7 +160,7 @@ where
         sinks,
         &Event::TurnStarted {
             n,
-            of: ceiling.get(),
+            of: ceiling.limit(),
         },
     );
 
@@ -374,7 +374,7 @@ where
             results.push(outcome.for_the_model(ports.redactor));
         }
 
-        if round >= ceiling.get() {
+        if ceiling.limit().is_some_and(|limit| round >= limit) {
             return Ok(finish(
                 sinks,
                 n,

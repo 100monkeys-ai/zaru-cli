@@ -611,6 +611,10 @@ pub fn schema() -> Schema {
             crate::runtime::max_iterations_key(),
             crate::runtime::max_iterations_field(),
         )
+        .with(
+            crate::runtime::max_tool_exchanges_key(),
+            crate::runtime::max_tool_exchanges_field(),
+        )
 }
 
 /// Fold the layers this binary can read, over a caller's environment.
@@ -660,64 +664,6 @@ pub fn resolve(
 /// [`LoadFailure`].
 pub fn resolve_from_process(overrides: &Overrides) -> Result<Resolution, LoadFailure> {
     resolve(overrides, std::env::vars(), &Files::from_process())
-}
-
-// --- The four numbers a turn needs, and the one that is not here ------------
-//
-// [ADR-0014] D3's `runtime.max_iterations` is **not** in this block, and that
-// is the distinction the whole block exists to make. It is a declared
-// configuration key, resolved through D1's five layers and lowered only by a
-// project under D6's `LowerOnly`, so a user chooses it and `zaru config
-// explain runtime.max_iterations` shows where their value came from. The four
-// below are not settable by anybody: no record names a number for one of them
-// and none declares a key, so this binary chooses, in one place, and says so.
-//
-// Each is a **delegated coordinator ruling of 2026-09-05** under Jeshua's
-// directive of that day, open to his veto, and each is recorded as an accepted
-// Update on the record that owns the quantity. They sit here rather than in
-// the modules that consume them for the reason `FILE_CEILING_BYTES` already
-// gives: the constructors take a required argument with no default, because a
-// default there would be a value chosen for a different caller ([Verification
-// lessons] §14), so a caller has to choose and this module is where this
-// binary's choices live.
-
-/// How many exchanges with the model one turn may take.
-///
-/// **Eight, and no record carries a number for this.** [ADR-0008]'s own Status
-/// tracking says so in as many words — "**A row for it belongs in ADR-0001 D3's
-/// table or in this record**, and neither has one" — and that record is equally
-/// clear that the quantity is not [ADR-0001] D3's: "ADR-0001 D3's table is
-/// *iteration* ceilings, per tier and per provider, and iterations are the
-/// inner loop's."
-///
-/// So it is chosen here, and the argument is termination rather than
-/// capability. **The mechanism's own floor is two**: a turn that calls a tool
-/// spends one exchange asking for it and a second answering with its result,
-/// so a ceiling of one can never both call a tool and reply. Above that floor
-/// nothing bounds how many times a model that keeps requesting tools may be
-/// asked, and "an unbounded loop does not terminate, which is not a property a
-/// harness may acquire by omission" — that record again. Eight is deliberately
-/// generous against the floor, because the two outcomes are not symmetric: a
-/// turn stopped at the ceiling is reported as `Exhausted` and the user reads
-/// what was tried and where it stopped, while a turn that never stops is a
-/// harness that has to be killed.
-///
-/// **It is not derived from ADR-0001 D3's cells and must not be read as
-/// related to them.** Tying the outer ceiling to the tier would invent the
-/// relation that record declines to state.
-///
-/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
-/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-pub const TOOL_CALL_CEILING: u32 = 8;
-
-/// [`TOOL_CALL_CEILING`] as the loop takes it.
-///
-/// # Panics
-///
-/// Never. [`TOOL_CALL_CEILING`] is not zero.
-#[must_use]
-pub fn tool_call_ceiling() -> zaru_core::tool_call::ToolCallCeiling {
-    zaru_core::tool_call::ToolCallCeiling::new(TOOL_CALL_CEILING).expect("eight is not zero")
 }
 
 /// How long a child process started by [ADR-0011] D1's `cmd.run` may run.
