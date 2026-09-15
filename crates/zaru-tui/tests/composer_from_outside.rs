@@ -66,6 +66,13 @@ const STRANGER: [(&str, &str); 3] = [
 ];
 
 impl CommandVocabulary for Commands {
+    /// Nothing, so every check in this file is about the namespace corpus
+    /// alone and a row appearing here would be a row this fixture did not put
+    /// there.
+    fn extensions(&self) -> Vec<zaru_tui::shell::Extension> {
+        Vec::new()
+    }
+
     fn namespaces(&self) -> Vec<Namespace> {
         STRANGER
             .into_iter()

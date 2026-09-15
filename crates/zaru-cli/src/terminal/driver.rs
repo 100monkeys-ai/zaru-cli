@@ -955,6 +955,10 @@ impl zaru_tui::composer::Entries for NoEntries {
 struct NoVocabulary;
 
 impl zaru_tui::shell::CommandVocabulary for NoVocabulary {
+    fn extensions(&self) -> Vec<zaru_tui::shell::Extension> {
+        Vec::new()
+    }
+
     fn namespaces(&self) -> Vec<zaru_tui::shell::Namespace> {
         Vec::new()
     }

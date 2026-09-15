@@ -10,7 +10,7 @@
 
 use crate::composer::entries::{Entry, EntryKind};
 use crate::composer::search::SearchState;
-use crate::shell::port::Namespace;
+use crate::shell::port::{Extension, Namespace};
 
 /// Which of D1's two modes the strip is in.
 ///
@@ -119,6 +119,18 @@ pub enum StripContent {
         /// like everywhere else in this composer, and empty once the line
         /// carries a space, because the namespace has then been named.
         matches: Vec<Namespace>,
+        /// The **second corpus**, since 2026-09-15: [ADR-0015] D1's commands
+        /// this session has loaded, narrowed by the same prefix and shown
+        /// after the namespaces.
+        ///
+        /// **Empty everywhere it was empty before**, which is what keeps every
+        /// existing assertion about this variant byte-identical — a project
+        /// whose commands nobody has admitted, and a session with no command
+        /// files at all, both show exactly the rows they showed on
+        /// 2026-09-14.
+        ///
+        /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+        extensions: Vec<Extension>,
         /// How many further namespaces matched and are not in `matches`.
         ///
         /// Zero when they all fit. When it is not, the last row is

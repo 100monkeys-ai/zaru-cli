@@ -25,7 +25,7 @@
 use crate::composer::Composer;
 use crate::composer::entries::{Entries, Entry, EntryKind};
 use crate::shell::fixtures::StagedVocabulary;
-use crate::shell::port::{CommandVocabulary, Namespace};
+use crate::shell::port::{CommandVocabulary, Extension, Namespace};
 use core::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, TestBackend};
@@ -147,6 +147,7 @@ pub(crate) fn press(composer: &mut Composer, key: Key, entries: &dyn Entries) {
 #[derive(Debug)]
 pub(crate) struct VocabularyOf {
     namespaces: Vec<Namespace>,
+    extensions: Vec<Extension>,
 }
 
 impl VocabularyOf {
@@ -163,11 +164,40 @@ impl VocabularyOf {
                     verbs: &[],
                 })
                 .collect(),
+            extensions: Vec::new(),
         }
+    }
+
+    /// The same, plus `count` ADR-0015 D1 commands reachable by the same
+    /// prefix, so a check can stage a picker whose rows come from **both**
+    /// corpora and vary either half on its own.
+    pub(crate) fn and_commands(mut self, count: usize) -> Self {
+        // `/sédulous` shares a prefix with exactly one of the namespaces
+        // above -- `/sédum` -- which is the only staging under which "a
+        // prefix reaching one of each is not completed" can be measured at
+        // all. A corpus whose spellings only ever collide with each other is
+        // awkward on one axis and ordinary on the axis that mutant moves
+        // ([Verification lessons] §51).
+        //
+        // [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+        const SPELLINGS: [&str; 4] = ["/sérail", "/sédulous", "/sérum", "/sévère"];
+        self.extensions = SPELLINGS
+            .into_iter()
+            .take(count)
+            .map(|slash| Extension {
+                slash: slash.to_owned(),
+                governs: "a staged command".to_owned(),
+            })
+            .collect();
+        self
     }
 }
 
 impl CommandVocabulary for VocabularyOf {
+    fn extensions(&self) -> Vec<Extension> {
+        self.extensions.clone()
+    }
+
     fn namespaces(&self) -> Vec<Namespace> {
         self.namespaces.clone()
     }

@@ -67,8 +67,8 @@ pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{
-    Answered, CommandVocabulary, Confirmation, Line, Namespace, Palette, Prose, Register, Row,
-    SecretAnswer, SecretRequest, TranscriptSource,
+    Answered, CommandVocabulary, Confirmation, Extension, Line, Namespace, Palette, Prose,
+    Register, Row, SecretAnswer, SecretRequest, TranscriptSource,
 };
 
 use crate::composer::{Composer, Entries};

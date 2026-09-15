@@ -46,7 +46,7 @@ pub use search::{
 };
 pub use strip::{PickerKind, StripContent, StripMode};
 
-use crate::shell::port::{CommandVocabulary, Namespace};
+use crate::shell::port::{CommandVocabulary, Extension, Namespace};
 use core::cell::Cell;
 use core::time::Duration;
 use tui_textarea::{Input, Key, TextArea};
@@ -147,6 +147,15 @@ pub struct Composer {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     commands: Vec<Namespace>,
+    /// The picker's **second corpus**: [ADR-0015] D1's commands this session
+    /// has loaded, narrowed by the same prefix on the same keystrokes.
+    ///
+    /// Kept beside [`Composer::commands`] rather than folded into it, for the
+    /// reason [`crate::shell::Extension`] gives: a namespace is a `const` row
+    /// of `&'static str` and a command is a file somebody wrote a moment ago.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    extensions: Vec<Extension>,
     /// The server's results, once a response has been delivered for the query
     /// now in the input. `None` until then, so "no results yet" and "a
     /// response carrying no results" stay different states.
@@ -198,6 +207,7 @@ impl Composer {
             tip: None,
             matches: Vec::new(),
             commands: Vec::new(),
+            extensions: Vec::new(),
             server: None,
             search: SearchState::Idle,
             absence: None,
@@ -407,13 +417,19 @@ impl Composer {
     /// only while the trimmed line holds none of its own, so the prompt is
     /// that leading run followed by the word and nothing else.
     fn complete(&mut self, filter: &str) {
-        let [namespace] = self.commands.as_slice() else {
-            return;
+        // The uniqueness rule is over **both** corpora: a `/dep` that reaches
+        // one namespace and one command reaches two spellings, and completing
+        // it to either would be a guess. The slice patterns say so without
+        // telling "several matched" and "none matched" apart, which is what
+        // this function has never had to do.
+        let spelling: String = match (self.commands.as_slice(), self.extensions.as_slice()) {
+            ([namespace], []) => namespace.slash.to_owned(),
+            ([], [extension]) => extension.slash.clone(),
+            _ => return,
         };
-        if namespace.slash == filter {
+        if spelling == filter {
             return;
         }
-        let spelling = namespace.slash;
         let text = self.text();
         let leading: String = text.chars().take_while(|c| c.is_whitespace()).collect();
         let mut input = TextArea::default();
@@ -482,6 +498,22 @@ impl Composer {
                 .namespaces()
                 .into_iter()
                 .filter(|namespace| namespace.slash.starts_with(filter.as_str()))
+                .collect(),
+            Intent::Command { picking: None }
+            | Intent::Empty
+            | Intent::Picker { .. }
+            | Intent::Query { .. } => Vec::new(),
+        };
+        // The same narrowing over the same keystroke, on the corpus a project
+        // and a user contribute. One rule, two corpora: a command line narrows
+        // by prefix and never by nearest, which is the refusal's job.
+        self.extensions = match &intent {
+            Intent::Command {
+                picking: Some(filter),
+            } => vocabulary
+                .extensions()
+                .into_iter()
+                .filter(|extension| extension.slash.starts_with(filter.as_str()))
                 .collect(),
             Intent::Command { picking: None }
             | Intent::Empty
@@ -582,16 +614,25 @@ impl Composer {
             // reproducing.
             Intent::Command { .. } => {
                 let rows = usize::from(crate::shell::STRIP_ROWS);
-                if self.commands.len() <= rows {
+                // The two corpora page as one list, namespaces first. Paging
+                // them separately would let a narrowed command fall off a
+                // strip that still had a namespace row to spare, and the
+                // closing line would then be counting one corpus while the
+                // rows showed two.
+                let total = self.commands.len() + self.extensions.len();
+                if total <= rows {
                     StripContent::Command {
                         matches: self.commands.clone(),
+                        extensions: self.extensions.clone(),
                         beyond: 0,
                     }
                 } else {
                     let shown = rows.saturating_sub(1);
+                    let namespaces = shown.min(self.commands.len());
                     StripContent::Command {
-                        matches: self.commands[..shown].to_vec(),
-                        beyond: self.commands.len() - shown,
+                        matches: self.commands[..namespaces].to_vec(),
+                        extensions: self.extensions[..shown - namespaces].to_vec(),
+                        beyond: total - shown,
                     }
                 }
             }
@@ -744,7 +785,8 @@ pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests {
     use super::fixtures::{
-        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, press, server_results, typing,
+        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, VocabularyOf, press, server_results,
+        typing, typing_with,
     };
     use super::{Composer, DEBOUNCE, PickerKind, Scope, SearchResponse, StripContent, StripMode};
     use crate::shell::fixtures::StagedVocabulary;
@@ -1491,6 +1533,163 @@ mod tests {
                 .step(Duration::from_secs(86_400) + DEBOUNCE)
                 .is_some(),
             "and it elapses exactly one debounce after it"
+        );
+    }
+
+    /// ADR-0015 D3's commands are the picker's **second corpus**, beside D2's
+    /// namespaces, narrowed by the same prefix on the same keystroke.
+    ///
+    /// **The mutant:** `Composer::refreshed` leaving `extensions` empty
+    /// reddens the row list, and a person who admitted a command would type
+    /// `/` and not see it.
+    #[test]
+    fn an_admitted_command_is_a_row_beside_the_namespaces() {
+        let vocabulary = VocabularyOf::new(2).and_commands(2);
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sé", Duration::ZERO, &trie, &vocabulary);
+
+        assert_eq!(
+            composer.strip_lines(),
+            vec![
+                "/séance    a staged namespace".to_owned(),
+                "/sédan     a staged namespace".to_owned(),
+                "/sérail    a staged command".to_owned(),
+                "/sédulous  a staged command".to_owned(),
+            ],
+            "the namespaces come first, the commands after them, and one \
+             column is padded across both; they were {:?}",
+            composer.strip_lines()
+        );
+        assert_eq!(
+            composer.strip().mode(),
+            StripMode::Typing,
+            "a command line is not the empty mode"
+        );
+    }
+
+    /// The narrowing is by prefix over both corpora and never by nearest,
+    /// and the accepting sibling is the same check one keystroke later.
+    ///
+    /// **The mutant:** filtering the second corpus with `contains` instead of
+    /// `starts_with` reddens the last assertion, because `/séra` would go on
+    /// matching a namespace it is not a prefix of.
+    #[test]
+    fn the_second_corpus_narrows_by_prefix_and_empties_with_the_slash() {
+        let vocabulary = VocabularyOf::new(2).and_commands(2);
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sérai", Duration::ZERO, &trie, &vocabulary);
+        assert_eq!(
+            composer.strip_lines(),
+            vec!["/sérail  a staged command".to_owned()],
+            "a prefix that reaches one command shows one row: {:?}",
+            composer.strip_lines()
+        );
+
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "sérai", Duration::ZERO, &trie, &vocabulary);
+        assert!(
+            !matches!(composer.strip(), StripContent::Command { .. }),
+            "without the slash it is a search and not a command line: {:?}",
+            composer.strip()
+        );
+    }
+
+    /// `Tab` completes a unique incomplete prefix from **either** corpus, and
+    /// does nothing where the prefix reaches one of each — which would be a
+    /// guess.
+    ///
+    /// **The mutant:** the match arm completing on `([namespace], _)` reddens
+    /// the third arm, and a `/sé` reaching two namespaces and two commands
+    /// would complete to one of them.
+    #[test]
+    fn tab_completes_a_unique_prefix_from_either_corpus_and_never_a_guess() {
+        let trie = CountingTrie::staged();
+        let tab = || tui_textarea::Input {
+            key: Key::Tab,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        };
+
+        let vocabulary = VocabularyOf::new(2).and_commands(2);
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sérai", Duration::ZERO, &trie, &vocabulary);
+        composer.key(tab(), Duration::ZERO, &trie, &vocabulary);
+        assert_eq!(
+            composer.text(),
+            "/sérail",
+            "a prefix reaching one command completes to it"
+        );
+
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/zzz", Duration::ZERO, &trie, &vocabulary);
+        composer.key(tab(), Duration::ZERO, &trie, &vocabulary);
+        assert_eq!(
+            composer.text(),
+            "/zzz",
+            "a prefix reaching nothing inserts nothing, not even whitespace"
+        );
+
+        // Four namespaces, so that `/sédu` reaches `/sédum` from the first
+        // corpus and `/sédulous` from the second -- one of each, which is the
+        // only staging this arm can be measured under.
+        let one_of_each = VocabularyOf::new(4).and_commands(2);
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sédu", Duration::ZERO, &trie, &one_of_each);
+        composer.key(tab(), Duration::ZERO, &trie, &one_of_each);
+        assert_eq!(
+            composer.text(),
+            "/sédu",
+            "a prefix reaching one namespace and one command is two spellings, \
+             and completing it to either would be a guess"
+        );
+
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sé", Duration::ZERO, &trie, &vocabulary);
+        composer.key(tab(), Duration::ZERO, &trie, &vocabulary);
+        assert_eq!(
+            composer.text(),
+            "/sé",
+            "a prefix reaching two namespaces and two commands is not completed"
+        );
+    }
+
+    /// The closing row counts **both** corpora, so a command narrowed off the
+    /// strip is never dropped silently.
+    ///
+    /// **The mutant:** `strip()` computing `beyond` from the namespaces alone
+    /// reddens the count, and the strip would say five where seven are
+    /// hidden.
+    #[test]
+    fn the_closing_row_counts_the_commands_it_could_not_paint() {
+        let vocabulary = VocabularyOf::new(6).and_commands(4);
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing_with(&mut composer, "/sé", Duration::ZERO, &trie, &vocabulary);
+
+        let lines = composer.strip_lines();
+        assert_eq!(lines.len(), 6, "six rows and no more: {lines:?}");
+        assert_eq!(
+            lines[5], "… 5 more · type to narrow",
+            "ten matched, five painted, five said: {lines:?}"
+        );
+    }
+
+    /// A session with no commands paints exactly what it painted before the
+    /// second corpus existed, which is the accepting sibling for every check
+    /// above.
+    #[test]
+    fn a_session_with_no_commands_paints_the_namespaces_alone() {
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "/runtime", Duration::ZERO, &trie);
+        assert_eq!(
+            composer.strip_lines(),
+            vec!["/runtime  tier and membrane".to_owned()],
+            "the staged vocabulary offers no commands, so no row appears: {:?}",
+            composer.strip_lines()
         );
     }
 }

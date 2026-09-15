@@ -70,6 +70,14 @@ const NAMESPACES: [(&str, &str, bool, &[&str]); 11] = [
 ];
 
 impl CommandVocabulary for StagedVocabulary {
+    /// **Nothing.** This fixture stages ADR-0015 D2's table and nothing else,
+    /// so it is the accepting sibling for every check about the namespaces
+    /// alone: a strip that grew a row here would be a row the second corpus
+    /// did not put there.
+    fn extensions(&self) -> Vec<crate::shell::port::Extension> {
+        Vec::new()
+    }
+
     fn namespaces(&self) -> Vec<Namespace> {
         NAMESPACES
             .into_iter()

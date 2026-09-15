@@ -89,23 +89,37 @@ impl Composer {
             // strip shows is the command namespaces rather than the hint
             // tiers' matches — and it carries no absence line, because the
             // absence line is about a corpus this row is not showing.
-            StripContent::Command { matches, beyond } => {
+            StripContent::Command {
+                matches,
+                extensions,
+                beyond,
+            } => {
                 // The spellings are padded to the widest row shown, the way
                 // `--help` pads its own, so the descriptions line up. Padding
                 // to the widest in the *vocabulary* instead would indent every
                 // narrowed list by the width of `/providers`, which is a
                 // column of blanks a person has no use for.
-                let width = matches
+                //
+                // **Across both corpora**, since 2026-09-15: a command's row
+                // and a namespace's row sit in one list, so a column that
+                // lined up only within each half would read as two tables.
+                let rows: Vec<(String, String)> = matches
+                    .into_iter()
+                    .map(|namespace| (namespace.slash.to_owned(), namespace.governs.to_owned()))
+                    .chain(
+                        extensions
+                            .into_iter()
+                            .map(|extension| (extension.slash, extension.governs)),
+                    )
+                    .collect();
+                let width = rows
                     .iter()
-                    .map(|namespace| namespace.slash.chars().count())
+                    .map(|(slash, _)| slash.chars().count())
                     .max()
                     .unwrap_or(0);
-                let mut lines: Vec<String> = matches
+                let mut lines: Vec<String> = rows
                     .into_iter()
-                    .map(|namespace| {
-                        let slash = namespace.slash;
-                        format!("{slash:width$}  {}", namespace.governs)
-                    })
+                    .map(|(slash, governs)| format!("{slash:width$}  {governs}"))
                     .collect();
                 if beyond > 0 {
                     lines.push(continues(beyond));

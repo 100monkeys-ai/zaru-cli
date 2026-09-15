@@ -10,7 +10,7 @@
 use crate::cli::namespace::Namespace;
 use crate::session::{Phase, Record, SaidOnce, Voice};
 use zaru_tui::shell::port::{
-    CommandVocabulary, Line, Namespace as Row, Register, TranscriptSource,
+    CommandVocabulary, Extension, Line, Namespace as Row, Register, TranscriptSource,
 };
 
 /// [ADR-0015] D2's table, answered from this crate's own closed enum.
@@ -26,10 +26,46 @@ use zaru_tui::shell::port::{
 ///
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Vocabulary;
+#[derive(Debug, Clone, Default)]
+pub struct Vocabulary {
+    extensions: Vec<Extension>,
+}
+
+impl Vocabulary {
+    /// The built-in vocabulary, with [ADR-0015] D1's commands this session
+    /// loaded beside it.
+    ///
+    /// **`Vocabulary::default()` is the built-ins alone**, and every surface
+    /// that is not a session uses it: a picker outside a session has no
+    /// project to have admitted anything.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[must_use]
+    pub fn of(commands: &[crate::commands::Command]) -> Self {
+        Self {
+            extensions: commands
+                .iter()
+                .map(|command| Extension {
+                    slash: command.slash(),
+                    // The file's own `description` where it has one. A command
+                    // with none gets its source word rather than a blank
+                    // column or a sentence composed here: what a reader wants
+                    // from an undescribed row is where it came from.
+                    governs: command
+                        .description()
+                        .map_or_else(|| command.source().word().to_owned(), ToOwned::to_owned),
+                })
+                .collect(),
+        }
+    }
+}
 
 impl CommandVocabulary for Vocabulary {
+    /// This session's loaded commands, in load order.
+    fn extensions(&self) -> Vec<Extension> {
+        self.extensions.clone()
+    }
+
     fn namespaces(&self) -> Vec<Row> {
         Namespace::ALL
             .into_iter()
@@ -738,7 +774,7 @@ mod tests {
                 },
                 Duration::ZERO,
                 &NoNotes,
-                &Vocabulary,
+                &Vocabulary::default(),
             );
         }
     }
@@ -767,7 +803,7 @@ mod tests {
     #[test]
     fn a_bare_slash_offers_this_harnesss_own_twelve_namespaces() {
         assert_eq!(
-            Vocabulary.namespaces().len(),
+            Vocabulary::default().namespaces().len(),
             Namespace::ALL.len(),
             "the port answers a different number of namespaces than D2's table holds"
         );
@@ -822,7 +858,7 @@ mod tests {
         }
         .to_string();
         assert_eq!(
-            zaru_tui::shell::command::read("/stack", &Vocabulary),
+            zaru_tui::shell::command::read("/stack", &Vocabulary::default()),
             zaru_tui::shell::Typed::Refused(zaru_tui::shell::Refused::NotBuilt {
                 slash: "/stack",
                 governs: "AEGIS component fetch and status",

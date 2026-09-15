@@ -74,6 +74,32 @@ pub struct Namespace {
     pub verbs: &'static [&'static str],
 }
 
+/// One [ADR-0015] D1 **Command** the session has loaded, as the picker needs
+/// it.
+///
+/// # Why this is not a [`Namespace`]
+///
+/// A namespace is one of D2's closed set and every field of it is
+/// `&'static str`, which is what lets that type be built from a `const` table
+/// and compared without an allocation. A command's name and description come
+/// off a file a person wrote a moment ago, so they are owned strings, and
+/// widening `Namespace` to carry them would make every existing row
+/// assertion in this crate move for a corpus that is not D2's.
+///
+/// So the strip carries **two** corpora and renders them with one function.
+/// The picker's rows are the namespaces followed by the commands, in that
+/// order, which is explicit here rather than emergent from a fold.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extension {
+    /// The spelling a user types, including the leading slash.
+    pub slash: String,
+    /// What the picker's second column says, which is the file's own
+    /// `description` where it has one.
+    pub governs: String,
+}
+
 /// [ADR-0015] D2's namespaces, and the nearest-match rule that goes with them.
 ///
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
@@ -95,6 +121,18 @@ pub trait CommandVocabulary {
     /// `None` for a namespace that takes no verb at all, which is a different
     /// thing from a namespace whose verbs nothing matched.
     fn nearest_verb(&self, slash: &str, offered: &str) -> Option<&'static str>;
+
+    /// Every [ADR-0015] D1 command this session has loaded, in load order.
+    ///
+    /// **Required rather than defaulted**, and that is the point. A default
+    /// returning nothing would give every future implementer a silent empty
+    /// corpus — [Verification lessons] §7's "check whose trigger can never
+    /// fire", wearing a trait method — so each implementation answers for
+    /// itself and a new one cannot forget.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+    fn extensions(&self) -> Vec<Extension>;
 }
 
 /// Which register a transcript line was written in.
