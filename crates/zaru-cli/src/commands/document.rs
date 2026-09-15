@@ -626,6 +626,56 @@ pub enum CommandRefused {
 }
 
 impl CommandRefused {
+    /// Name the file **from here** where it is inside here.
+    ///
+    /// # Why a refusal measures its path from the working directory
+    ///
+    /// A project's command file is always under the directory a person is
+    /// standing in, so its absolute path repeats what they already know and
+    /// pushes what they do not off the screen. Measured from the release
+    /// binary at `15d31f1` at 40 columns, a `.zaru/commands/greet.md` with no
+    /// front matter took **seven rows of the opening pane and four of them
+    /// were the path**, the sentence starting on the fifth; from here the same
+    /// refusal is three rows. The words are unchanged — [ADR-0016] D2's
+    /// remedy was already in them — and what changes is where the file is
+    /// measured from.
+    ///
+    /// **[ADR-0015] D3's other location is left alone**, and that is the
+    /// argument for taking a root rather than shortening everything: there is
+    /// no tree for `~/.zaru/commands/` to be inside, so a path from there is
+    /// the whole path or it is a lie. `strip_prefix` failing is that case and
+    /// leaves the refusal exactly as it was.
+    ///
+    /// **A total match with no wildcard**, so a thirteenth variant cannot
+    /// arrive carrying a path this forgets.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    pub fn shorten_against(&mut self, root: &Path) {
+        let shorten = |path: &mut PathBuf| {
+            if let Ok(inside) = path.strip_prefix(root) {
+                *path = inside.to_path_buf();
+            }
+        };
+        match self {
+            Self::File(refused) => refused.shorten_against(root),
+            Self::NotListed { path, .. }
+            | Self::NoFrontMatter { path }
+            | Self::NameDisagrees { path, .. }
+            | Self::UnknownKey { path, .. }
+            | Self::NotAString { path, .. }
+            | Self::UnknownPlaceholder { path, .. }
+            | Self::OutsideTheWorkingDirectory { path }
+            | Self::Validator { path, .. }
+            | Self::ValidatorInACommand { path, .. }
+            | Self::Shadows { path, .. } => shorten(path),
+            Self::NameCollision { command, skill, .. } => {
+                shorten(command);
+                shorten(skill);
+            }
+        }
+    }
+
     /// The file the refusal is about.
     #[must_use]
     pub fn path(&self) -> &Path {

@@ -268,6 +268,32 @@ pub enum FileRefused {
 }
 
 impl FileRefused {
+    /// Name the file **from `root`** where it is inside it.
+    ///
+    /// A refusal carries the path it was given, and a reader who is standing
+    /// in `root` already knows that half of it. `strip_prefix` failing leaves
+    /// the path whole, which is the answer for a file outside the tree: from
+    /// there the whole path is the only true one. See
+    /// `commands::CommandRefused::shorten_against`, which is where the rule
+    /// and the measurement that motivated it are written.
+    ///
+    /// **A total match with no wildcard**, so a seventh variant cannot arrive
+    /// carrying a path this forgets.
+    pub fn shorten_against(&mut self, root: &Path) {
+        match self {
+            Self::NotRead { path, .. }
+            | Self::TooLarge { path, .. }
+            | Self::NotText { path, .. }
+            | Self::NotToml { path, .. }
+            | Self::NotJson { path, .. }
+            | Self::UnrepresentableKind { path, .. } => {
+                if let Ok(inside) = path.strip_prefix(root) {
+                    *path = inside.to_path_buf();
+                }
+            }
+        }
+    }
+
     /// The file the refusal is about.
     #[must_use]
     pub fn path(&self) -> &Path {

@@ -188,6 +188,7 @@ pub fn load_from(
             Source::User,
             ceiling,
             None,
+            None,
             &mut refusals,
         )
     });
@@ -206,6 +207,15 @@ pub fn load_from(
             Source::Project,
             ceiling,
             boundary.as_ref(),
+            // **A project's refusal names its file from here.** The path is
+            // under the directory the person is standing in, so its absolute
+            // spelling repeats what they know and pushes the sentence off a
+            // narrow frame: measured at 40 columns from the release binary at
+            // `15d31f1`, a `---`-fenced `greet.md` took seven rows of the
+            // opening pane and four of them were the path. The user's own
+            // location above passes `None`, because there is no tree for
+            // `~/.zaru/commands/` to be inside.
+            Some(here),
             &mut refusals,
         )
     });
@@ -250,8 +260,40 @@ pub fn load_from(
     }
 }
 
-/// Every `<name>.md` in one directory, in name order.
+/// Every `<name>.md` in one directory, in name order, refused by a path a
+/// reader standing in `from_here` can act on.
+///
+/// `from_here` is the working directory for [ADR-0015] D3's project location
+/// and `None` for the user's own — see the call sites for which and why.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 fn read_directory(
+    directory: &Path,
+    source: Source,
+    ceiling: SizeCeiling,
+    boundary: Option<&WorkingDirectory>,
+    from_here: Option<&Path>,
+    refusals: &mut Vec<CommandRefused>,
+) -> Vec<Command> {
+    let mut mine = Vec::new();
+    let commands = read_location(directory, source, ceiling, boundary, &mut mine);
+    // **One seam rather than one per push.** Every refusal this location
+    // produced passes through here, so a shape added to the reader below
+    // cannot arrive with a path nobody shortened, and the rule is stated once
+    // rather than at each of the five places a refusal is made.
+    if let Some(root) = from_here {
+        for refusal in &mut mine {
+            refusal.shorten_against(root);
+        }
+    }
+    refusals.append(&mut mine);
+    commands
+}
+
+/// Read one of [ADR-0015] D3's locations, as it is on disk.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+fn read_location(
     directory: &Path,
     source: Source,
     ceiling: SizeCeiling,

@@ -284,6 +284,78 @@ fn a_user_command_loads_and_a_projects_does_not_until_it_is_admitted() {
     );
 }
 
+/// A project's refusal names its file **from the working directory**, and the
+/// user's own names it whole.
+///
+/// # The defect this closes
+///
+/// Measured from the release binary at `15d31f1` over a real pseudo-terminal:
+/// a `---`-fenced `greet.md` in a project under the fleet's scratch directory
+/// was refused across **the whole opening pane** — three rows at 100 columns
+/// of which two were the path, and **seven rows at 40 columns of which four
+/// were the path**, the sentence starting on the fifth. The words were
+/// already right: [ADR-0016] D2's remedy is in them, and `+++` stays.
+///
+/// **The mutant:** `shorten_against` made a no-op, or `read_directory` given
+/// `None` for the project location — the first assertion reddens on the
+/// absolute prefix. **The accepting sibling** is the user location below,
+/// which must keep its whole path: there is no tree for `~/.zaru/commands/`
+/// to be inside, so a path from anywhere else would be a lie.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn a_projects_refusal_names_its_file_from_here_and_a_users_names_it_whole() {
+    let scratch = fixtures::Scratch::new();
+    // Three shapes, made by three different arms of the reader, so the seam
+    // is asserted over the reader rather than over one refusal.
+    scratch.project_command("greet", "---\ndescription = \"hello\"\n---\nGreet them.\n");
+    scratch.project_command("session", &fixtures::file("", "Shadow a namespace.\n"));
+    scratch.project_command(
+        "spend",
+        &fixtures::file("", "It cost $0.50, which is an unknown placeholder.\n"),
+    );
+    scratch.user_command("mine", "---\nnot front matter\n---\n");
+    let admissions = Admissions::under(&scratch.home());
+
+    let loaded = load_from(
+        Some(&scratch.home()),
+        Some(&scratch.project()),
+        &admissions,
+        ceiling(),
+    );
+    let project = scratch.project();
+    let prefix = project.display().to_string();
+    let mut whole = Vec::new();
+    for refusal in &loaded.refusals {
+        let said = refusal.to_string();
+        if said.contains("mine.md") {
+            assert!(
+                said.contains(&scratch.home().display().to_string()),
+                "the user's own location has no tree to be inside, so its refusal must name the \
+                 whole path: {said}"
+            );
+            continue;
+        }
+        if said.contains(&prefix) {
+            whole.push(said.clone());
+        }
+        assert!(
+            said.contains(".zaru/commands/"),
+            "a project's refusal must still say where the file is: {said}"
+        );
+    }
+    assert!(
+        whole.is_empty(),
+        "a project's refusal names the working directory a reader is standing in: {whole:?}"
+    );
+    assert_eq!(
+        loaded.refusals.len(),
+        4,
+        "all four shapes were refused: {:?}",
+        loaded.refusals
+    );
+}
+
 /// D4's second half: "the decision is recorded per project".
 ///
 /// **The mutant:** `Admissions::covers` ignoring `directory` reddens the last
