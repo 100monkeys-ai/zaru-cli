@@ -330,3 +330,52 @@ fn every_client_composes_its_transport_failures_the_same_way() {
         );
     }
 }
+
+/// No client declares an exchange ceiling of its own, read from the source.
+///
+/// **A fourth kind picking a fourth number is what this check exists to stop,
+/// and it cannot be caught by running anything.** A client's timeout is inside
+/// the `reqwest::Client` it built; nothing on `Provider` reports it, and a
+/// check that drove a client to its ceiling would have to wait ten minutes to
+/// learn the figure. So the property is held by reading the source, the same
+/// instrument and for the same reason as the walk check above.
+///
+/// **Until 2026-09-15 the three figures were 60, 600 and 600** — which bound a
+/// turn ran under depended on which kind served the alias, and the sixty
+/// killed reasoning turns that were inside the model's ordinary range. The
+/// constant is now `providers::transport::EXCHANGE_TIMEOUT` and a client
+/// chooses nothing.
+///
+/// The count is asserted in both directions, as the walk check's is: zero
+/// declarations is the property, and three readings of the shared constant is
+/// the control that says the files were found and the needle is findable, so a
+/// path typo cannot make this pass by reading nothing.
+#[test]
+fn no_client_declares_an_exchange_ceiling_of_its_own() {
+    const CLIENTS: [(&str, &str); 3] = [
+        ("gemini", include_str!("../src/providers/gemini.rs")),
+        ("ollama", include_str!("../src/providers/ollama.rs")),
+        (
+            "openai_compatible",
+            include_str!("../src/providers/openai_compatible.rs"),
+        ),
+    ];
+
+    for (kind, source) in CLIENTS {
+        let declared = source.matches("const EXCHANGE_TIMEOUT").count();
+        assert_eq!(
+            declared, 0,
+            "the {kind} client declares {declared} exchange ceiling(s) of its own. One figure per \
+             kind is what made a gemini turn die at sixty seconds while the same work against \
+             ollama had ten minutes, and a fourth kind would pick a fourth number",
+        );
+        let read = source
+            .matches("crate::providers::transport::EXCHANGE_TIMEOUT")
+            .count();
+        assert_eq!(
+            read, 1,
+            "the {kind} client reads the shared ceiling {read} time(s) rather than once, so \
+             either it stopped reading it or this needle no longer names anything",
+        );
+    }
+}

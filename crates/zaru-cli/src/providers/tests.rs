@@ -1663,3 +1663,29 @@ fn each_kind_states_its_window_from_its_own_source_and_a_kind_without_one_refuse
         4_096
     );
 }
+
+// ---------------------------------------------------------------------------
+// The exchange ceiling — ADR-0012 D3, one figure for every kind
+// ---------------------------------------------------------------------------
+
+/// The ceiling is ten minutes, and the figure is a measurement.
+///
+/// **This check is `openai_compatible`'s own, moved rather than written.** It
+/// stood beside that kind's constant as
+/// `the_exchange_ceiling_is_the_local_one_because_a_cold_load_took_minutes`
+/// and carried the cold-load measurement that is the reason for 600; the
+/// constant moved to the seam on 2026-09-15 and its reason moved with it,
+/// because a figure whose measurement is deleted is a figure nobody can
+/// defend. The second measurement is the one that made the move necessary.
+#[test]
+fn the_exchange_ceiling_is_ten_minutes_for_every_kind() {
+    assert_eq!(
+        crate::providers::transport::EXCHANGE_TIMEOUT.as_secs(),
+        600,
+        "measured at both ends: a cold load of llama3.2:3b through llama-server took over four \
+         minutes before a token on 2026-09-14, so a 60-second ceiling calls a working server \
+         unreachable; and a reasoning turn against gemini-3.6-flash had its first SSE byte at \
+         92.7s on 2026-09-15, so a 60-second ceiling kills a turn inside the model's ordinary \
+         range",
+    );
+}

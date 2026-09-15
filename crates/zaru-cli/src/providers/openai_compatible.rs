@@ -90,7 +90,6 @@ use crate::providers::resolution::ModelId;
 use crate::providers::sse;
 use crate::providers::usage::TokenUsage;
 use std::sync::Mutex;
-use std::time::Duration;
 use zaru_core::iteration::PortFailure;
 use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
 
@@ -102,21 +101,6 @@ pub const AUTHORIZATION_HEADER: &str = "authorization";
 
 /// What an `Authorization` value is prefixed with.
 pub const BEARER_PREFIX: &str = "Bearer ";
-
-/// How long one exchange may take.
-///
-/// **600 seconds, the `ollama` figure rather than the `gemini` 60, and it is a
-/// measurement rather than a preference.** This kind's endpoint is most often
-/// a model server on the reader's own machine, and a cold load of
-/// `llama3.2:3b` through `llama-server` on the development machine took **over
-/// four minutes** before a token was generated on 2026-09-14 — measured under
-/// a load average of 10.8 from peer builds, which is the ordinary condition
-/// here rather than an unlucky one. A 60-second ceiling would report an
-/// unreachable endpoint for a server that was working exactly as designed.
-///
-/// A hosted gateway of this kind answers in seconds and never approaches this,
-/// so the ceiling costs a gateway user nothing.
-pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// [ADR-0012] D3's `openai-compatible` provider, and `zaru-core`'s model
 /// behind it.
@@ -177,7 +161,10 @@ impl OpenAiCompatibleClient {
         // TLS and redirects. What this caller differs on is passed as an
         // argument: its own timeout, and `reqwest`'s default redirect policy.
         let http =
-            crate::web::client::build(EXCHANGE_TIMEOUT, reqwest::redirect::Policy::default())
+            crate::web::client::build(
+                crate::providers::transport::EXCHANGE_TIMEOUT,
+                reqwest::redirect::Policy::default(),
+            )
                 .map_err(|error| OpenAiCompatibleFailure::Unavailable {
                     code: None,
                     detail: error.detail().to_owned(),

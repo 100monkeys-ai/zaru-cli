@@ -98,3 +98,45 @@ pub fn transport_detail(error: &dyn std::error::Error) -> String {
 /// error` → `Connection refused`), so the measured cases are whole and an
 /// unmeasured one cannot run away.
 pub const CHAIN_DEPTH: usize = 4;
+
+/// How long one exchange may take before a client gives up, for every kind.
+///
+/// **Ten minutes, and one figure rather than three.** Until 2026-09-15 each
+/// client declared its own: `ollama` and `openai-compatible` at 600 seconds
+/// and `gemini` at 60, so which bound a turn ran under depended on which kind
+/// served the alias, and a fourth kind would have picked a fourth number. It
+/// is declared here, at the seam the three already share for what a transport
+/// failure says, so a client chooses nothing.
+///
+/// **It bounds the whole streamed exchange, first byte to last.** That is
+/// `reqwest`'s own reading of the value `crate::web::client::build` passes
+/// to `ClientBuilder::timeout`, whose documentation in 0.12.28 is "a total
+/// request timeout … applied from when the request starts connecting until
+/// the response body has finished. Also considered a total deadline" — and
+/// not `read_timeout`, which resets after each successful read. So the budget
+/// is spent by generation rather than by latency, and **an answer that
+/// generates for longer than ten minutes is refused**.
+///
+/// **The figure is measured rather than preferred, on both ends of the
+/// range.** A cold load of `llama3.2:3b` through `llama-server` on the
+/// development machine took over four minutes before a token on 2026-09-14,
+/// so a 60-second ceiling reported a working server as unreachable. At the
+/// other end, two timestamped probes of `streamGenerateContent` against
+/// `gemini-3.6-flash` on 2026-09-15 found the first SSE byte at **46.0 s** and
+/// at **92.7 s**, the second confirmed by Google's own `server-timing:
+/// gfet4t7; dur=92545` — so 60 seconds killed a reasoning turn that was well
+/// inside the model's ordinary range, which is the defect this figure closes.
+/// A hosted gateway answering in seconds never approaches it, so the ceiling
+/// costs that reader nothing.
+///
+/// There is deliberately **no retry and no backoff**. A retry policy decides
+/// whether a request that may have had an effect is repeated, and no record
+/// makes that decision; a client that retried on its own would be answering it
+/// silently.
+///
+/// **It is a constant until a record says otherwise.** Whether
+/// `provider.<kind>` should carry a ceiling key is [ADR-0012]'s author's and
+/// is not settled here.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+pub const EXCHANGE_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(600);

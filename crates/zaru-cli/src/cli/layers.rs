@@ -344,8 +344,8 @@ pub const FETCH_BODY_CEILING_BYTES: u64 = 1 << 20;
 
 /// How long one `web.fetch` may take, start to finished body.
 ///
-/// **Thirty seconds, and it is deliberately shorter than the sixty
-/// [`EXCHANGE_TIMEOUT`](crate::providers::gemini::EXCHANGE_TIMEOUT) a model
+/// **Thirty seconds, and it is deliberately far shorter than the ten minutes
+/// [`EXCHANGE_TIMEOUT`](crate::providers::transport::EXCHANGE_TIMEOUT) a model
 /// completion gets.** A completion is slow on purpose — a large prompt on a
 /// slow link is the case that number protects — whereas a page that has not
 /// answered in thirty seconds will not be useful to the turn that asked for
@@ -727,9 +727,10 @@ pub fn tool_call_ceiling() -> zaru_core::tool_call::ToolCallCeiling {
 /// invented by the thing being bounded is not a ceiling … the numbers are the
 /// composition's to supply" — and this is the composition supplying it.
 ///
-/// **The provider's sixty seconds is deliberately not reused.**
-/// [`crate::providers::gemini::EXCHANGE_TIMEOUT`] bounds a request to a service
-/// that answers in seconds; a `cmd.run` is a build, a test suite or a linter,
+/// **The provider's ten minutes is deliberately not reused.**
+/// [`crate::providers::transport::EXCHANGE_TIMEOUT`] bounds a whole exchange
+/// with a model that may think for minutes before it answers; a `cmd.run` is a
+/// build, a test suite or a linter,
 /// and [ADR-0009]'s own Negative consequence is that "a project whose test
 /// suite takes minutes makes the loop impractical". Two minutes is short
 /// enough that a hung command is a recognisable event rather than a session
