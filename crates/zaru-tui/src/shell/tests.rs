@@ -3837,6 +3837,62 @@ fn page_up_and_page_down_move_by_one_page_and_land_back_at_the_tail() {
     }
 }
 
+/// A shifted page key is the terminal's one-row scroll gesture.
+///
+/// The CLI maps mouse-wheel events to this form: physical page keys retain
+/// their page-sized movement, while every wheel notch moves exactly one
+/// wrapped row and reaches the tail again after the matching down gesture.
+#[test]
+fn shifted_page_keys_move_the_pane_one_row_at_a_time() {
+    for (width, height) in SIZES {
+        let mut shell = shell_of(60);
+        let pane = region(width, height);
+        let wheel_up = Input {
+            key: Key::PageUp,
+            shift: true,
+            ..Input::default()
+        };
+        let wheel_down = Input {
+            key: Key::PageDown,
+            shift: true,
+            ..Input::default()
+        };
+
+        assert!(
+            shell.moved(
+                &wheel_up,
+                pane,
+                NOW,
+                &TrieOf::new(0),
+                &StagedVocabulary,
+                &NoPaths,
+            ),
+            "the one-row scroll gesture did not reach the pane at {width}x{height}"
+        );
+        assert_eq!(
+            shell.rows_below(pane.height, pane.width),
+            1,
+            "one upward gesture must hold exactly one wrapped row at {width}x{height}"
+        );
+        assert!(
+            shell.moved(
+                &wheel_down,
+                pane,
+                NOW,
+                &TrieOf::new(0),
+                &StagedVocabulary,
+                &NoPaths,
+            ),
+            "the one-row scroll gesture did not return to the pane at {width}x{height}"
+        );
+        assert_eq!(
+            shell.viewing(),
+            crate::shell::Viewing::Tail,
+            "one downward gesture must resume following at {width}x{height}"
+        );
+    }
+}
+
 /// `Home` shows the first row of the transcript and `End` the last.
 ///
 /// **The mutant**: `to_top` setting `At(1)` — the first row is missing.

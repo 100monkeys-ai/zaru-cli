@@ -1231,6 +1231,24 @@ impl Shell {
         }
     }
 
+    /// Hold the window one wrapped transcript row further back.
+    pub fn line_up(&mut self, height: u16, width: u16) {
+        let first = self.first(height, width);
+        self.viewing = Viewing::At(first.saturating_sub(1));
+    }
+
+    /// Move the window one wrapped transcript row forward, following again at
+    /// the tail.
+    pub fn line_down(&mut self, height: u16, width: u16) {
+        let last = self.rows(width).saturating_sub(usize::from(height));
+        let first = self.first(height, width).saturating_add(1);
+        if first >= last {
+            self.viewing = Viewing::Tail;
+        } else {
+            self.viewing = Viewing::At(first);
+        }
+    }
+
     /// Hold the window at the first row of the transcript.
     pub const fn to_top(&mut self) {
         self.viewing = Viewing::At(0);
@@ -1351,7 +1369,9 @@ impl Shell {
     ///
     /// # Which keys, and the two that are conditional
     ///
-    /// `PageUp` and `PageDown` always move the pane. Nothing is taken from
+    /// `PageUp` and `PageDown` always move the pane. Their shifted forms move
+    /// one wrapped transcript row, which is how mouse-wheel input reaches the
+    /// pane. Nothing is taken from
     /// the composer by that: `tui-textarea` reads them as its own viewport's
     /// scrolling, and this composer stopped painting through that widget on
     /// 2026-09-13, when [`Composer::input_row`] began composing its one row.
@@ -1387,6 +1407,8 @@ impl Shell {
             return false;
         }
         match &input.key {
+            Key::PageUp if input.shift => self.line_up(pane.height, pane.width),
+            Key::PageDown if input.shift => self.line_down(pane.height, pane.width),
             Key::PageUp => self.page_up(pane.height, pane.width),
             Key::PageDown => self.page_down(pane.height, pane.width),
             Key::Home if self.composer.text().is_empty() => self.to_top(),

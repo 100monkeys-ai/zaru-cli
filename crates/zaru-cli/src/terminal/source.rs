@@ -478,14 +478,17 @@ fn read_until_stopped(sender: &UnboundedSender<Struck>, stop: &AtomicBool) {
             Ok(Event::Key(key)) => Struck::Key(translate(key)),
             // Mouse capture makes wheel movement an event rather than the
             // terminal's legacy Up/Down escape sequence. Those arrows walk
-            // prompt history; a wheel belongs to the transcript pane.
+            // prompt history; a wheel belongs to the transcript pane. Shift
+            // distinguishes its one-row movement from a physical Page key.
             Ok(Event::Mouse(mouse)) => match mouse.kind {
                 ratatui::crossterm::event::MouseEventKind::ScrollUp => Struck::Key(Input {
                     key: zaru_tui::shell::Key::PageUp,
+                    shift: true,
                     ..Input::default()
                 }),
                 ratatui::crossterm::event::MouseEventKind::ScrollDown => Struck::Key(Input {
                     key: zaru_tui::shell::Key::PageDown,
+                    shift: true,
                     ..Input::default()
                 }),
                 _ => Struck::Key(Input::default()),
