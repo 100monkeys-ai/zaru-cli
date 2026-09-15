@@ -35,8 +35,19 @@
 //! Everything a check could want to reach lives in
 //! [`zaru_cli::cli`], because a binary target cannot be named from an
 //! integration test — the same reason this crate grew a library target for the
-//! credential store. What is left here is the boundary, the two writers, and
-//! the exit code.
+//! credential store. What is left here is the boundary, the two handles the
+//! writing is done on, and the exit code.
+//!
+//! **The writing itself left on 2026-09-15, and the sentence above said "the
+//! two writers" until then.** It was two macros here, and a `return` in the
+//! branch below still goes past them: a session that will not open at a
+//! terminal exits with its code and prints nothing at all. The rule is
+//! [`zaru_cli::cli::Outcome::written`] now — one call, on writers this file
+//! passes — because a rule that lives in a binary target is a rule no check
+//! can read the bytes back from, which is what this paragraph already says
+//! about everything else in this file. **That branch is routed in the commit
+//! after this one**, which is what makes the sentence above true of every
+//! ending rather than of one.
 //!
 //! # The binary starts a session, and this is the day that changed
 //!
@@ -68,7 +79,7 @@
 
 use std::process::ExitCode;
 use zaru_cli::cli::{Run, classify::Surface, parse_process};
-use zaru_cli::failure::{Exit, Guarded, Presentation, SessionEvidence, guard};
+use zaru_cli::failure::{Exit, Guarded, SessionEvidence, guard};
 
 /// Everything the binary does, inside the boundary.
 ///
@@ -85,6 +96,11 @@ fn run() -> Exit {
         // decision and the reason. This is the only branch in this file that
         // is not parse, execute, write.
         Ok(line) => match zaru_cli::terminal::take_over(&line, version, report_at) {
+            // **This ending goes past the writing below, and it is the one
+            // defect this commit does not fix.** Routing it is the commit
+            // after this one; what had to happen first is that the writing
+            // became something a check can read the bytes back from, which is
+            // `cli::Outcome::written`.
             Some(exit) => return exit,
             None => Run { version, report_at }.execute(&line),
         },
@@ -94,20 +110,19 @@ fn run() -> Exit {
         },
     };
 
-    for line in &outcome.lines {
-        println!("{line}");
-    }
-
     // A failure goes to standard error, so that a shell reading `zaru models`
     // gets the listing on its pipe and the refusal on its terminal. ADR-0016
     // D5's whole argument is that this harness is wrapped by CI, and a wrapper
     // that has to parse a refusal out of the data stream is a wrapper that
     // will one day take the refusal for data.
-    if let Exit::Failed(classified) = &outcome.exit {
-        eprintln!("{}", Presentation::of(classified));
-    }
-
-    outcome.exit
+    //
+    // **The rule is `Outcome::written` and not two macros here**, because a
+    // rule written in a binary target is a rule no check can name: this file
+    // cannot be reached from an integration test, which is the same reason
+    // this crate has a library target at all. What it asserts -- data to one
+    // writer, the refusal to the other, for every class -- is asserted over
+    // two `Vec<u8>` there.
+    outcome.written(&mut std::io::stdout(), &mut std::io::stderr())
 }
 
 fn main() -> ExitCode {

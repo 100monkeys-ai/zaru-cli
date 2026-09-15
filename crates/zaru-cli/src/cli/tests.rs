@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::cli::invocation::Request;
+use crate::failure::{Classified, Exit, Presentation, SessionEvidence};
 use crate::tools::WorkingDirectory;
 use std::ffi::OsString;
 
@@ -2502,4 +2503,183 @@ fn a_project_may_lower_a_providers_context_window_and_may_not_raise_one() {
         "the refusal names the key, what was granted and what was asked"
     );
     println!("{refusal}");
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0016 D2 and D5 — every ending writes, data on one handle and the
+// refusal on the other
+// ---------------------------------------------------------------------------
+
+/// The refusals that stop a session opening at a terminal, each built by the
+/// classifier the door path itself calls.
+///
+/// **One entry per refusal kind measured from the release binary on
+/// 2026-09-15**, over a pseudo-terminal at 80 and 120 columns, where every one
+/// of them exited with its code and wrote **zero bytes**. They are built here
+/// through the real classifiers rather than through
+/// [`crate::failure::fixtures`] because what the check below asserts is that
+/// *these* sentences reach a reader, and a fixture would assert it of a
+/// sentence nobody is ever shown.
+///
+/// The fifth is the one that matters most and the one the brief did not have:
+/// a checkpoint this harness did not write is [ADR-0016] D1's **Defect** at
+/// D5's `70`, so what a person lost was the report URL — D3's "never present
+/// a defect as a user error" met from the far side, a defect presented as
+/// nothing at all.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+fn refusals_that_stop_a_session_opening() -> Vec<(&'static str, Classified)> {
+    let surface = Surface::new("0.0.0-check", "https://example.invalid/report");
+
+    // `zaru --continue` in a directory no session was started in.
+    let continuing = surface.no_session_to_continue();
+
+    // `zaru --resume <a well-formed id nothing has>`, which `resolve_in`
+    // refuses through the store rather than through the resume reader.
+    let missing = surface.session(&crate::session::SessionError::NoSuchSession {
+        id: crate::session::SessionId::parse("01M2HXEW4DVETBKXFPZ4K00XG4")
+            .expect("a well-formed session id"),
+    });
+
+    // A `./zaru.toml` carrying a table the manifest does not declare, read by
+    // the real reader over a scratch project so the sentence is the one a
+    // person gets.
+    let tree = crate::tools::fixtures::ScratchTree::new();
+    std::fs::write(
+        tree.project().join(crate::manifest::MANIFEST_FILE),
+        b"[provider]\nkind = \"gemini\"\n",
+    )
+    .expect("staging: a project file naming a table no manifest declares");
+    let files = Files::at(
+        None,
+        Some(WorkingDirectory::at(tree.project()).expect("the project directory exists")),
+    );
+    let refused_file = Surface::load(
+        &layers::resolve(&Overrides::default(), [], &files)
+            .expect_err("a `[provider]` table in a manifest is refused by name"),
+    );
+
+    // `runtime.tier` set to something that names no tier, from the layer a
+    // person actually sets it in. The fold **accepts** the text -- the value
+    // is well-shaped for the key -- and `ResolvedTier` is what refuses it,
+    // which is the order `terminal::open::mint` reads them in and therefore
+    // the order a person meets them in.
+    let resolution = layers::resolve(
+        &Overrides::default(),
+        [("ZARU_RUNTIME_TIER".to_owned(), "bogus".to_owned())],
+        &Files::none(),
+    )
+    .expect("a value that is text is a shape the key admits");
+    let refused_tier = surface.tier(
+        &crate::runtime::ResolvedTier::from_configuration(&resolution)
+            .expect_err("a value naming no tier is refused"),
+    );
+
+    // A checkpoint that parses as JSON and is not what this harness writes,
+    // refused by the one place the document is interpreted.
+    let error = crate::compose::SessionContext::restored(
+        crate::compose::prefix_for(),
+        crate::terminal::open::context_shape_of(None),
+        &serde_json::json!({ "exchanges": "not what this harness writes" }),
+    )
+    .expect_err("a document this harness did not write is refused");
+    let checkpoint = surface.checkpoint_contents(&error, SessionEvidence::NoSessionExists);
+
+    vec![
+        ("there is no session to continue", continuing),
+        ("a session that does not exist", missing),
+        ("a `zaru.toml` refused by name", refused_file),
+        ("a runtime tier that names none", refused_tier),
+        ("a checkpoint this harness did not write", checkpoint),
+    ]
+}
+
+/// ADR-0016 D2, on the surface where it was silently false: every classified
+/// refusal an ending can carry reaches standard error **whole** — headline and
+/// remedy — and nothing of it reaches standard output.
+///
+/// # What the mutant is
+///
+/// Deleting the `if let Exit::Failed(…)` block from [`Outcome::written`],
+/// which is the shape `main.rs` had for the terminal path until 2026-09-15:
+/// the run exits with the right code and says nothing. Watched red.
+///
+/// The exit code is asserted beside the bytes because D5's argument is that a
+/// wrapper reads both, and a sentence on the wrong handle or a code that does
+/// not match its class each break the wrapper on their own.
+#[test]
+fn corpus_every_refusal_that_stops_a_session_opening_is_written_to_standard_error_whole() {
+    for (kind, classified) in refusals_that_stop_a_session_opening() {
+        let shown = Presentation::of(&classified);
+        let expected_code = classified.class().exit_code();
+
+        // The terminal path's own shape: no lines, because what that path had
+        // to show it painted itself.
+        let outcome = Outcome {
+            lines: Vec::new(),
+            exit: Exit::Failed(classified),
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let exit = outcome.written(&mut out, &mut err);
+
+        let written = String::from_utf8(err).expect("a refusal is UTF-8");
+        assert!(
+            written.contains(&shown.headline),
+            "{kind}: the refusal's headline reached no reader. \
+             standard error held {} byte(s): {written:?}",
+            written.len()
+        );
+        for line in &shown.lines {
+            assert!(
+                written.contains(&line.flattened()),
+                "{kind}: the headline reached the reader and ADR-0016 D2's remedy did not, \
+                 which is a stack trace with better grammar. missing {:?} from {written:?}",
+                line.flattened()
+            );
+        }
+        assert!(
+            out.is_empty(),
+            "{kind}: a refusal reached standard output, where a wrapper reading data off the \
+             pipe will one day take it for data: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+        assert_eq!(
+            exit.code(),
+            expected_code,
+            "{kind}: the process exits with its class's code"
+        );
+    }
+}
+
+/// The accepting sibling, and it is what stops the check above passing against
+/// a writer that puts everything on standard error or nothing anywhere.
+///
+/// A run that did what was asked puts its lines on standard output, writes
+/// **nothing** to standard error, and exits `0` — which is the successful open
+/// measured beside the five refusals on 2026-09-15: 179 bytes of frame on the
+/// pseudo-terminal, zero on standard error.
+#[test]
+fn a_run_that_did_what_was_asked_writes_its_lines_to_standard_output_and_nothing_else() {
+    let outcome = Outcome {
+        lines: vec!["first".to_owned(), "second".to_owned()],
+        exit: Exit::Succeeded,
+    };
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut err: Vec<u8> = Vec::new();
+    let exit = outcome.written(&mut out, &mut err);
+
+    assert_eq!(
+        String::from_utf8(out).expect("lines are UTF-8"),
+        "first\nsecond\n",
+        "a run's lines reach standard output, one per line and in order"
+    );
+    assert!(
+        err.is_empty(),
+        "a run that succeeded wrote {} byte(s) to standard error",
+        err.len()
+    );
+    assert_eq!(exit.code(), 0, "a run that did what was asked exits 0");
 }

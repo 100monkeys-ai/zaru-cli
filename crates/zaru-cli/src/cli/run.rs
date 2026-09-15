@@ -3,14 +3,28 @@
 
 //! What each request does, and what the process exits with.
 //!
-//! # This module writes nothing
+//! # This module decides nothing about where the bytes go
 //!
-//! It returns lines and an [`Exit`], and the binary writes them. That keeps
+//! Every request returns lines and an [`Exit`], and one function --
+//! [`Outcome::written`] -- puts them on writers its caller passes. That keeps
 //! the whole of [ADR-0015]'s out-of-session surface reachable from a check
-//! that is an ordinary caller, and it keeps the one `println!` in this crate
-//! in `main.rs` where the composition root already is. The real evidence for
-//! this surface is `tests/cli_from_outside.rs`, which runs the built binary;
-//! this shape is what makes the *unit* half possible at all.
+//! that is an ordinary caller, and it keeps the composition root deciding
+//! *which* writers. The real evidence for this surface is
+//! `tests/cli_from_outside.rs`, which runs the built binary; this shape is
+//! what makes the *unit* half possible at all.
+//!
+//! **The writing moved here from `main.rs` on 2026-09-15, and the reason is
+//! that a rule living in a binary target is a rule no check can name.** The
+//! sentence above said "this module writes nothing" and "the one `println!`
+//! in this crate in `main.rs`" until that day; what it did not say is that
+//! `main` had a second ending -- the terminal path's -- which returned above
+//! the writers, so every classified refusal that stopped a session opening at
+//! a terminal exits with its code and prints nothing at all. Measured from
+//! the release binary over a pseudo-terminal: five refusal kinds, zero bytes
+//! of standard error each, including [ADR-0016] D1's **Defect** at D5's `70`
+//! with its report URL. One writer, one call site each, and a check that can
+//! read the bytes back is what this commit puts in place of two macros; the
+//! branch that goes past it is routed in the commit after.
 //!
 //! # Every exit code the binary can reach comes from here
 //!
@@ -32,10 +46,11 @@ use crate::credentials::{
     Alias, Confirm, CredentialStore, Description, Entry, Family, HarnessKeys, Instance, Listing,
     OsKeyring, Reach, Secret, StoreError, tool_scope_at,
 };
-use crate::failure::{Classified, Exit, SessionEvidence};
+use crate::failure::{Classified, Exit, Presentation, SessionEvidence};
 use crate::providers::{ModelTable, ProviderKind};
 use crate::runtime::{ResolvedTier, Runtime};
 use crate::session::{SessionId, SessionStore};
+use std::io::Write;
 
 /// What one run produced.
 ///
@@ -67,6 +82,56 @@ impl Outcome {
             lines: Vec::new(),
             exit: Exit::Failed(classified),
         }
+    }
+
+    /// Write what this run has to say, and hand back what the process exits
+    /// with.
+    ///
+    /// # Data to one writer, refusals to the other
+    ///
+    /// [ADR-0016] D5's argument is that CI wraps this harness, so a wrapper
+    /// reading `zaru models` off a pipe gets the listing and never has to
+    /// parse a refusal out of the data stream. That is the whole rule here,
+    /// and it is one function rather than a shape each caller repeats: on
+    /// 2026-09-15 the binary had **two** endings and only one of them wrote
+    /// anything, because `main` returned the terminal path's [`Exit`] above
+    /// the writers. **That second ending is routed into this call in the
+    /// commit after this one**; what had to come first is a writer whose
+    /// bytes a check can read back, which is the section below.
+    ///
+    /// # Why it takes two writers instead of reaching for the process's own
+    ///
+    /// The same reason `terminal::driver::arm` is a function over a writer --
+    /// a plain code span because that function is `pub(crate)` and a public
+    /// page must not point at something its reader cannot open, which is the
+    /// rule `terminal::vocabulary` already states for `config::nearest`: a
+    /// rule written against `std::io::stdout()` is a rule no check can read
+    /// back, and what this one asserts is the bytes. Over two
+    /// `Vec<u8>` a check can say that a refusal reached standard error, that
+    /// it carries [ADR-0016] D2's remedy and not merely its headline, and
+    /// that nothing at all reached standard output — for the class of every
+    /// refusal the surface can raise. `main` passes the process's own.
+    ///
+    /// # Panics
+    ///
+    /// When a writer refuses the bytes. That is what `println!` already did
+    /// on this path — a broken pipe panics, [ADR-0016] D3's boundary catches
+    /// it and reports a defect — and it is deliberately unchanged here: a
+    /// write whose failure was swallowed would be this function producing the
+    /// silence it exists to remove.
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    pub fn written(self, out: &mut impl Write, err: &mut impl Write) -> Exit {
+        for line in &self.lines {
+            writeln!(out, "{line}").expect("standard output accepts a line");
+        }
+
+        if let Exit::Failed(classified) = &self.exit {
+            writeln!(err, "{}", Presentation::of(classified))
+                .expect("standard error accepts a refusal");
+        }
+
+        self.exit
     }
 }
 
