@@ -15,7 +15,7 @@
 //! That inertness is a property of these types rather than a rule somebody
 //! remembered. A [`Command`] holds a name, an optional description and a
 //! **body of text**; there is no field on it, and none on
-//! [`Expanded`](crate::commands::Expanded), that a tool name could ride. The
+//! [`Expanded`], that a tool name could ride. The
 //! expansion is a `String`, and its one consumer is the task a turn runs.
 //!
 //! # The two locations, and the third that is not here

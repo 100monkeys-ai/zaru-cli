@@ -341,7 +341,7 @@ pub enum Action {
     ///
     /// The host expands it and runs the result as the turn's task. This crate
     /// carries the name and the line and never the body — see
-    /// [`Typed::Extension`](crate::shell::Typed::Extension).
+    /// [`Typed::Extension`].
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Extension {

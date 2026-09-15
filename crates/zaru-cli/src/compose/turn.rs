@@ -1702,8 +1702,12 @@ pub(super) fn record_the_failure(session: &crate::session::Session, classified: 
 ///
 /// # Why it is here and not in the terminal
 ///
-/// [`record_the_failure`] above is the shape this follows: one `Record`
-/// variant, one construction of it, and callers that decide *when*. The
+/// `record_the_failure` above is the shape this follows: one `Record`
+/// variant, one construction of it, and callers that decide *when*. It is
+/// named in prose rather than linked because it is `pub(super)`, and
+/// rustdoc's `private_intra_doc_links` is right to refuse a public page
+/// pointing at something a reader of that page cannot open — the rule
+/// `terminal::vocabulary` already states for `config::nearest`. The
 /// terminal decides that a typed line was a command; what a transcript record
 /// of that looks like is this module's, beside the two halves of
 /// [`crate::session::Record::Conversation`] it sits between.
@@ -1715,7 +1719,7 @@ pub(super) fn record_the_failure(session: &crate::session::Session, classified: 
 /// A transcript that will not take the record is not reported. The turn is
 /// what the reader asked for, and replacing it with the reason its
 /// bookkeeping failed is strictly less useful — [ADR-0016] D6's "partial
-/// success is reported as partial", which is the rule [`record_the_failure`]
+/// success is reported as partial", which is the rule `record_the_failure`
 /// already applies to itself.
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript

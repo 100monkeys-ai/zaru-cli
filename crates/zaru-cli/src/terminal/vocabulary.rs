@@ -329,8 +329,11 @@ fn lines_for(record: &Record) -> Vec<Line> {
 
 /// [ADR-0015] D6's attribution, as the line a pane paints.
 ///
-/// **One function, two callers**, which is the rule [`spoken`] already
-/// follows: the pump paints this the moment a command expands, and
+/// **One function, two callers**, which is the rule `spoken` already
+/// follows — named in prose rather than linked, because it is `pub(crate)`
+/// and this module's own documentation already gives the reason: a public
+/// page must not point at something a reader of that page cannot open. The
+/// pump paints this the moment a command expands, and
 /// [`Transcript::of`] paints it again on `--resume`. Two spellings of one line
 /// are two things that can come to disagree about a word.
 ///
@@ -349,7 +352,7 @@ pub fn attributed_lines(attributed: &crate::session::Attribution) -> Vec<Line> {
 /// [ADR-0015] D6's attribution line, less the glyph the register paints.
 ///
 /// The line itself is [`crate::commands::document::attribution_line`]'s and
-/// is spelled once there, for the reason [`spoken`] is one function: what a
+/// is spelled once there, for the reason `spoken` is one function: what a
 /// person watches and what they read back cannot be allowed to disagree about
 /// a word. This is the adapter that gives it the register.
 ///
