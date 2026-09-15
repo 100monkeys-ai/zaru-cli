@@ -68,7 +68,7 @@ pub enum CostRefused {
     /// It is rendered into a status line, where one can move the cursor or
     /// erase a neighbouring row.
     UnitControl {
-        /// The unit as it was offered, escaped.
+        /// The unit as it was offered.
         offered: String,
     },
 }
@@ -114,7 +114,7 @@ impl Cost {
         }
         if unit.chars().any(char::is_control) {
             return Err(CostRefused::UnitControl {
-                offered: unit.escape_debug().to_string(),
+                offered: unit.to_string(),
             });
         }
         Ok(Self {

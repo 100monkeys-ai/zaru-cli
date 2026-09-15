@@ -43,7 +43,7 @@ pub enum KeyRefused {
     /// move the cursor or erase a neighbouring row, so the block stops being
     /// evidence about what the layers hold.
     Control {
-        /// The key as it was offered, escaped.
+        /// The key as it was offered.
         offered: String,
     },
     /// A segment began or ended with whitespace.
@@ -106,7 +106,7 @@ impl Key {
         }
         if offered.chars().any(char::is_control) {
             return Err(KeyRefused::Control {
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             });
         }
         for segment in offered.split('.') {

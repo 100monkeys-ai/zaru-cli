@@ -77,7 +77,7 @@ pub enum ModelIdRefused {
     Empty,
     /// The identifier carried a control character.
     Control {
-        /// The identifier as it was configured, escaped.
+        /// The identifier as it was configured.
         offered: String,
     },
     /// The identifier began or ended with whitespace.
@@ -132,7 +132,7 @@ impl ModelId {
         }
         if offered.chars().any(char::is_control) {
             return Err(ModelIdRefused::Control {
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             });
         }
         if offered.trim() != offered {

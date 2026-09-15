@@ -108,7 +108,7 @@ pub enum CommandRefused {
     UnexpectedWord {
         /// The command, as `--help` spells it.
         command: String,
-        /// What was typed, escaped.
+        /// What was typed.
         offered: String,
     },
     /// A command whose argument is required was given none.

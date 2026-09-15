@@ -201,7 +201,7 @@ pub enum ModeRefused {
     NoSuchMode {
         /// The configuration key, as the caller spelled it.
         key: String,
-        /// The value offered, escaped.
+        /// The value offered.
         offered: String,
     },
 }
@@ -292,7 +292,7 @@ impl Mode {
         if layer.bound_by_the_escalation_ceiling() {
             return Err(ModeRefused::FromAClonedRepository {
                 key: key.to_owned(),
-                offered: value.escape_debug().to_string(),
+                offered: value.to_string(),
                 layer,
             });
         }
@@ -301,7 +301,7 @@ impl Mode {
             .find(|mode| mode.as_str() == value)
             .ok_or_else(|| ModeRefused::NoSuchMode {
                 key: key.to_owned(),
-                offered: value.escape_debug().to_string(),
+                offered: value.to_string(),
             })
     }
 
