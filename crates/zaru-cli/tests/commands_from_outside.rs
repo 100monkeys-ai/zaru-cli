@@ -463,7 +463,7 @@ expect = { matches = "hello" }
     .expect("a skill that declares validators gives the turn its own plan");
 
     let working =
-        zaru_cli::tools::WorkingDirectory::at(&scratch.project()).expect("the project resolves");
+        zaru_cli::tools::WorkingDirectory::at(scratch.project()).expect("the project resolves");
     let files =
         zaru_cli::config::SizeCeiling::new(zaru_cli::cli::FILE_CEILING_BYTES).expect("a mebibyte");
     let spawn = zaru_cli::process::Spawn::new(

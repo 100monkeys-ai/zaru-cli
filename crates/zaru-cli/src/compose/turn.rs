@@ -1028,67 +1028,6 @@ pub fn prepare(
         session_grants: crate::tools::grants::SessionGrants::none(),
     })
 }
-/// Run one turn of a session that already exists.
-///
-/// # What this half rebuilds, and why it is not in [`Prepared`]
-///
-/// Everything below is per turn because it *is* per turn: the allowlist is
-/// read from configuration at the moment the turn asks, the child environment
-/// and the spawner are the boundary this turn's commands start in, the
-/// executor holds a `&mut` on the transcript for the length of one turn, and
-/// `Classifying` keeps the last provider failure of one turn. The order is the
-/// order it was in before the split, so every refusal happens where it
-/// happened.
-///
-/// `n` is the turn's position in the session, which
-/// [`zaru_core::tool_call::run`] says is "the caller's,
-/// because a session spans many calls to this function and a number invented
-/// here would restart at one every turn". [`task`] passes `1`; a shell counts
-/// up.
-///
-/// `start` is what the turn is about, and it is the **caller's** for the same
-/// reason `n` is. [`task`] passes [`Start::Task`]; a shell passes that for a
-/// line the user typed and [`Start::Resumed`] for the one turn a session
-/// resumed over an interrupted transcript owes the model first — [ADR-0010]
-/// D4's "the model is told it did not complete". It is a required parameter
-/// rather than a defaulted one so that the compiler names every call site that
-/// should have been asked which of the two this is (library
-/// [Verification lessons] §14).
-///
-/// `confirmer` is [ADR-0011] D3's `ask`. `None` refuses a call that needed one
-/// rather than performing it, which is `Decision::permit`'s own rule.
-///
-/// `extra` is [ADR-0008] clause 3's second consumer. `run` "constructs each
-/// event once and hands the same value to every registered sink in turn", so a
-/// slice holding this session's transcript writer and a renderer is **one
-/// emission reaching two consumers** — the clause is about the caller, and
-/// this is the caller.
-///
-/// `owed` is the session's, not the turn's. See [`Owed`].
-///
-/// `context` is [ADR-0013]'s, and it is the **session's** too: a second turn
-/// assembles over layer 6, which is what that record's own Status tracking
-/// says becomes load-bearing "the day a session holds more than one turn".
-/// Nothing here compacts — `Context::compact` takes `&mut self` and the policy
-/// holds a shared borrow — so a context that will not fit refuses with D7's
-/// own answer.
-///
-/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-#[must_use]
-#[allow(
-    clippy::too_many_lines,
-    clippy::too_many_arguments,
-    reason = "\
-    the composition is one dependency order and splitting it into functions \
-    would put the order in the call graph rather than on the page, where the \
-    only thing that makes it reviewable is reading it top to bottom; every \
-    argument is a port or a value some record owns, and bundling them into a \
-    struct would be a second name for the same list"
-)]
 /// What a turn a skill started adds to it.
 ///
 /// # Added to the project's, never replacing them
@@ -1164,6 +1103,67 @@ pub fn plan_for_the_turn(
     zaru_core::iteration::validator::Plan::from_declared(declared).map(Some)
 }
 
+/// Run one turn of a session that already exists.
+///
+/// # What this half rebuilds, and why it is not in [`Prepared`]
+///
+/// Everything below is per turn because it *is* per turn: the allowlist is
+/// read from configuration at the moment the turn asks, the child environment
+/// and the spawner are the boundary this turn's commands start in, the
+/// executor holds a `&mut` on the transcript for the length of one turn, and
+/// `Classifying` keeps the last provider failure of one turn. The order is the
+/// order it was in before the split, so every refusal happens where it
+/// happened.
+///
+/// `n` is the turn's position in the session, which
+/// [`zaru_core::tool_call::run`] says is "the caller's,
+/// because a session spans many calls to this function and a number invented
+/// here would restart at one every turn". [`task`] passes `1`; a shell counts
+/// up.
+///
+/// `start` is what the turn is about, and it is the **caller's** for the same
+/// reason `n` is. [`task`] passes [`Start::Task`]; a shell passes that for a
+/// line the user typed and [`Start::Resumed`] for the one turn a session
+/// resumed over an interrupted transcript owes the model first — [ADR-0010]
+/// D4's "the model is told it did not complete". It is a required parameter
+/// rather than a defaulted one so that the compiler names every call site that
+/// should have been asked which of the two this is (library
+/// [Verification lessons] §14).
+///
+/// `confirmer` is [ADR-0011] D3's `ask`. `None` refuses a call that needed one
+/// rather than performing it, which is `Decision::permit`'s own rule.
+///
+/// `extra` is [ADR-0008] clause 3's second consumer. `run` "constructs each
+/// event once and hands the same value to every registered sink in turn", so a
+/// slice holding this session's transcript writer and a renderer is **one
+/// emission reaching two consumers** — the clause is about the caller, and
+/// this is the caller.
+///
+/// `owed` is the session's, not the turn's. See [`Owed`].
+///
+/// `context` is [ADR-0013]'s, and it is the **session's** too: a second turn
+/// assembles over layer 6, which is what that record's own Status tracking
+/// says becomes load-bearing "the day a session holds more than one turn".
+/// Nothing here compacts — `Context::compact` takes `&mut self` and the policy
+/// holds a shared borrow — so a context that will not fit refuses with D7's
+/// own answer.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    reason = "\
+    the composition is one dependency order and splitting it into functions \
+    would put the order in the call graph rather than on the page, where the \
+    only thing that makes it reviewable is reading it top to bottom; every \
+    argument is a port or a value some record owns, and bundling them into a \
+    struct would be a second name for the same list"
+)]
 async fn ran(
     version: &str,
     report_at: &str,
