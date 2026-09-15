@@ -19,7 +19,9 @@ tools it asks for, and writes every step to a transcript you can read with
 `cat`.
 
 `zaru` reads its arguments, resolves configuration, and prints what is already
-on this machine. Seven commands run:
+on this machine. `zaru --help` lists every command this build runs, walked from
+the same table the parser reads, so it cannot name one that does not run or
+miss one that does. Some of them:
 
 ```sh
 zaru runtime                  # the tier, what it engages, and what changing it would alter
@@ -110,8 +112,8 @@ performed — and prints what the model answered and what the turn cost in
 tokens. At `bare` tier it says, once, that it is not a sandbox, because it is
 not.
 
-**One thing it will refuse.** Four of ADR-0012 D3's five provider kinds have
-no client, so a task against one is refused naming the kind that does.
+**One thing it will refuse.** Two of ADR-0012 D3's five provider kinds have
+no client, so a task against one is refused naming the three that do.
 
 **And one thing it will now do instead of refusing.** A project whose
 `zaru.toml` declares validators runs the **iteration loop**, which is the
@@ -124,8 +126,7 @@ as a success or an error. `runtime.max_iterations` sets the ceiling and a
 project may only lower it; where nothing sets it, ADR-0001's per-tier default
 applies, which at `bare` is one.
 
-Eleven pieces exist behind that binary and the command surface reaches eight of
-them. The iteration loop and the tool-call loop are in `zaru-core`, headless,
+The iteration loop and the tool-call loop are in `zaru-core`, headless,
 and **as of 2026-09-05 every port either loop needs has a product
 implementation in `zaru-cli`**. A validator's command runs as a real child
 process; a `matches` pattern is compiled by an engine that cannot backtrack,
@@ -147,10 +148,10 @@ piece has been waiting on. A status line, a transcript pane and the composer,
 all headless — the shell renders into a frame and reads a backend-agnostic
 keystroke, and the terminal itself is `zaru-cli`'s, which is what keeps a
 terminal backend out of the composer's search tier. The slash grammar is a
-second grammar over one vocabulary: the eleven namespaces, their two spellings
+second grammar over one vocabulary: the twelve namespaces, their two spellings
 each and the nearest-match rule are declared once, in `zaru-cli`, and handed
 across, so a command reached with a slash runs the *same function* the
-subcommand runs. Seven of the eleven namespaces answer; the other four need
+subcommand runs. Ten of the twelve namespaces answer; the other two need
 things that do not exist and say so rather than guessing at a nearest.
 
 The composer is in `zaru-tui` too, and its fast tier is built: a prefix trie in
@@ -161,30 +162,31 @@ adapts, one trie per workspace so that scoping to the attached one cannot
 truncate a strip that had matches to show. A leading `/` is a command and never
 a search, decided before the strip sees a keystroke.
 
-**Nothing populates it on this machine**, because reaching Nuclear Notes needs a
-transport that is a port with no implementation and a token nothing here can
-add. So the strip says that in one line rather than going blank, which is the
-difference a user sees today. Its second tier — the debounced server search —
-is a request/response pair nothing implements, and no request is emitted at
-all.
+**It is populated from `~/.zaru/corpus.jsonl`**, which a session writes when it
+opens with a stored Nuclear Notes token: one line per instance and workspace,
+compacted at open. A machine with no token gets one honest line rather than a
+blank strip, which is the difference a user sees before they add one. Its
+second tier — the debounced server search — is a request/response pair nothing
+implements, and no request is emitted at all.
 
 The credential store is in `zaru-cli`, holding named tokens on disk with the
 bearer value **sealed**: AES-256-GCM, a fresh nonce per seal, and the alias
 bound in so a sealed value moved between entries will not open. The key comes
 from the OS keyring where there is one and from `ZARU_CREDENTIAL_KEY` where
 there is not — which is the ordinary case on a headless machine, not just in
-CI. `zaru notes tokens` still lists nothing on any real machine, because
-nothing here can *add* a token: that surface needs a Nuclear Notes server to
-authenticate against. The configuration hierarchy is
-in `zaru-cli`, resolving five layers over a schema whose keys arrive from the
+CI. `zaru notes tokens add <alias> <host>` stores one, reading it from standard
+input and asking the instance what it grants before the value is sealed, so
+`zaru notes tokens` lists what this machine actually holds. The configuration
+hierarchy is in `zaru-cli`, resolving five layers over a schema whose keys
+arrive from the
 records that own them; **all five layers have readers as of 2026-09-05** — the
 built-in one, `~/.zaru/config.toml`, `./zaru.toml`, `ZARU_*`, and the command
 line. The two that read files are the two that waited on a TOML parser, and a
 file that does not parse is refused naming the file, the line and the column
 and never the line's contents: the parser's own message renders the offending
 source line, and a refusal that quoted it would publish whatever was on it. The local tool surface is in `zaru-cli` too: the seven built-in
-tool names, the working-directory boundary, and the permission model. **Six
-of the seven act**: `fs.read`, `fs.list`, `fs.write`, `fs.edit` and `fs.search`
+tool names, the working-directory boundary, and the permission model. **All
+seven act**: `fs.read`, `fs.list`, `fs.write`, `fs.edit` and `fs.search`
 through `std::fs` inside that boundary — the two that replace a file doing so
 whole, at the file's own mode, and the one that searches never following a
 link — and `cmd.run` as a real child process, started at the boundary's root
@@ -196,7 +198,7 @@ directory it starts in — and **nothing contains that child**:
 at `bare` tier the harness is not a sandbox and the decision record says so.
 Every call's arguments arrive as one JSON object, read before the permission
 decision because a path that has not been extracted is not yet a target.
-`web.fetch` acts too, and it is the last of the seven to: `http` and `https`
+`web.fetch` was the last of the seven to act, and it takes `http` and `https`
 only, no redirect followed across a host, this machine and the cloud
 metadata range refused by name, no cookie kept and no header of the harness's
 own added — and a response larger than the ceiling its caller supplies is
@@ -224,9 +226,10 @@ drift apart.
 The Nuclear Notes client is in `zaru-notes`: a session over MCP with the
 workspace named on every read, a bearer value the type system will not render,
 three staleness signals, and listings of a workspace's pages and atoms that
-follow their own cursor and refuse one that does not advance. It reaches no
-network, because the transport is a port with no implementation. Every check
-against it exchanges real protocol bytes over an in-memory pipe.
+follow their own cursor and refuse one that does not advance. It reaches a real
+instance over `rmcp`'s streamable HTTP transport, behind a port the crate
+declares rather than a client it hard-codes. Every check against it exchanges
+real protocol bytes over an in-memory pipe, so the suite needs no server.
 
 The session lifecycle is in `zaru-cli`. A session is a directory named by a
 ULID holding plain files, because a harness that shows its work should not
@@ -237,9 +240,9 @@ deletion is real. `zaru --resume` prints the transcript's own bytes for exactly
 that reason. `meta.toml` is written and read since 2026-09-05, atomically and at
 `0600`, and it records one thing ADR-0010 D1 does not name — the configuration
 layer the tier came from, because a tier that cannot say where it came from is
-not a record of the session's tier. **The binary starts no session**: it reads
-the ones that are there and creates nothing by being asked a question, so no
-`meta.toml` exists on any machine yet.
+not a record of the session's tier. **A command that only answers a question
+starts no session**: `zaru runtime` and its neighbours read what is there and
+create nothing. A task does, and so does a bare `zaru` at a terminal.
 
 Cutting across three of the pieces above is one port rather than an eleventh:
 every path from captured bytes into a model prompt passes a `Redactor`, and the
@@ -258,9 +261,9 @@ through. Five classes of failure, each carrying by construction what its class
 owes the reader; a mapping from every error the workspace already raises to the
 class a decision record states for it; and a boundary around everything the
 binary does, so that a bug in the harness is reported as a bug in the harness
-rather than as a Rust panic. Three of its six exit codes are now reachable from
-the real artefact: `0`, `2` for anything the reader can change, and `4` for a
-model that resolved to a provider this build cannot reach.
+rather than as a Rust panic. Every one of its exit codes is reachable from the
+real artefact and asserted there, and only the code for work that genuinely
+failed needs a provider key to reach.
 
 The runtime tiers are in `zaru-cli` as well, and `zaru runtime` is the first
 thing that shows one. **The tier names are ADR-0001's and this file
@@ -299,19 +302,22 @@ cargo test --workspace
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
-build needs a registry: `Cargo.lock` resolves 300 packages, six of which are
-this workspace's own. The third-party set is `rmcp` for the Nuclear Notes
-client, `ratatui` and `tui-textarea` for the composer, `serde` and `serde_json`
-for the credential store, `aes-gcm` and `keyring` for sealing that store, `toml`
-for `~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`, `regex` and `boon` for
-two of a declared validator's four `expect` kinds, `reqwest` for the provider
+build needs a registry: `Cargo.lock` resolves 319 packages, six of which are
+this workspace's own. The third-party set is fifteen rows in
+`[workspace.dependencies]`: `rmcp` for the Nuclear Notes client with `futures`
+and `sse-stream`, the two types its own transport trait is spelled in;
+`ratatui` and `tui-textarea` for the composer; `pulldown-cmark` for the
+markdown the pane renders; `serde` and `serde_json` for the credential store;
+`aes-gcm` and `keyring` for sealing that store; `toml` for
+`~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`; `regex` and `boon` for
+two of a declared validator's four `expect` kinds; `reqwest` for the provider
 client **and for `web.fetch`, which share one builder** — a second caller for a
-crate already carried rather than a new dependency, so the set is still
-twelve — `tokio` for the client's channels, for polling that provider's futures,
-for the binary crate's own check that drives a session end to end, and for
-polling the loop's futures under `#[tokio::test]`, and what those twelve pull
-in. `boon` needs the URL and Unicode machinery `$ref` resolution
-asks for, and would be the largest single dependency here had `reqwest` not
+crate already carried rather than a new dependency; and `tokio` for the
+client's channels, for polling that provider's futures, for the binary crate's
+own check that drives a session end to end, and for polling the loop's futures
+under `#[tokio::test]` — and what those fifteen pull in. `boon` needs the URL
+and Unicode machinery `$ref` resolution asks for, and would be the largest
+single dependency here had `reqwest` not
 already brought most of it. Which dependencies the harness may carry is
 ADR-0003 D2's to decide, and `[workspace.dependencies]` is where each arrives
 once it has a caller.
