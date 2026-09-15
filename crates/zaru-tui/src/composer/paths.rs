@@ -117,6 +117,21 @@ pub trait Paths {
     /// call site honest: no answer contains an entry that cannot be offered.
     fn matches(&self, prefix: &str, limit: usize) -> Vec<PathEntry>;
 
+    /// Tell the corpus a turn has ended.
+    ///
+    /// A turn is the only thing that changes the working directory while the
+    /// person stays in the composer, because a turn is when `fs.write` runs.
+    /// An implementation that keeps what it walked drops it here and walks
+    /// again on the next `@`; one that walks every time does nothing.
+    ///
+    /// **This is a message and not a question**, which is why it is on the
+    /// port rather than on the type the host happens to hold: the pump knows
+    /// when a turn ended and knows nothing else about a corpus, and a pump
+    /// holding a concrete implementation to call one method on it would be a
+    /// second edge for no gain. **Defaulted to nothing**, so a staged
+    /// implementation ignores it.
+    fn turn_ended(&self) {}
+
     /// What the strip should say when this corpus has nothing to offer at all,
     /// if anything.
     ///

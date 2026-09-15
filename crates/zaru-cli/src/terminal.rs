@@ -46,6 +46,7 @@
 pub mod corpus;
 pub mod driver;
 pub mod open;
+pub mod paths;
 pub mod source;
 pub mod trie;
 pub mod vocabulary;
@@ -60,6 +61,7 @@ pub use driver::{
 pub use open::{
     Opening, Populating, Refresh, refresh_from, resolve_in, restored_context, shell_for, take_over,
 };
+pub use paths::{NOTHING_TO_OFFER, ProjectPaths, WALK_CEILING};
 pub use source::{Beat, POLL, Pace, Source, TICK, Taken};
 pub use trie::{FROM_CACHE, LOOKING, NOTHING_CACHED, NotesTrie, UNREACHABLE};
 pub use vocabulary::{Transcript, Vocabulary};

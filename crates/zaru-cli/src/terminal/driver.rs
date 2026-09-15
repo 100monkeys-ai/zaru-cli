@@ -1013,7 +1013,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                 .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
             let acted = pane
                 .shell
-                .key(input, region, now, &NoEntries, &NoVocabulary);
+                .key(input, region, now, &NoEntries, &NoVocabulary, &NoPaths);
             pane.paint();
             // A question is not a prompt a user can leave past either: this
             // call is what a tool is waiting on and there is nowhere for a
@@ -1118,6 +1118,17 @@ struct NoEntries;
 
 impl zaru_tui::composer::Entries for NoEntries {
     fn matches(&self, _prefix: &str, _limit: usize) -> Vec<zaru_tui::composer::Entry> {
+        Vec::new()
+    }
+}
+
+/// The same, for the working directory: no `@` is typed while a question
+/// stands, so nothing is ever walked.
+#[derive(Debug)]
+struct NoPaths;
+
+impl zaru_tui::composer::Paths for NoPaths {
+    fn matches(&self, _prefix: &str, _limit: usize) -> Vec<zaru_tui::composer::PathEntry> {
         Vec::new()
     }
 }
@@ -1332,6 +1343,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    paths: &dyn zaru_tui::composer::Paths,
     now: &mut Duration,
     turns: &mut Turns<'_>,
     start: Start<'_>,
@@ -1386,6 +1398,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
             pace,
             entries,
             vocabulary,
+            paths,
             now,
             Some(&mut deltas),
             Some(&meter),
@@ -1750,6 +1763,7 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    paths: &dyn zaru_tui::composer::Paths,
     now: &mut Duration,
     deltas: Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
     meter: Option<&Meter<'_>>,
@@ -1777,7 +1791,7 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
                     break Raced::Interrupted;
                 }
                 *now += Duration::from_millis(1);
-                read_while_busy(pane, struck, *now, entries, vocabulary);
+                read_while_busy(pane, struck, *now, entries, vocabulary, paths);
             }
 
             // The answer's text, as the provider hands it over.
@@ -1868,8 +1882,16 @@ async fn next_delta(
 /// idle.
 ///
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
-fn refresh_absence(shell: &mut zaru_tui::shell::Shell, entries: &dyn zaru_tui::composer::Entries) {
+fn refresh_absence(
+    shell: &mut zaru_tui::shell::Shell,
+    entries: &dyn zaru_tui::composer::Entries,
+    paths: &dyn zaru_tui::composer::Paths,
+) {
     shell.composer_mut().set_absence(entries.absence());
+    // The third corpus's own sentence, re-asked on the same beat and for the
+    // same reason: this one is walked lazily, so what it has to say is not
+    // known at session open either.
+    shell.composer_mut().set_path_absence(paths.absence());
 }
 
 /// A pane the beat could not lock is a defect this counts rather than one it
@@ -1885,6 +1907,7 @@ fn read_while_busy<S: Surface + Send>(
     now: Duration,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    paths: &dyn zaru_tui::composer::Paths,
 ) {
     let Ok(mut pane) = pane.try_lock() else {
         return;
@@ -1894,14 +1917,14 @@ fn read_while_busy<S: Surface + Send>(
     // than waiting for the turn to end. Above the match rather than inside one
     // arm, because all three repaint the composer and the queued-task arm is
     // the one where a person is most likely to be waiting on something.
-    refresh_absence(pane.shell, entries);
+    refresh_absence(pane.shell, entries, paths);
     match struck {
         // A block pasted during a turn lands in the prompt exactly as one
         // pasted at it does, and waits for the `Enter` that submits it.
         Struck::Pasted(text) => {
             pane.shell
                 .composer_mut()
-                .paste(&text, now, entries, vocabulary);
+                .paste(&text, now, entries, vocabulary, paths);
             pane.paint();
         }
         Struck::Key(input) if input.key == zaru_tui::shell::Key::Enter => {
@@ -1930,13 +1953,14 @@ fn read_while_busy<S: Surface + Send>(
                 Err(_) => false,
                 Ok(area) => {
                     let region = Shell::regions(area)[1];
-                    pane.shell.moved(&input, region, now, entries, vocabulary)
+                    pane.shell
+                        .moved(&input, region, now, entries, vocabulary, paths)
                 }
             };
             if !moved {
                 pane.shell
                     .composer_mut()
-                    .key(input, now, entries, vocabulary);
+                    .key(input, now, entries, vocabulary, paths);
             }
             pane.paint();
         }
@@ -2121,6 +2145,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
     runner: &crate::cli::Run<'_>,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    paths: &dyn zaru_tui::composer::Paths,
     turns: &mut Turnable<'_>,
     recording: Option<Recording<'_>>,
     extensions: &mut Extensions<'_>,
@@ -2222,7 +2247,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
         // than inside the terminal arm, so a queued task submitted without a
         // keystroke -- ADR-0015's 2026-09-13 amendment -- repaints a strip
         // that is as current as one a keystroke reached.
-        refresh_absence(shell, entries);
+        refresh_absence(shell, entries, paths);
 
         let action = match pending.take() {
             Some(line) => shell.submit(&line, vocabulary),
@@ -2242,7 +2267,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 let region = surface
                     .area()
                     .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
-                shell.struck(struck, region, now, entries, vocabulary)
+                shell.struck(struck, region, now, entries, vocabulary, paths)
             }
         };
 
@@ -2341,6 +2366,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                                         pace,
                                         entries,
                                         vocabulary,
+                                        paths,
                                         &mut now,
                                         runner,
                                         alias,
@@ -2579,10 +2605,16 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 let lines = match turns {
                     Turnable::Ready(turns) => {
                         let turned = turns_of_one_line(
-                            shell, surface, source, pace, entries, vocabulary, &mut now, turns,
-                            &task, declaring,
+                            shell, surface, source, pace, entries, vocabulary, paths, &mut now,
+                            turns, &task, declaring,
                         )
                         .await;
+                        // The tree can have changed, because a turn is when
+                        // `fs.write` runs. The third corpus is told once, here,
+                        // and walks again on the next `@` rather than on the
+                        // beat -- ADR-0005's amendment, and the reason nothing
+                        // watches the filesystem.
+                        paths.turn_ended();
                         let redactor = turns.prepared.redactor();
                         let session = turns.session;
                         match after(
@@ -2678,6 +2710,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    paths: &dyn zaru_tui::composer::Paths,
     now: &mut Duration,
     turns: &mut Turns<'_>,
     task: &str,
@@ -2693,6 +2726,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
             pace,
             entries,
             vocabulary,
+            paths,
             now,
             turns,
             Start::Resumed(&interrupted),
@@ -2717,6 +2751,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
         pace,
         entries,
         vocabulary,
+        paths,
         now,
         turns,
         Start::Task(task),
@@ -3276,6 +3311,7 @@ pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
     vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    paths: &dyn zaru_tui::composer::Paths,
     now: &mut Duration,
     runner: &crate::cli::Run<'_>,
     alias: &crate::credentials::Alias,
@@ -3325,6 +3361,7 @@ pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
             pace,
             entries,
             vocabulary,
+            paths,
             now,
             None,
             None,
@@ -3495,7 +3532,7 @@ pub async fn ask_at_the_door<S: Surface + Send>(
         let region = surface
             .area()
             .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
-        shell.struck(struck, region, now, &NoEntries, &NoVocabulary);
+        shell.struck(struck, region, now, &NoEntries, &NoVocabulary, &NoPaths);
         surface.draw(shell)?;
 
         if let Some(answered) = shell.answer() {
@@ -3554,7 +3591,7 @@ pub async fn ask_for_a_secret<S: Surface + Send>(
         let region = surface
             .area()
             .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
-        shell.struck(struck, region, now, &NoEntries, &NoVocabulary);
+        shell.struck(struck, region, now, &NoEntries, &NoVocabulary, &NoPaths);
         surface.draw(shell)?;
 
         match shell.secret_answer() {

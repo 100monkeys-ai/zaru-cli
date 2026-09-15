@@ -105,6 +105,10 @@ regex = { workspace = true }
 # ADR-0009 D3's fourth `expect` kind. See `[workspace.dependencies]` for the
 # measurement and for why this crate and not `jsonschema`.
 boon = { workspace = true }
+# ADR-0005's third strip corpus, and the only thing this crate asks of it is
+# what `.gitignore` says. See `[workspace.dependencies]` for the two measured
+# numbers, and for why a hand-written subset of that language was refused.
+ignore = { workspace = true }
 # ADR-0015 D2's in-session half needs a terminal, and this is where the
 # terminal backend arrives. `crossterm` is a FEATURE of a crate ADR-0003 D2
 # already names -- its row's role is "Terminal UI" in as many words -- and

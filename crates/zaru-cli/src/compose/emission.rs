@@ -95,7 +95,7 @@
 //! [`prose::ITERATION_IS_ONE_EXCHANGE`]: crate::compose::prose::ITERATION_IS_ONE_EXCHANGE
 
 use crate::compose::prose;
-use crate::terminal::trie;
+use crate::terminal::{paths, trie};
 
 /// Where a line's wording comes from.
 ///
@@ -201,6 +201,13 @@ pub enum Door {
     StandingStrip,
     /// `Composer::set_absence` — the strip's absence line.
     AbsenceStrip,
+    /// `Composer::set_path_absence` — the same, for the path corpus.
+    ///
+    /// A second door and not a second use of the one above, because the two
+    /// corpora fail independently: a session can have a cortex to search and a
+    /// working directory with nothing to name, or the reverse, and one field
+    /// would make the strip say the wrong sentence in exactly those sessions.
+    PathAbsenceStrip,
     /// `SessionNotice::state_once` — [ADR-0011] D2's notice.
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
@@ -296,6 +303,7 @@ impl Door {
         match self {
             Self::StandingStrip => ".set_standing(",
             Self::AbsenceStrip => ".set_absence(",
+            Self::PathAbsenceStrip => ".set_path_absence(",
             Self::SessionNotice | Self::Recommendation => ".state_once()",
             Self::InterruptNotice => "self.announce_interrupted()",
             Self::ContextAnnouncement => "render::announcement(",
@@ -326,6 +334,7 @@ impl Door {
         match self {
             Self::StandingStrip => &["src/terminal/open.rs"],
             Self::AbsenceStrip => &["src/terminal/driver.rs", "src/terminal/open.rs"],
+            Self::PathAbsenceStrip => &["src/terminal/driver.rs"],
             Self::SessionNotice | Self::Recommendation => &["src/compose/turn.rs"],
             Self::InterruptNotice => &["src/compose/iterate.rs"],
             Self::ContextAnnouncement => &["src/compose/turn.rs", "src/terminal/vocabulary.rs"],
@@ -368,6 +377,13 @@ pub enum Unprompted {
     StandingTip,
     /// The absence line when no stored token holds the composer role.
     NothingCached,
+    /// The absence line when the working directory offers no path to name.
+    ///
+    /// [ADR-0005]'s third corpus, added 2026-09-15. It is on the same surface
+    /// as the four above and says a different thing about a different corpus.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates-2
+    NothingToName,
     /// The absence line while the corpus is still being fetched.
     LookingInNotes,
     /// The absence line when the token's instance could not be reached.
@@ -483,15 +499,16 @@ pub enum Unprompted {
 impl Unprompted {
     /// Every line in the set, so a check can walk them rather than list them.
     ///
-    /// The length is annotated, so a seventeenth fails to compile here as well
+    /// The length is annotated, so an eighteenth fails to compile here as well
     /// as in every exhaustive match below.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::NotASandbox,
         Self::MissingValidators,
         Self::DeclareOne,
         Self::Interrupted,
         Self::StandingTip,
         Self::NothingCached,
+        Self::NothingToName,
         Self::LookingInNotes,
         Self::NotesUnreachable,
         Self::NotesFromCache,
@@ -528,6 +545,10 @@ impl Unprompted {
             Self::NothingCached => Wording::Authored {
                 name: "NOTHING_CACHED",
                 text: trie::NOTHING_CACHED,
+            },
+            Self::NothingToName => Wording::Authored {
+                name: "NOTHING_TO_OFFER",
+                text: paths::NOTHING_TO_OFFER,
             },
             Self::LookingInNotes => Wording::Authored {
                 name: "LOOKING",
@@ -591,6 +612,7 @@ impl Unprompted {
             // before the first frame and before any turn exists.
             Self::StandingTip
             | Self::NothingCached
+            | Self::NothingToName
             | Self::LookingInNotes
             | Self::NotesUnreachable
             | Self::NotesFromCache
@@ -626,6 +648,10 @@ impl Unprompted {
             | Self::LookingInNotes
             | Self::NotesUnreachable
             | Self::NotesFromCache => Subject::TheHarness,
+            // The project's, and not the harness's: what it reports is what
+            // this working directory holds, which is a fact about the tree
+            // somebody opened the session in.
+            Self::NothingToName => Subject::TheProject,
             // The model's, and emphatically not the user's: what is
             // reported is what the provider is doing, never how long
             // somebody has been waiting on it. D7 forbids the second.
@@ -652,6 +678,7 @@ impl Unprompted {
             | Self::LookingInNotes
             | Self::NotesUnreachable
             | Self::NotesFromCache => Door::AbsenceStrip,
+            Self::NothingToName => Door::PathAbsenceStrip,
             Self::Compacted | Self::AttachmentDropped => Door::ContextAnnouncement,
             Self::ContextUsage => Door::ContextSegment,
             Self::TokenUsage => Door::TokenSegment,
@@ -677,6 +704,7 @@ impl Unprompted {
             | Self::LookingInNotes
             | Self::NotesUnreachable
             | Self::NotesFromCache => ("ADR-0005", "D3"),
+            Self::NothingToName => ("ADR-0005", "D1"),
             Self::Compacted => ("ADR-0013", "D3"),
             Self::AttachmentDropped => ("ADR-0013", "D4"),
             Self::ContextUsage => ("ADR-0013", "D6"),
@@ -695,10 +723,11 @@ impl Unprompted {
 /// without having asked for it. The walk in `emission/tests.rs` reads each one
 /// off disk and fails when a constant is declared in one of them and neither
 /// referenced by a member nor named in [`EXEMPT`].
-pub const UNPROMPTED_HOMES: [&str; 3] = [
+pub const UNPROMPTED_HOMES: [&str; 4] = [
     "src/compose/prose.rs",
     "src/compose/tips.rs",
     "src/terminal/trie.rs",
+    "src/terminal/paths.rs",
 ];
 
 /// Constants declared in an [`UNPROMPTED_HOMES`] file that are not members,
