@@ -67,7 +67,7 @@ pub enum InferenceRefused {
     NoSuchAxis {
         /// The key, as this record spells it.
         key: Key,
-        /// The value offered, escaped.
+        /// The value offered.
         offered: String,
     },
 }
@@ -143,7 +143,7 @@ impl Inference {
             .find(|axis| axis.as_str() == offered)
             .ok_or_else(|| InferenceRefused::NoSuchAxis {
                 key: key.clone(),
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             })
     }
 

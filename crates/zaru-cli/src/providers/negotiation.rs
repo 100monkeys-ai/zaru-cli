@@ -119,7 +119,7 @@ impl RemoteModelId {
         }
         if offered.chars().any(char::is_control) {
             return Err(ModelIdRefused::Control {
-                offered: offered.escape_debug().to_string(),
+                offered: offered.to_string(),
             });
         }
         if offered.trim() != offered {
