@@ -1523,8 +1523,19 @@ pub fn refresh_status(
     described: Option<Described<'_>>,
     redactor: &(dyn zaru_core::redaction::Redactor + Sync),
 ) {
+    // ADR-0013 D6's figure, spelled over the window where a provider named one
+    // and over the used figure alone where none did. `described` is the whole
+    // discriminator and no argument was added for it: it is `None` exactly
+    // when `compose::turn::prepare` resolved no provider, which is the same
+    // session whose `Usage::window` is `cli::layers::WINDOW_WHEN_NO_PROVIDER`
+    // rather than any model's room. See `cli::render::Window`.
     shell.set_context_usage(Some(crate::cli::render::context_row(
         context.usage(redactor),
+        if described.is_some() {
+            crate::cli::render::Window::Known
+        } else {
+            crate::cli::render::Window::Unknown
+        },
     )));
     // `render::usage_row` and not a second spelling: its full form is the same
     // function the session prints on exit, so the row and that line cannot

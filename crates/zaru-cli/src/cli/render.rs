@@ -620,12 +620,54 @@ pub fn thousands(tokens: u64) -> String {
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 /// [`Usage`]: zaru_core::context::Usage
 #[must_use]
-pub fn context_usage(usage: zaru_core::context::Usage) -> String {
-    format!(
-        "context {}/{} tokens",
-        thousands(usage.used()),
-        thousands(usage.window())
-    )
+pub fn context_usage(usage: zaru_core::context::Usage, window: Window) -> String {
+    match window {
+        Window::Known => format!(
+            "context {}/{} tokens",
+            thousands(usage.used()),
+            thousands(usage.window())
+        ),
+        Window::Unknown => format!("context {} tokens", thousands(usage.used())),
+    }
+}
+
+/// Whether this session knows the window its context is measured against.
+///
+/// # Why the row needs this and the usage figure cannot carry it
+///
+/// [`Usage`](zaru_core::context::Usage) always carries a window, because a
+/// [`Context`](zaru_core::context::Context) is built with limits and a session
+/// that resolved no provider is built with
+/// [`crate::cli::layers::WINDOW_WHEN_NO_PROVIDER`] — the smallest window any
+/// kind in this binary states, chosen so that the shape claims no more room
+/// than something real. That is the right number for the *shape*, and it is
+/// not a claim the row may make: no provider answered, so nothing on this
+/// machine has said how much room there is.
+///
+/// Row 6 of [the second look-and-feel audit] measured the alternative, which
+/// was to show nothing at all: with no provider the row read
+/// `runtime.tier = bare · session …` for the whole session, at every width,
+/// while [ADR-0013] D6's trigger clause 5 asks for the figure "throughout".
+///
+/// **The used figure alone is not the narrowing [ADR-0001]'s amendment
+/// refused.** That refusal is "narrowing the context figure past its window
+/// destroys D6's relation", and the relation is approaching: a session that
+/// resolved no provider can run no turn, its layer 6 never grows, and there is
+/// nothing to approach. Where a window is known both numbers stay, at both
+/// widths, exactly as they were.
+///
+/// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Window {
+    /// [ADR-0012] D3's capability descriptor for the kind that resolved.
+    ///
+    /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+    Known,
+    /// No provider resolved, so the second figure would be a number nobody on
+    /// this machine has claimed.
+    Unknown,
 }
 
 /// The token count as [ADR-0001] D2's row carries it, in both its spellings.
@@ -673,11 +715,16 @@ fn tokens_total(spent: &crate::providers::TokenUsage) -> u64 {
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 #[must_use]
-pub fn context_row(usage: zaru_core::context::Usage) -> zaru_tui::shell::Segment {
-    zaru_tui::shell::Segment::new(
-        context_usage(usage),
-        format!("{}/{}", thousands(usage.used()), thousands(usage.window())),
-    )
+pub fn context_row(usage: zaru_core::context::Usage, window: Window) -> zaru_tui::shell::Segment {
+    // **The unit stays in the narrow form where the window is gone, and it is
+    // dropped where the window is there.** Measured at forty columns: with
+    // both numbers `1.4k/1048.5k` reads as a figure over its room and needs no
+    // noun, and with one `1.4k` is a number with nothing saying what it counts.
+    let narrow = match window {
+        Window::Known => format!("{}/{}", thousands(usage.used()), thousands(usage.window())),
+        Window::Unknown => format!("{} tokens", thousands(usage.used())),
+    };
+    zaru_tui::shell::Segment::new(context_usage(usage, window), narrow)
 }
 
 /// Which model is answering, as [ADR-0001] D2's row carries it.

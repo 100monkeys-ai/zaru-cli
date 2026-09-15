@@ -549,6 +549,21 @@ pub fn shell_for(
     Ok((shell, transcript, trie, populating, resumed, conditions))
 }
 
+/// The redactor a session that resolved no provider paints its row through.
+///
+/// [ADR-0008] clause 6's port is over the credential store, and a session
+/// whose composition refused never read it — so holding nothing is the honest
+/// state rather than a stand-in. Redacting with this is the identity, which is
+/// what `HeldSecrets::none`'s own documentation says it is for.
+///
+/// A `static` rather than a value built at the call site because
+/// [`crate::terminal::driver::refresh_status`] takes a reference and the
+/// alternative is a temporary whose lifetime the call has to be written
+/// around.
+///
+/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+static NOTHING_HELD: crate::redaction::HeldSecrets = crate::redaction::HeldSecrets::none();
+
 /// How a session's context is sized, whether or not a provider was prepared.
 ///
 /// **A session whose `prepare` refused still opens**, says what is wrong, and
@@ -968,6 +983,42 @@ fn one_session(
         });
     }
 
+    // **The row is written before the turns are built, since 2026-09-15.**
+    // This stood below the `match`, inside `if let Turnable::Ready(turns)`, so
+    // a session that resolved no provider never reached `refresh_status` at
+    // all and the row kept its opening spelling for the whole session -- no
+    // context figure at any width, where ADR-0013 D6's trigger clause 5 asks
+    // for one "throughout". Row 6 of the second look-and-feel audit measured
+    // it. The context exists either way: `restored_context` above built one
+    // over `context_shape_of`'s `None` branch, whose window is
+    // `cli::layers::WINDOW_WHEN_NO_PROVIDER` -- a constant whose own
+    // documentation says it decides "the second figure on ADR-0013 D6's row
+    // while the reader reads that refusal", written for the row this guard
+    // prevented.
+    //
+    // ADR-0012 D4's model and ADR-0011 D3's mode ride the same `Described`,
+    // and it is `None` here for the session that has neither -- which is the
+    // real state of a session whose composition could not resolve a provider:
+    // there is no model answering and no mode governing a tool call that
+    // cannot happen. It is also what `cli::render::Window` reads to choose the
+    // figure's spelling, so the row cannot claim a window and disown a model
+    // in one paint. The redactor is the prepared provider's where there is one
+    // and holds nothing where there is not, which is the honest state of a
+    // harness that read no secret.
+    crate::terminal::driver::refresh_status(
+        &mut shell,
+        &context,
+        None,
+        prepared
+            .as_ref()
+            .ok()
+            .map(crate::terminal::driver::Described::of),
+        prepared
+            .as_ref()
+            .ok()
+            .map_or(&NOTHING_HELD, |prepared| prepared.redactor()),
+    );
+
     let mut turns = match &prepared {
         Ok(prepared) => Turnable::Ready(Box::new(Turns {
             version,
@@ -1022,15 +1073,6 @@ fn one_session(
     // The `Cannot` arm supplies neither, which is the real state of a session
     // whose composition could not resolve a provider -- there is no model
     // answering and no mode governing a tool call that cannot happen.
-    if let Turnable::Ready(turns) = &turns {
-        crate::terminal::driver::refresh_status(
-            &mut shell,
-            &turns.context,
-            None,
-            Some(crate::terminal::driver::Described::of(turns.prepared)),
-            turns.prepared.redactor(),
-        );
-    }
 
     // ADR-0002 D8's standing tip, offered once, before the session's first
     // frame. **This is the only product caller of

@@ -1728,14 +1728,14 @@ fn the_context_segment_abbreviates_as_adr_0013_d3_does_and_never_rounds_up() {
     use zaru_core::context::Usage;
 
     assert_eq!(
-        render::context_usage(Usage::new(12_390, 1_048_576)),
+        render::context_usage(Usage::new(12_390, 1_048_576), render::Window::Known),
         "context 12.3k/1048.5k tokens",
         "12,390 truncates to 12.3k and 1,048,576 to 1048.5k; rounding would give 12.4k and \
          1048.6k, and D3's reading is that the line never reports more than was measured"
     );
 
     assert_eq!(
-        render::context_usage(Usage::new(999, 1_048_576)),
+        render::context_usage(Usage::new(999, 1_048_576), render::Window::Known),
         "context 999/1048.5k tokens",
         "below a thousand D3's abbreviation is the integer itself, so a session that has barely \
          started shows what it really holds rather than 0.9k"
@@ -1757,7 +1757,7 @@ fn the_context_segment_carries_the_window_and_not_only_what_is_used() {
     use zaru_core::context::Usage;
 
     let usage = Usage::new(300_000, 1_048_576);
-    let rendered = render::context_usage(usage);
+    let rendered = render::context_usage(usage, render::Window::Known);
 
     assert!(
         rendered.contains(&render::thousands(usage.used())),
@@ -1782,7 +1782,7 @@ fn the_pressure_threshold_is_not_on_the_status_row() {
     use zaru_core::context::Usage;
 
     let window = crate::providers::gemini::CONTEXT_WINDOW_TOKENS;
-    let rendered = render::context_usage(Usage::new(300_000, window));
+    let rendered = render::context_usage(Usage::new(300_000, window), render::Window::Known);
     let threshold = render::thousands(crate::cli::layers::context_limits(window).threshold().get());
 
     assert!(
@@ -1948,7 +1948,7 @@ fn a_narrow_spelling_drops_labelling_and_never_a_number() {
         tokens.narrow
     );
 
-    let context = render::context_row(Usage::new(12_390, 1_048_576));
+    let context = render::context_row(Usage::new(12_390, 1_048_576), render::Window::Known);
     assert_eq!(
         context.full, "context 12.3k/1048.5k tokens",
         "the full spelling is ADR-0013 D3's own register"

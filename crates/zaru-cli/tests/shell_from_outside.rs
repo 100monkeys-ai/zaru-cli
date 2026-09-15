@@ -2505,3 +2505,84 @@ fn corpus_a_masked_answer_is_absent_from_the_history_file() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// [ADR-0013] D6's figure is on the row of a session that resolved no
+/// provider, and it is the used figure alone.
+///
+/// # What this is about
+///
+/// That record's trigger clause 5 asks for context usage "throughout", and it
+/// read Satisfied on a row that had never been measured without a provider.
+/// Row 6 of the second look-and-feel audit measured it: `refresh_status` was
+/// called inside `if let Turnable::Ready(turns)`, so a session with no model
+/// configured kept its opening spelling for ever, at 100 columns and at 40.
+///
+/// The window is dropped rather than shown because
+/// `cli::layers::WINDOW_WHEN_NO_PROVIDER` is the shape's number and not a
+/// claim any provider on this machine made. The **unit** is kept in the narrow
+/// form, which the with-window narrow form drops: measured at forty columns,
+/// `runtime.tier = bare · 1.4k` is a number with nothing saying what it counts.
+///
+/// # The mutant and the accepting sibling
+///
+/// Passing `Window::Known` unconditionally in `refresh_status`, which is the
+/// spelling the row had before this arc: the row then claims `4.1k` of room on
+/// a machine where nothing has said there is any. Watched red.
+///
+/// The sibling is the second half: the same call with a `Described` present
+/// paints both numbers at both widths, byte for byte as it did before, so a
+/// mutation that dropped the window from every row reddens here.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+#[test]
+fn the_context_figure_is_on_the_row_of_a_session_that_resolved_no_provider() {
+    use zaru_cli::compose::SessionContext;
+
+    let limits =
+        zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER);
+    let context = SessionContext::opened(
+        zaru_cli::compose::prefix_for(None),
+        zaru_cli::compose::ContextShape::of(limits, 0),
+    );
+    let held = zaru_cli::redaction::HeldSecrets::none();
+
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    // `described` is `None`, which is what a session whose `prepare` refused
+    // hands this function — no model answering, no mode governing.
+    zaru_cli::terminal::driver::refresh_status(&mut shell, &context, None, None, &held);
+
+    let wide = shell.status().painted(100);
+    let narrow = shell.status().painted(40);
+    for (width, row) in [(100_u16, &wide), (40, &narrow)] {
+        assert!(
+            row.contains("tokens"),
+            "at {width} columns a session with no provider carries no context figure at all, \
+             which is the row ADR-0013 clause 5 says has one throughout: {row:?}"
+        );
+        assert!(
+            !row.contains('/'),
+            "at {width} columns the row names a window no provider on this machine claimed: \
+             {row:?}"
+        );
+    }
+    assert!(
+        wide.contains("context "),
+        "the full spelling lost ADR-0013 D3's leading word: {wide:?}"
+    );
+
+    // The sibling: with a provider described, both numbers are on the row at
+    // both widths and the narrow form drops the unit, exactly as before.
+    let mut answered = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    answered.set_context_usage(Some(zaru_cli::cli::render::context_row(
+        zaru_core::context::Usage::new(1_400, 1_048_576),
+        zaru_cli::cli::render::Window::Known,
+    )));
+    for width in [100_u16, 40] {
+        let row = answered.status().painted(width);
+        assert!(
+            row.contains("1.4k/1048.5k"),
+            "at {width} columns a session that resolved a provider lost its window, so this \
+             check would pass on a harness that dropped it from every row: {row:?}"
+        );
+    }
+}
