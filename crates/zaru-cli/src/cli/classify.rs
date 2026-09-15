@@ -116,6 +116,37 @@ fn run(sentence: &str, command: &str) -> Remedy {
 const BOTH_LISTINGS: &str =
     "run `zaru notes tokens` or `zaru providers keys` to see what this machine holds";
 
+/// What a reader does about a context that will not fit its window.
+///
+/// **The one authored line this arc added**, and it is the remedy rather than
+/// the statement: what happened is [`ContextRefusal::WindowExceeded`]'s own
+/// wording, already written, so nothing here says it a second time.
+///
+/// The first half is [`CapabilityRefused::ContextSizeUnknown`]'s remedy word
+/// for word — *"set `{key}` to the number of tokens that server accepts"* —
+/// because it is the same key, the same reader and the same thing to do, and
+/// a second phrasing of one instruction is the drift a shared sentence
+/// prevents. **It says "that server accepts" and not "above what this turn
+/// needed"** on purpose: for a local kind the harness *tells* the server this
+/// number as well as obeying it, so a remedy that named the turn's own figure
+/// would be telling a reader to promise their server a window it does not
+/// have.
+///
+/// The second half is the half no key can fix — a turn can be smaller — and
+/// it is on one action rather than two because it is not a second thing to
+/// configure. [`Remedy::also`] is D2's `or:` line and is where a second
+/// action would go if this were ever read as two.
+///
+/// A named constant for the reason [`BOTH_LISTINGS`] is one: it is a sentence
+/// with one raiser, and a string built at the match arm is a string `cargo
+/// fmt` can wrap into stray whitespace.
+///
+/// [`CapabilityRefused::ContextSizeUnknown`]: crate::providers::CapabilityRefused::ContextSizeUnknown
+/// [`ContextRefusal::WindowExceeded`]: zaru_core::iteration::ContextRefusal::WindowExceeded
+/// [`Remedy::also`]: crate::failure::Remedy::also
+const SET_THE_WINDOW_OR_READ_LESS: &str =
+    "set `{key}` to the number of tokens that server accepts, or give this turn less to read";
+
 /// A user-correctable failure: the refusal's own words, and what to change.
 fn correctable(refusal: &impl core::fmt::Display, remedy: Remedy) -> Classified {
     Classified::UserCorrectable {
@@ -1406,28 +1437,85 @@ impl Surface<'_> {
         &self,
         error: &zaru_core::tool_call::ToolCallError,
         provider: Option<&crate::providers::ProviderFailure>,
+        kind: ProviderKind,
         session: SessionEvidence,
     ) -> Classified {
         use zaru_core::tool_call::{PortKind, ToolCallError};
 
-        let ToolCallError::Port { port, .. } = error;
-        match (port, provider) {
-            (PortKind::Model, Some(failure)) => self.provider_failure(failure, session),
-            // A model failure with no typed value kept is unreachable: the
-            // adapter stores one on every `Err`. Carried as a defect rather
-            // than unwrapped, because the day it is reachable the adapter has
-            // stopped keeping them and that is a bug in this crate.
-            // A model failure with no typed value kept is unreachable, and so
-            // is an inner-loop failure reaching here: `compose::turn` reads
-            // the typed `IterationError` off `Inner` first and classifies by
-            // the port that actually failed. Both are carried as defects
-            // because the day either is reachable, this crate has stopped
-            // keeping what it said it keeps.
-            (PortKind::Model, None)
-            | (PortKind::Tools | PortKind::ContextPolicy | PortKind::InnerLoop, _) => {
-                undecided(self.version, self.report_at, session, line!())
+        // **A `match` rather than the irrefutable `let` that stood here.**
+        // `ToolCallError` grew a second variant on 2026-09-15 and the `let`
+        // stopped compiling — `error[E0005]: refutable pattern in local
+        // binding` — which is the mechanism rather than a comment: a third
+        // variant cannot arrive without meeting this function. There is no
+        // wildcard arm anywhere below it, for the reason this whole module has
+        // none.
+        match error {
+            ToolCallError::ContextWindowExceeded { needed, window } => {
+                Self::context_window_exceeded(*needed, *window, kind)
             }
+            ToolCallError::Port { port, .. } => match (port, provider) {
+                (PortKind::Model, Some(failure)) => self.provider_failure(failure, session),
+                // A model failure with no typed value kept is unreachable: the
+                // adapter stores one on every `Err`. Carried as a defect rather
+                // than unwrapped, because the day it is reachable the adapter has
+                // stopped keeping them and that is a bug in this crate.
+                // A model failure with no typed value kept is unreachable, and so
+                // is an inner-loop failure reaching here: `compose::turn` reads
+                // the typed `IterationError` off `Inner` first and classifies by
+                // the port that actually failed. Both are carried as defects
+                // because the day either is reachable, this crate has stopped
+                // keeping what it said it keeps.
+                (PortKind::Model, None)
+                | (PortKind::Tools | PortKind::ContextPolicy | PortKind::InnerLoop, _) => {
+                    undecided(self.version, self.report_at, session, line!())
+                }
+            },
         }
+    }
+
+    /// A turn whose own context would not fit the window.
+    ///
+    /// # Why this is the reader's and not ours
+    ///
+    /// [ADR-0016] D1 row 2 is "the user's … says exactly what to change", and
+    /// the window is `provider.<kind>.context_tokens` as [ADR-0014]'s layers
+    /// resolved it — a number the reader set, or the built-in row for the kind
+    /// that answered. Nothing here is broken. **This arm exists because until
+    /// 2026-09-15 that sentence was the opposite of what a reader was told**:
+    /// the refusal reached [`Self::turn`] as `PortKind::ContextPolicy` with
+    /// its two numbers already flattened into a string, fell to
+    /// [`undecided`], and printed *"a defect in Zaru 0.0.0 … this is a bug in
+    /// Zaru, not something you can configure"* — false in its last clause, and
+    /// D3's own "never present a defect as a user error" arriving inverted.
+    ///
+    /// # It is not exhaustion, and the difference is a register
+    ///
+    /// [ADR-0013] D7 says an **iteration** that would exceed the window "fails
+    /// as exhausted with a clear reason", and the iteration loop does exactly
+    /// that — `ExhaustionReason::ContextWindowExceeded`, rendered by
+    /// [`crate::cli::render::exhaustion`] with both numbers. A **turn** is not
+    /// an iteration, and calling this exhaustion would put it in
+    /// [ADR-0008] D5's register at [ADR-0016] D5's exit `1`, which is
+    /// `Class::Expected` — the register for the mechanism working. A window
+    /// the reader configured too small is not the mechanism working. So it is
+    /// row 2 at exit `2`, and D7 does not move.
+    ///
+    /// # No sentence is authored for what happened
+    ///
+    /// The statement is the error's own `Display`, which is
+    /// `ContextRefusal::WindowExceeded`'s wording reached through
+    /// `zaru-core` — one copy in the workspace. Only the remedy is this
+    /// harness's own line; see [`SET_THE_WINDOW_OR_READ_LESS`].
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    fn context_window_exceeded(needed: u64, window: u64, kind: ProviderKind) -> Classified {
+        correctable(
+            &zaru_core::tool_call::ToolCallError::ContextWindowExceeded { needed, window },
+            act(SET_THE_WINDOW_OR_READ_LESS.replace("{key}", kind.context_tokens_key().as_str())),
+        )
     }
 
     /// A summarisation that did not produce a summary, in its own class.

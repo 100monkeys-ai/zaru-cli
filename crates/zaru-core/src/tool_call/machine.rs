@@ -204,24 +204,31 @@ where
         Start::Task(task) => Turn::Initial { task },
         Start::Resumed(interrupted) => Turn::Resumed { interrupted },
     };
-    let prompt = ports.context.assemble(&turn).await.map_err(|refusal| {
-        // ADR-0013 D7's window-pressure route belongs to the *iteration*
-        // loop's exhaustion, which this loop does not have. Carrying it out
-        // as a port failure would be the honest reading only if the two were
-        // the same thing, and they are not — so the refusal's own wording
-        // travels and `zaru-cli` classifies it, which is what
-        // `iteration::port`'s documentation already says happens to a
-        // `PortFailure`. Recorded on ADR-0013 as a question this arc did not
-        // answer: what a turn does when its own assembly will not fit.
-        ToolCallError::Port {
-            port: PortKind::ContextPolicy,
-            round: 1,
-            failure: match refusal {
-                ContextRefusal::Failed(failure) => failure,
-                other => crate::iteration::PortFailure::new(other.to_string()),
+    let prompt = ports
+        .context
+        .assemble(&turn)
+        .await
+        .map_err(|refusal| match refusal {
+            // A policy that broke is a port failure like any other.
+            ContextRefusal::Failed(failure) => ToolCallError::Port {
+                port: PortKind::ContextPolicy,
+                round: 1,
+                failure,
             },
-        }
-    })?;
+            // ADR-0013 D7's window-pressure route belongs to the *iteration*
+            // loop's exhaustion, which this loop does not have, so it travels as
+            // itself and `zaru-cli` classifies it. That much was already true;
+            // what was not is that it travelled as a **string**. Until 2026-09-15
+            // this arm read `PortFailure::new(other.to_string())`, which flattened
+            // the two numbers into prose, and the classifier — with nothing left
+            // to read but a port kind — reported the reader's own configuration as
+            // a defect in the harness. The numbers travel now. Recorded on
+            // ADR-0013 as the answer to the question that arc did not answer:
+            // what a turn does when its own assembly will not fit.
+            ContextRefusal::WindowExceeded { needed, window } => {
+                ToolCallError::ContextWindowExceeded { needed, window }
+            }
+        })?;
 
     let descriptors = ports.tools.descriptors().to_vec();
     let mut results: Vec<ToolResult> = Vec::new();

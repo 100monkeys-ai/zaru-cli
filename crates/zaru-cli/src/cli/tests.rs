@@ -2331,6 +2331,95 @@ fn the_store_refusals_notes_use_can_raise_are_user_correctable_and_not_defects()
     }
 }
 
+/// A turn whose own context will not fit the window is the reader's, not ours.
+///
+/// # Found by running the binary, and it is the third of this exact shape
+///
+/// [ADR-0016] D3 says "never present a defect as a user error". Until
+/// 2026-09-15 a session against a local Ollama with
+/// `provider.ollama.context_tokens` below what the tool surface plus a short
+/// conversation costs painted, at the end of a turn, *"a defect in Zaru 0.0.0,
+/// at crates/zaru-cli/src/cli/classify.rs:1428:0 — this is a bug in Zaru, not
+/// something you can configure"*. The last clause is false to the reader's
+/// face: it is exactly something they configured. The `endpoint` arc found
+/// this inversion on the apex path on 2026-09-06 and `notes use` found it
+/// again above; this is the third.
+///
+/// # What is asserted, and why the remedy's key is the load-bearing half
+///
+/// The class and the exit code are the easy half. The half that matters is
+/// that the remedy **names the key that sized the window**, because that key
+/// is the one thing the defect report did not carry and the only thing the
+/// reader can act on — and it is the kind's own key, so a classifier handed
+/// the wrong kind names a key the reader does not have. Both kinds that carry
+/// a window are driven, so an arm that hard-coded one of them fails.
+///
+/// The two numbers are asserted on the statement for [ADR-0013] D3's own
+/// reason for `ExhaustionReason` carrying them: "a reader cannot act on 'the
+/// window was exceeded' without knowing by how much".
+///
+/// **The mutants**: returning `undecided` from the arm, which is the tree
+/// this check was watched red on; dropping `{key}` from the remedy; and
+/// hard-coding one kind's key instead of reading the kind.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn a_turn_that_will_not_fit_its_window_is_user_correctable_and_names_the_key() {
+    use crate::failure::{Class, Classified, SessionEvidence};
+    use crate::providers::ProviderKind;
+    use zaru_core::tool_call::ToolCallError;
+
+    let classify = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let error = ToolCallError::ContextWindowExceeded {
+        needed: 2413,
+        window: 2000,
+    };
+
+    for kind in [ProviderKind::Ollama, ProviderKind::Gemini] {
+        let classified = classify.turn(&error, None, kind, SessionEvidence::NoSessionExists);
+
+        assert_eq!(
+            classified.class(),
+            Class::UserCorrectable,
+            "a window the reader configured is {} -- ADR-0016 D1 row 2 is the user's, and D3 says              never to present a defect as a user error, which this is the inverse of",
+            classified.class()
+        );
+        assert_eq!(
+            classified.class().exit_code(),
+            2,
+            "ADR-0016 D5's code for something the reader can change"
+        );
+
+        let Classified::UserCorrectable { statement, remedy } = &classified else {
+            unreachable!("the class was asserted user-correctable above")
+        };
+        assert!(
+            statement.as_str().contains("2413") && statement.as_str().contains("2000"),
+            "the statement is {:?} and carries fewer than both numbers; a reader cannot act on              \"the window was exceeded\" without knowing by how much",
+            statement.as_str()
+        );
+
+        let key = kind.context_tokens_key();
+        assert!(
+            remedy
+                .actions()
+                .any(|action| action.lead().as_str().contains(key.as_str())),
+            "the remedy for a {kind} turn is {:?} and never names `{key}` -- the one thing the \
+             defect report it replaced also failed to name",
+            remedy
+                .actions()
+                .map(|a| a.lead().as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            remedy.actions().all(|action| action.command().is_none()),
+            "the remedy names a command; ADR-0015 owns the command surface and this arm has no \
+             business inventing one"
+        );
+    }
+}
+
 /// [ADR-0014] D6 on `provider.<kind>.context_tokens`: a project lowers a
 /// window and may not raise one.
 ///

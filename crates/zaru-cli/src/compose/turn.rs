@@ -1299,7 +1299,12 @@ async fn ran(
             // nowhere to put it.
             let classified = match kept.error.as_ref() {
                 Some(inner) => surface.inner_loop(inner, provider.taken().as_ref(), evidence),
-                None => surface.turn(&error, provider.taken().as_ref(), evidence),
+                // The kind is the session's own, from `Prepared`, because a
+                // turn whose context will not fit is classified by the key
+                // that sized it -- `provider.<kind>.context_tokens` -- and the
+                // classifier cannot name that key without knowing which kind
+                // answered.
+                None => surface.turn(&error, provider.taken().as_ref(), prepared.kind(), evidence),
             };
             return Ran::refused_having_said(lines, classified);
         }
