@@ -419,6 +419,124 @@ fn absent_everywhere(home: &Home, ran: &Ran, value: &str, core: &str, what: &str
 /// user's own file, is taken — read back out of `config explain` because that
 /// is the only place a person can see it, and without it this check is
 /// satisfied by a harness that refuses the key from every layer.
+/// A window too small to hold a turn refuses at exit 2, and a window that fits
+/// reaches the socket for **the same exit code by a different sentence**.
+///
+/// # Why both arms carry exit 2, and why that is the point rather than a flaw
+///
+/// [ADR-0016] D5's `2` is "user-correctable", and both of these are: a window
+/// the reader set too small, and a local model server the reader has not
+/// started. So the exit code cannot discriminate and **the sentence must** —
+/// which is exactly what this check asserts, because an arm that fired for
+/// every failure would satisfy any assertion made on the code alone
+/// ([Verification lessons] §13, the invariant that holds because both sides
+/// are wrong together).
+///
+/// # No server, no key, no packet
+///
+/// The assembly refuses **before** the model is called — `ContextPolicy` is
+/// consulted at the turn boundary and the socket only afterwards — so the
+/// refusing arm needs nothing listening anywhere, which is measured here
+/// rather than argued: with `provider.ollama.endpoint` pointed at
+/// [`CLOSED_LOOPBACK`], the small window never reaches the port and the large
+/// one is refused by the kernel. On a runner with no key and no Ollama, both
+/// arms are the same two runs they are on a developer's machine.
+///
+/// # What this replaced
+///
+/// Before 2026-09-15 the refusing arm exited **70** with "a defect in Zaru
+/// 0.0.0, at crates/zaru-cli/src/cli/classify.rs:1428:0 — this is a bug in
+/// Zaru, not something you can configure", measured from the release binary
+/// at `828a255` with the window at 1,000 and nothing listening. The assertion
+/// on the absence of that sentence is what keeps the old behaviour from
+/// coming back quietly.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+#[test]
+fn a_window_too_small_refuses_at_exit_2_and_one_that_fits_reaches_the_socket_for_the_same_code() {
+    let home = Home::new("context-window");
+    std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+
+    // The reader's own layer, because the project layer cannot carry a
+    // `[provider]` table at all: `./zaru.toml` is ADR-0009 D1's manifest and
+    // contributes only `[project]` and `[runtime]`.
+    let configure = |tokens: u64| {
+        std::fs::write(
+            home.path().join(".zaru").join("config.toml"),
+            format!(
+                "[model]\ndefault = \"llama3.2:3b\"\n\n[provider.default]\nkind = \"ollama\"\n\n                 [provider.ollama]\nendpoint = \"{CLOSED_LOOPBACK}\"\ncontext_tokens = {tokens}\n"
+            ),
+        )
+        .expect("a scratch user file");
+    };
+
+    // --- the window is smaller than the tool surface plus one question -----
+    configure(1_000);
+    let refused = zaru(&home, &[], &["say", "the", "word", "yes"]);
+
+    assert_eq!(
+        refused.code,
+        2,
+        "a window the reader configured is theirs to change, which is ADR-0016 D5's 2; this run \
+         exited {} saying: {}",
+        refused.code,
+        refused.everything()
+    );
+    assert!(
+        !refused.everything().contains("a defect in Zaru"),
+        "the reader's own `provider.ollama.context_tokens` was reported as a bug in the product, \
+         which is ADR-0016 D3 inverted: {}",
+        refused.everything()
+    );
+    assert!(
+        refused.everything().contains("the window allows 1000"),
+        "the refusal must say what the window was, because a reader cannot act on \"the window \
+         was exceeded\" without knowing by how much: {}",
+        refused.everything()
+    );
+    assert!(
+        refused
+            .everything()
+            .contains("provider.ollama.context_tokens"),
+        "the refusal must name the key that sized the window, which is the one thing the defect \
+         report it replaced never named: {}",
+        refused.everything()
+    );
+    assert!(
+        !refused.everything().contains("Connection refused"),
+        "the turn reached the socket, so this arm is measuring the endpoint rather than the \
+         window and its sibling below is not a sibling: {}",
+        refused.everything()
+    );
+
+    // --- the accepting sibling: a window that fits, same exit, other words -
+    configure(4_096);
+    let reached = zaru(&home, &[], &["say", "the", "word", "yes"]);
+
+    assert_eq!(
+        reached.code,
+        2,
+        "an unreachable local server is also the reader's under ADR-0016 D1 row 2, so the two \
+         arms share an exit code and only the sentence tells them apart: {}",
+        reached.everything()
+    );
+    assert!(
+        reached.everything().contains("Connection refused")
+            || reached.everything().contains("nothing answered"),
+        "a window that fits must get past the assembly and reach the endpoint; this run never \
+         dialled it: {}",
+        reached.everything()
+    );
+    assert!(
+        !reached.everything().contains("the window allows"),
+        "the window arm fired on a turn that fits, so it is firing on everything and the check \
+         above asserts nothing: {}",
+        reached.everything()
+    );
+}
+
 #[test]
 fn corpus_a_project_may_not_set_the_permission_mode_and_the_user_may() {
     let home = Home::new("mode-project");
