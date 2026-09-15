@@ -263,6 +263,15 @@ pub struct Prepared {
     /// ADR-0009 D2's declared validators in dependency order. Empty where the
     /// project declared none, which is legal and is what `iterating` reads.
     plan: zaru_core::iteration::validator::Plan,
+    /// The same validators before they were ordered, kept because a turn a
+    /// skill declares validators for orders **its own** plan out of these and
+    /// the skill's together.
+    ///
+    /// [ADR-0015](https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility)
+    /// D5: a skill's validators are *added to* the project's for that turn
+    /// and never replace them, so the session's plan stays exactly what it
+    /// was and the turn's is built beside it. See [`SkillTurn`].
+    declared: Vec<zaru_core::iteration::validator::Declared>,
     /// ADR-0009 D4's branch, decided once for the session.
     iterating: bool,
     /// ADR-0001 D3's iteration ceiling for this run.
@@ -670,7 +679,7 @@ pub fn prepare(
         .map(|manifest| manifest.validators().to_vec())
         .unwrap_or_default();
     let iterating = !declared.is_empty();
-    let plan = match zaru_core::iteration::validator::Plan::from_declared(declared) {
+    let plan = match zaru_core::iteration::validator::Plan::from_declared(declared.clone()) {
         Ok(plan) => plan,
         Err(refusal) => return Err(Box::new(Ran::refused(Surface::validator_plan(&refusal)))),
     };
@@ -1002,6 +1011,7 @@ pub fn prepare(
     Ok(Prepared {
         tier,
         plan,
+        declared,
         iterating,
         ceiling,
         mode,
@@ -1079,6 +1089,81 @@ pub fn prepare(
     argument is a port or a value some record owns, and bundling them into a \
     struct would be a second name for the same list"
 )]
+/// What a turn a skill started adds to it.
+///
+/// # Added to the project's, never replacing them
+///
+/// [ADR-0015] D5: "A skill with validators runs inside the iteration loop and
+/// is refined against them." It says nothing about the project's own
+/// validators, and replacing them would mean a skill could make a turn
+/// succeed that the project's `zaru.toml` says has not — which is the silent
+/// green [ADR-0009] D2 exists to prevent. So the turn's plan is ordered out of
+/// the project's declarations and the skill's **together**, and a skill may
+/// name a project validator in its `after`, which is the whole value of
+/// "added to".
+///
+/// **A name declared by both is refused, naming both files.** `after` refers
+/// to a prerequisite by name and there is no answer to which of the two it
+/// meant; prefixing the skill's names to avoid the collision would make a
+/// skill's own `after = ["build"]` mean something other than what the file
+/// says.
+///
+/// **The session's plan is untouched.** `Prepared` is per session and this is
+/// per turn, so the next turn — a typed line, or another skill — is ordered
+/// out of the project's declarations again.
+///
+/// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+#[derive(Debug, Clone, Copy)]
+pub struct SkillTurn<'a> {
+    /// The skill's name, without a leading slash, for a refusal that has to
+    /// say whose validators collided.
+    pub name: &'a str,
+    /// The file it was read from, for the same reason.
+    pub path: &'a std::path::Path,
+    /// What it declares, in declaration order.
+    pub validators: &'a [zaru_core::iteration::validator::Declared],
+}
+
+/// The plan this turn runs, or `None` where the session's own plan is it.
+///
+/// # A function rather than a block inside the turn
+///
+/// [Verification lessons] §27: a rule buried in a procedure can only be
+/// tested by running the procedure, and running this one needs a provider, a
+/// session directory and a terminal. The rule is the whole of what
+/// [ADR-0015] D5 adds to the loop, so it has a name and a home, and the
+/// procedure calls it.
+///
+/// `Ok(None)` is D5's "one without runs as instructions": no skill, or a
+/// skill that declares nothing. `Ok(Some(plan))` is the project's
+/// declarations and the skill's **ordered together** — not the skill's alone,
+/// because a skill that replaced the project's could make a turn succeed that
+/// the project's `zaru.toml` says has not.
+///
+/// # Errors
+///
+/// [`PlanRefused`](zaru_core::iteration::validator::PlanRefused)'s three:
+/// a duplicate name, an unknown prerequisite, or a cycle — over the two files
+/// together, which is where a duplicate name actually arrives.
+///
+/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+pub fn plan_for_the_turn(
+    project: &[zaru_core::iteration::validator::Declared],
+    skill: Option<SkillTurn<'_>>,
+) -> Result<
+    Option<zaru_core::iteration::validator::Plan>,
+    zaru_core::iteration::validator::PlanRefused,
+> {
+    let Some(skill) = skill.filter(|skill| !skill.validators.is_empty()) else {
+        return Ok(None);
+    };
+    let mut declared = project.to_vec();
+    declared.extend_from_slice(skill.validators);
+    zaru_core::iteration::validator::Plan::from_declared(declared).map(Some)
+}
+
 async fn ran(
     version: &str,
     report_at: &str,
@@ -1092,6 +1177,7 @@ async fn ran(
     narrator: Option<&dyn crate::compose::Narrator>,
     owed: &mut Owed,
     context: &mut SessionContext,
+    skill: Option<SkillTurn<'_>>,
 ) -> Ran {
     let surface = Surface::new(version, report_at);
     let evidence = session.evidence();
@@ -1265,10 +1351,33 @@ async fn ran(
         fetch: &fetch,
     };
 
+    // --- ADR-0015 D5's skill, if this turn is one --------------------------
+    //
+    // The project's declarations and the skill's, ordered together, for this
+    // turn alone. `prepared.plan` is the session's and is untouched: the next
+    // turn is ordered out of the project's again. See `SkillTurn`.
+    let turns_own_plan;
+    let (plan, iterating) = match plan_for_the_turn(&prepared.declared, skill) {
+        Ok(Some(plan)) => {
+            turns_own_plan = plan;
+            (&turns_own_plan, true)
+        }
+        // No skill, or one that declares nothing — D5's "one without runs as
+        // instructions", which is the turn a typed line already runs.
+        Ok(None) => (&prepared.plan, prepared.iterating),
+        Err(refusal) => {
+            let path = skill.map_or_else(
+                || prepared.here.root().to_path_buf(),
+                |it| it.path.to_path_buf(),
+            );
+            return Ran::refused_having_said(lines, Surface::skill_validator_plan(&path, &refusal));
+        }
+    };
+
     // --- ADR-0013's context, assembled once inside the turn ----------------
     let clock = SystemClock::started_now();
     let outcome = {
-        let policy = context.policy(&prepared.held, prepared.iterating);
+        let policy = context.policy(&prepared.held, iterating);
         // ADR-0008's execution, decided 2026-09-05: one tool surface, reached
         // by both loops. See `crate::compose::shared` for why it is a lock and
         // why sharing the value rather than building a second one is what
@@ -1285,12 +1394,8 @@ async fn ran(
         // having checked nothing, which is ADR-0009 D2's silent green.
         let patterns = crate::validators::Patterns::new(layers::pattern_ceiling());
         let schemas = crate::validators::SchemaFiles::new(&prepared.here, layers::file_ceiling());
-        let dispatch = zaru_core::iteration::validator::Dispatch::new(
-            &prepared.plan,
-            &spawn,
-            &patterns,
-            &schemas,
-        );
+        let dispatch =
+            zaru_core::iteration::validator::Dispatch::new(plan, &spawn, &patterns, &schemas);
         let generating = crate::compose::Generating::over(&provider);
         let applying = crate::compose::Applying::through(tools);
         let inner = crate::compose::Inner::over(
@@ -1340,8 +1445,9 @@ async fn ran(
                 redactor: &prepared.held,
             },
             // ADR-0009 D4's branch: "A project with no `zaru.toml` runs the
-            // tool-call loop only."
-            prepared.iterating.then_some(&inner),
+            // tool-call loop only." **Or a skill that declares validators**,
+            // which is ADR-0015 D5's other way into the same loop.
+            iterating.then_some(&inner),
             &mut sinks,
         )
         .await;
@@ -1593,6 +1699,10 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
         None,
         &mut owed,
         &mut context,
+        // `zaru "<task>"` expands no command and starts no skill: ADR-0015
+        // D1's expansion is an in-session surface, which is a stop rather
+        // than an omission.
+        None,
     ));
 
     // --- ADR-0013 D1's layer 6 and ADR-0010 D3's checkpoint over it --------
@@ -1721,10 +1831,11 @@ pub async fn run_one(
     narrator: Option<&dyn crate::compose::Narrator>,
     owed: &mut Owed,
     context: &mut SessionContext,
+    skill: Option<SkillTurn<'_>>,
 ) -> Ran {
     let outcome = ran(
         version, report_at, resolution, prepared, session, n, start, confirmer, extra, narrator,
-        owed, context,
+        owed, context, skill,
     )
     .await;
 
@@ -1808,7 +1919,7 @@ pub fn record_the_attribution(
             crate::session::Attribution {
                 n,
                 name: expanded.name.clone(),
-                source: expanded.source.word().to_owned(),
+                source: crate::commands::origin_words(expanded.source, expanded.kind),
                 admitted: expanded.admitted.clone(),
                 typed: expanded.typed.clone(),
             },

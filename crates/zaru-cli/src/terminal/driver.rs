@@ -1167,6 +1167,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     now: &mut Duration,
     turns: &mut Turns<'_>,
     start: Start<'_>,
+    skill: Option<crate::compose::turn::SkillTurn<'_>>,
 ) -> Turned {
     let n = turns.next;
     turns.next += 1;
@@ -1233,6 +1234,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
                 Some(&narrator as &dyn crate::compose::Narrator),
                 &mut turns.owed,
                 &mut turns.context,
+                skill,
             ),
         )
         .await;
@@ -1861,12 +1863,13 @@ impl<'a> WithCommands<'a> {
                 .map(|command| zaru_tui::shell::Extension {
                     slash: command.slash(),
                     // The file's own `description` where it has one. A command
-                    // with none gets its source word rather than a blank
+                    // with none gets its origin words rather than a blank
                     // column or a sentence composed here: what a reader wants
-                    // from an undescribed row is where it came from.
+                    // from an undescribed row is where it came from, and for
+                    // a skill that includes which kind it is.
                     governs: command
                         .description()
-                        .map_or_else(|| command.source().word().to_owned(), ToOwned::to_owned),
+                        .map_or_else(|| command.origin(), ToOwned::to_owned),
                 })
                 .collect(),
         }
@@ -1947,12 +1950,18 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
             // `Question::detail` is for: what the question is *about*, shown
             // under the sentence and composed by the decision rather than by
             // the renderer.
+            // The slash spelling of each, with `(skill)` where the kind is
+            // one and **each declared `run` line verbatim** beneath it. A
+            // validator's command is the one thing in either file that is
+            // executed, and a gate that showed the instructions and not the
+            // command would be a gate about the wrong half -- see
+            // `commands::skill`.
             detail: extensions
                 .loaded
                 .offer
                 .pending()
                 .iter()
-                .map(crate::commands::Command::slash)
+                .flat_map(crate::commands::Command::offered_rows)
                 .collect(),
             prominent: true,
             answers: crate::tools::prompt::ADMISSION_SUFFIX,
@@ -2284,7 +2293,13 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                             &crate::session::Attribution {
                                 n: 0,
                                 name: expanded.name.clone(),
-                                source: expanded.source.word().to_owned(),
+                                // D6's origin words, composed in the one
+                                // place they are composed -- `project`,
+                                // `user`, `project skill`, `user skill`.
+                                source: crate::commands::origin_words(
+                                    expanded.source,
+                                    expanded.kind,
+                                ),
                                 admitted: expanded.admitted.clone(),
                                 typed: expanded.typed.clone(),
                             },
@@ -2328,11 +2343,27 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 // is the next turn, told first about the call that did not
                 // complete. `after` is where that is decided, so a check can
                 // ask without a provider.
+                // ADR-0015 D5's skill, if a skill is what started this turn.
+                // Read off the corpus by name rather than carried on
+                // `Expanded`, because what the loop needs is the
+                // declarations and what the expansion is is a `String` --
+                // which is the property D1's inertness rests on and is not
+                // widened here.
+                let declaring = expanded
+                    .as_ref()
+                    .filter(|expanded| expanded.kind == crate::commands::Kind::Skill)
+                    .and_then(|expanded| commands.named(&expanded.name))
+                    .map(|command| crate::compose::turn::SkillTurn {
+                        name: command.name(),
+                        path: command.path(),
+                        validators: command.validators(),
+                    });
+
                 let lines = match turns {
                     Turnable::Ready(turns) => {
                         let turned = turns_of_one_line(
                             shell, surface, source, pace, entries, vocabulary, &mut now, turns,
-                            &task,
+                            &task, declaring,
                         )
                         .await;
                         let redactor = turns.prepared.redactor();
@@ -2433,6 +2464,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
     now: &mut Duration,
     turns: &mut Turns<'_>,
     task: &str,
+    skill: Option<crate::compose::turn::SkillTurn<'_>>,
 ) -> Turned {
     let mut lines = Vec::new();
 
@@ -2447,6 +2479,9 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
             now,
             turns,
             Start::Resumed(&interrupted),
+            // A resumed turn never enters the iteration loop, whatever the
+            // caller supplied — `zaru_core`'s own rule, on `Start::Resumed`.
+            None,
         )
         .await
         {
@@ -2468,6 +2503,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
         now,
         turns,
         Start::Task(task),
+        skill,
     )
     .await
     {

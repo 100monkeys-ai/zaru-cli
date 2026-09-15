@@ -1145,6 +1145,36 @@ impl Surface<'_> {
         )
     }
 
+    /// A skill's declared validators and the project's do not form a plan
+    /// together.
+    ///
+    /// The same three failures [`Surface::validator_plan`] names, reached from
+    /// [ADR-0015] D5's other direction — and the remedy is different, because
+    /// the declarations are now in **two** files and a reader sent to
+    /// `./zaru.toml` alone would open the wrong one. The commonest of the
+    /// three here is a duplicate name, which is exactly what happens when a
+    /// skill and a manifest both call a validator `test`.
+    ///
+    /// **The names are not prefixed to avoid it**: `after` refers to a
+    /// prerequisite by name, so renaming a skill's validators would make its
+    /// own `after = ["build"]` mean something other than what the file says.
+    ///
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[must_use]
+    pub fn skill_validator_plan(
+        skill: &std::path::Path,
+        refusal: &zaru_core::iteration::validator::PlanRefused,
+    ) -> Classified {
+        correctable(
+            refusal,
+            act(format!(
+                "the validators are declared in `./zaru.toml` and in {}; fix the name or the \
+                 `after` list in one of them",
+                skill.display()
+            )),
+        )
+    }
+
     /// No iteration ceiling could be resolved.
     ///
     /// Two classes, and which one is the difference between a value the reader

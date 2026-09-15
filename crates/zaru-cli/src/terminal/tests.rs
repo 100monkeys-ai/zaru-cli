@@ -6413,3 +6413,69 @@ fn adr_0002_d6s_two_commands_answer_the_same_thing_at_both_entry_points() {
         );
     }
 }
+
+/// ADR-0015 D6, for a skill: the attribution says **which kind** contributed,
+/// and the door's rows say it too, with the `run` line under them.
+///
+/// The words are the records' own — `project` is D6's example's and `skill` is
+/// D1's table's — so nothing is authored to say either.
+///
+/// **The mutants:** `origin_words` ignoring the kind reddens the first
+/// assertion with `(project · admitted`, which is a command's line on a
+/// skill; `Command::offered_rows` returning the slash alone reddens the third.
+#[test]
+fn an_expanded_skill_is_attributed_as_a_skill_and_the_door_showed_its_run_line() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "triage.skill",
+        &crate::commands::fixtures::file(
+            "[[validator]]\nname = \"v\"\nrun = \"printf triaged\"\nexpect = { matches = \
+             \"triaged\" }\n",
+            "Triage issue $1.\n",
+        ),
+    );
+    let (_, surface, _) = pump_with_commands(&scratch, admitting_then(&["/triage 7", "/exit"]));
+
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains("◈ /triage (project skill · admitted"),
+        "D6's line says which kind contributed: {painted}"
+    );
+    assert!(
+        painted.contains("/triage (skill)"),
+        "the door's row names the kind: {painted}"
+    );
+    assert!(
+        painted.contains("printf triaged"),
+        "and carries the command that would run, verbatim: {painted}"
+    );
+    assert!(
+        painted.contains("/triage 7"),
+        "the pane echoes the line the person typed: {painted}"
+    );
+}
+
+/// A skill is a row in the `/` picker beside the commands and the namespaces,
+/// with its own `description` in the second column.
+///
+/// **The mutant:** `WithCommands::over` filtering to `Kind::Command` reddens
+/// the assertion, and a project's skills would be unfindable from inside a
+/// session.
+#[test]
+fn an_admitted_skill_is_a_row_in_the_picker() {
+    let scratch = crate::commands::fixtures::Scratch::new();
+    scratch.project_command(
+        "triage.skill",
+        &crate::commands::fixtures::file(
+            "description = \"triage one issue\"\n",
+            "Triage issue $1.\n",
+        ),
+    );
+    let (_, surface, _) = pump_with_commands(&scratch, admitting_then(&["/tri", "/exit"]));
+
+    let painted = flattened(&surface);
+    assert!(
+        painted.contains("/triage triage one issue"),
+        "the skill narrows to one row carrying its own description: {painted}"
+    );
+}
