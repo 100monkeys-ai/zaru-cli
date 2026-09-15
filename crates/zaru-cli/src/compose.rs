@@ -88,6 +88,7 @@ pub mod prose;
 pub mod shared;
 pub mod sink;
 pub mod summarise;
+pub mod tips;
 pub mod turn;
 
 pub use boundary::{ContextShape, SessionContext};
@@ -98,6 +99,7 @@ pub use model::Classifying;
 pub use shared::Shared;
 pub use sink::{Records, ToolLines};
 pub use summarise::ModelSummariser;
+pub use tips::{Conditions, Tip, Tips};
 pub use turn::{KINDS_WITH_A_CLIENT, Owed, Prepared, Ran};
 
 #[cfg(test)]
