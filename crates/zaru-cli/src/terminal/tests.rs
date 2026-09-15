@@ -2670,6 +2670,7 @@ fn the_elapsed_figure_advances_across_the_beats_of_one_turn() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             Some(&meter),
@@ -2741,6 +2742,7 @@ fn the_token_count_changes_when_an_exchange_reports_one_and_not_before() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             Some(&meter),
@@ -2808,6 +2810,7 @@ fn the_context_figure_is_the_same_bytes_on_every_frame_of_one_turn() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             Some(&meter),
@@ -3004,6 +3007,7 @@ fn the_pane_repaints_while_a_turn_is_suspended() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3085,6 +3089,7 @@ fn a_keystroke_during_a_turn_is_painted_and_enter_queues_it_as_the_next_task() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3158,6 +3163,7 @@ fn a_second_enter_during_one_turn_replaces_the_queued_task() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3198,6 +3204,7 @@ fn an_enter_on_an_empty_prompt_during_a_turn_queues_nothing() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3262,6 +3269,7 @@ fn ctrl_c_during_a_turn_leaves_and_the_turns_future_is_dropped() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             None,
             None,
@@ -3985,6 +3993,7 @@ fn the_answers_text_is_painted_across_beats_before_the_turn_ends() {
             &source,
             &pace,
             &trie,
+            &Vocabulary,
             &mut now,
             Some(&mut deltas),
             None,
@@ -4160,8 +4169,18 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
                     .map_err(|failure| format!("{failure}")),
             )
         });
-        crate::terminal::driver::race(&pane, &source, &pace, &trie, &mut now, None, None, turn)
-            .await
+        crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &Vocabulary,
+            &mut now,
+            None,
+            None,
+            turn,
+        )
+        .await
     };
 
     assert_eq!(

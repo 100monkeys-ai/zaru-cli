@@ -362,6 +362,17 @@ impl Composer {
     /// through unchanged and still inserts those spaces, which is today's
     /// behaviour and which no record names.
     ///
+    /// **A command line past its namespace absorbs `Tab` too**, and that is
+    /// this rule reaching one case the proposal left to the fall-through.
+    /// `/se list` has no prefix left to complete, so the ruling's "does
+    /// nothing when the prefix is ambiguous or empty" applies to it as much as
+    /// to a bare `/` — and the alternative, four spaces pushed into a line
+    /// whose parser splits on whitespace, is inert noise a person can see.
+    /// Found by the fifth arm of
+    /// `tab_completes_a_unique_command_prefix_and_otherwise_inserts_nothing`,
+    /// which asserted the rule the proposal stated while the code implemented
+    /// the narrower one.
+    ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
     pub fn key(
         &mut self,
@@ -373,11 +384,11 @@ impl Composer {
         if input.key == Key::Tab
             && !input.ctrl
             && !input.alt
-            && let Intent::Command {
-                picking: Some(filter),
-            } = self.intent()
+            && let Intent::Command { picking } = self.intent()
         {
-            self.complete(&filter);
+            if let Some(filter) = picking {
+                self.complete(&filter);
+            }
             self.refreshed(now, entries, vocabulary);
             return;
         }
@@ -732,9 +743,14 @@ pub(crate) mod fixtures;
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, server_results, typing};
+    use super::fixtures::{
+        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, press, server_results, typing,
+    };
     use super::{Composer, DEBOUNCE, PickerKind, Scope, SearchResponse, StripContent, StripMode};
+    use crate::shell::fixtures::StagedVocabulary;
+    use crate::shell::port::CommandVocabulary;
     use core::time::Duration;
+    use tui_textarea::Key;
 
     /// One millisecond either side of the debounce, and the debounce itself.
     const JUST_UNDER: Duration = Duration::from_millis(249);
@@ -1076,6 +1092,243 @@ mod tests {
             searched.calls(),
             7,
             "the same word without the slash is a search, and every keystroke of it consults the              trie"
+        );
+    }
+
+    /// ADR-0005's amendment of 2026-09-15: a bare `/` lists the command
+    /// namespaces in D2's table order, five of them plus the line saying how
+    /// many are not shown.
+    ///
+    /// The order is the discriminating arm: a set that happened to hold the
+    /// right five in the wrong order would satisfy a membership check and tell
+    /// a person the wrong thing about which command is which.
+    #[test]
+    fn a_bare_slash_lists_the_namespaces_in_the_records_own_table_order() {
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "/", Duration::ZERO, &trie);
+
+        let lines = composer.strip_lines();
+        assert_eq!(
+            lines.len(),
+            6,
+            "the strip paints six rows and the picker may not ask for a seventh; it asked for \
+             {lines:?}"
+        );
+        assert_eq!(
+            lines[..5],
+            [
+                "/runtime  tier and membrane".to_owned(),
+                "/stack    AEGIS component fetch and status".to_owned(),
+                "/notes    Nuclear Notes tokens, workspace, search".to_owned(),
+                "/config   configuration and explanation".to_owned(),
+                "/memory   relationship memory".to_owned(),
+            ],
+            "the first five rows are D2's first five namespaces, in D2's order, each carrying \
+             that record's own second column; they were {lines:?}"
+        );
+        assert_eq!(
+            lines[5],
+            crate::composer::continues(6),
+            "the sixth row says how many namespaces are not shown rather than dropping them \
+             silently; it read {:?}",
+            lines[5]
+        );
+        assert_eq!(
+            trie.calls(),
+            0,
+            "and a bare `/` reached the trie {} time(s)",
+            trie.calls()
+        );
+    }
+
+    /// The picker narrows by prefix, never by nearest, and closes at the first
+    /// space.
+    ///
+    /// Four stagings, and the third is the one that separates this from a
+    /// nearest match: `/xyz` names no namespace, so the picker shows nothing
+    /// at all rather than offering the closest noun. ADR-0014 D5's nearest is
+    /// the refusal's job and it runs on `Enter`.
+    #[test]
+    fn the_picker_narrows_by_prefix_and_never_by_nearest() {
+        for (line, expected) in [
+            ("/se", vec!["/session  resume, list, remove".to_owned()]),
+            (
+                "/s",
+                vec![
+                    "/stack    AEGIS component fetch and status".to_owned(),
+                    "/session  resume, list, remove".to_owned(),
+                ],
+            ),
+            ("/xyz", Vec::new()),
+            ("/session ", Vec::new()),
+        ] {
+            let trie = CountingTrie::staged();
+            let mut composer = Composer::new();
+            typing(&mut composer, line, Duration::ZERO, &trie);
+            assert_eq!(
+                composer.strip_lines(),
+                expected,
+                "{line:?} should narrow the picker to {expected:?}; it painted {:?}",
+                composer.strip_lines()
+            );
+        }
+    }
+
+    /// The rows are the vocabulary's own, with a liveness control.
+    ///
+    /// The positive arm alone cannot fail for a matcher that has widened into
+    /// something universal, so the second arm asserts that a spelling the
+    /// vocabulary does not carry is absent — which is the only run in which
+    /// this check demonstrates it can answer "no".
+    #[test]
+    fn every_picker_row_is_a_namespace_the_vocabulary_carries() {
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "/", Duration::ZERO, &trie);
+
+        let carried = StagedVocabulary.namespaces();
+        for line in composer.strip_lines() {
+            if line == crate::composer::continues(6) {
+                continue;
+            }
+            assert!(
+                carried
+                    .iter()
+                    .any(|namespace| line.starts_with(namespace.slash)
+                        && line.ends_with(namespace.governs)),
+                "the row {line:?} names no namespace the vocabulary carries"
+            );
+        }
+
+        assert!(
+            !composer
+                .strip_lines()
+                .iter()
+                .any(|line| line.starts_with("/help")),
+            "the picker offered `/help`, which this vocabulary does not carry — so the rows are \
+             not being read from it; they were {:?}",
+            composer.strip_lines()
+        );
+    }
+
+    /// The `Tab` rule, asserted on the composer's own bytes in five arms.
+    ///
+    /// Byte for byte rather than by a rendered row, because the behaviour this
+    /// replaces is **invisible in a frame**: `tui-textarea`'s `insert_tab`
+    /// advances the caret to the next tab stop, and a terminal capture trims
+    /// trailing spaces — which is how the look-and-feel survey read `Tab` as a
+    /// no-op when it was inserting three of them after a bare `/`.
+    ///
+    /// The fifth arm is the accepting sibling for the closing rule: once the
+    /// line carries a space the namespace has been named, so `Tab` has nothing
+    /// to complete and must leave the whole line alone.
+    #[test]
+    fn tab_completes_a_unique_command_prefix_and_otherwise_inserts_nothing() {
+        for (typed, after, why) in [
+            ("/se", "/session", "a unique incomplete prefix is completed"),
+            (
+                "/s",
+                "/s",
+                "two namespaces share `/s`, so there is nothing unique to complete",
+            ),
+            (
+                "/",
+                "/",
+                "a bare `/` reaches every namespace and completes none of them",
+            ),
+            (
+                "/session",
+                "/session",
+                "the whole spelling is already there and there is nothing to add",
+            ),
+            (
+                "/se list",
+                "/se list",
+                "the line carries a space, so the picker is closed and Tab leaves it alone",
+            ),
+        ] {
+            let trie = CountingTrie::staged();
+            let mut composer = Composer::new();
+            typing(&mut composer, typed, Duration::ZERO, &trie);
+            press(&mut composer, Key::Tab, &trie);
+            assert_eq!(
+                composer.text(),
+                after,
+                "{typed:?} then Tab should hold {after:?} because {why}; it holds {:?}",
+                composer.text()
+            );
+        }
+    }
+
+    /// Outside a command line `Tab` is unchanged, and that is asserted rather
+    /// than assumed.
+    ///
+    /// The accepting sibling for the four arms above that assert nothing was
+    /// inserted: without it, an implementation that swallowed every `Tab`
+    /// everywhere would pass all five.
+    #[test]
+    fn tab_outside_a_command_line_still_reaches_the_text_area() {
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "édit", Duration::ZERO, &trie);
+        press(&mut composer, Key::Tab, &trie);
+        assert_eq!(
+            composer.text(),
+            "édit    ",
+            "outside a command line Tab is the text area's and still advances to the next tab \
+             stop; the composer holds {:?}",
+            composer.text()
+        );
+    }
+
+    /// The hint strip returns the instant the leading `/` goes, absence line
+    /// and all.
+    ///
+    /// Two arms, because they fail differently: the trie's matches coming back
+    /// says the tier is consulted again, and the absence line coming back says
+    /// the typing rows are reached again rather than the command row being
+    /// rendered empty.
+    #[test]
+    fn the_hint_strip_returns_the_moment_the_line_stops_being_a_command() {
+        const ABSENCE: &str = "no Nuclear Notes token · nothing to search";
+
+        let trie = CountingTrie::staged();
+        let mut composer = Composer::new();
+        typing(&mut composer, "/se", Duration::ZERO, &trie);
+        assert_eq!(trie.calls(), 0, "a command line reaches no tier");
+
+        for _ in 0..3 {
+            press(&mut composer, Key::Backspace, &trie);
+        }
+        typing(&mut composer, "édi", Duration::ZERO, &trie);
+        assert!(
+            composer
+                .strip_lines()
+                .iter()
+                .any(|line| line.contains(TRIE_NONCE)),
+            "with the slash gone the fast tier is back on the strip; it painted {:?}",
+            composer.strip_lines()
+        );
+
+        let empty = TrieOf::new(0);
+        let mut composer = Composer::new();
+        composer.set_absence(Some(ABSENCE.to_owned()));
+        typing(&mut composer, "/se", Duration::ZERO, &empty);
+        assert!(
+            !composer.strip_lines().iter().any(|line| line == ABSENCE),
+            "the absence line is about a corpus the picker is not showing: {:?}",
+            composer.strip_lines()
+        );
+        for _ in 0..3 {
+            press(&mut composer, Key::Backspace, &empty);
+        }
+        typing(&mut composer, "édi", Duration::ZERO, &empty);
+        assert_eq!(
+            composer.strip_lines(),
+            vec![ABSENCE.to_owned()],
+            "and it is back the moment the line stops being a command: {:?}",
+            composer.strip_lines()
         );
     }
 

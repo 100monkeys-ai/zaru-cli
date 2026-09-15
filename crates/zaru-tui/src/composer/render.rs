@@ -205,7 +205,8 @@ impl Composer {
 mod tests {
     use super::KEYWORD_ONLY;
     use crate::composer::fixtures::{
-        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, painted, press, server_results, typing,
+        CountingTrie, SERVER_NONCE, TRIE_NONCE, TrieOf, VocabularyOf, painted, press,
+        server_results, typing, typing_with,
     };
     use crate::composer::search::SearchResponse;
     use crate::composer::{Composer, NEWLINE};
@@ -277,6 +278,68 @@ mod tests {
             painted_rows[0].trim_end(),
             prompt.replace('\n', NEWLINE),
             "the input row should hold what was composed"
+        );
+    }
+
+    /// ADR-0005 clause 5, over the command picker: the input's row and cursor
+    /// are byte-identical across pickers of zero, one and six rows.
+    ///
+    /// **A third producer for that clause, beside the pasted block and the
+    /// queued task's row, rather than the clause moving.** On a command line
+    /// the strip is a function of the text, so what varies here is the
+    /// *vocabulary* — the six staged namespaces all answer to the same prefix,
+    /// so the text and the cursor stay fixed while the picker is zero, one and
+    /// six rows tall.
+    #[test]
+    fn the_input_row_is_byte_identical_whatever_the_picker_shows() {
+        let trie = TrieOf::new(0);
+        let mut painted_rows = Vec::new();
+        let mut cursors = Vec::new();
+        for namespaces in [0_usize, 1, 6] {
+            let mut composer = Composer::new();
+            typing_with(
+                &mut composer,
+                "/sé",
+                Duration::ZERO,
+                &trie,
+                &VocabularyOf::new(namespaces),
+            );
+            let (rows, cursor) = painted(&composer, WIDTH, HEIGHT);
+            assert_eq!(
+                composer.strip_lines().len(),
+                namespaces,
+                "the staging is wrong: a vocabulary of {namespaces} should paint {namespaces} \
+                 picker rows, and it painted {:?}",
+                composer.strip_lines()
+            );
+            painted_rows.push(rows[0].clone());
+            cursors.push(cursor);
+        }
+
+        assert_eq!(
+            painted_rows[0], painted_rows[1],
+            "the input row moved between a picker of nothing and a picker of one row: {:?} then \
+             {:?}",
+            painted_rows[0], painted_rows[1]
+        );
+        assert_eq!(
+            painted_rows[0], painted_rows[2],
+            "the input row moved between a picker of nothing and a picker of six rows: {:?} then \
+             {:?}",
+            painted_rows[0], painted_rows[2]
+        );
+        assert_eq!(
+            cursors[0], cursors[1],
+            "the cursor moved because one picker row appeared, which D2 forbids"
+        );
+        assert_eq!(
+            cursors[0], cursors[2],
+            "the cursor moved because six picker rows appeared, which D2 forbids"
+        );
+        assert_eq!(
+            painted_rows[0].trim_end(),
+            "/sé",
+            "the input row should hold what was typed"
         );
     }
 

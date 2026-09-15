@@ -654,3 +654,128 @@ pub(crate) fn loop_line(event: &zaru_core::iteration::Event) -> Line {
 pub(crate) fn seconds(elapsed: core::time::Duration) -> String {
     format!("{:.2}s", elapsed.as_secs_f64())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Vocabulary;
+    use crate::cli::namespace::Namespace;
+    use core::time::Duration;
+    use zaru_tui::composer::{Composer, Entries, Entry};
+    use zaru_tui::shell::{CommandVocabulary, Input, Key};
+
+    /// The trie the composer is handed here: empty, because this check is
+    /// about the second corpus and an entry from the first would be noise.
+    struct NoNotes;
+
+    impl Entries for NoNotes {
+        fn matches(&self, _prefix: &str, _limit: usize) -> Vec<Entry> {
+            Vec::new()
+        }
+    }
+
+    /// Type `text` into `composer` against the product's own vocabulary.
+    fn typing(composer: &mut Composer, text: &str) {
+        for ch in text.chars() {
+            composer.key(
+                Input {
+                    key: Key::Char(ch),
+                    ctrl: false,
+                    alt: false,
+                    shift: false,
+                },
+                Duration::ZERO,
+                &NoNotes,
+                &Vocabulary,
+            );
+        }
+    }
+
+    /// The picker is driven by **this crate's** vocabulary rather than by
+    /// `zaru-tui`'s staged one, and what a person meets at a bare `/` is what
+    /// [ADR-0005]'s amendment of 2026-09-15 quotes.
+    ///
+    /// # Why this check is here and not beside the picker
+    ///
+    /// `zaru-tui`'s `StagedVocabulary` is a hand-written array in that crate's
+    /// own fixtures — the crate cannot read [`Namespace::ALL`], because the
+    /// dependency runs the other way — so every picker check over there is a
+    /// check about that array. `/help` is the standing proof: [ADR-0015] D2's
+    /// twelfth row, added 2026-09-14, and the staged array still carries
+    /// eleven. Only a check in this crate can say what D2's table actually
+    /// puts in front of a person.
+    ///
+    /// The overflow count is the arm that ties the two together: **seven** is
+    /// twelve namespaces less the five rows that fit, and it is the number the
+    /// record quotes, so a thirteenth namespace reddens here as well as in
+    /// every exhaustive match on `Namespace`.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
+    /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+    #[test]
+    fn a_bare_slash_offers_this_harnesss_own_twelve_namespaces() {
+        assert_eq!(
+            Vocabulary.namespaces().len(),
+            Namespace::ALL.len(),
+            "the port answers a different number of namespaces than D2's table holds"
+        );
+
+        let mut composer = Composer::new();
+        typing(&mut composer, "/");
+        let lines = composer.strip_lines();
+
+        assert_eq!(
+            lines,
+            vec![
+                "/runtime  tier and membrane".to_owned(),
+                "/stack    AEGIS component fetch and status".to_owned(),
+                "/notes    Nuclear Notes tokens, workspace, search".to_owned(),
+                "/config   configuration and explanation".to_owned(),
+                "/memory   relationship memory".to_owned(),
+                "… 7 more · type to narrow".to_owned(),
+            ],
+            "a bare `/` should paint D2's first five namespaces and the line naming the seven \
+             that do not fit; it painted {lines:?}"
+        );
+    }
+
+    /// A namespace this build does not implement is **listed** by the picker
+    /// and still refused on `Enter`, in the same words.
+    ///
+    /// The listing arm and the refusal arm are asserted apart, because they
+    /// are two mechanisms: a picker that filtered the unbuilt namespaces out
+    /// would satisfy the second on its own, and that is exactly the reading
+    /// ADR-0015 D2's "a word naming one of them is refused saying so" does not
+    /// support — a person cannot discover a namespace whose only appearance is
+    /// in the refusal for typing it.
+    #[test]
+    fn an_unimplemented_namespace_is_listed_and_still_refuses() {
+        let mut composer = Composer::new();
+        typing(&mut composer, "/sta");
+        assert_eq!(
+            composer.strip_lines(),
+            vec!["/stack  AEGIS component fetch and status".to_owned()],
+            "`/stack` is one of D2's namespaces and the picker lists it whatever this build \
+             implements; it painted {:?}",
+            composer.strip_lines()
+        );
+
+        assert!(
+            !Namespace::Stack.is_built(),
+            "the premise of this check is that `/stack` has no in-session half"
+        );
+        let refusal = zaru_tui::shell::Refused::NotBuilt {
+            slash: Namespace::Stack.slash(),
+            governs: Namespace::Stack.governs(),
+        }
+        .to_string();
+        assert_eq!(
+            zaru_tui::shell::command::read("/stack", &Vocabulary),
+            zaru_tui::shell::Typed::Refused(zaru_tui::shell::Refused::NotBuilt {
+                slash: "/stack",
+                governs: "AEGIS component fetch and status",
+            }),
+            "and typing it still refuses, in the words it refused in before this picker existed: \
+             {refusal}"
+        );
+    }
+}

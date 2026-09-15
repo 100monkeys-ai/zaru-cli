@@ -1105,6 +1105,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     source: &Source,
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
+    vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
     now: &mut Duration,
     turns: &mut Turns<'_>,
     start: Start<'_>,
@@ -1157,6 +1158,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
             source,
             pace,
             entries,
+            vocabulary,
             now,
             Some(&mut deltas),
             Some(&meter),
@@ -1508,6 +1510,7 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
     source: &Source,
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
+    vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
     now: &mut Duration,
     deltas: Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
     meter: Option<&Meter<'_>>,
@@ -1535,7 +1538,7 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
                     break Raced::Interrupted;
                 }
                 *now += Duration::from_millis(1);
-                read_while_busy(pane, struck, *now, entries);
+                read_while_busy(pane, struck, *now, entries, vocabulary);
             }
 
             // The answer's text, as the provider hands it over.
@@ -1642,6 +1645,7 @@ fn read_while_busy<S: Surface + Send>(
     struck: Struck,
     now: Duration,
     entries: &dyn zaru_tui::composer::Entries,
+    vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
 ) {
     let Ok(mut pane) = pane.try_lock() else {
         return;
@@ -1656,7 +1660,9 @@ fn read_while_busy<S: Surface + Send>(
         // A block pasted during a turn lands in the prompt exactly as one
         // pasted at it does, and waits for the `Enter` that submits it.
         Struck::Pasted(text) => {
-            pane.shell.composer_mut().paste(&text, now, entries);
+            pane.shell
+                .composer_mut()
+                .paste(&text, now, entries, vocabulary);
             pane.paint();
         }
         Struck::Key(input) if input.key == zaru_tui::shell::Key::Enter => {
@@ -1672,7 +1678,9 @@ fn read_while_busy<S: Surface + Send>(
             pane.paint();
         }
         Struck::Key(input) => {
-            pane.shell.composer_mut().key(input, now, entries);
+            pane.shell
+                .composer_mut()
+                .key(input, now, entries, vocabulary);
             pane.paint();
         }
     }
@@ -1805,6 +1813,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                                         source,
                                         pace,
                                         entries,
+                                        vocabulary,
                                         &mut now,
                                         runner,
                                         alias,
@@ -1982,7 +1991,8 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                 let lines = match turns {
                     Turnable::Ready(turns) => {
                         let turned = turns_of_one_line(
-                            shell, surface, source, pace, entries, &mut now, turns, &task,
+                            shell, surface, source, pace, entries, vocabulary, &mut now, turns,
+                            &task,
                         )
                         .await;
                         let redactor = turns.prepared.redactor();
@@ -2079,6 +2089,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
     source: &Source,
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
+    vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
     now: &mut Duration,
     turns: &mut Turns<'_>,
     task: &str,
@@ -2092,6 +2103,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
             source,
             pace,
             entries,
+            vocabulary,
             now,
             turns,
             Start::Resumed(&interrupted),
@@ -2112,6 +2124,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
         source,
         pace,
         entries,
+        vocabulary,
         now,
         turns,
         Start::Task(task),
@@ -2669,6 +2682,7 @@ pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
     source: &Source,
     pace: &P,
     entries: &dyn zaru_tui::composer::Entries,
+    vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
     now: &mut Duration,
     runner: &crate::cli::Run<'_>,
     alias: &crate::credentials::Alias,
@@ -2710,6 +2724,7 @@ pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
             source,
             pace,
             entries,
+            vocabulary,
             now,
             None,
             None,

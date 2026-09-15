@@ -25,6 +25,7 @@
 use crate::composer::Composer;
 use crate::composer::entries::{Entries, Entry, EntryKind};
 use crate::shell::fixtures::StagedVocabulary;
+use crate::shell::port::{CommandVocabulary, Namespace};
 use core::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, TestBackend};
@@ -134,6 +135,73 @@ pub(crate) fn press(composer: &mut Composer, key: Key, entries: &dyn Entries) {
         entries,
         &StagedVocabulary,
     );
+}
+
+/// A vocabulary offering exactly `count` namespaces, every one of them
+/// reachable by the same prefix, so a check can stage a **picker** of a chosen
+/// height without changing the text in the input.
+///
+/// That is the only shape that can carry ADR-0005 clause 5 over the picker: on
+/// a command line the strip is a function of the text, so the strip height can
+/// only be varied by varying what the vocabulary answers.
+#[derive(Debug)]
+pub(crate) struct VocabularyOf {
+    namespaces: Vec<Namespace>,
+}
+
+impl VocabularyOf {
+    pub(crate) fn new(count: usize) -> Self {
+        const SPELLINGS: [&str; 6] = ["/séance", "/sédan", "/sédge", "/sédum", "/séism", "/sépal"];
+        Self {
+            namespaces: SPELLINGS
+                .into_iter()
+                .take(count)
+                .map(|slash| Namespace {
+                    slash,
+                    governs: "a staged namespace",
+                    built: true,
+                    verbs: &[],
+                })
+                .collect(),
+        }
+    }
+}
+
+impl CommandVocabulary for VocabularyOf {
+    fn namespaces(&self) -> Vec<Namespace> {
+        self.namespaces.clone()
+    }
+
+    fn nearest(&self, _offered: &str) -> Option<&'static str> {
+        None
+    }
+
+    fn nearest_verb(&self, _slash: &str, _offered: &str) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Type `text` into `composer` against a chosen vocabulary.
+pub(crate) fn typing_with(
+    composer: &mut Composer,
+    text: &str,
+    now: Duration,
+    entries: &dyn Entries,
+    vocabulary: &dyn CommandVocabulary,
+) {
+    for ch in text.chars() {
+        composer.key(
+            Input {
+                key: Key::Char(ch),
+                ctrl: false,
+                alt: false,
+                shift: false,
+            },
+            now,
+            entries,
+            vocabulary,
+        );
+    }
 }
 
 /// A trie that returns exactly `count` entries, so a check can stage a strip
