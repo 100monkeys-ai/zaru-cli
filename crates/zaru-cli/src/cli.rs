@@ -20,18 +20,30 @@
 //!
 //! | [ADR-0015] | Built here |
 //! | --- | --- |
-//! | D1 — three extension kinds | **no**; nothing is loaded from a file |
-//! | D2 — the namespace table | the table as a closed type, and the five subcommands this harness implements |
-//! | D3 — commands and skills discovered from three places | **no** |
-//! | D4 — a project extension is inert until admitted | **no**; nothing is discovered, so nothing is admitted |
-//! | D5 — skills declare their validators | **no** |
-//! | D6 — every contribution is attributed in the transcript | **no** |
+//! | D1 — three extension kinds | the two that are files, in [`crate::commands`]; the MCP server is not one |
+//! | D2 — the namespace table | the table as a closed type, and the subcommands this harness implements |
+//! | D3 — commands and skills discovered from three places | two of three; the served location loads nothing |
+//! | D4 — a project extension is inert until admitted | yes, for both file kinds, in [`crate::commands::admission`] |
+//! | D5 — skills declare their validators | yes, in [`crate::commands::skill`], run by the turn's own plan |
+//! | D6 — every contribution is attributed in the transcript | yes, as [`crate::session::Record::Attribution`] |
 //! | D7 — no marketplace | yes, by absence, as it always was |
 //!
-//! **None of this record's six trigger clauses moves**, and that is worth
-//! stating rather than leaving to be noticed: all six are about *extensions*,
-//! and D2's namespaces have no clause at all. A seventh is drafted on the
-//! record for D2 under a delegated coordinator ruling of 2026-09-05.
+//! **Dated 2026-09-15.** Four of those rows read `**no**` and the paragraph
+//! beneath them read "**None of this record's six trigger clauses moves**"
+//! until this line, and both had been false since the `command-files` arc
+//! landed `0c8ea16..6bdf080` earlier the same day. Nothing here is a gate, so
+//! nothing checked it — which is the shape [Agent lessons] §76 records for a
+//! user-facing "cannot do yet" list and §69 for an arm written while an
+//! operation was a refusal, arriving in module documentation. The table above
+//! is re-derived rather than edited row by row.
+//!
+//! **What the clauses now say**, from the record's own Status tracking rather
+//! than from this file: clauses 1 and 5 are whole, clauses 4 and 6 are whole
+//! across both file kinds, clause 2 is satisfied by D5's skill, **clause 3
+//! does not move** at two of three locations, and clause 7 is unchanged —
+//! an admitted command or skill is not a namespace.
+//!
+//! [Agent lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/agent-lessons-3
 //!
 //! # It also becomes ADR-0014 layer 5's first reader
 //!

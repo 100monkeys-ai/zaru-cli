@@ -28,14 +28,16 @@
 //! name and shown in the picker. So the skill loader **claims** the spelling
 //! rather than adding one, and `<name>.md` beside `<name>.skill.md` is the
 //! one collision a directory cannot prevent by itself:
-//! [`CommandRefused::NameCollision`](super::document::CommandRefused::NameCollision)
-//! refuses both, naming both paths.
+//! [`super::document::CommandRefused::NameCollision`] refuses both, naming
+//! both paths.
 //!
 //! # One parser, not two
 //!
 //! The `[[validator]]` blocks are parsed by
-//! [`ManifestFile::validators`](crate::manifest::ManifestFile::validators) —
-//! the same function that reads `zaru.toml`'s — so a skill's block is
+//! `ManifestFile::validators` — `pub(crate)`, so it is named here as a code
+//! span rather than as a link, which is the rule `terminal::vocabulary`
+//! already states for `config::nearest` — the same function that reads
+//! `zaru.toml`'s — so a skill's block is
 //! byte-identical to the one a person already knows, and a malformed one is
 //! refused in the same words. A second parser here would be two readings of
 //! one grammar, which is exactly what `manifest::file` refuses for a
