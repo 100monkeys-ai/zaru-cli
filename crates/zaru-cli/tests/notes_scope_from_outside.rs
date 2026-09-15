@@ -451,6 +451,27 @@ async fn wire() -> Wired {
         )
         .expect("the token is stored");
 
+    // A second Nuclear Notes token, which is staging rather than subject.
+    // ADR-0007 D5's exclusion predicate became "the token the composer reads
+    // with" on 2026-09-15, and with one stored token that is this one -- so a
+    // store of one projects nothing and the projection arm below would read an
+    // absence rather than a refreshed scope. Two puts `composer_token` in its
+    // several-with-no-role case, where it serves nothing and both are the
+    // agent's, which is the state this check is actually about.
+    store
+        .add(
+            Entry::notes(
+                Alias::new(&nonce("beside")).expect("a nonce is a legal alias"),
+                Description::new("a second context").expect("one line"),
+                Secret::notes(format!("nn_mcp_{}", nonce("second"))).expect("nn_mcp_ names a kind"),
+                Reach::InstanceLocked(TokenInstance::new("100monkeys-ai.cortex.page")),
+            )
+            .expect("an nn_ value builds a Nuclear Notes entry"),
+            &keys,
+            None,
+        )
+        .expect("the second token is stored");
+
     // The bearer comes back through the sealing port, which is its only path,
     // and crosses into `zaru-notes` through the one named door.
     let secret = store.secret(&alias, &keys).expect("the port holds it");

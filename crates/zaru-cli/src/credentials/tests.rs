@@ -1724,9 +1724,16 @@ fn an_entry_is_refused_when_its_secret_belongs_to_the_other_family() {
 
 // D3: "The agent sees aliases, descriptions, and tool lists. It never sees a
 // secret value." A provider key is not projected at all -- not as an empty
-// namespace, not under a `notes:` name. The Notes token beside it is the
+// namespace, not under a `notes:` name. The Notes tokens beside it are the
 // discriminating arm: a projection that returned nothing would pass the
 // absence assertion on its own.
+//
+// **Two Notes tokens rather than one, since 2026-09-15.** With one, the store
+// has a token the composer reads with, and D5's exclusion predicate is now
+// that rather than the role -- so a single Notes token projects nothing and
+// this check would have measured that instead of the family filter it is
+// about. Two puts `composer_token` in its several-with-no-role case, where it
+// serves nothing and both are the agent's.
 #[test]
 fn a_provider_key_is_never_projected_to_the_agent() {
     let scratch = ScratchRoot::new();
@@ -1738,6 +1745,11 @@ fn a_provider_key_is_never_projected_to_the_agent() {
     store
         .add(notes, &keys, None)
         .expect("the Notes token is added");
+    let (second, _) = staged_entry("agenttwo");
+    let second_alias = second.alias().clone();
+    store
+        .add(second, &keys, None)
+        .expect("the second Notes token is added");
 
     let (provider, provider_value) = staged_provider_entry(ProviderKind::Gemini);
     let provider_alias = provider.alias().clone();
@@ -1748,11 +1760,16 @@ fn a_provider_key_is_never_projected_to_the_agent() {
     let namespaces = store.agent_namespaces();
     assert_eq!(
         namespaces.len(),
-        1,
-        "the agent was offered {} namespaces over a store of two credentials",
+        2,
+        "the agent was offered {} namespaces over a store of three credentials",
         namespaces.len()
     );
-    assert_eq!(namespaces[0].name, format!("notes:{notes_alias}"));
+    let names: Vec<&str> = namespaces
+        .iter()
+        .map(|namespace| namespace.name.as_str())
+        .collect();
+    assert!(names.contains(&format!("notes:{notes_alias}").as_str()));
+    assert!(names.contains(&format!("notes:{second_alias}").as_str()));
 
     let rendered = format!("{namespaces:?}");
     assert!(
@@ -2387,4 +2404,136 @@ fn adr_0007_d6_the_file_says_which_entries_have_been_refreshed() {
             .all(|tool| tool.input_schema().is_some()),
         "the declared form round-trips through the file"
     );
+}
+
+// --- ADR-0007 D5's exclusion predicate is what the composer reads with ------
+//
+// D5 says "every non-composer token". The role is the wrong reading of that on
+// every machine that exists: `grant_composer_role` refuses the role to any
+// scope outside ADR-0006 D4's nine and every token measured grants 94, so no
+// real token carries it -- and `notes-hints-wiring` decided on 2026-09-14 that
+// a single stored token serves the composer's reads without it. Those 94
+// include `me.set_current_workspace`, so projecting that token hands the model
+// the pointer the person is typing against.
+
+/// **Security corpus.** The mutant: put `record.role()` back as the only
+/// predicate.
+#[test]
+fn corpus_the_token_the_composer_reads_with_is_never_declared_though_it_holds_no_role() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    // The state of every real machine: one Nuclear Notes token, no role, and a
+    // scope far outside D4's set -- exactly what `zaru notes tokens add play
+    // play.cortex.page` produced on 2026-09-15, which reported 94 tools.
+    let (only, _) = staged_entry("play");
+    let only_alias = only.alias().clone();
+    let only = Entry::notes(
+        only_alias.clone(),
+        only.description().clone(),
+        only.secret().clone(),
+        only.reach().expect("a Notes entry has a reach").clone(),
+    )
+    .expect("an nn_ value builds a Nuclear Notes entry")
+    .with_tools(ToolScope::of_names([
+        "pages.read",
+        "pages.apply_patch",
+        "me.set_current_workspace",
+    ]));
+    store.add(only, &keys, None).expect("the token is stored");
+
+    assert_eq!(
+        store.record(&only_alias).expect("it is stored").role(),
+        None,
+        "this check asserts nothing unless the token carries no role"
+    );
+    assert_eq!(
+        crate::credentials::composer_token(&store).map(|(alias, _)| alias),
+        Some(only_alias.clone()),
+        "and unless the composer is reading with it"
+    );
+
+    assert!(
+        store.agent_namespaces().is_empty(),
+        "ADR-0006 D1: the token the composer reads with is never declared to the model, or the \
+         agent can move the pointer the person is typing against -- ADR-0131's own failure, \
+         inside one product"
+    );
+
+    // The accepting sibling, so a project-nothing implementation cannot pass:
+    // a second token is not the composer's and is declared. Adding it also
+    // takes `composer_token` to its several-with-no-role case, so the first
+    // token stops being the composer's and joins the projection.
+    let (second, _) = staged_entry("work");
+    let second_alias = second.alias().clone();
+    store.add(second, &keys, None).expect("a second is stored");
+    assert_eq!(
+        crate::credentials::composer_token(&store),
+        None,
+        "several tokens and no role serves nothing, which is `notes-hints-wiring`'s third case"
+    );
+    let declared: Vec<String> = store
+        .agent_namespaces()
+        .into_iter()
+        .map(|namespace| namespace.name)
+        .collect();
+    assert_eq!(declared.len(), 2, "both are the agent's now: {declared:?}");
+    assert!(
+        declared.contains(&format!("{NAMESPACE_PREFIX}:{second_alias}"))
+            && declared.contains(&format!("{NAMESPACE_PREFIX}:{only_alias}")),
+        "{declared:?}"
+    );
+}
+
+/// **Security corpus.** The mutant: drop the role arm and keep only
+/// `composer_token`'s answer.
+#[test]
+fn corpus_an_apex_token_holding_the_role_is_never_declared_though_composer_token_answers_nothing() {
+    let scratch = ScratchRoot::new();
+    let keys = StagedKey::minted();
+    let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
+
+    // An apex entry scoped inside ADR-0006 D4's set, which `grant_composer_role`
+    // accepts because it "does not read the reach" -- the configuration
+    // `apex-marking` recorded as reachable through the store's own door.
+    let composer = staged_notes("apexcomposer", vec!["pages.list", "atoms.list"], true);
+    let composer_alias = composer.alias().clone();
+    let confirmer = StagedConfirmer::accepting();
+    store
+        .add(composer, &keys, Some(&confirmer))
+        .expect("a confirmed apex token is stored");
+    store
+        .grant_composer_role(&composer_alias)
+        .expect("a read-only scope may hold the role, apex or not");
+    let other = staged_notes("agentside", vec!["pages.read"], false);
+    store.add(other, &keys, None).expect("a second is stored");
+
+    // `composer_token` maps a record through its host and an apex entry has
+    // none, so it answers nothing at all for this store -- which is why the
+    // role arm cannot be dropped.
+    assert_eq!(
+        crate::credentials::composer_token(&store),
+        None,
+        "an apex composer has no host to map through, so this function answers None"
+    );
+    assert_eq!(
+        store.record(&composer_alias).expect("it is stored").role(),
+        Some("composer"),
+        "and the role is what is left to exclude it by"
+    );
+
+    let declared: Vec<String> = store
+        .agent_namespaces()
+        .into_iter()
+        .map(|namespace| namespace.name)
+        .collect();
+    assert!(
+        !declared.contains(&format!("{NAMESPACE_PREFIX}:{composer_alias}")),
+        "ADR-0007 D4: the agent may use any token not flagged `composer`, and never the \
+         composer's -- apex or not: {declared:?}"
+    );
+    // The accepting sibling: the other token in the same store is declared.
+    assert_eq!(declared.len(), 1, "{declared:?}");
+    drop(scratch);
 }

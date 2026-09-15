@@ -9,11 +9,45 @@
 //!
 //! Two exclusions are the point of this module, and both are structural.
 //!
-//! **The composer's token is not here.** D4: "The agent may use any token not
-//! flagged `composer`, and never the composer's." The projection is built by
-//! skipping the record that carries the role, so the agent's namespace list
-//! is not a filtered view of everything — the composer's entry never enters
-//! it.
+//! **The composer's token is not here, and the predicate is not the role.**
+//! D4: "The agent may use any token not flagged `composer`, and never the
+//! composer's." The projection is built by skipping the composer's entry, so
+//! the agent's namespace list is not a filtered view of everything — that
+//! entry never enters it.
+//!
+//! # Why the role is the wrong question, measured
+//!
+//! D5's own words are "every non-composer token", and until 2026-09-15 that
+//! was read as "every token not carrying the `composer` role". **On every
+//! machine that exists, that reading projects the composer's own credential.**
+//! `notes-hints-wiring` decided on 2026-09-14, under directives 20, 29 and 31,
+//! that when no token carries the role and exactly one Nuclear Notes token is
+//! stored, *that* token serves the composer's reads — because
+//! [`CredentialStore::grant_composer_role`] refuses the role to any scope
+//! outside [ADR-0006] D4's nine, and every token this project has ever held
+//! reports **94 tools**. So the role is unheld on every real store and the
+//! composer still reads with something.
+//!
+//! Those 94 include `me.set_current_workspace`. A projection excluding only
+//! the role-holder would therefore declare, to the model, the pointer the
+//! person is typing against — [ADR-0131]'s "the agent has yanked the human's
+//! tab out from under them", reproduced inside one product, which
+//! [ADR-0006] D1 exists to prevent. That record's own amendments page named
+//! the moment: the one-token reading "expires the moment the agent's
+//! projection ships, and whoever builds that inherits this paragraph".
+//!
+//! **So the predicate is [`composer_token`]'s answer**, which is the function
+//! that decides what the composer actually reads with — one reading, two
+//! consumers, the same argument D1 makes about one store. The role arm is kept
+//! beside it rather than replaced, because the two do not answer the same
+//! question in every state: `composer_token` answers `None` for a role held by
+//! an *apex* token, whose entry has no host to map through, and D4 excludes
+//! that token regardless. Either arm alone leaves a hole; both together are
+//! "never the composer's".
+//!
+//! [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
+//! [ADR-0131]: https://cortex.page/adrs/p/0131-mcp-per-token-current-workspace
+//! [`composer_token`]: crate::credentials::composer_token
 //!
 //! **A secret is not here.** [`Namespace`] has no field one could go in. D3:
 //! "The agent sees aliases, descriptions, and tool lists. It never sees a
@@ -62,6 +96,11 @@ impl CredentialStore {
     /// The composer's is absent. See the module documentation.
     #[must_use]
     pub fn agent_namespaces(&self) -> Vec<Namespace> {
+        // Asked once, outside the walk, because it reads the whole store: its
+        // one-token case is a property of how many Notes tokens there are
+        // rather than of the record in hand.
+        let reading_for_the_composer =
+            crate::credentials::notes::composer_token(self).map(|(alias, _)| alias);
         self.records()
             // A provider key is filtered out before the composer is, and the
             // order does not matter because the two predicates are
@@ -72,7 +111,12 @@ impl CredentialStore {
             // the sharper reason: the agent must never see a provider key,
             // and a namespace is the surface the agent reaches through.
             .filter(|(_, record)| record.is_notes())
+            // D4's own clause: a token flagged `composer` is never the
+            // agent's, whatever else is true of the store.
             .filter(|(_, record)| record.role() != Some(Role::Composer.as_str()))
+            // And the token the composer actually reads with, which on every
+            // real store carries no role at all. See the module documentation.
+            .filter(|(alias, _)| Some(*alias) != reading_for_the_composer.as_ref())
             .map(|(alias, record)| Namespace {
                 name: format!("{NAMESPACE_PREFIX}:{alias}"),
                 description: agent_description(record),
