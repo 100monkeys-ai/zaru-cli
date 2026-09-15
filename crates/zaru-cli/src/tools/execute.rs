@@ -192,7 +192,7 @@ pub struct Executor<'a, C, F> {
     ///
     /// What the user allowed at a prompt, for this exact line, for the rest of
     /// this session. **Never written to any configuration layer** — see
-    /// [`SessionGrants`](crate::tools::grants::SessionGrants). It is a shared
+    /// [`SessionGrants`]. It is a shared
     /// reference because the grant set outlives the executor: an `Executor` is
     /// built per turn and a session has many.
     pub session_grants: &'a SessionGrants,

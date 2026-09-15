@@ -32,9 +32,11 @@
 //! reaches neither the allowlist nor the line a transcript holds.
 //!
 //! **It authors no elision marker.** D5 already decided how an elision reads
-//! and [`excerpt`](crate::tools::output::excerpt) is that decision; this
-//! module calls it rather than spelling `[... N bytes elided ...]` a second
-//! time.
+//! and `tools::output`'s own `excerpt` is that decision — named in prose
+//! rather than linked, because it is `pub(crate)` and rustdoc is right to
+//! refuse a public page pointing at something a reader of that page cannot
+//! open. This module calls it rather than spelling `[... N bytes elided ...]`
+//! a second time.
 //!
 //! **It redacts before it composes.** [ADR-0008] clause 6's port is applied
 //! where a capture becomes text a *model* is given, and a prompt runs the

@@ -230,9 +230,13 @@ impl Shell {
     /// The answers line is the one `zaru-cli`'s plain prompt writes, handed
     /// across rather than spelled again — see [`Confirmation::answers`].
     ///
-    /// **A confirmation's `detail` is not here**, and that is deliberate. It
-    /// is painted in a pinned region out of the *pane's* own area by
-    /// [`Shell::question_detail`], for the reason a queued task is: the
+    /// **A confirmation's `detail` is in the rows this becomes**, and where
+    /// those rows are painted is not all one region. `question_rows` breaks
+    /// them to the width and `pane_and_question` — named in prose rather than
+    /// linked, because it is private and rustdoc is right to refuse a public
+    /// page pointing at something a reader of that page cannot open — puts
+    /// whatever does not fit into a pinned region out of the *pane's* own
+    /// area, for the reason a queued task takes one: the
     /// composer's area is seven rows at every terminal size, and at 40
     /// columns a resolved absolute path wraps to three of them, so a preview
     /// inside this area would be three rows of an elision — which tells a
