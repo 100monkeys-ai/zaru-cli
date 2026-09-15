@@ -54,9 +54,9 @@
 pub mod alias;
 pub mod entry;
 pub mod family;
+pub mod grant;
 pub mod notes;
 pub mod port;
-pub mod grant;
 pub mod projected;
 pub mod projection;
 pub mod sealing;
@@ -65,11 +65,11 @@ pub mod store;
 
 pub use alias::{Alias, AliasRefused};
 pub use entry::{
-    COMPOSER_SCOPE, CachedTool, Description, DescriptionRefused, Entry, EntryRefused, Held, Instance, Reach,
-    Role, ToolScope, Ttl, TtlRefused,
+    COMPOSER_SCOPE, CachedTool, Description, DescriptionRefused, Entry, EntryRefused, Held,
+    Instance, Reach, Role, ToolScope, Ttl, TtlRefused,
 };
 pub use family::Family;
-pub use grant::{Granted, GrantRefused};
+pub use grant::{GrantRefused, Granted};
 pub use notes::{
     Cached, ReachFailure, Refreshed, ScopeError, bearer_for_dispatch, composer_apex_marking,
     composer_token, corpus_at, corpus_from, tool_scope_at,
@@ -82,7 +82,9 @@ pub use sealing::{
     SealingError, SealingKey,
 };
 pub use secret::{Kind, REDACTED, Secret, SecretRefused};
-pub use store::{CredentialStore, STORE_FILE, Record, Removed, StoreError, StoredHeld, StoredReach};
+pub use store::{
+    CredentialStore, Record, Removed, STORE_FILE, StoreError, StoredHeld, StoredReach,
+};
 
 // `pub(crate)` rather than private: `crate::config`'s checks plant the same
 // awkward nonces and assert the same ASCII core, and the reason that core

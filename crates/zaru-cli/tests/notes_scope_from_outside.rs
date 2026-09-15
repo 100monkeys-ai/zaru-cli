@@ -64,8 +64,8 @@ use zaru_cli::credentials::{
 };
 use zaru_core::iteration::Clock;
 use zaru_notes::session::{
-    Instance as NotesInstance,
-    Bearer, Endpoint, EndpointFailure, Instance, Invalidation, NotesError, Session, WorkspaceId,
+    Bearer, Endpoint, EndpointFailure, Instance as NotesInstance, Instance, Invalidation,
+    NotesError, Session, WorkspaceId,
 };
 
 // -- the nonce, which this file must carry its own copy of -------------------
@@ -1000,8 +1000,7 @@ fn projected_store() -> Projected {
             Entry::notes(
                 Alias::new(&nonce("beside")).expect("a nonce is a legal alias"),
                 Description::new("a second context").expect("one line"),
-                Secret::notes(format!("nn_mcp_{}", nonce("second")))
-                    .expect("nn_mcp_ names a kind"),
+                Secret::notes(format!("nn_mcp_{}", nonce("second"))).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(TokenInstance::new("play.cortex.page")),
             )
             .expect("an nn_ value builds a Nuclear Notes entry"),
@@ -1051,9 +1050,13 @@ async fn adr_0007_d5_a_granted_tool_is_declared_called_and_answered_over_real_pr
     .expect("the in-process server attaches");
     staged
         .store
-        .cache_tool_scope(&staged.alias, &session, &ManualClock {
-            elapsed: Mutex::new(Duration::from_secs(0)),
-        })
+        .cache_tool_scope(
+            &staged.alias,
+            &session,
+            &ManualClock {
+                elapsed: Mutex::new(Duration::from_secs(0)),
+            },
+        )
         .await
         .expect("one tools/list fills the cache");
     drop(session);
@@ -1092,7 +1095,9 @@ async fn adr_0007_d5_a_granted_tool_is_declared_called_and_answered_over_real_pr
         "the schema the model is shown is the server's own bytes"
     );
     assert!(
-        offered.description.contains("the cortex I share with the team"),
+        offered
+            .description
+            .contains("the cortex I share with the team"),
         "ADR-0007 D2: the token's description reaches the agent: {}",
         offered.description
     );
@@ -1117,13 +1122,18 @@ async fn adr_0007_d5_a_granted_tool_is_declared_called_and_answered_over_real_pr
     .expect("the in-process server answers");
     assert_eq!(captured.exit_code, 0, "{captured:?}");
     assert!(
-        captured.stdout.contains(&format!("home as read from {WORKSPACE}")),
+        captured
+            .stdout
+            .contains(&format!("home as read from {WORKSPACE}")),
         "the server's own answer did not come back: {captured:?}"
     );
 
     // A second call into the same alias reuses the session: one `initialize`
     // on the wire for the projection's own connection, not two.
-    let before = staged.wire_text().matches(r#""method":"initialize""#).count();
+    let before = staged
+        .wire_text()
+        .matches(r#""method":"initialize""#)
+        .count();
     zaru_cli::tools::Projected::call(
         &projection,
         &staged.alias,
@@ -1133,7 +1143,10 @@ async fn adr_0007_d5_a_granted_tool_is_declared_called_and_answered_over_real_pr
     .await
     .expect("the second call answers");
     assert_eq!(
-        staged.wire_text().matches(r#""method":"initialize""#).count(),
+        staged
+            .wire_text()
+            .matches(r#""method":"initialize""#)
+            .count(),
         before,
         "the projection opened a second session for the same alias"
     );
@@ -1203,7 +1216,9 @@ fn granted_for(
     alias: &Alias,
     names: &[&str],
 ) -> zaru_cli::credentials::Granted {
-    use zaru_cli::config::{Contribution, Field, FieldKind, Layer, Resolution, Schema, Source, Table, Value};
+    use zaru_cli::config::{
+        Contribution, Field, FieldKind, Layer, Resolution, Schema, Source, Table, Value,
+    };
     let schema = Schema::new().with_family(
         zaru_cli::credentials::grant::PREFIX,
         zaru_cli::credentials::grant::SUFFIX,
@@ -1221,7 +1236,11 @@ fn granted_for(
     );
     let resolution = Resolution::resolve(
         &schema,
-        [Contribution::new(Layer::User, Source::named("staged"), document)],
+        [Contribution::new(
+            Layer::User,
+            Source::named("staged"),
+            document,
+        )],
     )
     .expect("a permissive schema takes an array at the user's layer");
     let cached: Vec<String> = store

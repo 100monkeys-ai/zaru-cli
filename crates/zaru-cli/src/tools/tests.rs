@@ -2192,7 +2192,11 @@ fn an_allowlist_entry_is_the_line_the_prompt_showed() {
     let entry = Entry::parse(1, shown).unwrap_or_else(|refusal| {
         panic!("the line the prompt showed is not an allowlist entry: {refusal}")
     });
-    assert_eq!(entry.tool(), Some(ToolName::FsWrite), "the tool did not survive");
+    assert_eq!(
+        entry.tool(),
+        Some(ToolName::FsWrite),
+        "the tool did not survive"
+    );
     assert_eq!(
         entry.target(),
         invocation.subject_text(),
@@ -3826,8 +3830,7 @@ fn corpus_a_write_tool_the_person_did_not_grant_is_absent_from_the_declarations(
     // refusal**, which is the shape `ToolName`'s own closure uses -- the
     // forbidden reach has nothing to call.
     let read_only = granted(&["pages.read"]);
-    let declared =
-        crate::tools::surface(&namespaces, |_| &read_only).expect("nothing collides");
+    let declared = crate::tools::surface(&namespaces, |_| &read_only).expect("nothing collides");
     let names: Vec<&str> = declared
         .iter()
         .map(|descriptor| descriptor.name.as_str())
@@ -3967,7 +3970,9 @@ fn adr_0007_d6_a_granted_tool_with_no_cached_schema_is_refused_naming_the_token(
         other => panic!("{other:?}"),
     }
     assert!(
-        refusal.to_string().contains("refreshed at the next session"),
+        refusal
+            .to_string()
+            .contains("refreshed at the next session"),
         "the refusal must name D6's remedy: {refusal}"
     );
 

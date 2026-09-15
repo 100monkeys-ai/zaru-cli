@@ -410,11 +410,7 @@ pub async fn tool_scope_at(host: &str, secret: &Secret) -> Result<ToolScope, Rea
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 fn cached(declared: zaru_notes::session::ToolDeclaration) -> CachedTool {
-    CachedTool::declared(
-        declared.name,
-        declared.description,
-        declared.input_schema,
-    )
+    CachedTool::declared(declared.name, declared.description, declared.input_schema)
 }
 
 /// Which shape of [`ReachFailure`] a client error is, and it turns on one

@@ -1230,7 +1230,10 @@ async fn a_candidate_applied_whole_reports_zero_and_carries_what_the_tools_produ
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell, crate::tools::descriptor_set()));
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(
+        &cell,
+        crate::tools::descriptor_set(),
+    ));
 
     let candidate = candidate(&[("fs.read", &["inside/file"]), ("fs.list", &["inside"])]).await;
     let outcome = applying.execute(&candidate).await.expect("no port failed");
@@ -1313,7 +1316,10 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell, crate::tools::descriptor_set()));
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(
+        &cell,
+        crate::tools::descriptor_set(),
+    ));
     let outcome = applying.execute(&candidate).await.expect("no port failed");
 
     assert!(
@@ -1363,7 +1369,10 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell, crate::tools::descriptor_set()));
+    let applying = crate::compose::Applying::through(crate::compose::Shared::over(
+        &cell,
+        crate::tools::descriptor_set(),
+    ));
     let accepted = applying.execute(&candidate).await.expect("no port failed");
     assert_eq!(
         accepted.exit_code, 0,
@@ -1706,8 +1715,9 @@ async fn an_instances_refusal_reaches_the_model_as_a_tool_result_rather_than_end
     let no_grants = crate::tools::grants::SessionGrants::none();
     // What the `play` token actually answers on every workspace it was probed
     // against: it authenticates and is a member of nothing.
-    let projection =
-        crate::tools::fixtures::StagedProjection::refusing("You are not a member of that workspace.");
+    let projection = crate::tools::fixtures::StagedProjection::refusing(
+        "You are not a member of that workspace.",
+    );
     let declared = with_projected();
 
     let mut executor = Executor {

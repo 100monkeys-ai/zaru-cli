@@ -123,10 +123,7 @@ where
 }
 
 /// One projected server's declarations, filtered to what was granted.
-fn projected<'a, G>(
-    namespace: &'a Namespace,
-    granted: &G,
-) -> Result<Vec<ToolDescriptor>, Refused>
+fn projected<'a, G>(namespace: &'a Namespace, granted: &G) -> Result<Vec<ToolDescriptor>, Refused>
 where
     G: Fn(&Alias) -> &'a Granted,
 {

@@ -1140,8 +1140,5 @@ async fn adr_0007_d5_arguments_that_are_not_a_json_object_are_refused_before_the
         .session
         .call_declared("pages.read", r#"{"pathOrId":"home","workspace":"w"}"#)
         .await;
-    assert!(
-        answered.is_ok(),
-        "an object is a call: {answered:?}"
-    );
+    assert!(answered.is_ok(), "an object is a call: {answered:?}");
 }

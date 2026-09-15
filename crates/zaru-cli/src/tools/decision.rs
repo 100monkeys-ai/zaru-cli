@@ -631,8 +631,7 @@ impl Decision {
 
         // D4 is not conditional on the effect: an out-of-tree *read* prompts
         // in `ask` and `allow` too.
-        let would_prompt_in_ask =
-            out_of_tree || invocation.called().effect().prompts_in_ask();
+        let would_prompt_in_ask = out_of_tree || invocation.called().effect().prompts_in_ask();
 
         let mut requirement = match mode {
             // D3: "No prompts."

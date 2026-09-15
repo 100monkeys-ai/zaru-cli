@@ -1440,10 +1440,7 @@ impl Surface<'_> {
     pub fn projection(refusal: &crate::tools::RegistrationRefused) -> Classified {
         correctable(
             refusal,
-            run(
-                "see which tools each stored token grants",
-                "notes tokens",
-            ),
+            run("see which tools each stored token grants", "notes tokens"),
         )
     }
 

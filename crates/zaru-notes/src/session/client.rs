@@ -325,12 +325,13 @@ impl Session {
         tools
             .into_iter()
             .map(|tool| {
-                let input_schema = serde_json::to_string(tool.input_schema.as_ref()).map_err(
-                    |_error| NotesError::Unreadable {
-                        tool: "tools/list".to_owned(),
-                        expected: "a tool whose input schema serialises as JSON",
-                    },
-                )?;
+                let input_schema =
+                    serde_json::to_string(tool.input_schema.as_ref()).map_err(|_error| {
+                        NotesError::Unreadable {
+                            tool: "tools/list".to_owned(),
+                            expected: "a tool whose input schema serialises as JSON",
+                        }
+                    })?;
                 Ok(ToolDeclaration {
                     name: tool.name.into_owned(),
                     description: tool.description.map(std::borrow::Cow::into_owned),
@@ -342,7 +343,7 @@ impl Session {
 
     /// One call to a tool named at run time, with its arguments as JSON.
     ///
-    /// # Why this door is public where [`Session::call`] is private
+    /// # Why this door is public where the crate's own `call` is private
     ///
     /// Every other caller in this crate names its tool at compile time —
     /// `pages.read`, `search.global`, the two listings — because each has a
@@ -368,11 +369,7 @@ impl Session {
     /// refuses, and [`NotesError::Transport`] when the call cannot be made.
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
-    pub async fn call_declared(
-        &self,
-        tool: &str,
-        arguments: &str,
-    ) -> Result<String, NotesError> {
+    pub async fn call_declared(&self, tool: &str, arguments: &str) -> Result<String, NotesError> {
         let parsed: Value =
             serde_json::from_str(arguments).map_err(|_error| NotesError::Unreadable {
                 tool: "tools/call".to_owned(),

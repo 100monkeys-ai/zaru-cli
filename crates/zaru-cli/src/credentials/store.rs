@@ -276,7 +276,7 @@ pub enum StoredHeld {
         /// D6's cached tools, as much of each as the cache holds.
         ///
         /// Names alone until 2026-09-15, whole declarations since — see
-        /// [`CachedTool`](super::entry::CachedTool), which is also why a tool
+        /// [`CachedTool`], which is also why a tool
         /// here can still be a bare string.
         tools: Vec<CachedTool>,
         /// D2's `workspace`, "informational only".

@@ -825,7 +825,11 @@ fn what_the_store_wrote_is_what_it_reads_back() {
     assert_eq!(record.kind(), "personal");
     assert_eq!(record.tools().len(), 2);
     assert_eq!(
-        record.tools().iter().map(CachedTool::name).collect::<Vec<_>>(),
+        record
+            .tools()
+            .iter()
+            .map(CachedTool::name)
+            .collect::<Vec<_>>(),
         vec!["pages.read", "search.global"]
     );
     assert_eq!(record.workspace(), Some("zaru"));
@@ -888,7 +892,11 @@ fn a_description_is_replaced_and_survives_a_reopen() {
     // different credential under the same name.
     assert_eq!(record.tools().len(), 2);
     assert_eq!(
-        record.tools().iter().map(CachedTool::name).collect::<Vec<_>>(),
+        record
+            .tools()
+            .iter()
+            .map(CachedTool::name)
+            .collect::<Vec<_>>(),
         vec!["pages.read", "search.global"]
     );
     assert_eq!(record.workspace(), Some("zaru"));
@@ -2622,7 +2630,8 @@ fn adr_0007_d5_nothing_is_granted_by_default_and_a_grant_is_the_users_own() {
     // decides otherwise.
     let empty =
         Resolution::resolve(&permissive_grant_schema(), Vec::new()).expect("an empty resolution");
-    let nothing = Granted::from_configuration(&empty, &alias, &cached).expect("absence is not a refusal");
+    let nothing =
+        Granted::from_configuration(&empty, &alias, &cached).expect("absence is not a refusal");
     assert!(
         nothing.is_empty(),
         "a token with no grant declares nothing: 94 tools on every request is what ADR-0007's own \
@@ -2661,8 +2670,13 @@ fn corpus_a_cloned_repository_cannot_widen_what_a_model_may_reach_in_your_cortex
     // product's own declaration the fold refuses before anything reads the
     // value, so a resolution carrying a project grant does not come into
     // existence at all.
-    let at_the_fold = grant_over(grant_schema(), Layer::Project, &alias, &["pages.apply_patch"])
-        .expect_err("the fold refuses a project grant");
+    let at_the_fold = grant_over(
+        grant_schema(),
+        Layer::Project,
+        &alias,
+        &["pages.apply_patch"],
+    )
+    .expect_err("the fold refuses a project grant");
     let folded = at_the_fold.to_string();
     assert!(
         folded.contains("notes.play.agent_tools") && folded.contains("~/.zaru/config.toml"),
@@ -2685,7 +2699,10 @@ fn corpus_a_cloned_repository_cannot_widen_what_a_model_may_reach_in_your_cortex
     )
     .expect_err("a project may not grant a model reach into somebody's cortex");
     match &refusal {
-        GrantRefused::FromAClonedRepository { alias: named, layer } => {
+        GrantRefused::FromAClonedRepository {
+            alias: named,
+            layer,
+        } => {
             assert_eq!(named, &alias);
             assert_eq!(*layer, Layer::Project);
         }
@@ -2700,9 +2717,12 @@ fn corpus_a_cloned_repository_cannot_widen_what_a_model_may_reach_in_your_cortex
     // The three accepting siblings, so a refuse-everything implementation
     // cannot pass: the user, environment and flag layers each grant.
     for layer in [Layer::User, Layer::Environment, Layer::Flag] {
-        let granted =
-            Granted::from_configuration(&grant_from(layer, &alias, &["pages.read"]), &alias, &cached)
-                .unwrap_or_else(|refused| panic!("{layer:?} may grant: {refused}"));
+        let granted = Granted::from_configuration(
+            &grant_from(layer, &alias, &["pages.read"]),
+            &alias,
+            &cached,
+        )
+        .unwrap_or_else(|refused| panic!("{layer:?} may grant: {refused}"));
         assert_eq!(granted.names(), ["pages.read"], "at {layer:?}");
     }
 }
@@ -2721,10 +2741,15 @@ fn adr_0007_d6_a_granted_name_the_token_does_not_carry_is_refused_naming_its_own
     .expect_err("a typo is a mistake the person can fix, not a tool that never fires");
     match &refusal {
         GrantRefused::NotInTheTokensScope {
-            offered, cached: listed, ..
+            offered,
+            cached: listed,
+            ..
         } => {
             assert_eq!(offered, "pages.raed");
-            assert_eq!(listed, &vec!["pages.read".to_owned(), "pages.list".to_owned()]);
+            assert_eq!(
+                listed,
+                &vec!["pages.read".to_owned(), "pages.list".to_owned()]
+            );
         }
         other => panic!("a name outside the scope should be refused, not {other:?}"),
     }
@@ -2758,10 +2783,13 @@ fn a_grant_key_is_three_segments_and_neither_more_nor_fewer() {
 
     assert!(declared("notes.play.agent_tools"), "the family's own shape");
     assert!(
-        declared("notes.a.very.long.alias.agent_tools") == false,
+        !declared("notes.a.very.long.alias.agent_tools"),
         "five segments is not a member: an alias is one segment"
     );
-    assert!(!declared("notes.agent_tools"), "two segments is not a member");
+    assert!(
+        !declared("notes.agent_tools"),
+        "two segments is not a member"
+    );
     assert!(!declared("notes.play.agent_tool"), "the suffix is exact");
     assert!(!declared("note.play.agent_tools"), "the prefix is exact");
 
@@ -2811,8 +2839,7 @@ fn adr_0014_the_grant_family_is_declared_once_holds_a_list_and_is_refused_to_a_p
     // answered -- the same limit `tools.allowlist` already carries.
     assert!(
         matches!(
-            crate::config::FieldKind::Array
-                .coerce(Value::Text("pages.read,pages.list".to_owned())),
+            crate::config::FieldKind::Array.coerce(Value::Text("pages.read,pages.list".to_owned())),
             Err(crate::config::CoercionFailure::WrongShape { .. })
         ),
         "if this starts passing, somebody has decided how a list is spelled in an environment \

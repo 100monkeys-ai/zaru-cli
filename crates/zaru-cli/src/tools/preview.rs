@@ -165,10 +165,9 @@ pub fn detail_for(
         // What keeps a held value out of that statement is a refusal rather
         // than a redaction -- see `execute`'s projected arm -- which is the
         // stronger of the two: a marker in a question still sends the value.
-        Subject::Path(_)
-        | Subject::Search { .. }
-        | Subject::Url(_)
-        | Subject::Remote { .. } => Vec::new(),
+        Subject::Path(_) | Subject::Search { .. } | Subject::Url(_) | Subject::Remote { .. } => {
+            Vec::new()
+        }
     }
 }
 

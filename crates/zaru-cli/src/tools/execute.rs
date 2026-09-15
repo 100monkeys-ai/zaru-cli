@@ -493,10 +493,12 @@ where
                     arguments,
                 },
             ) => self.projected.call(alias, tool, arguments).await,
-            (Subject::Path(target), Requested::Builtin(Call::OnPath { tool, .. })) => Ok(match tool {
-                ToolName::FsList => files::list(target.resolved()),
-                _ => files::read(target.resolved()),
-            }),
+            (Subject::Path(target), Requested::Builtin(Call::OnPath { tool, .. })) => {
+                Ok(match tool {
+                    ToolName::FsList => files::list(target.resolved()),
+                    _ => files::read(target.resolved()),
+                })
+            }
             (Subject::Write { target, .. }, Requested::Builtin(Call::Write { contents, .. })) => {
                 Ok(files::write(target.resolved(), contents))
             }

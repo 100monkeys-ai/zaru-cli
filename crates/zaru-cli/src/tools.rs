@@ -83,8 +83,8 @@
 
 pub mod allowlist;
 pub mod arguments;
-pub mod declared;
 pub mod decision;
+pub mod declared;
 pub mod destructive;
 pub mod execute;
 pub mod files;
@@ -101,11 +101,11 @@ pub mod tree;
 
 pub use allowlist::{Allowed, AllowlistRefused, Entry};
 pub use arguments::{ArgumentsRefused, Call, schema};
-pub use declared::{Refused as RegistrationRefused, surface};
 pub use decision::{
     Assessment, DESTRUCTIVE_MARKING, Decision, Invocation, InvocationRefused, Permission,
     RefusedBecause, Requirement, Subject, TranscriptEntry,
 };
+pub use declared::{Refused as RegistrationRefused, surface};
 pub use destructive::{Category, Shapes};
 pub use execute::{
     Executor, NotACall, OVERFLOW_PREFIX, SessionOverflow, descriptor_set, descriptors,
@@ -118,8 +118,8 @@ pub use output::{
     PresentationRefused, Presented,
 };
 pub use port::{
-    Allowlist, Confirm, ConfirmFailure, DestructiveMatch, Fetch, NoProjection, Projected,
-    Question, Subprocess,
+    Allowlist, Confirm, ConfirmFailure, DestructiveMatch, Fetch, NoProjection, Projected, Question,
+    Subprocess,
 };
 // `prompt` is deliberately **not** re-exported here. `zaru-core` already has
 // an `iteration::Prompt` and several checks in this crate import it, so a
