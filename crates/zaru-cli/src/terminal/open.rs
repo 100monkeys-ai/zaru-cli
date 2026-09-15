@@ -805,9 +805,22 @@ fn one_session(
         });
     }
 
-    // ADR-0008 D1's turns, resolved once for the whole session. Everything
-    // below happens **before** the terminal is taken, so a refusal is written
-    // to a terminal that is still echoing.
+    // ADR-0008 D1's turns, resolved once for the whole session, and before the
+    // pump rather than before the terminal.
+    //
+    // **The terminal is already taken when this runs.** `open` takes it --
+    // raw mode and the alternate screen both, through `Crossterm::take` --
+    // before the loop that calls this function, so nothing below can write to
+    // a terminal that is still echoing and this comment said it did until
+    // 2026-09-15. What happens instead is that a refusal leaves as the `Exit`
+    // this function returns, `open` gives the terminal back on that path
+    // before it hands it up, and the binary writes ADR-0016's presentation to
+    // the restored screen. **Until that day it wrote nothing at all**: the
+    // binary returned the terminal path's `Exit` past its own writers, so
+    // every refusal here exited with its code and said nothing -- measured
+    // from the release binary over a pseudo-terminal at five refusal kinds,
+    // zero bytes each. See `cli::Outcome::written`, which is the one writer
+    // now.
     let classify = Classify::new(version, report_at);
     let resolution = crate::cli::layers::resolve_from_process(overrides)
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
@@ -875,7 +888,14 @@ fn one_session(
     };
 
     // ADR-0010 D3's checkpoint, read back into ADR-0013 D1's layer 6, before
-    // the terminal is taken so a refusal reaches a terminal that still echoes.
+    // the pump -- and not before the terminal is taken, which is what this
+    // comment claimed until 2026-09-15. See the note above the turns for what
+    // is actually true of a refusal raised here.
+    //
+    // A checkpoint this harness did not write is ADR-0016 D1's **Defect** at
+    // D5's `70`, so what a person lost while the binary returned past its own
+    // writers was the report URL: exit 70, the alternate screen entered and
+    // left, and not one byte saying a bug had been found. It reaches them now.
     let context = restored_context(
         &resumed,
         &classify,

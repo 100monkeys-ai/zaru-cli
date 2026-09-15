@@ -344,3 +344,107 @@ fn corpus_one_place_in_the_terminal_renders_a_classified_failure() {
         offences.join("\n  "),
     );
 }
+
+/// **The binary has one ending, and it goes through the writing.**
+///
+/// [ADR-0016] D2's remedy and D5's exit code are built for every refusal this
+/// harness raises, and until 2026-09-15 one path threw the first away:
+/// `main.rs` answered the terminal branch with `Some(exit) => return exit`,
+/// which left `run()` above the two writers below it. Measured from the
+/// release binary at `6bdf080` over a pseudo-terminal, five refusal kinds
+/// each exited with their code and wrote **zero bytes** — including a
+/// checkpoint this harness did not write, which is D1's `Defect` at D5's `70`
+/// and whose whole presentation is "this is a bug in Zaru" plus where to
+/// report it.
+///
+/// # Why a walk, and why it is the only instrument that reaches this
+///
+/// `main.rs` is a binary target and cannot be named from an integration test,
+/// which is the reason this crate has a library target at all. So the
+/// property "every ending writes" is asserted twice, from the two sides a
+/// check can stand on: `Outcome::written`'s own corpus asserts what the
+/// writing *does*, over two `Vec<u8>`, for the class of every refusal; this
+/// asserts that the binary has no ending that goes past it. Neither alone
+/// would have caught the defect — the first because the writer was correct
+/// all along, the second because a walk cannot say what bytes come out.
+///
+/// It is the same instrument, drawn for the same reason, as
+/// `corpus_one_place_in_the_terminal_renders_a_classified_failure` above: a
+/// rule that stops a *second* site being written the same way cannot be a
+/// per-site check, because a check cannot fail for a site nobody has written
+/// yet.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn corpus_the_binary_has_no_ending_that_goes_past_the_writing() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let text = std::fs::read_to_string(&path).expect("the binary's own source");
+
+    /// A line of prose about the rule is not an instance of it. Both the
+    /// module documentation and the branch's own comment name the `return`
+    /// this walk forbids, because they record why it is forbidden.
+    fn is_prose(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("//") || trimmed.starts_with('*')
+    }
+
+    let code: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !is_prose(line))
+        .map(|(number, line)| (number + 1, line))
+        .collect();
+
+    // Liveness first. A walk over a file it failed to read, or over a file
+    // that stopped being the composition root, passes vacuously and says
+    // nothing -- `Verification lessons` §8. `main.rs` is some hundreds of
+    // lines and a floor well under that still catches an empty read.
+    println!("scanned src/main.rs: {} line(s) of code", code.len());
+    assert!(
+        code.len() > 40,
+        "this walk read {} line(s) of code from src/main.rs, which is too few to have asserted \
+         anything about how the binary ends",
+        code.len()
+    );
+
+    // The rule. `run()` returns the value of one expression and the process
+    // exits with it; an early `return` is an ending that skips the writing,
+    // which is exactly the shape the terminal path had.
+    let early: Vec<String> = code
+        .iter()
+        .filter(|(_, line)| line.contains("return ") || line.trim_end().ends_with("return;"))
+        .map(|(number, line)| format!("src/main.rs:{number}: {}", line.trim()))
+        .collect();
+    assert!(
+        early.is_empty(),
+        "an ending that returns out of `run` goes past `Outcome::written`, and a refusal taking \
+         it exits with its code and says nothing at all -- which is what ADR-0016 D2 calls an \
+         error whose reader cannot act, with the grammar removed too:\n{}",
+        early.join("\n")
+    );
+
+    // The other half of the same rule: the data writer moved with the refusal
+    // writer, so a second `println!` here would be a second answer to where
+    // standard output comes from. `eprintln!` stays for exactly one caller --
+    // ADR-0016 D3's boundary, which reports a caught defect and is not an
+    // `Outcome` at all.
+    let printers: Vec<String> = code
+        .iter()
+        .filter(|(_, line)| line.contains("println!(") && !line.contains("eprintln!("))
+        .map(|(number, line)| format!("src/main.rs:{number}: {}", line.trim()))
+        .collect();
+    assert!(
+        printers.is_empty(),
+        "standard output has one writer and it is `Outcome::written`:\n{}",
+        printers.join("\n")
+    );
+
+    // The accepting sibling, without which every assertion above is satisfied
+    // by a `main.rs` that writes nothing and ends nowhere.
+    assert!(
+        code.iter()
+            .any(|(_, line)| line.contains("outcome.written(")),
+        "the binary's one ending is `Outcome::written`, and this file does not call it -- so the \
+         two assertions above hold vacuously"
+    );
+}

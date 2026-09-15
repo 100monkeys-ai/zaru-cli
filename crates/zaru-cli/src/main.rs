@@ -40,14 +40,12 @@
 //!
 //! **The writing itself left on 2026-09-15, and the sentence above said "the
 //! two writers" until then.** It was two macros here, and a `return` in the
-//! branch below still goes past them: a session that will not open at a
-//! terminal exits with its code and prints nothing at all. The rule is
+//! branch below went past both of them: a session that would not open at a
+//! terminal exited with its code and printed nothing at all. The rule is
 //! [`zaru_cli::cli::Outcome::written`] now — one call, on writers this file
 //! passes — because a rule that lives in a binary target is a rule no check
 //! can read the bytes back from, which is what this paragraph already says
-//! about everything else in this file. **That branch is routed in the commit
-//! after this one**, which is what makes the sentence above true of every
-//! ending rather than of one.
+//! about everything else in this file.
 //!
 //! # The binary starts a session, and this is the day that changed
 //!
@@ -96,12 +94,25 @@ fn run() -> Exit {
         // decision and the reason. This is the only branch in this file that
         // is not parse, execute, write.
         Ok(line) => match zaru_cli::terminal::take_over(&line, version, report_at) {
-            // **This ending goes past the writing below, and it is the one
-            // defect this commit does not fix.** Routing it is the commit
-            // after this one; what had to happen first is that the writing
-            // became something a check can read the bytes back from, which is
-            // `cli::Outcome::written`.
-            Some(exit) => return exit,
+            // **The terminal path's ending is an `Outcome` like every other,
+            // and until 2026-09-15 it was a `return` that went past the
+            // writing below.** A person whose session would not open -- no
+            // session to continue, a session that does not exist, a
+            // `zaru.toml` refused by name, a runtime tier that names none, a
+            // checkpoint this harness did not write -- got the exit code and
+            // not one byte of the sentence, which is ADR-0016 D2's "an error
+            // message whose reader cannot act" with the grammar removed too.
+            //
+            // There are no lines, because what the terminal path had to show
+            // it painted itself. `terminal::open` gives the terminal back
+            // before it hands this up -- `guard.restore_now()` on both of its
+            // exits -- so the refusal is written to the screen the person is
+            // looking at rather than into an alternate screen that is about
+            // to be discarded with it.
+            Some(exit) => zaru_cli::cli::Outcome {
+                lines: Vec::new(),
+                exit,
+            },
             None => Run { version, report_at }.execute(&line),
         },
         Err(refusal) => zaru_cli::cli::Outcome {

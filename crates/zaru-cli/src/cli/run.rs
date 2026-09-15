@@ -19,12 +19,11 @@
 //! in this crate in `main.rs`" until that day; what it did not say is that
 //! `main` had a second ending -- the terminal path's -- which returned above
 //! the writers, so every classified refusal that stopped a session opening at
-//! a terminal exits with its code and prints nothing at all. Measured from
+//! a terminal exited with its code and printed nothing at all. Measured from
 //! the release binary over a pseudo-terminal: five refusal kinds, zero bytes
 //! of standard error each, including [ADR-0016] D1's **Defect** at D5's `70`
 //! with its report URL. One writer, one call site each, and a check that can
-//! read the bytes back is what this commit puts in place of two macros; the
-//! branch that goes past it is routed in the commit after.
+//! read the bytes back is what replaces that.
 //!
 //! # Every exit code the binary can reach comes from here
 //!
@@ -95,9 +94,7 @@ impl Outcome {
     /// and it is one function rather than a shape each caller repeats: on
     /// 2026-09-15 the binary had **two** endings and only one of them wrote
     /// anything, because `main` returned the terminal path's [`Exit`] above
-    /// the writers. **That second ending is routed into this call in the
-    /// commit after this one**; what had to come first is a writer whose
-    /// bytes a check can read back, which is the section below.
+    /// the writers. Every ending is this call now.
     ///
     /// # Why it takes two writers instead of reaching for the process's own
     ///
