@@ -244,6 +244,13 @@ pub enum Door {
     ///
     /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
     StillGeneratingRow,
+    /// `cli::render::opening` — the one line a session opens on.
+    ///
+    /// The door is the composing function rather than `Shell::notice`, which
+    /// puts dozens of *caused* lines on the pane across two files and would
+    /// name a needle every one of them matched. This is the rule
+    /// [`Door::ContextAnnouncement`] already follows for the same reason.
+    OpeningLine,
 }
 
 impl Door {
@@ -251,7 +258,7 @@ impl Door {
     ///
     /// The length is annotated, so a twelfth fails to compile here as well as
     /// in every exhaustive match below.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::StandingStrip,
         Self::AbsenceStrip,
         Self::SessionNotice,
@@ -263,6 +270,7 @@ impl Door {
         Self::ElapsedSegment,
         Self::NarrativeRow,
         Self::StillGeneratingRow,
+        Self::OpeningLine,
     ];
 
     /// The text that opens this door, as it is written at a call site.
@@ -299,6 +307,7 @@ impl Door {
             // wording lives in `prose` and this names the one method that
             // puts it on the shell.
             Self::StillGeneratingRow => "self.say_still_generating()",
+            Self::OpeningLine => "render::opening(",
         }
     }
 
@@ -325,6 +334,7 @@ impl Door {
             }
             Self::NarrativeRow => &["src/terminal/vocabulary.rs"],
             Self::StillGeneratingRow => &["src/terminal/driver.rs"],
+            Self::OpeningLine => &["src/terminal/open.rs"],
         }
     }
 }
@@ -445,6 +455,29 @@ pub enum Unprompted {
     /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     StillGenerating,
+    /// The one line a session opens on, naming the working directory and
+    /// `/help`.
+    ///
+    /// # Composed, although its sentence is a constant
+    ///
+    /// `cli::render::OPENING` is the whole of what is authored, and the line a
+    /// person meets carries a path beside it — so the wording exists as text
+    /// before the moment it is shown and the *line* does not. Every other
+    /// [`Wording::Authored`] member is quoted verbatim, and claiming this one
+    /// among them would make `Authored`'s own "compared by value against the
+    /// constant that declares it" false for one member.
+    ///
+    /// # Its cause is the command that opened the session
+    ///
+    /// [ADR-0002] D1's causes are "The user sent a message, **ran a command**,
+    /// or is in a turn Zaru is currently serving", and running `zaru` is
+    /// running a command — which is what [`Cause::UserMessage`] here has said
+    /// since this registry was written. **Accepted 2026-09-15 under directive
+    /// 20 and open to Jeshua's veto**, on that record's amendments page. The
+    /// subject is this session: where it is, and what may be typed into it.
+    ///
+    /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+    Opening,
 }
 
 impl Unprompted {
@@ -452,7 +485,7 @@ impl Unprompted {
     ///
     /// The length is annotated, so a seventeenth fails to compile here as well
     /// as in every exhaustive match below.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::NotASandbox,
         Self::MissingValidators,
         Self::DeclareOne,
@@ -469,6 +502,7 @@ impl Unprompted {
         Self::Elapsed,
         Self::TurnCounter,
         Self::StillGenerating,
+        Self::Opening,
     ];
 
     /// Where this line's wording comes from — by reference, never retyped.
@@ -532,6 +566,9 @@ impl Unprompted {
                 name: "STILL_GENERATING",
                 text: prose::STILL_GENERATING,
             },
+            Self::Opening => Wording::Composed {
+                by: "crate::cli::render::opening",
+            },
         }
     }
 
@@ -556,7 +593,8 @@ impl Unprompted {
             | Self::NothingCached
             | Self::LookingInNotes
             | Self::NotesUnreachable
-            | Self::NotesFromCache => Cause::UserMessage,
+            | Self::NotesFromCache
+            | Self::Opening => Cause::UserMessage,
             Self::NotASandbox
             | Self::MissingValidators
             | Self::DeclareOne
@@ -597,7 +635,8 @@ impl Unprompted {
             | Self::AttachmentDropped
             | Self::ContextUsage
             | Self::Elapsed
-            | Self::TurnCounter => Subject::TheSession,
+            | Self::TurnCounter
+            | Self::Opening => Subject::TheSession,
         }
     }
 
@@ -619,6 +658,7 @@ impl Unprompted {
             Self::Elapsed => Door::ElapsedSegment,
             Self::TurnCounter => Door::NarrativeRow,
             Self::StillGenerating => Door::StillGeneratingRow,
+            Self::Opening => Door::OpeningLine,
         }
     }
 
@@ -644,6 +684,7 @@ impl Unprompted {
             Self::Elapsed => ("ADR-0028", "D5"),
             Self::TurnCounter => ("ADR-0028", "D3"),
             Self::StillGenerating => ("ADR-0028", "D5"),
+            Self::Opening => ("ADR-0002", "D1"),
         }
     }
 }

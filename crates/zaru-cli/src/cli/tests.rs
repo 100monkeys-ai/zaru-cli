@@ -2756,3 +2756,51 @@ fn the_cold_start_refusal_names_the_model_alias_and_then_the_provider_key() {
          that appended it to everything: {sibling_whole:?}"
     );
 }
+
+/// [ADR-0002] D1's opening line names where the session is and how to ask, on
+/// one row.
+///
+/// # The mutant and the accepting sibling
+///
+/// This check's mutant is a wording one — dropping the directory, which is the
+/// datum row 9 measured as being on no surface at all. **Where the line is
+/// painted has its own mutant and its own home**:
+/// `every_unprompted_door_is_opened_only_where_the_registry_says` fails by
+/// name when `render::opening` is called anywhere but `src/terminal/open.rs`,
+/// which is the registry's proof rather than a second assertion here.
+///
+/// The sibling is the row's own composition, which must not gain a second one:
+/// an opening line that wrapped to two rows would push the frame a person
+/// meets at forty columns, so it is asserted to hold no line break.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+#[test]
+fn the_opening_line_names_the_working_directory_and_how_to_ask() {
+    let here = std::path::Path::new("/tmp/a-project");
+    let line = render::opening(here);
+
+    assert!(
+        line.contains("/tmp/a-project"),
+        "the opening line does not name the working directory, which is the datum that decides \
+         what every tool call may touch and which session `--continue` resumes: {line:?}"
+    );
+    assert!(
+        line.contains("/help"),
+        "the opening line says nothing about what to type, which is the other half of the frame \
+         row 9 measured: {line:?}"
+    );
+    assert!(
+        line.contains(render::OPENING),
+        "the painted line and the constant that authors it have come apart: {line:?}"
+    );
+    assert!(
+        !line.contains('\n'),
+        "the opening line is more than one row, and D8's `Form` for a recommendation -- one line \
+         either way -- is the bar a greeting should not clear less well: {line:?}"
+    );
+    assert!(
+        !line.contains("  "),
+        "the opening line carries two consecutive spaces, which renders as a hole in the \
+         sentence: {line:?}"
+    );
+}

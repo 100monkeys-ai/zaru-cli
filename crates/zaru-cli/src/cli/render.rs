@@ -701,6 +701,63 @@ fn tokens_total(spent: &crate::providers::TokenUsage) -> u64 {
     spent.prompt_tokens() + spent.completion_tokens()
 }
 
+/// The one line a session opens on, naming where it is and how to ask.
+///
+/// # Why there is a line here at all
+///
+/// Row 9 of [the second look-and-feel audit] measured the opening frame: one
+/// status row and twenty-nine blank rows at 100×30, twenty-three at 40×24. No
+/// greeting, nothing saying what to type or how to leave, and **the working
+/// directory — which decides what every tool call may touch and which session
+/// `--continue` resumes — on no surface at all**. The first survey's row 14
+/// refused a path on the *status row* for a reason that still stands, that a
+/// path is unbounded and would compete with two clauses for one row's width;
+/// this is not the status row.
+///
+/// # It is caused output, and that is a reading rather than a claim
+///
+/// [ADR-0002] D1 is "Zaru never emits output the user did not cause", and its
+/// causes are "The user sent a message, **ran a command**, or is in a turn
+/// Zaru is currently serving". Running `zaru` is running a command, and
+/// [`Cause::UserMessage`](crate::compose::emission::Cause::UserMessage)
+/// already reads "including the command that opened the session this line is
+/// painted in". **Accepted 2026-09-15 under directive 20 and open to Jeshua's
+/// veto**, written on that record's amendments page; if the reading is refused
+/// the row closes as measured-and-correct and this line goes.
+///
+/// # One sentence and one path
+///
+/// [`OPENING`] is the whole of what is authored — one constant, one edit to
+/// change — and the directory is the canonical root [ADR-0011] D4 bounds every
+/// tool call by, the same value `meta.toml` records. It is painted in
+/// [`Register::Plain`](zaru_tui::shell::port::Register::Plain): no marker, no
+/// colour and no seventh register, because no record gives an opening line
+/// one and inventing one would be authoring.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+#[must_use]
+pub fn opening(here: &std::path::Path) -> String {
+    // The separator is authored here rather than read off
+    // `zaru_tui::shell::SEPARATOR`: that constant is the *status row's*
+    // structure, which is why a field carrying it paints as two, and a pane
+    // line borrowing it would tie one to the other for the sake of a glyph.
+    format!("{} · {OPENING}", here.display())
+}
+
+/// The authored half of [`opening`], and the only sentence this arc adds to
+/// the door.
+///
+/// A constant so that changing what a session says at its first frame is one
+/// edit in one place, which is the discipline
+/// [`crate::compose::prose`] already keeps for every line a person reads
+/// unasked. It lives here rather than there because the line a person meets
+/// carries a path as well, so its wording is **composed** rather than quoted —
+/// see [`crate::compose::emission::Unprompted::Opening`], which records it
+/// that way.
+pub const OPENING: &str = "type a task, or `/help` for what this harness can do";
+
 /// [ADR-0013] D6's context figure as the row carries it, in both spellings.
 ///
 /// The full form is [`context_usage`]. The narrow form drops the leading word

@@ -895,6 +895,31 @@ fn one_session(
     // append, and doing it once as a session opens leaves a window the width
     // of one session's start rather than one per line typed.
     let here = crate::tools::WorkingDirectory::of_this_process().ok();
+
+    // ADR-0002 D1's one opening line, painted once, before anything a session
+    // goes on to say.
+    //
+    // **Row 9 of the second look-and-feel audit measured the frame this
+    // replaces**: one status row and twenty-nine blank rows at 100x30,
+    // twenty-three at 40x24, with nothing saying what to type and the working
+    // directory -- which bounds every tool call and decides which session
+    // `--continue` resumes -- on no surface at all. `cli::render::opening`
+    // carries the reading that makes it caused output rather than an
+    // unprompted emission, and `compose::emission::Unprompted::Opening` is its
+    // member.
+    //
+    // **Only where the directory is known.** A line naming a working directory
+    // this process could not read is not the line; a session that reaches here
+    // with `None` gets the frame it had. That `None` is also the one that
+    // leaves `Recording` absent one screen down, so the two silences are the
+    // same fact rather than two rules.
+    if let Some(here) = &here {
+        shell.notice(zaru_tui::shell::Line::new(
+            zaru_tui::shell::Register::Plain,
+            crate::cli::render::opening(here.root()),
+        ));
+    }
+
     let history = crate::session::History::under(store.root());
     if let Some(here) = &here {
         match history
