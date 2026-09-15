@@ -88,26 +88,8 @@ use crate::providers::port::Provider;
 use crate::providers::resolution::ModelId;
 use crate::providers::usage::TokenUsage;
 use std::sync::Mutex;
-use std::time::Duration;
 use zaru_core::iteration::PortFailure;
 use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
-
-/// How long one exchange may take before the client gives up.
-///
-/// **Six hundred seconds, ten times the `gemini` client's, and the difference
-/// is measured rather than cautious.** A local model on a machine with no GPU
-/// generates at a fraction of a hosted model's rate, and it also has to be
-/// loaded: the first exchange against `llama3.2:3b` on this machine spent
-/// **35.6 seconds** loading the model into memory before generating a token,
-/// which the server reports as `load_duration` and which recurs whenever the
-/// model has been evicted. A sixty-second ceiling would turn an ordinary cold
-/// start into a reported failure.
-///
-/// A ceiling rather than a policy, and raised on ADR-0012 rather than settled
-/// here. There is deliberately **no retry and no backoff**, for the reason the
-/// other client gives: a retry policy decides whether a request that may have
-/// had an effect is repeated, and no record makes that decision.
-pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// [ADR-0012] D3's `ollama` provider, and `zaru-core`'s model behind it.
 ///
@@ -175,12 +157,14 @@ impl OllamaClient {
         // one and `web.fetch` cannot drift about cookies, TLS and redirects.
         // What this caller differs on is passed as an argument: its own
         // timeout, and `reqwest`'s default redirect policy.
-        let http =
-            crate::web::client::build(EXCHANGE_TIMEOUT, reqwest::redirect::Policy::default())
-                .map_err(|error| OllamaFailure::Unreachable {
-                    endpoint: endpoint.clone(),
-                    detail: error.detail().to_owned(),
-                })?;
+        let http = crate::web::client::build(
+            crate::providers::transport::EXCHANGE_TIMEOUT,
+            reqwest::redirect::Policy::default(),
+        )
+        .map_err(|error| OllamaFailure::Unreachable {
+            endpoint: endpoint.clone(),
+            detail: error.detail().to_owned(),
+        })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
             configured: endpoint,
@@ -289,7 +273,10 @@ impl OllamaClient {
                 // call changed: a closed port and a hostname that does not
                 // resolve printed the same sentence but for the URL, so a
                 // reader whose DNS was wrong was told to start a server.
-                detail: crate::providers::transport::transport_detail(&error),
+                detail: crate::providers::transport::transport_detail_within(
+                    &error,
+                    crate::providers::transport::EXCHANGE_TIMEOUT,
+                ),
             })?;
 
         let status = response.status();
@@ -305,7 +292,10 @@ impl OllamaClient {
                 .await
                 .map_err(|error| OllamaFailure::Unavailable {
                     code: status.as_u16(),
-                    detail: crate::providers::transport::transport_detail(&error),
+                    detail: crate::providers::transport::transport_detail_within(
+                        &error,
+                        crate::providers::transport::EXCHANGE_TIMEOUT,
+                    ),
                 })?;
             return Err(OllamaFailure::from_status(
                 status.as_u16(),
@@ -334,7 +324,10 @@ impl OllamaClient {
                 .await
                 .map_err(|error| OllamaFailure::Unreachable {
                     endpoint: self.configured.clone(),
-                    detail: crate::providers::transport::transport_detail(&error),
+                    detail: crate::providers::transport::transport_detail_within(
+                        &error,
+                        crate::providers::transport::EXCHANGE_TIMEOUT,
+                    ),
                 })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();

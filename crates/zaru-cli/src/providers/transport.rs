@@ -92,9 +92,86 @@ pub fn transport_detail(error: &dyn std::error::Error) -> String {
     said
 }
 
+/// The same sentence, and the bound it was refused at when it timed out.
+///
+/// **A timed-out exchange said nothing about the ceiling it hit.** Measured
+/// 2026-09-15 from the release binary: a reasoning turn against
+/// `gemini-3.6-flash` painted nothing for sixty seconds and then printed *"the
+/// provider could not be reached: error sending request for url (...):
+/// operation timed out"*, with the remedy beside it saying only that waiting
+/// would not help. Nothing on either line told the reader a bound existed, so
+/// a turn lost to a ceiling and a turn lost to a dead socket read identically
+/// -- and the first has a cause the second does not.
+///
+/// So when, and only when, `reqwest` reports the failure as a timeout, the
+/// figure joins the sentence it already prints: *"... operation timed out
+/// after 600s"*. **The figure is composed from the constant and never typed**,
+/// so a ceiling that changes changes the sentence, and a refusal that is not a
+/// timeout is untouched -- a refused connection still says exactly what it
+/// said.
+///
+/// **The ceiling arrives as an argument rather than being read here**, which
+/// is what lets a check drive a real timeout against a listener that never
+/// answers in eighty milliseconds instead of ten minutes.
+///
+/// [`transport_detail`] keeps its `&dyn Error` signature and is unchanged: the
+/// chain-walk checks run over synthetic chains that never came from a socket,
+/// and `reqwest::Error` cannot be constructed to make one.
+#[must_use]
+pub fn transport_detail_within(error: &reqwest::Error, ceiling: core::time::Duration) -> String {
+    let said = transport_detail(error);
+    if error.is_timeout() {
+        format!("{said} after {ceiling:?}")
+    } else {
+        said
+    }
+}
+
 /// How many `source` links a transport failure's sentence may carry.
 ///
 /// Four is one more than the deepest chain measured (`Connect` → `tcp connect
 /// error` → `Connection refused`), so the measured cases are whole and an
 /// unmeasured one cannot run away.
 pub const CHAIN_DEPTH: usize = 4;
+
+/// How long one exchange may take before a client gives up, for every kind.
+///
+/// **Ten minutes, and one figure rather than three.** Until 2026-09-15 each
+/// client declared its own: `ollama` and `openai-compatible` at 600 seconds
+/// and `gemini` at 60, so which bound a turn ran under depended on which kind
+/// served the alias, and a fourth kind would have picked a fourth number. It
+/// is declared here, at the seam the three already share for what a transport
+/// failure says, so a client chooses nothing.
+///
+/// **It bounds the whole streamed exchange, first byte to last.** That is
+/// `reqwest`'s own reading of the value `crate::web::client::build` passes
+/// to `ClientBuilder::timeout`, whose documentation in 0.12.28 is "a total
+/// request timeout … applied from when the request starts connecting until
+/// the response body has finished. Also considered a total deadline" — and
+/// not `read_timeout`, which resets after each successful read. So the budget
+/// is spent by generation rather than by latency, and **an answer that
+/// generates for longer than ten minutes is refused**.
+///
+/// **The figure is measured rather than preferred, on both ends of the
+/// range.** A cold load of `llama3.2:3b` through `llama-server` on the
+/// development machine took over four minutes before a token on 2026-09-14,
+/// so a 60-second ceiling reported a working server as unreachable. At the
+/// other end, two timestamped probes of `streamGenerateContent` against
+/// `gemini-3.6-flash` on 2026-09-15 found the first SSE byte at **46.0 s** and
+/// at **92.7 s**, the second confirmed by Google's own `server-timing:
+/// gfet4t7; dur=92545` — so 60 seconds killed a reasoning turn that was well
+/// inside the model's ordinary range, which is the defect this figure closes.
+/// A hosted gateway answering in seconds never approaches it, so the ceiling
+/// costs that reader nothing.
+///
+/// There is deliberately **no retry and no backoff**. A retry policy decides
+/// whether a request that may have had an effect is repeated, and no record
+/// makes that decision; a client that retried on its own would be answering it
+/// silently.
+///
+/// **It is a constant until a record says otherwise.** Whether
+/// `provider.<kind>` should carry a ceiling key is [ADR-0012]'s author's and
+/// is not settled here.
+///
+/// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
+pub const EXCHANGE_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(600);

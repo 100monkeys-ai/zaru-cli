@@ -298,6 +298,11 @@ async fn the_gemini_client_says_which_transport_failure_a_reader_has() {
 /// this check is that reading made mechanical: a fourth arm added to any client
 /// with `to_string()` reddens here even though nothing can drive it.
 ///
+/// **The needle became `transport_detail_within(` on 2026-09-15**, when the
+/// arms began passing the exchange ceiling so a timed-out refusal could name
+/// it. The property is unchanged and so is the count; what the arms call is
+/// the wrapper rather than the walk.
+///
 /// The count is asserted in both directions on purpose. Zero occurrences of the
 /// forbidden spelling is the property; three occurrences of the required one is
 /// the control that says the file was found and the needle is findable at all,
@@ -314,7 +319,7 @@ fn every_client_composes_its_transport_failures_the_same_way() {
     ];
 
     for (kind, source) in CLIENTS {
-        let walked = source.matches("transport_detail(&error)").count();
+        let walked = source.matches("transport_detail_within(").count();
         assert_eq!(
             walked, 3,
             "the {kind} client has {walked} transport arms walking the source chain rather than \
@@ -327,6 +332,61 @@ fn every_client_composes_its_transport_failures_the_same_way() {
             dropped, 0,
             "the {kind} client composes {dropped} transport failure(s) from `reqwest`'s \
              top-level message alone, which names no cause a reader can act on",
+        );
+    }
+}
+
+/// No client declares an exchange ceiling of its own, read from the source.
+///
+/// **A fourth kind picking a fourth number is what this check exists to stop,
+/// and it cannot be caught by running anything.** A client's timeout is inside
+/// the `reqwest::Client` it built; nothing on `Provider` reports it, and a
+/// check that drove a client to its ceiling would have to wait ten minutes to
+/// learn the figure. So the property is held by reading the source, the same
+/// instrument and for the same reason as the walk check above.
+///
+/// **Until 2026-09-15 the three figures were 60, 600 and 600** — which bound a
+/// turn ran under depended on which kind served the alias, and the sixty
+/// killed reasoning turns that were inside the model's ordinary range. The
+/// constant is now `providers::transport::EXCHANGE_TIMEOUT` and a client
+/// chooses nothing.
+///
+/// The count is asserted in both directions, as the walk check's is: zero
+/// declarations is the property, and four readings of the shared constant per
+/// client is the control that says the files were found and the needle is
+/// findable, so a path typo cannot make this pass by reading nothing. **Four
+/// is the builder plus the three transport arms** -- the client passes the
+/// ceiling to `web::client::build` and then to `transport_detail_within` at
+/// each of the three points it maps a `reqwest::Error`, so the figure a
+/// refusal names and the figure the request ran under are the same value by
+/// construction rather than by two constants agreeing.
+#[test]
+fn no_client_declares_an_exchange_ceiling_of_its_own() {
+    const CLIENTS: [(&str, &str); 3] = [
+        ("gemini", include_str!("../src/providers/gemini.rs")),
+        ("ollama", include_str!("../src/providers/ollama.rs")),
+        (
+            "openai_compatible",
+            include_str!("../src/providers/openai_compatible.rs"),
+        ),
+    ];
+
+    for (kind, source) in CLIENTS {
+        let declared = source.matches("const EXCHANGE_TIMEOUT").count();
+        assert_eq!(
+            declared, 0,
+            "the {kind} client declares {declared} exchange ceiling(s) of its own. One figure per \
+             kind is what made a gemini turn die at sixty seconds while the same work against \
+             ollama had ten minutes, and a fourth kind would pick a fourth number",
+        );
+        let read = source
+            .matches("crate::providers::transport::EXCHANGE_TIMEOUT")
+            .count();
+        assert_eq!(
+            read, 4,
+            "the {kind} client reads the shared ceiling {read} time(s) rather than 4 -- the \
+             builder and the three transport arms. Either it stopped reading it somewhere, or \
+             this needle no longer names anything",
         );
     }
 }
