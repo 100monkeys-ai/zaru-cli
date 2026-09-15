@@ -401,15 +401,20 @@ fn one_emission_reaches_the_transcript_and_the_pane() {
 /// the last being the default the prompt renders as `N`.
 #[test]
 fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
-    use crate::tools::port::Confirm as _;
+    use crate::tools::port::{Answer, Confirm as _};
 
     for (key, expected) in [
-        (Key::Char('y'), true),
-        (Key::Char('Y'), true),
-        (Key::Char('n'), false),
-        (Key::Char('N'), false),
-        (Key::Esc, false),
-        (Key::Enter, false),
+        (Key::Char('y'), Answer::Once),
+        (Key::Char('Y'), Answer::Once),
+        // D3's third answer, since 2026-09-14: allow this exact line for the
+        // rest of the session. It is a *third* value rather than a second
+        // yes, so a check that read a `bool` could not tell it from `y`.
+        (Key::Char('a'), Answer::ForThisSession),
+        (Key::Char('A'), Answer::ForThisSession),
+        (Key::Char('n'), Answer::No),
+        (Key::Char('N'), Answer::No),
+        (Key::Esc, Answer::No),
+        (Key::Enter, Answer::No),
     ] {
         let mut shell = shell();
         let restores: Restores = Arc::new(AtomicUsize::new(0));
@@ -430,7 +435,7 @@ fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
             .expect("the pane answered");
         assert_eq!(
             answered, expected,
-            "{key:?} was read as {answered} rather than {expected}"
+            "{key:?} was read as {answered:?} rather than {expected:?}"
         );
     }
 }
@@ -1723,7 +1728,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
     );
     assert_eq!(
         shell.answer(),
-        Some(false),
+        Some(zaru_tui::shell::Answered::No),
         "Enter through the pump did not decline"
     );
 }
@@ -1744,11 +1749,29 @@ fn a_confirmation_renders_its_default_through_the_pump() {
 /// everything accepts would pass the first assertion alone.
 #[test]
 fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
+    use crate::tools::port::Answer;
     use crate::tools::prompt::answer;
 
-    assert!(answer(Some("y")), "the plain prompt does not accept `y`");
-    assert!(!answer(Some("")), "the plain prompt accepts an empty line");
-    assert!(!answer(None), "the plain prompt accepts end of input");
+    assert_eq!(
+        answer(Some("y")),
+        Answer::Once,
+        "the plain prompt does not accept `y`"
+    );
+    assert_eq!(
+        answer(Some("a")),
+        Answer::ForThisSession,
+        "the plain prompt does not accept `a`, so the two surfaces offer different answers"
+    );
+    assert_eq!(
+        answer(Some("")),
+        Answer::No,
+        "the plain prompt accepts an empty line"
+    );
+    assert_eq!(
+        answer(None),
+        Answer::No,
+        "the plain prompt accepts end of input"
+    );
 
     let mut accepting = shell();
     accepting.ask(question_for_the_shell(&Question {
@@ -1765,7 +1788,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     );
     assert_eq!(
         accepting.answer(),
-        Some(true),
+        Some(zaru_tui::shell::Answered::Once),
         "the pane does not accept `y`"
     );
 
@@ -1784,7 +1807,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
     );
     assert_eq!(
         declining.answer(),
-        Some(false),
+        Some(zaru_tui::shell::Answered::No),
         "the pane accepts the default, where the plain prompt declines an empty line"
     );
 }
@@ -2383,7 +2406,11 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
             })
             .expect("the pane answered")
     };
-    assert!(painted, "`y` was read as a decline");
+    assert_eq!(
+        painted,
+        crate::tools::port::Answer::Once,
+        "`y` was read as a decline"
+    );
 
     assert!(
         beats.load(Ordering::SeqCst) >= 3,
@@ -4203,7 +4230,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
 
     assert_eq!(
         raced,
-        crate::terminal::driver::Raced::Ran(Ok(true)),
+        crate::terminal::driver::Raced::Ran(Ok(crate::tools::port::Answer::Once)),
         "the question raised inside the race was not answered `y` by the key the terminal sent"
     );
     // The invariant `Source::contended`'s documentation argues for. It was
@@ -5141,8 +5168,9 @@ fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read()
             })
             .expect("the terminal answered")
     };
-    assert!(
+    assert_eq!(
         answered,
+        crate::tools::port::Answer::Once,
         "the `y` after the paste was not read, so the paste consumed the answer"
     );
     assert_eq!(

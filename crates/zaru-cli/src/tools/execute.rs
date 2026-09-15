@@ -74,6 +74,7 @@ use crate::tools::decision::{
     Decision, Invocation, Permission, RefusedBecause, Subject, TranscriptEntry,
 };
 use crate::tools::files;
+use crate::tools::grants::SessionGrants;
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::output::{Captured, OutputBudget, Overflow, Presented};
@@ -187,6 +188,14 @@ pub struct Executor<'a, C, F> {
     /// D3's allowlist. The product implementation is
     /// [`Allowed`](crate::tools::Allowed), reading ADR-0014 D1's layer 2.
     pub allowlist: &'a (dyn Allowlist + Sync),
+    /// D3's third answer, held for the life of the session.
+    ///
+    /// What the user allowed at a prompt, for this exact line, for the rest of
+    /// this session. **Never written to any configuration layer** — see
+    /// [`SessionGrants`](crate::tools::grants::SessionGrants). It is a shared
+    /// reference because the grant set outlives the executor: an `Executor` is
+    /// built per turn and a session has many.
+    pub session_grants: &'a SessionGrants,
     /// D6's four categories. The product implementation is
     /// [`Shapes`](crate::tools::Shapes), which answers for the two of them
     /// whose shape D6's own words determine and matches nothing for the two
@@ -491,10 +500,18 @@ where
         // a question cannot describe one call and a decision another — and it
         // arrives already redacted, because whether a value is a secret is
         // not a thing a renderer can know. See `crate::tools::preview`.
-        let decision =
-            Decision::assess(self.mode, &invocation, self.allowlist, self.destructive).showing(
-                crate::tools::preview::detail_for(&invocation, self.preview_budget, self.redactor),
-            );
+        let decision = Decision::assess(
+            self.mode,
+            &invocation,
+            self.allowlist,
+            self.destructive,
+            self.session_grants,
+        )
+        .showing(crate::tools::preview::detail_for(
+            &invocation,
+            self.preview_budget,
+            self.redactor,
+        ));
         let entry = decision.entry().clone();
 
         // ADR-0004 D2: at `contained` and above the membrane decides, and
@@ -509,14 +526,27 @@ where
             .question()
             .map_or_else(|| entry.render(), |question| question.statement);
 
-        match decision.permit(self.confirmer.map(|confirmer| confirmer as &dyn Confirm)) {
+        let permission = decision.permit(self.confirmer.map(|confirmer| confirmer as &dyn Confirm));
+
+        // The grant is remembered **before** the act, so a call that fails or
+        // is interrupted mid-act does not lose the answer a person gave about
+        // it. Recorded here rather than inside `Decision::permit`, which is
+        // pure and holds no session.
+        let statement = if permission == Permission::GrantedForTheSession {
+            self.session_grants.allow(&invocation);
+            format!("{statement}{GRANTED_FOR_THE_SESSION}")
+        } else {
+            statement
+        };
+
+        match permission {
             Permission::Refused(because) => self.refuse(
                 request,
                 &entry,
                 statement,
                 RefusedBecause::to_string(&because),
             ),
-            Permission::Granted => {
+            Permission::Granted | Permission::GrantedForTheSession => {
                 // The record is written *before* the act, so a process killed
                 // inside the act leaves a `Started` with nothing closing it —
                 // which is what ADR-0010 D4's `Interrupted` is derived from.
@@ -576,6 +606,25 @@ impl<C, F> Executor<'_, C, F> {
         })
     }
 }
+
+/// What is added to a call's statement when the user allowed it for the
+/// session.
+///
+/// **Drafted under a delegated coordinator ruling of 2026-09-15 00:13:45Z,
+/// open to Jeshua's veto**, and recorded on [ADR-0011's amendments volume 3].
+///
+/// D3's grant is an answer a person gave, and [ADR-0010] D2's transcript is
+/// the record of what happened in a session — so a call that ran because of a
+/// grant and a call that ran because someone answered `y` must not read the
+/// same. Without this, the only difference between the two would be the
+/// **absence** of a later prompt, which is a thing a reader cannot see. It is
+/// appended to the statement rather than carried as a field, because
+/// `ToolDecision` is a projection of what the user was told and the user was
+/// told this.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// [ADR-0011's amendments volume 3]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface-updates-3
+pub const GRANTED_FOR_THE_SESSION: &str = " — allowed for the rest of this session";
 
 /// What the model is shown of a capture.
 ///

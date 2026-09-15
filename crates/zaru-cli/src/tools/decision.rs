@@ -45,9 +45,10 @@
 //! being there to answer, which is not the harness deciding either.
 
 use crate::process::line::CommandLine;
+use crate::tools::grants::SessionGrants;
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
-use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Question};
+use crate::tools::port::{Allowlist, Answer, Confirm, DestructiveMatch, Question};
 use crate::tools::tree::{Placement, Target};
 use crate::web::url::RequestedUrl;
 use core::fmt;
@@ -327,6 +328,17 @@ pub struct Assessment {
     pub allowlisted: bool,
     /// Whether it matches one of ADR-0011 D6's four categories.
     pub destructive: bool,
+    /// Whether the user has already allowed this exact line for this session.
+    ///
+    /// D3's third answer, since 2026-09-14. Distinct from
+    /// [`Assessment::allowlisted`] in what it is and in what it does:
+    /// `allowlisted` is ADR-0014 layer 2's durable list and decides only the
+    /// `allow` mode, where this is an answer the user gave at the prompt, is
+    /// never written anywhere, and removes the prompt at **every** mode —
+    /// because a person who has just been asked about this exact line and
+    /// said "for the session" has answered the question the mode would ask
+    /// again.
+    pub session_granted: bool,
 }
 
 impl Assessment {
@@ -336,10 +348,12 @@ impl Assessment {
         invocation: &Invocation<'_>,
         allowlist: &dyn Allowlist,
         destructive: &dyn DestructiveMatch,
+        granted: &SessionGrants,
     ) -> Self {
         Self {
             allowlisted: allowlist.approves(invocation),
             destructive: destructive.is_destructive(invocation),
+            session_granted: granted.approves(invocation),
         }
     }
 }
@@ -494,8 +508,23 @@ impl std::error::Error for RefusedBecause {}
 pub enum Permission {
     /// It may.
     Granted,
+    /// It may, and the user said so for every later call on this exact line.
+    ///
+    /// A separate variant rather than a flag on [`Permission::Granted`],
+    /// because the caller does two different things with them: this one is
+    /// also an instruction to remember the line, and a record of a decision a
+    /// person made that the transcript owes a line to.
+    GrantedForTheSession,
     /// It may not, and this is why.
     Refused(RefusedBecause),
+}
+
+impl Permission {
+    /// Whether the call may act.
+    #[must_use]
+    pub const fn permits(self) -> bool {
+        matches!(self, Self::Granted | Self::GrantedForTheSession)
+    }
 }
 
 /// What ADR-0011's permission model says about one call.
@@ -530,7 +559,7 @@ impl Decision {
         // in `ask` and `allow` too.
         let would_prompt_in_ask = out_of_tree || invocation.tool().effect().prompts_in_ask();
 
-        let requirement = match mode {
+        let mut requirement = match mode {
             // D3: "No prompts."
             Mode::Yolo => Requirement::Proceed,
             // D3: "Prompts before any write or command", plus D4.
@@ -551,6 +580,17 @@ impl Decision {
                 }
             }
         };
+
+        // D3's third answer, since 2026-09-14. **One line, applied after the
+        // mode's own rule and never inside it**, because that is exactly what
+        // it is: the mode decides whether this call would be asked about, and
+        // a session grant is the user having already answered that question
+        // for this exact line. Folding it into the three arms would make it
+        // three rules that could come to disagree, and would hide that it
+        // holds at `ask`, `allow` and `yolo` alike.
+        if assessment.session_granted {
+            requirement = Requirement::Proceed;
+        }
 
         Self {
             requirement,
@@ -585,8 +625,9 @@ impl Decision {
         invocation: &Invocation<'_>,
         allowlist: &dyn Allowlist,
         destructive: &dyn DestructiveMatch,
+        granted: &SessionGrants,
     ) -> Self {
-        let assessment = Assessment::gather(invocation, allowlist, destructive);
+        let assessment = Assessment::gather(invocation, allowlist, destructive, granted);
         Self::reach(mode, invocation, assessment)
     }
 
@@ -640,8 +681,9 @@ impl Decision {
         };
         match confirmer.map(|confirmer| confirmer.confirm(&question)) {
             None | Some(Err(_)) => Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
-            Some(Ok(true)) => Permission::Granted,
-            Some(Ok(false)) => Permission::Refused(RefusedBecause::TheUserDeclined),
+            Some(Ok(Answer::Once)) => Permission::Granted,
+            Some(Ok(Answer::ForThisSession)) => Permission::GrantedForTheSession,
+            Some(Ok(Answer::No)) => Permission::Refused(RefusedBecause::TheUserDeclined),
         }
     }
 }

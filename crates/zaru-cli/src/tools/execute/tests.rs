@@ -28,7 +28,7 @@ use crate::tools::fixtures::{ScratchTree, nonce};
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::output::{Captured, OutputBudget};
-use crate::tools::port::{Confirm, ConfirmFailure, Fetch, Question, Subprocess};
+use crate::tools::port::{Answer, Confirm, ConfirmFailure, Fetch, Question, Subprocess};
 use crate::tools::seal::{NoMembrane, Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
 use zaru_core::iteration::PortFailure;
@@ -86,12 +86,12 @@ impl Fetch for Unbuilt {
 
 /// A confirmer that answers as it was built to, and records what it was told.
 struct Answering {
-    answer: bool,
+    answer: Answer,
     asked: std::sync::Mutex<Vec<String>>,
 }
 
 impl Answering {
-    const fn saying(answer: bool) -> Self {
+    const fn saying(answer: Answer) -> Self {
         Self {
             answer,
             asked: std::sync::Mutex::new(Vec::new()),
@@ -100,7 +100,7 @@ impl Answering {
 }
 
 impl Confirm for Answering {
-    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         self.asked
             .lock()
             .expect("asked poisoned")
@@ -150,12 +150,13 @@ impl Drop for Scratch {
 /// Build an executor over a scratch tree and a scratch session.
 macro_rules! executor {
     ($working:expr, $mode:expr, $allow:expr, $destructive:expr, $confirmer:expr,
-     $verdicts:expr, $overflow:expr, $transcript:expr, $unbuilt:expr) => {
+     $verdicts:expr, $overflow:expr, $transcript:expr, $unbuilt:expr, $grants:expr) => {
         Executor {
             working_directory: $working,
             mode: $mode,
             allowlist: $allow,
             destructive: $destructive,
+            session_grants: $grants,
             confirmer: $confirmer,
             verdicts: $verdicts,
             budget: OutputBudget::new(4096).expect("a usable budget"),
@@ -240,6 +241,7 @@ async fn a_read_inside_the_working_directory_returns_the_files_bytes() {
     let destructive = StagedDestructive(false);
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let mut executor = executor!(
         &working,
         Mode::Ask,
@@ -249,7 +251,8 @@ async fn a_read_inside_the_working_directory_returns_the_files_bytes() {
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
 
     let outcome = executor
@@ -303,6 +306,7 @@ async fn nothing_outside_the_working_directory_is_ever_read() {
         let membrane = NoMembrane;
         // No confirmer: an out-of-tree read prompts in `ask` (D4), and a
         // prompt nobody can answer is refused rather than performed.
+        let no_grants = crate::tools::grants::SessionGrants::none();
         let mut executor = executor!(
             &working,
             Mode::Ask,
@@ -312,7 +316,8 @@ async fn nothing_outside_the_working_directory_is_ever_read() {
             &membrane,
             &mut overflow,
             &mut transcript,
-            &unbuilt
+            &unbuilt,
+            &no_grants
         );
 
         let outcome = executor
@@ -334,6 +339,7 @@ async fn nothing_outside_the_working_directory_is_ever_read() {
 
         // The accepting arm. Without it an executor that refuses everything
         // satisfies every assertion above.
+        let no_grants = crate::tools::grants::SessionGrants::none();
         let mut executor = executor!(
             &working,
             Mode::Ask,
@@ -343,7 +349,8 @@ async fn nothing_outside_the_working_directory_is_ever_read() {
             &membrane,
             &mut overflow,
             &mut transcript,
-            &unbuilt
+            &unbuilt,
+            &no_grants
         );
         let inside = executor
             .execute(&request("fs.read", &["inside/file"]))
@@ -384,6 +391,7 @@ async fn a_request_named_for_one_tool_never_performs_another() {
     let membrane = NoMembrane;
     // `yolo` prompts for nothing, so nothing but the executor's own routing
     // stands between these requests and an act.
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let mut executor = executor!(
         &working,
         Mode::Yolo,
@@ -393,7 +401,8 @@ async fn a_request_named_for_one_tool_never_performs_another() {
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
 
     let target = tree.project().join("inside").join("written");
@@ -485,7 +494,8 @@ async fn a_command_at_ask_with_the_user_declining_does_not_act() {
     let destructive = StagedDestructive(false);
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
-    let confirmer = Answering::saying(false);
+    let confirmer = Answering::saying(Answer::No);
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let mut executor = executor!(
         &working,
         Mode::Ask,
@@ -495,7 +505,8 @@ async fn a_command_at_ask_with_the_user_declining_does_not_act() {
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
 
     // `Unbuilt::run` answers with a failure naming itself, so reaching it at
@@ -542,8 +553,9 @@ async fn a_refused_call_is_recorded_and_is_never_reported_as_interrupted() {
     let destructive = StagedDestructive(false);
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
-    let confirmer = Answering::saying(false);
+    let confirmer = Answering::saying(Answer::No);
     {
+        let no_grants = crate::tools::grants::SessionGrants::none();
         let mut executor = executor!(
             &working,
             Mode::Ask,
@@ -553,7 +565,8 @@ async fn a_refused_call_is_recorded_and_is_never_reported_as_interrupted() {
             &membrane,
             &mut overflow,
             &mut transcript,
-            &unbuilt
+            &unbuilt,
+            &no_grants
         );
         executor
             .execute(&request("cmd.run", &["echo hello"]))
@@ -599,8 +612,9 @@ async fn the_record_is_written_at_every_mode_including_yolo() {
         let destructive = StagedDestructive(false);
         let unbuilt = Unbuilt;
         let membrane = NoMembrane;
-        let confirmer = Answering::saying(true);
+        let confirmer = Answering::saying(Answer::Once);
         {
+            let no_grants = crate::tools::grants::SessionGrants::none();
             let mut executor = executor!(
                 &working,
                 mode,
@@ -610,7 +624,8 @@ async fn the_record_is_written_at_every_mode_including_yolo() {
                 &membrane,
                 &mut overflow,
                 &mut transcript,
-                &unbuilt
+                &unbuilt,
+                &no_grants
             );
             executor
                 .execute(&request("fs.read", &["inside/file"]))
@@ -659,11 +674,13 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
     let destructive = StagedDestructive(false);
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let mut executor = Executor {
         working_directory: &working,
         mode: Mode::Yolo,
         allowlist: &allow,
         destructive: &destructive,
+        session_grants: &no_grants,
         confirmer: None,
         verdicts: &membrane,
         budget: OutputBudget::new(64).expect("a small budget"),
@@ -726,7 +743,8 @@ async fn a_denied_verdict_refuses_at_every_mode_and_is_an_expected_failure() {
         let destructive = StagedDestructive(false);
         let unbuilt = Unbuilt;
         let membrane = Denying(reason.clone());
-        let confirmer = Answering::saying(true);
+        let confirmer = Answering::saying(Answer::Once);
+        let no_grants = crate::tools::grants::SessionGrants::none();
         let mut executor = executor!(
             &working,
             mode,
@@ -736,7 +754,8 @@ async fn a_denied_verdict_refuses_at_every_mode_and_is_an_expected_failure() {
             &membrane,
             &mut overflow,
             &mut transcript,
-            &unbuilt
+            &unbuilt,
+            &no_grants
         );
 
         let outcome = executor
@@ -815,6 +834,7 @@ async fn a_name_that_is_not_a_built_in_is_reported_to_the_model_and_is_not_an_er
     let destructive = StagedDestructive(false);
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let mut executor = executor!(
         &working,
         Mode::Yolo,
@@ -824,7 +844,8 @@ async fn a_name_that_is_not_a_built_in_is_reported_to_the_model_and_is_not_an_er
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
 
     let outcome = executor
@@ -968,6 +989,7 @@ async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() 
         // `ask` and `allow` both prompt for an out-of-tree call whatever the
         // effect is (D4), and a prompt nobody can answer is refused.
         for mode in [Mode::Ask, Mode::Allow] {
+            let no_grants = crate::tools::grants::SessionGrants::none();
             let mut executor = executor!(
                 &working,
                 mode,
@@ -977,7 +999,8 @@ async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() 
                 &membrane,
                 &mut overflow,
                 &mut transcript,
-                &unbuilt
+                &unbuilt,
+                &no_grants
             );
             let outcome = executor
                 .execute(&request("fs.write", &[target, "OVERWRITTEN-BY-THE-MODEL"]))
@@ -1002,6 +1025,7 @@ async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() 
         // `yolo` prompts for nothing, so the write lands -- and the record
         // still says it left the tree. That is D4's second sentence, and it
         // is why this arm is here rather than omitted as an escape.
+        let no_grants = crate::tools::grants::SessionGrants::none();
         let mut executor = executor!(
             &working,
             Mode::Yolo,
@@ -1011,7 +1035,8 @@ async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() 
             &membrane,
             &mut overflow,
             &mut transcript,
-            &unbuilt
+            &unbuilt,
+            &no_grants
         );
         let outcome = executor
             .execute(&request("fs.write", &[target, "OVERWRITTEN-BY-THE-MODEL"]))
@@ -1048,7 +1073,8 @@ async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() 
         // says yes rather than at `yolo`, because D3 prompts before ANY write
         // and the discriminating question is whether the answer is honoured --
         // not whether prompting can be switched off.
-        let saying_yes = Answering::saying(true);
+        let saying_yes = Answering::saying(Answer::Once);
+        let no_grants = crate::tools::grants::SessionGrants::none();
         let mut executor = executor!(
             &working,
             Mode::Ask,
@@ -1058,7 +1084,8 @@ async fn a_write_outside_the_working_directory_is_refused_and_always_recorded() 
             &membrane,
             &mut overflow,
             &mut transcript,
-            &unbuilt
+            &unbuilt,
+            &no_grants
         );
         let inside = executor
             .execute(&request("fs.write", &["inside/written", "ordinary"]))
@@ -1112,6 +1139,7 @@ async fn the_two_handles_to_one_tool_surface_return_one_descriptor_list() {
     let destructive = StagedDestructive(false);
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let executor = executor!(
         &working,
         Mode::Ask,
@@ -1121,7 +1149,8 @@ async fn the_two_handles_to_one_tool_surface_return_one_descriptor_list() {
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
 
     // The list as the executor itself answers it, taken before the value
@@ -1180,6 +1209,7 @@ async fn a_candidate_applied_whole_reports_zero_and_carries_what_the_tools_produ
     let destructive = StagedDestructive(false);
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let executor = executor!(
         &working,
         Mode::Yolo,
@@ -1189,7 +1219,8 @@ async fn a_candidate_applied_whole_reports_zero_and_carries_what_the_tools_produ
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
     let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
@@ -1261,6 +1292,7 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
     let confirmer = Declining::once();
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let executor = executor!(
         &working,
         Mode::Ask,
@@ -1270,7 +1302,8 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
     let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
@@ -1309,6 +1342,7 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
     let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
     let mut overflow = SessionOverflow::in_session(scratch.session.directory());
     let accepting = Declining::nothing();
+    let no_grants = crate::tools::grants::SessionGrants::none();
     let executor = executor!(
         &working,
         Mode::Ask,
@@ -1318,7 +1352,8 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &membrane,
         &mut overflow,
         &mut transcript,
-        &unbuilt
+        &unbuilt,
+        &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
     let applying = crate::compose::Applying::through(crate::compose::Shared::over(&cell));
@@ -1367,10 +1402,14 @@ impl Declining {
 }
 
 impl Confirm for Declining {
-    fn confirm(&self, _question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, _question: &Question) -> Result<Answer, ConfirmFailure> {
         let mut asked = self.asked.lock().expect("not poisoned");
         *asked += 1;
-        Ok(*asked > self.decline)
+        Ok(if *asked > self.decline {
+            Answer::Once
+        } else {
+            Answer::No
+        })
     }
 }
 

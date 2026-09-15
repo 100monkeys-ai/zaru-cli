@@ -25,6 +25,7 @@ use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::terminal::driver::Pending;
+use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
     Captured, ConfirmFailure, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question,
     SessionOverflow, Subprocess, ToolName, Verdict, Verdicts, WorkingDirectory,
@@ -207,9 +208,9 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
 
 struct Declining;
 impl zaru_cli::tools::Confirm for Declining {
-    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         println!("  the user is asked: {:?} -> no", question.statement);
-        Ok(false)
+        Ok(Answer::No)
     }
 }
 
@@ -257,11 +258,13 @@ async fn a_model_reads_a_file_inside_the_boundary_and_the_bytes_reach_it() {
     ));
 
     let outcome = {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode: Mode::Ask,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: None,
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),
@@ -357,11 +360,13 @@ async fn a_read_outside_the_boundary_is_refused_and_its_bytes_never_reach_the_mo
     ));
 
     let outcome = {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode: Mode::Ask,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: Some(&declining),
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),
@@ -482,8 +487,14 @@ async fn a_resumed_session_tells_the_model_once_and_re_executes_nothing() {
             Transcript::append_to(scratch.session.transcript_path()).expect("opens");
         let target = working.classify("src/fresh.rs");
         let invocation = zaru_cli::tools::Invocation::writing(&target, "fn main() {}\n");
-        let decision =
-            zaru_cli::tools::Decision::assess(Mode::Yolo, &invocation, &Nothing, &Nothing);
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
+        let decision = zaru_cli::tools::Decision::assess(
+            Mode::Yolo,
+            &invocation,
+            &Nothing,
+            &Nothing,
+            &no_grants,
+        );
         transcript
             .record(&Record::ToolCall(zaru_cli::session::ToolCall::started(
                 decision.entry(),
@@ -551,6 +562,7 @@ async fn a_resumed_session_tells_the_model_once_and_re_executes_nothing() {
     let membrane = NoMembrane;
 
     {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             // `yolo`, so the last turn's write is not refused for want of a
@@ -559,6 +571,7 @@ async fn a_resumed_session_tells_the_model_once_and_re_executes_nothing() {
             mode: Mode::Yolo,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: None,
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),
@@ -735,7 +748,9 @@ fn a_session_interrupted_inside_an_iteration_owes_the_model_nothing() {
     let target = working.classify("src/main.rs");
     let invocation =
         zaru_cli::tools::Invocation::on_path(ToolName::FsRead, &target).expect("a path tool");
-    let decision = zaru_cli::tools::Decision::assess(Mode::Yolo, &invocation, &Nothing, &Nothing);
+    let no_grants = zaru_cli::tools::grants::SessionGrants::none();
+    let decision =
+        zaru_cli::tools::Decision::assess(Mode::Yolo, &invocation, &Nothing, &Nothing, &no_grants);
     transcript
         .record(&Record::ToolCall(zaru_cli::session::ToolCall::started(
             decision.entry(),
@@ -804,11 +819,13 @@ async fn a_denying_membrane_refuses_at_yolo_and_presents_as_an_expected_failure(
     ));
 
     {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode: Mode::Yolo,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: None,
             verdicts: &denying,
             budget: OutputBudget::new(4096).expect("a usable budget"),

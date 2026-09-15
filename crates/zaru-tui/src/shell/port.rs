@@ -688,6 +688,30 @@ impl Confirmation {
     }
 }
 
+/// How a [`Confirmation`] was answered.
+///
+/// Mirrors `zaru-cli`'s own three-valued answer without naming that crate's
+/// type, for the boundary reason in the module documentation — the same
+/// mirroring [`Confirmation`] itself is.
+///
+/// **Three variants since 2026-09-14, and it was a `bool` before.** The
+/// look-and-feel survey's row 10 recorded "there is no third option" of
+/// [ADR-0011] D3's prompt; a `bool` has nowhere to put one.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answered {
+    /// The user declined: `n`, `Esc` or `Enter`.
+    No,
+    /// The user permitted this call and said nothing about any other: `y`.
+    Once,
+    /// The user permitted this exact line for the rest of the session: `a`.
+    ///
+    /// What "this exact line" means and what is done with it are `zaru-cli`'s;
+    /// this crate carries the keystroke's meaning and nothing else.
+    ForThisSession,
+}
+
 /// What the user is asked for when the answer is a secret.
 ///
 /// The second kind of question this shell stands, beside [`Confirmation`], and

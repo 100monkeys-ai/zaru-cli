@@ -41,6 +41,7 @@ use std::sync::Mutex;
 use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::HeldSecrets;
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
+use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
     Captured, ConfirmFailure, Executor, Mode, NoMembrane, OutputBudget, Question, SessionOverflow,
     Subprocess, WorkingDirectory,
@@ -150,12 +151,12 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
 struct Counting(Mutex<Vec<String>>);
 
 impl zaru_cli::tools::Confirm for Counting {
-    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         self.0
             .lock()
             .expect("the counter is not poisoned")
             .push(question.statement.clone());
-        Ok(true)
+        Ok(Answer::Once)
     }
 }
 
@@ -266,11 +267,13 @@ async fn drive(scratch: &Scratch, mode: Mode, script: Vec<ModelResponse>) -> Run
     let model = Provider::new(script);
 
     {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: Some(&confirmer),
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),

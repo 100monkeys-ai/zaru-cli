@@ -228,23 +228,30 @@ impl crate::tools::port::DestructiveMatch for StagedDestructive {
 /// concludes from this is what [`Decision::permit`](crate::tools::Decision)
 /// does with each of the three answers a confirmer can give.
 pub(crate) struct RecordedConfirmer {
-    answer: bool,
+    answer: crate::tools::port::Answer,
     asked: std::cell::RefCell<Vec<crate::tools::port::Question>>,
 }
 
 impl RecordedConfirmer {
-    /// A user who says yes.
+    /// A user who says yes to this call and nothing about any other.
     pub(crate) fn accepting() -> Self {
-        Self {
-            answer: true,
-            asked: std::cell::RefCell::new(Vec::new()),
-        }
+        Self::saying(crate::tools::port::Answer::Once)
     }
 
     /// A user who says no.
     pub(crate) fn declining() -> Self {
+        Self::saying(crate::tools::port::Answer::No)
+    }
+
+    /// A user who allows this exact line for the rest of the session.
+    pub(crate) fn allowing_for_the_session() -> Self {
+        Self::saying(crate::tools::port::Answer::ForThisSession)
+    }
+
+    /// A user who answers whatever the check says.
+    pub(crate) fn saying(answer: crate::tools::port::Answer) -> Self {
         Self {
-            answer: false,
+            answer,
             asked: std::cell::RefCell::new(Vec::new()),
         }
     }
@@ -259,7 +266,7 @@ impl crate::tools::port::Confirm for RecordedConfirmer {
     fn confirm(
         &self,
         question: &crate::tools::port::Question,
-    ) -> Result<bool, crate::tools::port::ConfirmFailure> {
+    ) -> Result<crate::tools::port::Answer, crate::tools::port::ConfirmFailure> {
         self.asked.borrow_mut().push(question.clone());
         Ok(self.answer)
     }
@@ -356,7 +363,7 @@ impl crate::tools::port::Confirm for FailingConfirmer {
     fn confirm(
         &self,
         _question: &crate::tools::port::Question,
-    ) -> Result<bool, crate::tools::port::ConfirmFailure> {
+    ) -> Result<crate::tools::port::Answer, crate::tools::port::ConfirmFailure> {
         self.asked.set(self.asked.get() + 1);
         Err(crate::tools::port::ConfirmFailure::new(
             "the terminal closed between the statement and the answer",

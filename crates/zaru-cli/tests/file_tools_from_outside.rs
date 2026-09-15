@@ -42,6 +42,7 @@ use zaru_cli::credentials::{
 use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
+use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
     Captured, ConfirmFailure, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question,
     SessionOverflow, Subprocess, WorkingDirectory,
@@ -254,9 +255,9 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
 /// A user who says yes, because ADR-0011 D3's `ask` prompts before any write.
 struct Accepting;
 impl zaru_cli::tools::Confirm for Accepting {
-    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         println!("  the user was asked: {}", question.statement);
-        Ok(true)
+        Ok(Answer::Once)
     }
 }
 
@@ -319,11 +320,13 @@ async fn drive(
     let model = Provider::new(script);
 
     {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode: Mode::Ask,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: Some(&accepting),
             verdicts: &membrane,
             budget: OutputBudget::new(4096).expect("a usable budget"),

@@ -489,11 +489,13 @@ async fn one_command_turn(
     ]);
 
     let outcome = {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer,
             verdicts,
             budget: OutputBudget::new(budget).expect("a usable budget"),
@@ -1193,11 +1195,13 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
         },
     }]);
 
+    let no_grants = zaru_cli::tools::grants::SessionGrants::none();
     let mut executor = Executor {
         working_directory: &working,
         mode: Mode::Yolo,
         allowlist: &nothing,
         destructive: &nothing,
+        session_grants: &no_grants,
         confirmer: None,
         verdicts: &NoMembrane,
         budget: OutputBudget::new(4096).expect("a usable budget"),
@@ -1342,11 +1346,13 @@ async fn corpus_an_interrupt_with_a_child_in_flight_ends_it_and_leaves_the_call_
                 },
             },
         ]);
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode: Mode::Yolo,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: None,
             verdicts: &verdicts,
             budget: OutputBudget::new(4096).expect("a usable budget"),
@@ -1530,11 +1536,13 @@ async fn an_uninterrupted_round_leaves_a_matched_pair_for_both_calls() {
                 },
             },
         ]);
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode: Mode::Yolo,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: None,
             verdicts: &verdicts,
             budget: OutputBudget::new(4096).expect("a usable budget"),

@@ -49,6 +49,7 @@ use zaru_cli::credentials::{
 use zaru_cli::process::CommandLine;
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
+use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
     Captured, ConfirmFailure, Executor, Fetch, Mode, NoMembrane, OutputBudget, Question,
     SessionOverflow, Subprocess, WorkingDirectory,
@@ -276,8 +277,8 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
 
 struct Accepting;
 impl zaru_cli::tools::Confirm for Accepting {
-    fn confirm(&self, _question: &Question) -> Result<bool, ConfirmFailure> {
-        Ok(true)
+    fn confirm(&self, _question: &Question) -> Result<Answer, ConfirmFailure> {
+        Ok(Answer::Once)
     }
 }
 
@@ -344,11 +345,13 @@ async fn read_a_file_carrying(
     ]);
 
     {
+        let no_grants = zaru_cli::tools::grants::SessionGrants::none();
         let mut executor = Executor {
             working_directory: &working,
             mode: Mode::Ask,
             allowlist: &nothing,
             destructive: &nothing,
+            session_grants: &no_grants,
             confirmer: Some(&accepting),
             verdicts: &membrane,
             budget: OutputBudget::new(budget).expect("a usable budget"),

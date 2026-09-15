@@ -7,7 +7,7 @@ use crate::shell::fixtures::{
     SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, cells, painted,
 };
 use crate::shell::port::{CommandVocabulary, Confirmation, Line, Palette, Register, Row};
-use crate::shell::{Action, COMPOSER_ROWS, Leaving, Segment, Shell, Status};
+use crate::shell::{Action, Answered, COMPOSER_ROWS, Leaving, Segment, Shell, Status};
 use core::time::Duration;
 use ratatui::style::Color;
 use tui_textarea::{Input, Key};
@@ -1207,7 +1207,7 @@ fn a_confirmation_defaults_to_decline() {
     assert_eq!(key(&mut shell, Key::Enter), Action::Idle);
     assert_eq!(
         shell.answer(),
-        Some(false),
+        Some(Answered::No),
         "Enter on a prompt whose default is N did not decline"
     );
     assert!(shell.asking().is_none(), "the question is still standing");
@@ -1224,7 +1224,51 @@ fn an_explicit_yes_accepts() {
         false,
     ));
     assert_eq!(key(&mut shell, Key::Char('y')), Action::Idle);
-    assert_eq!(shell.answer(), Some(true));
+    assert_eq!(shell.answer(), Some(Answered::Once));
+}
+
+/// [ADR-0011] D3's third answer: `a` allows, and it is a **third** value.
+///
+/// It must not read as `y`. What `zaru-cli` does with each is different --
+/// one permits this call and the other is remembered for the session -- so a
+/// shell that collapsed them into one yes would hand the permission model an
+/// answer the person did not give.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+#[test]
+fn an_a_allows_for_the_session_and_is_not_the_same_answer_as_a_yes() {
+    for pressed in [Key::Char('a'), Key::Char('A')] {
+        let mut shell = shell();
+        shell.ask(Confirmation::new(
+            "run `rm -rf build`",
+            STAGED_ANSWERS,
+            false,
+        ));
+        assert_eq!(key(&mut shell, pressed), Action::Idle);
+        assert_eq!(
+            shell.answer(),
+            Some(Answered::ForThisSession),
+            "{pressed:?} did not allow for the session"
+        );
+        assert!(
+            shell.asking().is_none(),
+            "{pressed:?} left the question standing"
+        );
+    }
+
+    // The discriminating arm: `y` is still its own answer.
+    let mut shell = shell();
+    shell.ask(Confirmation::new(
+        "run `rm -rf build`",
+        STAGED_ANSWERS,
+        false,
+    ));
+    key(&mut shell, Key::Char('y'));
+    assert_eq!(
+        shell.answer(),
+        Some(Answered::Once),
+        "`y` was collapsed into the session grant, so a person cannot allow just this call"
+    );
 }
 
 /// `n` and `Esc` decline as `Enter` does.
@@ -1238,7 +1282,11 @@ fn an_explicit_no_and_an_escape_both_decline() {
             false,
         ));
         key(&mut shell, pressed);
-        assert_eq!(shell.answer(), Some(false), "{pressed:?} did not decline");
+        assert_eq!(
+            shell.answer(),
+            Some(Answered::No),
+            "{pressed:?} did not decline"
+        );
     }
 }
 

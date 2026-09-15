@@ -216,8 +216,56 @@ pub trait Confirm {
     /// # Errors
     ///
     /// [`ConfirmFailure`] when the question did not reach the user at all.
-    /// **Never** for an answer of no, which is `Ok(false)`.
-    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure>;
+    /// **Never** for an answer of no, which is `Ok(Answer::No)`.
+    fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure>;
+}
+
+/// What a person answered a [`Question`] with.
+///
+/// **Three variants since 2026-09-14, and it was a `bool` before.** ADR-0011
+/// D3's prompt offered allow-once and decline and nothing else, which the
+/// look-and-feel survey's row 10 recorded as its third gap: "there is no third
+/// option". A `bool` has no room for one.
+///
+/// **Widening the return type declares no trait**, so the harness still has
+/// exactly two confirmers and
+/// `this_harness_has_exactly_two_confirmers_and_the_masked_question_is_not_a_third`
+/// is unedited. That is the same move the 2026-09-05 change from `bool` to
+/// `Result` made: the question a confirmer answers got richer, and the count
+/// of things that can answer it did not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// The user declined. `n`, `Esc`, `Enter`, end of input, or anything that
+    /// is not a yes — see [`prompt::answer`](crate::tools::prompt::answer).
+    No,
+    /// The user permitted **this** call and said nothing about any other.
+    Once,
+    /// The user permitted this exact line for the rest of the session.
+    ///
+    /// # It is never persisted, and that is the whole of the argument
+    ///
+    /// The grant is held in memory for the life of the process and
+    /// `tools.allowlist` at [ADR-0014] D1's layer 2 is untouched at every
+    /// layer. D3's 2026-09-05 amendment argued against letting the prompt
+    /// write the allowlist, and what it refuses is a one-keystroke answer
+    /// becoming a **durable** grant a user did not write down. A grant that
+    /// dies with the process is not one.
+    ///
+    /// It matches the same pair the allowlist matches — the tool and
+    /// [`Invocation::subject_text`](crate::tools::Invocation::subject_text),
+    /// byte for byte, with no glob and no prefix — so "allow this line" means
+    /// the line that was on the screen and nothing near it.
+    ///
+    /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+    ForThisSession,
+}
+
+impl Answer {
+    /// Whether the call may act.
+    #[must_use]
+    pub const fn permits(self) -> bool {
+        matches!(self, Self::Once | Self::ForThisSession)
+    }
 }
 
 /// Executes a command line. `cmd.run`.

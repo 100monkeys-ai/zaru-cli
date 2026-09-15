@@ -56,6 +56,7 @@ use zaru_cli::credentials::{
 use zaru_cli::process::{Environment, ProcessCeiling, Spawn};
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction};
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
+use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
     Captured, Confirm, ConfirmFailure, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget,
     Question, SessionOverflow, WorkingDirectory,
@@ -232,10 +233,14 @@ impl Declining {
 }
 
 impl Confirm for Declining {
-    fn confirm(&self, _question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, _question: &Question) -> Result<Answer, ConfirmFailure> {
         let mut asked = self.asked.lock().expect("poisoned");
         *asked += 1;
-        Ok(*asked > self.decline)
+        Ok(if *asked > self.decline {
+            Answer::Once
+        } else {
+            Answer::No
+        })
     }
 }
 
@@ -334,11 +339,13 @@ fn drive_narrating<P: ContextPolicy + Sync>(
         ProcessCeiling::new(Duration::from_secs(20)).expect("a usable ceiling"),
     );
 
+    let no_grants = zaru_cli::tools::grants::SessionGrants::none();
     let executor = Executor {
         working_directory: &working,
         mode: staged.mode,
         allowlist: &allowlist,
         destructive: &destructive,
+        session_grants: &no_grants,
         confirmer: staged.confirmer,
         verdicts: &membrane,
         budget: OutputBudget::new(4096).expect("a usable budget"),
@@ -960,11 +967,13 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
                 environment,
                 ProcessCeiling::new(Duration::from_secs(20)).expect("a usable ceiling"),
             );
+            let no_grants = zaru_cli::tools::grants::SessionGrants::none();
             let executor = Executor {
                 working_directory: &working,
                 mode: Mode::Yolo,
                 allowlist: &allowlist,
                 destructive: &destructive,
+                session_grants: &no_grants,
                 confirmer: None,
                 verdicts: &membrane,
                 budget: OutputBudget::new(4096).expect("a usable budget"),

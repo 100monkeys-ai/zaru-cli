@@ -773,7 +773,10 @@ impl<'m, 'a, S: Surface + Send, P: Pace + Sync> PaneConfirm<'m, 'a, S, P> {
 }
 
 impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConfirm<'_, '_, S, P> {
-    fn confirm(&self, question: &Question) -> Result<bool, crate::tools::port::ConfirmFailure> {
+    fn confirm(
+        &self,
+        question: &Question,
+    ) -> Result<crate::tools::port::Answer, crate::tools::port::ConfirmFailure> {
         let mut pane = self.pane.try_lock().map_err(|_| {
             crate::tools::port::ConfirmFailure::new(
                 "the pane was already in use when the question was raised".to_owned(),
@@ -788,7 +791,18 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
         let mut now = Duration::ZERO;
         loop {
             if let Some(answer) = pane.shell.answer() {
-                return Ok(answer);
+                // The two enums are one mapping in one place. `zaru-tui`
+                // mirrors this crate's three-valued answer without naming its
+                // type -- the boundary that keeps the shell independent of the
+                // permission model -- so the translation lives here, is
+                // exhaustive, and cannot silently gain a fourth meaning.
+                return Ok(match answer {
+                    zaru_tui::shell::Answered::No => crate::tools::port::Answer::No,
+                    zaru_tui::shell::Answered::Once => crate::tools::port::Answer::Once,
+                    zaru_tui::shell::Answered::ForThisSession => {
+                        crate::tools::port::Answer::ForThisSession
+                    }
+                });
             }
             let input = match self.source.try_next() {
                 Taken::Struck(Struck::Key(input)) => input,
@@ -903,7 +917,9 @@ impl<S: Surface + Send, P: Pace + Sync> crate::credentials::port::Confirm
             detail: Vec::new(),
             prominent: true,
         };
-        crate::tools::port::Confirm::confirm(self, &question).unwrap_or(false)
+        crate::tools::port::Confirm::confirm(self, &question)
+            .map(crate::tools::port::Answer::permits)
+            .unwrap_or(false)
     }
 }
 

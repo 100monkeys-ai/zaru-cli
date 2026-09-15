@@ -110,6 +110,7 @@ pub(crate) fn entry_for(
         crate::tools::Assessment {
             allowlisted: false,
             destructive,
+            session_granted: false,
         },
     )
     .entry()

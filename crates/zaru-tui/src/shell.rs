@@ -67,8 +67,8 @@ pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{
-    CommandVocabulary, Confirmation, Line, Namespace, Palette, Prose, Register, Row, SecretAnswer,
-    SecretRequest, TranscriptSource,
+    Answered, CommandVocabulary, Confirmation, Line, Namespace, Palette, Prose, Register, Row,
+    SecretAnswer, SecretRequest, TranscriptSource,
 };
 
 use crate::composer::{Composer, Entries};
@@ -841,7 +841,7 @@ pub struct Shell {
     /// to decide which keystrokes belong to which, and there is no answer to
     /// that question that is not a rule somebody has to remember.
     standing: Option<Standing>,
-    answered: Option<bool>,
+    answered: Option<Answered>,
     secret_answered: Option<SecretAnswer>,
     /// What was typed at a [`SecretRequest`], from `Enter` until it is taken.
     ///
@@ -1469,7 +1469,7 @@ impl Shell {
     /// why a host asks and then pumps until this is `Some` rather than reading
     /// it speculatively.
     #[must_use]
-    pub const fn answer(&self) -> Option<bool> {
+    pub const fn answer(&self) -> Option<Answered> {
         self.answered
     }
 
@@ -1538,8 +1538,12 @@ impl Shell {
 
         if self.asking().is_some() {
             match input.key {
-                Key::Char('y' | 'Y') => self.resolve(true),
-                Key::Char('n' | 'N') | Key::Esc | Key::Enter => self.resolve(false),
+                Key::Char('y' | 'Y') => self.resolve(Answered::Once),
+                // [ADR-0011] D3's third answer, since 2026-09-14: allow this
+                // exact line for the rest of the session. What that means and
+                // what is remembered are `zaru-cli`'s; this is the keystroke.
+                Key::Char('a' | 'A') => self.resolve(Answered::ForThisSession),
+                Key::Char('n' | 'N') | Key::Esc | Key::Enter => self.resolve(Answered::No),
                 _ => {}
             }
             return Action::Idle;
@@ -1670,7 +1674,7 @@ impl Shell {
         }
     }
 
-    fn resolve(&mut self, answer: bool) {
+    fn resolve(&mut self, answer: Answered) {
         self.standing = None;
         self.answered = Some(answer);
     }

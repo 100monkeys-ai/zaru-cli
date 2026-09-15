@@ -62,7 +62,7 @@
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
-use crate::tools::port::{Confirm, ConfirmFailure, Question};
+use crate::tools::port::{Answer, Confirm, ConfirmFailure, Question};
 use std::io::{BufRead, BufReader, IsTerminal, Read, Stdin, Stdout, Write};
 use std::sync::Mutex;
 
@@ -71,8 +71,28 @@ use std::sync::Mutex;
 /// The capital `N` is the default and it is the default by being the only
 /// thing every input other than a yes produces — see [`answer`]. One
 /// constant, so the line a user reads and the rule that reads them back
-/// cannot disagree about which way an empty answer goes.
-pub const SUFFIX: &str = " [y/N] ";
+/// cannot disagree about which way an empty answer goes. `zaru-tui` holds no
+/// constant for it either: the pane is handed this same string, trimmed.
+///
+/// # It names every key that answers, since 2026-09-14
+///
+/// It read `" [y/N] "` until then, and `Esc` had declined the pane's
+/// confirmation since 2026-09-04 without the line ever saying so — which is
+/// why the look-and-feel survey recorded that "`Esc` is not offered" of a
+/// build where it worked. **A key that answers and is not named is not
+/// offered**, whatever the code does. `Ctrl-C` is deliberately absent because
+/// it is deliberately *ignored* at a confirmation, which is the divergence
+/// `keys-in-session` recorded against the masked question's table.
+///
+/// `a` is spelled out rather than left to be guessed. A one-letter answer
+/// whose meaning a person has to infer is how a session-long grant gets given
+/// by accident, and this is the one answer here that outlives the call.
+///
+/// **Drafted under a delegated coordinator ruling of 2026-09-15 00:13:45Z,
+/// open to Jeshua's veto**, and recorded on [ADR-0011's amendments volume 3].
+///
+/// [ADR-0011's amendments volume 3]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface-updates-3
+pub const SUFFIX: &str = " [y/N/a · a allows this exact line for this session · esc declines] ";
 
 /// What ADR-0011 D3's prompt writes.
 ///
@@ -98,21 +118,28 @@ pub fn line(question: &Question) -> String {
 
 /// What a typed line means.
 ///
-/// `y` or `yes`, in any case, after trimming — anything else is no, including
-/// an empty line and end of input. That is what makes `N` the default rather
-/// than a branch somebody could forget: there is one accepting shape and
-/// everything else falls through it.
+/// `y` or `yes` is [`Answer::Once`] and `a` or `always` is
+/// [`Answer::ForThisSession`], in any case, after trimming — **anything else
+/// is no**, including an empty line and end of input. That is what makes `N`
+/// the default rather than a branch somebody could forget: there are two
+/// accepting shapes and everything else falls through both.
 ///
 /// `None` is end of input: the user pressed the end-of-file key, or the
 /// stream ran out. It is a no rather than a failure, because a person who
 /// closed the prompt has answered it.
 #[must_use]
-pub fn answer(typed: Option<&str>) -> bool {
+pub fn answer(typed: Option<&str>) -> Answer {
     let Some(typed) = typed else {
-        return false;
+        return Answer::No;
     };
     let typed = typed.trim();
-    typed.eq_ignore_ascii_case("y") || typed.eq_ignore_ascii_case("yes")
+    if typed.eq_ignore_ascii_case("y") || typed.eq_ignore_ascii_case("yes") {
+        Answer::Once
+    } else if typed.eq_ignore_ascii_case("a") || typed.eq_ignore_ascii_case("always") {
+        Answer::ForThisSession
+    } else {
+        Answer::No
+    }
 }
 
 /// Put the question and read the answer, over any pair of handles.
@@ -126,12 +153,12 @@ pub fn answer(typed: Option<&str>) -> bool {
 /// # Errors
 ///
 /// [`ConfirmFailure`] when the line could not be written or the answer could
-/// not be read. **Never** for an answer of no.
+/// not be read. **Never** for an answer of no, which is [`Answer::No`].
 pub fn ask(
     input: &mut impl BufRead,
     output: &mut impl Write,
     question: &Question,
-) -> Result<bool, ConfirmFailure> {
+) -> Result<Answer, ConfirmFailure> {
     let statement = line(question);
     output
         .write_all(statement.as_bytes())
@@ -206,7 +233,7 @@ impl Prompt<BufReader<Stdin>, Stdout> {
 }
 
 impl<R: BufRead + Send, W: Write + Send> Confirm for Prompt<R, W> {
-    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         let mut input = self
             .input
             .lock()

@@ -41,13 +41,14 @@ use crate::tools::fixtures::{
     FailingConfirmer, RecordedConfirmer, RefusingOverflow, ScratchOverflow, ScratchTree,
     StagedAllowlist, StagedDestructive, nonce,
 };
+use crate::tools::grants::SessionGrants;
 use crate::tools::mode::{self, Layer, Mode, ModeRefused, Tier};
 use crate::tools::name::{Effect, ToolName};
 use crate::tools::notice::SessionNotice;
 use crate::tools::output::{
     BudgetIsZero, Captured, ELISION_PREFIX, OutputBudget, PresentationRefused,
 };
-use crate::tools::port::{Allowlist as _, DestructiveMatch as _};
+use crate::tools::port::{Allowlist as _, Answer, DestructiveMatch as _};
 use crate::tools::tree::{Placement, WorkingDirectory};
 use crate::tools::{fixtures, prompt};
 use std::path::PathBuf;
@@ -657,6 +658,7 @@ fn the_prompting_rule_is_the_records_at_every_mode() {
     let allowed = Assessment {
         allowlisted: true,
         destructive: false,
+        session_granted: false,
     };
     let not_allowed = Assessment::default();
 
@@ -1068,18 +1070,21 @@ fn a_destructive_match_annotates_and_raises_prominence_and_never_vetoes() {
     // one, which is the whole of the 2026-09-05 correction.
     let line = CommandLine::split("rm -rf inside").expect("a command line");
     let invocation = Invocation::running(&line);
+    let no_grants = SessionGrants::none();
 
     let quiet = Decision::assess(
         Mode::Yolo,
         &invocation,
         &StagedAllowlist::empty(),
         &StagedDestructive::quiet(),
+        &no_grants,
     );
     let matched = Decision::assess(
         Mode::Yolo,
         &invocation,
         &StagedAllowlist::empty(),
         &StagedDestructive::matching(),
+        &no_grants,
     );
 
     assert_eq!(
@@ -1108,6 +1113,7 @@ fn a_destructive_match_annotates_and_raises_prominence_and_never_vetoes() {
         &invocation,
         &StagedAllowlist::empty(),
         &StagedDestructive::matching(),
+        &no_grants,
     );
     let question = asked
         .question()
@@ -1122,6 +1128,7 @@ fn a_destructive_match_annotates_and_raises_prominence_and_never_vetoes() {
             &invocation,
             &StagedAllowlist::empty(),
             &StagedDestructive::quiet(),
+            &no_grants,
         )
         .question()
         .expect("a command at `ask` is prompted for")
@@ -1137,6 +1144,7 @@ fn a_destructive_match_annotates_and_raises_prominence_and_never_vetoes() {
 /// can reach. The mutant: composing the question's sentence separately.
 #[test]
 fn the_prompt_states_what_the_transcript_will_record() {
+    let no_grants = SessionGrants::none();
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
     let outside = working.classify("../elsewhere/secret");
@@ -1147,6 +1155,7 @@ fn the_prompt_states_what_the_transcript_will_record() {
         &invocation,
         &StagedAllowlist::empty(),
         &StagedDestructive::matching(),
+        &no_grants,
     );
     let question = decision.question().expect("this call is prompted for");
     let line = decision.entry().render();
@@ -1180,6 +1189,7 @@ fn the_prompt_states_what_the_transcript_will_record() {
 /// who approved reading one path has said nothing about running a command.
 #[test]
 fn the_allowlist_is_asked_about_the_tool_and_its_target_together() {
+    let no_grants = SessionGrants::none();
     // No working directory is staged: a command line is not measured against
     // one, which is the whole of the 2026-09-05 correction.
     let line = CommandLine::split("printf inside/file").expect("a command line");
@@ -1191,6 +1201,7 @@ fn the_allowlist_is_asked_about_the_tool_and_its_target_together() {
         &invocation,
         &allowlist,
         &StagedDestructive::quiet(),
+        &no_grants,
     );
 
     let asked = allowlist.asked();
@@ -1771,6 +1782,7 @@ fn a_mode_the_user_configured_reaches_the_decision_and_an_unset_key_is_ask() {
     let allowlisted = Assessment {
         allowlisted: true,
         destructive: false,
+        session_granted: false,
     };
 
     let granted = Mode::from_configuration(&mode_from(Layer::User, "allow"))
@@ -2206,6 +2218,7 @@ fn an_allowlist_entry_is_the_line_the_prompt_showed() {
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 #[test]
 fn the_product_allowlist_is_what_allow_mode_consults() {
+    let no_grants = SessionGrants::none();
     let line = CommandLine::split("cargo test").expect("a command line");
     let invocation = Invocation::running(&line);
 
@@ -2220,6 +2233,7 @@ fn the_product_allowlist_is_what_allow_mode_consults() {
         &invocation,
         &allowed,
         &StagedDestructive::quiet(),
+        &no_grants,
     );
     assert_eq!(
         decision.requirement(),
@@ -2233,6 +2247,7 @@ fn the_product_allowlist_is_what_allow_mode_consults() {
         &Invocation::running(&other),
         &allowed,
         &StagedDestructive::quiet(),
+        &no_grants,
     );
     assert_eq!(
         outside.requirement(),
@@ -2440,7 +2455,14 @@ fn the_product_matcher_annotates_at_yolo_where_there_is_no_prompt_at_all() {
     let line = CommandLine::split("rm -rf build").expect("a command line");
     let invocation = Invocation::running(&line);
 
-    let decision = Decision::assess(Mode::Yolo, &invocation, &Allowed::nothing(), &Shapes::new());
+    let no_grants = SessionGrants::none();
+    let decision = Decision::assess(
+        Mode::Yolo,
+        &invocation,
+        &Allowed::nothing(),
+        &Shapes::new(),
+        &no_grants,
+    );
 
     assert_eq!(
         decision.requirement(),
@@ -2467,6 +2489,7 @@ fn the_product_matcher_annotates_at_yolo_where_there_is_no_prompt_at_all() {
         &Invocation::running(&ordinary),
         &Allowed::nothing(),
         &Shapes::new(),
+        &no_grants,
     );
     assert!(
         !quiet.entry().is_destructive() && !quiet.entry().render().contains(DESTRUCTIVE_MARKING),
@@ -2561,7 +2584,14 @@ fn an_ask_that_could_not_reach_the_user_is_not_a_decline() {
 fn the_prompt_is_one_line_and_it_is_the_transcripts_own() {
     let destructive = CommandLine::split("rm -rf build").expect("a command line");
     let invocation = Invocation::running(&destructive);
-    let decision = Decision::assess(Mode::Ask, &invocation, &Allowed::nothing(), &Shapes::new());
+    let no_grants = SessionGrants::none();
+    let decision = Decision::assess(
+        Mode::Ask,
+        &invocation,
+        &Allowed::nothing(),
+        &Shapes::new(),
+        &no_grants,
+    );
     let question = decision
         .question()
         .expect("staging: a command at `ask` must raise a question");
@@ -2598,6 +2628,7 @@ fn the_prompt_is_one_line_and_it_is_the_transcripts_own() {
         &Invocation::running(&ordinary),
         &Allowed::nothing(),
         &Shapes::new(),
+        &no_grants,
     );
     let quiet_line = prompt::line(
         &quiet
@@ -2623,24 +2654,43 @@ fn the_prompt_is_one_line_and_it_is_the_transcripts_own() {
 /// the `Y` and `YES` rows catch.
 #[test]
 fn n_is_the_default_and_only_a_yes_is_a_yes() {
-    let yes = ["y", "Y", "yes", "YES", "Yes", " y ", "y\n", "yes\r\n"];
+    let once = ["y", "Y", "yes", "YES", "Yes", " y ", "y\n", "yes\r\n"];
+    // D3's third answer, since 2026-09-14. Its accepting shapes are as small
+    // and as explicit as `y`'s, because this is the one answer here that
+    // outlives the call it was asked about.
+    let session = [
+        "a",
+        "A",
+        "always",
+        "ALWAYS",
+        "Always",
+        " a ",
+        "a\n",
+        "always\r\n",
+    ];
     let no = [
-        "", " ", "\n", "n", "N", "no", "NO", "nope", "ye", "yess", "yeah", "1", "true", "ok",
+        "", " ", "\n", "n", "N", "no", "NO", "nope", "ye", "yess", "yeah", "1", "true", "ok", "al",
+        "alway", "allow", "all",
     ];
 
     let mut wrong = Vec::new();
-    for typed in yes {
-        if !prompt::answer(Some(typed)) {
-            wrong.push(format!("{typed:?} was read as no"));
+    for typed in once {
+        if prompt::answer(Some(typed)) != Answer::Once {
+            wrong.push(format!("{typed:?} was not read as an allow-once"));
+        }
+    }
+    for typed in session {
+        if prompt::answer(Some(typed)) != Answer::ForThisSession {
+            wrong.push(format!("{typed:?} was not read as a session grant"));
         }
     }
     for typed in no {
-        if prompt::answer(Some(typed)) {
-            wrong.push(format!("{typed:?} was read as yes"));
+        if prompt::answer(Some(typed)) != Answer::No {
+            wrong.push(format!("{typed:?} was read as something other than no"));
         }
     }
-    if prompt::answer(None) {
-        wrong.push("end of input was read as yes".to_owned());
+    if prompt::answer(None) != Answer::No {
+        wrong.push("end of input was read as something other than no".to_owned());
     }
     assert!(wrong.is_empty(), "{}", wrong.join("; "));
 }
@@ -2664,14 +2714,20 @@ fn the_prompt_writes_its_line_and_reads_the_answer_back() {
         prominent: true,
     };
 
-    for (typed, expected) in [("y\n", true), ("n\n", false), ("\n", false), ("", false)] {
+    for (typed, expected) in [
+        ("y\n", Answer::Once),
+        ("a\n", Answer::ForThisSession),
+        ("n\n", Answer::No),
+        ("\n", Answer::No),
+        ("", Answer::No),
+    ] {
         let mut input = typed.as_bytes();
         let mut output: Vec<u8> = Vec::new();
         let answered = prompt::ask(&mut input, &mut output, &question)
             .expect("a readable handle and a writable one cannot fail");
         assert_eq!(
             answered, expected,
-            "{typed:?} was read as {answered} and it means {expected}"
+            "{typed:?} was read as {answered:?} and it means {expected:?}"
         );
         let written = String::from_utf8(output).expect("the prompt writes text");
         assert_eq!(
@@ -3310,4 +3366,246 @@ fn corpus_a_held_secret_in_a_writes_content_paints_as_the_marker() {
         !edited.contains(StagedRedactor::VALUE),
         "a held value reached an edit's before-and-after: {edited:?}"
     );
+}
+
+// ------------------------------------ ADR-0011 D3's third answer, 2026-09-14
+
+/// A session grant removes the prompt at every mode, matches byte for byte,
+/// and is written to no configuration layer.
+///
+/// # The three properties, and why each is here
+///
+/// **Every mode.** A person who has just been asked about this exact line and
+/// answered "for the session" has answered the question `ask`, `allow` and
+/// `yolo` would each ask again. The rule is one line on `Decision::reach`,
+/// applied after the mode's own arm, and this drives all three.
+///
+/// **Byte for byte.** The grant matches the same pair D3's allowlist matches —
+/// the tool and `Invocation::subject_text` — through the same `Entry`, so a
+/// granted `fs.write` says nothing about a different path, about a path whose
+/// text merely extends it, or about a different tool on the same path.
+///
+/// **Never persisted.** The accompanying source walk,
+/// [`no_permission_answer_writes_a_configuration_layer`], is the half that
+/// cannot be expressed here: this check could pass over an implementation that
+/// also wrote `~/.zaru/config.toml`.
+#[test]
+fn a_session_grant_removes_the_prompt_at_every_mode_and_matches_byte_for_byte() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let granted_path = working.classify("inside/file");
+    let sibling = working.classify("inside/other");
+    let extending = working.classify("inside/file-and-more");
+
+    let grants = SessionGrants::none();
+    assert!(
+        grants.is_empty(),
+        "staging: a session starts with nothing granted"
+    );
+
+    // Before: an in-tree write prompts at `ask`, as D3 says.
+    let write = Invocation::writing(&granted_path, STAGED_CONTENTS);
+    assert_eq!(
+        Decision::assess(
+            Mode::Ask,
+            &write,
+            &StagedAllowlist::empty(),
+            &StagedDestructive::quiet(),
+            &grants,
+        )
+        .requirement(),
+        Requirement::Ask,
+        "staging: the call this check grants was not prompted for in the first place"
+    );
+
+    grants.allow(&write);
+    assert_eq!(grants.len(), 1, "the grant was not remembered");
+    grants.allow(&write);
+    assert_eq!(
+        grants.len(),
+        1,
+        "allowing the same line twice left two entries, so the count is not the number of \
+         distinct lines a person said yes to"
+    );
+
+    // After: it proceeds at every mode.
+    let mut wrong = Vec::new();
+    for mode in Mode::ALL {
+        let requirement = Decision::assess(
+            mode,
+            &write,
+            &StagedAllowlist::empty(),
+            &StagedDestructive::quiet(),
+            &grants,
+        )
+        .requirement();
+        if requirement != Requirement::Proceed {
+            wrong.push(format!(
+                "{mode}: a line the user allowed for this session still requires {requirement:?}"
+            ));
+        }
+    }
+
+    // And it says nothing about anything else. Each of these prompts at `ask`
+    // before the grant and must still prompt after it.
+    let others: Vec<(&str, Invocation<'_>)> = vec![
+        (
+            "a sibling path",
+            Invocation::writing(&sibling, STAGED_CONTENTS),
+        ),
+        (
+            "a path whose text extends the granted one",
+            Invocation::writing(&extending, STAGED_CONTENTS),
+        ),
+        (
+            "a different tool on the granted path",
+            Invocation::editing(&granted_path, "before", "after"),
+        ),
+    ];
+    for (what, invocation) in &others {
+        let requirement = Decision::assess(
+            Mode::Ask,
+            invocation,
+            &StagedAllowlist::empty(),
+            &StagedDestructive::quiet(),
+            &grants,
+        )
+        .requirement();
+        if requirement != Requirement::Ask {
+            wrong.push(format!(
+                "{what} was granted on the strength of a different line; ADR-0011 D3 matches byte \
+                 for byte and never by prefix or by tool family"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A grant reaches the permission outcome, and the statement says so.
+///
+/// `Permission::GrantedForTheSession` is a separate variant rather than a flag
+/// so the caller can do the two different things it owes: remember the line,
+/// and give the transcript a line saying a person made a standing decision.
+/// Without the second, the only difference between "ran because someone said
+/// yes" and "ran because someone said always" would be the **absence** of a
+/// later prompt, which a reader cannot see.
+#[test]
+fn allowing_for_the_session_is_its_own_permission_outcome() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project directory resolves");
+    let target = working.classify("inside/file");
+    let grants = SessionGrants::none();
+    let write = Invocation::writing(&target, STAGED_CONTENTS);
+
+    let decision = Decision::assess(
+        Mode::Ask,
+        &write,
+        &StagedAllowlist::empty(),
+        &StagedDestructive::quiet(),
+        &grants,
+    );
+
+    assert_eq!(
+        decision.permit(Some(&RecordedConfirmer::allowing_for_the_session())),
+        Permission::GrantedForTheSession,
+        "answering `a` reached the same outcome as answering `y`, so a caller cannot tell them \
+         apart and the line is never remembered"
+    );
+    assert_eq!(
+        decision.permit(Some(&RecordedConfirmer::accepting())),
+        Permission::Granted,
+        "answering `y` reached the session outcome, so every yes would become a standing grant"
+    );
+    assert_eq!(
+        decision.permit(Some(&RecordedConfirmer::declining())),
+        Permission::Refused(RefusedBecause::TheUserDeclined),
+        "answering no did not refuse"
+    );
+    assert!(
+        Permission::GrantedForTheSession.permits(),
+        "a session grant did not permit the call it was given for"
+    );
+}
+
+/// **No answer to a permission question writes a configuration layer.**
+///
+/// # Why this is a source walk and not a behavioural check
+///
+/// A behavioural check can show that a grant is remembered and that it is gone
+/// from a fresh `SessionGrants`. It cannot show that nothing *also* wrote
+/// `~/.zaru/config.toml`, because a check that looked in one place would be
+/// satisfied by an implementation that wrote somewhere else. ADR-0011 D3's
+/// 2026-09-05 amendment argues against the prompt writing the allowlist at
+/// all, and what that argument protects is the absence of a writer — so the
+/// absence is what is asserted.
+///
+/// The walk is over this crate's product sources, and it looks for the two
+/// shapes that would be needed: a write to the allowlist key, and any write of
+/// a configuration file at all from the permission path.
+#[test]
+fn no_permission_answer_writes_a_configuration_layer() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources = Vec::new();
+    collect_rust_sources(&root, &mut sources);
+    assert!(
+        sources.len() > 50,
+        "staging: only {} source files were walked, so this check is looking at almost nothing",
+        sources.len()
+    );
+
+    let mut offending = Vec::new();
+    for path in &sources {
+        let text = std::fs::read_to_string(path).expect("a source file reads");
+        let name = path.display().to_string();
+        // Tests and their fixtures are not the product.
+        if name.contains("tests.rs") || name.contains("fixtures.rs") {
+            continue;
+        }
+        for (number, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("///") || code.starts_with("//!") {
+                continue;
+            }
+            // The allowlist key, written rather than read.
+            if code.contains(allowlist::KEY) && (code.contains("write") || code.contains("insert"))
+            {
+                offending.push(format!("{name}:{}: {code}", number + 1));
+            }
+        }
+    }
+    assert!(
+        offending.is_empty(),
+        "something in the product writes ADR-0011 D3's allowlist key. A grant made at a prompt \
+         must die with the process; a durable grant nobody wrote down is exactly what the \
+         2026-09-05 amendment refuses:\n{}",
+        offending.join("\n")
+    );
+
+    // The accepting sibling: the key is *read* somewhere, or the walk above is
+    // vacuous because nothing mentions it at all.
+    let mentions = sources.iter().filter(|path| {
+        std::fs::read_to_string(path)
+            .map(|text| text.contains(allowlist::KEY))
+            .unwrap_or(false)
+    });
+    assert!(
+        mentions.count() > 0,
+        "no product source mentions {:?}, so the absence above proves nothing",
+        allowlist::KEY
+    );
+}
+
+/// Every `.rs` file under `root`, recursively.
+fn collect_rust_sources(root: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_sources(&path, into);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            into.push(path);
+        }
+    }
 }

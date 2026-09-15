@@ -40,6 +40,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zaru_cli::redaction::HeldSecrets;
+use zaru_cli::tools::grants::SessionGrants;
+use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
     Allowlist, Assessment, Captured, Confirm, ConfirmFailure, Decision, DestructiveMatch,
     Invocation, Layer, Mode, ModeRefused, Overflow, OverflowFailure, Permission, Question,
@@ -86,12 +88,12 @@ impl DestructiveMatch for MatchesNothing {
 
 /// A user who answers, and remembers what they were asked.
 struct AnsweringUser {
-    answer: bool,
+    answer: Answer,
     asked: RefCell<Vec<String>>,
 }
 
 impl AnsweringUser {
-    fn saying(answer: bool) -> Self {
+    fn saying(answer: Answer) -> Self {
         Self {
             answer,
             asked: RefCell::new(Vec::new()),
@@ -100,7 +102,7 @@ impl AnsweringUser {
 }
 
 impl Confirm for AnsweringUser {
-    fn confirm(&self, question: &Question) -> Result<bool, ConfirmFailure> {
+    fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         self.asked.borrow_mut().push(question.statement.clone());
         Ok(self.answer)
     }
@@ -156,12 +158,21 @@ fn a_caller_outside_this_crate_can_classify_decide_and_be_refused() {
     println!("  {:?}   (and never again)", notice.state_once());
 
     // ADR-0011 D3 and D4, at every mode, over one call outside the tree.
+    // Nothing granted: a session starts with no grant and a resumed one does
+    // too, because D3's third answer is never persisted.
+    let no_grants = SessionGrants::none();
     let escaping =
         Invocation::on_path(ToolName::FsRead, &outside).expect("fs.read addresses a path");
     println!("--- ADR-0011 D3 and D4: one out-of-tree read, at every mode ---");
     let mut records = Vec::new();
     for mode in Mode::ALL {
-        let decision = Decision::assess(mode, &escaping, &ApprovesNothing, &MatchesNothing);
+        let decision = Decision::assess(
+            mode,
+            &escaping,
+            &ApprovesNothing,
+            &MatchesNothing,
+            &no_grants,
+        );
         println!(
             "  {mode:<6} requires {:<8?} record: {}",
             decision.requirement(),
@@ -182,7 +193,13 @@ fn a_caller_outside_this_crate_can_classify_decide_and_be_refused() {
     );
 
     // The refusals, from outside.
-    let at_ask = Decision::assess(Mode::Ask, &escaping, &ApprovesNothing, &MatchesNothing);
+    let at_ask = Decision::assess(
+        Mode::Ask,
+        &escaping,
+        &ApprovesNothing,
+        &MatchesNothing,
+        &no_grants,
+    );
     assert_eq!(at_ask.requirement(), Requirement::Ask);
     assert_eq!(
         at_ask.permit(None),
@@ -190,12 +207,12 @@ fn a_caller_outside_this_crate_can_classify_decide_and_be_refused() {
         "a call needing the user, with nobody to ask, must be refused rather than performed"
     );
 
-    let declining = AnsweringUser::saying(false);
+    let declining = AnsweringUser::saying(Answer::No);
     assert_eq!(
         at_ask.permit(Some(&declining)),
         Permission::Refused(RefusedBecause::TheUserDeclined)
     );
-    let accepting = AnsweringUser::saying(true);
+    let accepting = AnsweringUser::saying(Answer::Once);
     assert_eq!(at_ask.permit(Some(&accepting)), Permission::Granted);
 
     println!("--- what the user was actually asked ---");

@@ -288,6 +288,18 @@ pub struct Prepared {
     ///
     /// See [`Self::context_reserve`].
     reserved: u64,
+    /// [ADR-0011] D3's third answer, for the life of this session.
+    ///
+    /// **Here rather than beside the `Executor`, and that is the whole
+    /// point.** An `Executor` is built inside `ran` once per turn, so a grant
+    /// held there would expire at the next turn boundary — a grant for one
+    /// call wearing the word "session". `prepare` runs once when a session
+    /// opens, which is exactly the scope the answer claims. It is never
+    /// written anywhere: see
+    /// [`SessionGrants`](crate::tools::grants::SessionGrants).
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    session_grants: crate::tools::grants::SessionGrants,
 }
 
 impl Prepared {
@@ -933,6 +945,7 @@ pub fn prepare(
         store_root,
         window,
         reserved,
+        session_grants: crate::tools::grants::SessionGrants::none(),
     })
 }
 /// Run one turn of a session that already exists.
@@ -1171,6 +1184,7 @@ async fn ran(
         destructive: &destructive,
         confirmer,
         verdicts: &verdicts,
+        session_grants: &prepared.session_grants,
         budget: layers::output_budget(),
         preview_budget: layers::preview_budget(),
         search_ceiling: layers::search_ceiling(),

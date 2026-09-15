@@ -87,6 +87,7 @@ pub mod decision;
 pub mod destructive;
 pub mod execute;
 pub mod files;
+pub mod grants;
 pub mod mode;
 pub mod name;
 pub mod notice;

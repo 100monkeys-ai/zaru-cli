@@ -308,6 +308,20 @@ impl Entry {
         })
     }
 
+    /// One entry from a tool and a target the harness already holds.
+    ///
+    /// **Not a parse.** [`Entry::parse`] takes what a *user* wrote and refuses
+    /// what is not an entry; this takes a pair the harness composed and cannot
+    /// fail. It exists for
+    /// [`SessionGrants`](crate::tools::grants::SessionGrants), so a grant made
+    /// at the prompt is the same value an allowlist line becomes and is
+    /// compared by the same [`Entry::approves`] — rather than a second
+    /// matching rule that could come to disagree with D3's.
+    #[must_use]
+    pub fn of(tool: ToolName, target: String) -> Self {
+        Self { tool, target }
+    }
+
     /// Which built-in this entry approves.
     #[must_use]
     pub const fn tool(&self) -> ToolName {
