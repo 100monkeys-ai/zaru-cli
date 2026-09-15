@@ -71,7 +71,15 @@
 //!   refuses in its own words.
 //! - **Everything said to a model.** [`prose::SUMMARISE_SPAN`] and
 //!   [`prose::ITERATION_IS_ONE_EXCHANGE`] are read by a model and never by a
-//!   person, and each says so where it is defined.
+//!   person, and each says so where it is defined. **[`prose::NO_PERSONA`] is
+//!   the third and it was a member until the artefact said otherwise**: its
+//!   own documentation says the line is there "so that a reader of the
+//!   transcript sees the absence rather than inferring it", and the transcript
+//!   does not carry it. `compose::context::prefix_for` puts it in
+//!   [ADR-0013] D1's layer 1, which is assembled into the prompt and persisted
+//!   nowhere — measured 2026-09-15 on a real session, whose `context.json`
+//!   holds only `exchanges`. So it reaches a model and no person, and it is
+//!   exempt rather than enumerated.
 //! - **Everything a person asked for.** A failure's statement and its remedy,
 //!   `--help`'s table, a data projection, a permission question, the two
 //!   retrieval commands' lines and the hint strip's typing-mode rows are the
@@ -81,6 +89,8 @@
 //! [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
 //! [ADR-0002's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output-updates
 //! [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+//! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+//! [`prose::NO_PERSONA`]: crate::compose::prose::NO_PERSONA
 //! [`prose::SUMMARISE_SPAN`]: crate::compose::prose::SUMMARISE_SPAN
 //! [`prose::ITERATION_IS_ONE_EXCHANGE`]: crate::compose::prose::ITERATION_IS_ONE_EXCHANGE
 
@@ -224,9 +234,6 @@ pub enum Door {
     ///
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     NarrativeRow,
-    /// The context prefix's layer 1, which reaches a person through the
-    /// transcript rather than the screen.
-    ContextPrefix,
 }
 
 impl Door {
@@ -234,7 +241,7 @@ impl Door {
     ///
     /// The length is annotated, so a twelfth fails to compile here as well as
     /// in every exhaustive match below.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 10] = [
         Self::StandingStrip,
         Self::AbsenceStrip,
         Self::SessionNotice,
@@ -245,7 +252,6 @@ impl Door {
         Self::TokenSegment,
         Self::ElapsedSegment,
         Self::NarrativeRow,
-        Self::ContextPrefix,
     ];
 
     /// The text that opens this door, as it is written at a call site.
@@ -278,7 +284,6 @@ impl Door {
             Self::TokenSegment => ".set_token_usage(",
             Self::ElapsedSegment => ".set_elapsed(",
             Self::NarrativeRow => "Event::TurnStarted { n, of }",
-            Self::ContextPrefix => "prose::NO_PERSONA",
         }
     }
 
@@ -304,7 +309,6 @@ impl Door {
                 &["src/terminal/driver.rs"]
             }
             Self::NarrativeRow => &["src/terminal/vocabulary.rs"],
-            Self::ContextPrefix => &["src/compose/context.rs"],
         }
     }
 }
@@ -332,11 +336,6 @@ pub enum Unprompted {
     DeclareOne,
     /// What the pane says when a turn was interrupted.
     Interrupted,
-    /// [ADR-0027] D1's absence, stated in context layer 1 so a reader of the
-    /// transcript sees it rather than inferring it.
-    ///
-    /// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
-    NoPersona,
     /// [ADR-0002] D8's standing tip.
     ///
     /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
@@ -407,12 +406,11 @@ impl Unprompted {
     ///
     /// The length is annotated, so a seventeenth fails to compile here as well
     /// as in every exhaustive match below.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 15] = [
         Self::NotASandbox,
         Self::MissingValidators,
         Self::DeclareOne,
         Self::Interrupted,
-        Self::NoPersona,
         Self::StandingTip,
         Self::NothingCached,
         Self::LookingInNotes,
@@ -445,10 +443,6 @@ impl Unprompted {
             Self::Interrupted => Wording::Authored {
                 name: "INTERRUPTED",
                 text: prose::INTERRUPTED,
-            },
-            Self::NoPersona => Wording::Authored {
-                name: "NO_PERSONA",
-                text: prose::NO_PERSONA,
             },
             Self::NothingCached => Wording::Authored {
                 name: "NOTHING_CACHED",
@@ -516,7 +510,6 @@ impl Unprompted {
             | Self::MissingValidators
             | Self::DeclareOne
             | Self::Interrupted
-            | Self::NoPersona
             | Self::Compacted
             | Self::AttachmentDropped
             | Self::ContextUsage
@@ -538,8 +531,7 @@ impl Unprompted {
         match self {
             Self::NotASandbox => Subject::ATier,
             Self::MissingValidators | Self::DeclareOne => Subject::TheProject,
-            Self::NoPersona
-            | Self::StandingTip
+            Self::StandingTip
             | Self::NothingCached
             | Self::LookingInNotes
             | Self::NotesUnreachable
@@ -561,7 +553,6 @@ impl Unprompted {
             Self::NotASandbox => Door::SessionNotice,
             Self::MissingValidators | Self::DeclareOne => Door::Recommendation,
             Self::Interrupted => Door::InterruptNotice,
-            Self::NoPersona => Door::ContextPrefix,
             Self::StandingTip => Door::StandingStrip,
             Self::NothingCached
             | Self::LookingInNotes
@@ -585,7 +576,6 @@ impl Unprompted {
             Self::NotASandbox => ("ADR-0011", "D2"),
             Self::MissingValidators | Self::DeclareOne => ("ADR-0009", "D4"),
             Self::Interrupted => ("ADR-0010", "D2"),
-            Self::NoPersona => ("ADR-0027", "D1"),
             Self::StandingTip => ("ADR-0002", "D8"),
             Self::NothingCached
             | Self::LookingInNotes
@@ -622,7 +612,7 @@ pub const UNPROMPTED_HOMES: [&str; 3] = [
 /// fails the check as loudly as one that appears without a member.
 ///
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-pub const EXEMPT: [(&str, &str); 6] = [
+pub const EXEMPT: [(&str, &str); 7] = [
     (
         "SUMMARISE_SPAN",
         "read by a model and never by a person; the constant says so where it is defined",
@@ -638,6 +628,12 @@ pub const EXEMPT: [(&str, &str); 6] = [
     (
         "NOTHING_LEARNED",
         "the answer `/learned` and `zaru learned` give, so a person asked for it",
+    ),
+    (
+        "NO_PERSONA",
+        "assembled into ADR-0013 D1's layer 1 and nowhere else, so it is read by a model and \
+         never by a person — measured on the artefact of 2026-09-15, where `context.json` holds \
+         only `exchanges` and the transcript holds no prefix",
     ),
     (
         "TIPS_FILE",

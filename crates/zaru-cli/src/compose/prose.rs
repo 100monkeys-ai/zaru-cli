@@ -150,6 +150,28 @@ pub const INTERRUPTED: &str = "turn interrupted · the session stays open, and w
 /// in a record; nothing here invents a sentence of it, and the day ADR-0027's
 /// fetch exists this constant is deleted rather than edited.
 ///
+/// # No reader of the transcript sees it, corrected 2026-09-15
+///
+/// The paragraph above says the prefix states the absence "so that a reader of
+/// the transcript sees the absence rather than inferring it from a prompt that
+/// looks short". **That is left as the arc that wrote it left it, and this is
+/// the correction beside it: the transcript does not carry the prefix.**
+/// [`crate::compose::context::prefix_for`] puts this line in [ADR-0013] D1's
+/// layer 1, which is assembled into the prompt at every turn and persisted
+/// nowhere — measured on a real session at 100×30 on 2026-09-15, whose
+/// `context.json` holds only `exchanges` and whose `transcript.jsonl` holds no
+/// prefix of any kind.
+///
+/// So this line reaches a **model** and no person, which is why
+/// [`crate::compose::emission`] holds it as an exemption rather than as a
+/// member of [ADR-0002]'s emission set, beside [`SUMMARISE_SPAN`] and
+/// [`ITERATION_IS_ONE_EXCHANGE`]. Nothing is changed here but this paragraph:
+/// whether the absence *should* be visible to a person is the decision
+/// ADR-0027's author and ADR-0013's own reserve, and it is recorded rather
+/// than built.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 /// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 pub const NO_PERSONA: &str = "[no persona: this harness reached no prompt server, so it has no \
