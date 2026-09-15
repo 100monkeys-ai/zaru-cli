@@ -1312,6 +1312,17 @@ fn one_emission_of_the_inner_loops_stream_reaches_the_transcript_and_a_subscribe
         fn announce_interrupted(&self) {
             panic!("an uninterrupted run told its subscriber the turn had been interrupted");
         }
+
+        /// The inner loop never says a session's once-ever line, and asserting
+        /// that is the point.
+        ///
+        /// The port's third method belongs to `compose::turn::ran`, which says
+        /// it once before the turn narrates anything; a panic here says the
+        /// loop reached it, which would mean the notice had become a thing a
+        /// turn emits rather than a thing a session says.
+        fn announce_session_notice(&self, sentence: &str) {
+            panic!("the inner loop said a session's once-ever line: {sentence:?}");
+        }
     }
 
     let scratch = Scratch::new("one-emission");

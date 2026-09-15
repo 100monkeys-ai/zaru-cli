@@ -1309,11 +1309,31 @@ async fn ran(
     // membrane, and ADR-0010 D2's "a crash loses at most the event in flight"
     // is what bounds the other order's cost. The failure ends the turn with
     // the line already said, exactly as the compaction record below it does.
+    //
+    // **And it is said before the turn's own lines, since 2026-09-15.** Row 13
+    // of the second look-and-feel audit measured the order on a session's
+    // first turn: `✓ turn 1 answered · 1 exchange(s) · 4.22s`, then the
+    // three-row notice, then the answer. `Ran::lines` is painted by the pane
+    // as a block when the race ends, so everything the turn narrated while it
+    // ran was already on the screen and this line landed between a conclusion
+    // and the thing the person asked for. Where it is said changed and what it
+    // says did not.
+    //
+    // The narrator is the one handle this function has on the pane, and it is
+    // `None` for `zaru "<task>"`, which has no pane, no interleaved stream and
+    // prints `Ran::lines` in the order it holds them -- so that order *is* the
+    // order there. One rule, two carriers: the session's line comes before the
+    // turn's. See `Narrator::announce_session_notice`.
     if let Some(notice) = owed.notice.as_mut()
         && let Some(sentence) = notice.state_once()
     {
-        lines.push(sentence.clone());
-        lines.push(String::new());
+        match narrator {
+            Some(narrator) => narrator.announce_session_notice(&sentence),
+            None => {
+                lines.push(sentence.clone());
+                lines.push(String::new());
+            }
+        }
         if let Err(failure) =
             transcript.record(&crate::session::Record::Said(crate::session::Said {
                 line: crate::session::SaidOnce::Notice,

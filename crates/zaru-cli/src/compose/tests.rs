@@ -1779,3 +1779,68 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
         "a compaction that grew the context is not a compaction: {after} against {cost_before}"
     );
 }
+
+/// The session's once-ever notice is routed to the narrator where there is
+/// one, in the one place it is said.
+///
+/// # Why this is a source walk
+///
+/// `compose::turn::ran` needs a [`Prepared`](crate::compose::Prepared), which
+/// needs a provider client and a stored key, so **no offline check can drive
+/// it** — the finding `Narrator::announce_interrupted`'s own documentation
+/// records for the neighbouring method, whose answer there was a witness type.
+/// A witness will not carry this one: the notice is owed on some sessions and
+/// not others, so a value proving it was announced cannot be required of every
+/// turn. What is held instead is that the block which spends
+/// `SessionNotice::state_once` hands the sentence to the narrator, in the shape
+/// `only_one_place_in_the_product_records_a_tip_showing` already uses.
+///
+/// The carrier's own order is
+/// `the_sessions_once_ever_notice_is_painted_above_the_turns_own_lines`, and
+/// the artefact is the evidence about the binary.
+///
+/// # The mutant and the accepting sibling
+///
+/// Pushing onto `lines` unconditionally, which is the block as it stood: the
+/// walk finds no call beside the spend. Watched red.
+///
+/// The sibling is the `None` arm, which must stay — `zaru "<task>"` has no
+/// narrator and prints `Ran::lines` in order, so deleting the push would take
+/// the notice off the out-of-session surface entirely.
+#[test]
+fn the_once_ever_notice_is_handed_to_the_narrator_where_there_is_one() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compose/turn.rs"),
+    )
+    .expect("this crate's own turn module reads");
+    let code: Vec<&str> = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect();
+
+    let spend = code
+        .iter()
+        .position(|line| line.contains("notice.state_once()"))
+        .expect("the notice is spent somewhere in this module");
+    let block = &code[spend..spend + 12];
+    let joined = block.join("\n");
+
+    assert!(
+        joined.contains("narrator.announce_session_notice(&sentence)"),
+        "the block that spends ADR-0011 D2's notice does not hand it to the narrator, so it \
+         lands inside the turn's own lines again: {joined:?}"
+    );
+    assert!(
+        joined.contains("lines.push(sentence.clone())"),
+        "the out-of-session arm is gone, so `zaru \"<task>\"` says nothing about the membrane at \
+         all: {joined:?}"
+    );
+    let announce = joined
+        .find("narrator.announce_session_notice")
+        .expect("asserted above");
+    let push = joined.find("lines.push(sentence").expect("asserted above");
+    assert!(
+        announce < push,
+        "the push is the first arm, so a session with a pane takes it: {joined:?}"
+    );
+}

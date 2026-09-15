@@ -2586,3 +2586,89 @@ fn the_context_figure_is_on_the_row_of_a_session_that_resolved_no_provider() {
         );
     }
 }
+
+/// [ADR-0011] D2's once-ever notice is on the pane **before** the turn's own
+/// lines, and [ADR-0028] D3's stream order is what puts it there.
+///
+/// # What this is about
+///
+/// Row 13 of the second look-and-feel audit measured the order a person reads
+/// on a session's first turn: `✓ turn 1 answered · 1 exchange(s) · 4.22s`,
+/// then the three-row `bare tier has no membrane…` notice, then the answer.
+/// The notice was pushed onto `Ran::lines`, which the pane paints as a block
+/// when the race ends, so everything the turn narrated while it ran was
+/// already on the screen.
+///
+/// # What it can and cannot say
+///
+/// It drives the **carrier** — `PaneNarrator`, the one handle
+/// `compose::turn::ran` has on the pane — and asserts that a session notice
+/// announced before a narrated event lands above it in the buffer a person
+/// reads. It says nothing about whether `ran` calls it: `run_one` needs a
+/// `Prepared`, which needs a provider client and a key, so no offline check
+/// can drive it, which is the finding `Narrator::announce_interrupted`'s own
+/// documentation already records for the neighbouring method. The wiring is
+/// held by `compose::tests`' source walk and shown by the artefact.
+///
+/// # The mutant and the accepting sibling
+///
+/// Announcing the notice **after** the event, which is the order the block
+/// produced: the two rows swap. Watched red.
+///
+/// The sibling is the event itself, which must still reach the pane in the
+/// register and wording `loop_line` gives it — so a narrator that painted
+/// only the notice reddens.
+///
+/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+/// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+#[test]
+fn the_sessions_once_ever_notice_is_painted_above_the_turns_own_lines() {
+    use zaru_cli::compose::Narrator;
+
+    let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
+    let mut surface = Recorded::wide();
+    // A clock because `Pane::during` takes one, and it is never read here:
+    // nothing on this pane arms ADR-0028 D5's quiet line, which is the same
+    // reason `driver`'s own out-of-turn pane builds one.
+    let outside_a_turn = zaru_core::iteration::SystemClock::started_now();
+    {
+        let pane = std::sync::Mutex::new(zaru_cli::terminal::driver::Pane::during(
+            &mut shell,
+            &mut surface,
+            &outside_a_turn,
+        ));
+        let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
+
+        narrator.announce_session_notice(zaru_cli::compose::prose::NOT_A_SANDBOX);
+        narrator.narrate(&zaru_core::iteration::Event::IterationStarted { n: 1, of: 3 });
+        assert_eq!(
+            narrator.contended(),
+            0,
+            "the pane refused an event, so the order below is about a lock rather than about a \
+             rule"
+        );
+    }
+
+    // Read after the pane's borrow ends, which is also when the turn's would.
+    let painted: Vec<String> = shell
+        .pane_lines()
+        .iter()
+        .map(|line| line.text.clone())
+        .collect();
+    let notice_at = painted
+        .iter()
+        .position(|line| line.contains("bare tier has no membrane"))
+        .unwrap_or_else(|| panic!("the session's notice reached no row at all: {painted:?}"));
+    let turn_at = painted
+        .iter()
+        .position(|line| line.contains("iteration 1 of 3"))
+        .unwrap_or_else(|| {
+            panic!("the turn's own narrated line reached no row, so this check would pass on a narrator that painted nothing but the notice: {painted:?}")
+        });
+    assert!(
+        notice_at < turn_at,
+        "the session's once-ever notice is painted inside the turn's lines, so a person reads a \
+         conclusion, then a standing fact about the tier, then the thing they asked for: \
+         {painted:?}"
+    );
+}

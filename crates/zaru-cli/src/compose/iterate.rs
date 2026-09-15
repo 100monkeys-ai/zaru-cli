@@ -433,6 +433,49 @@ pub trait Narrator: Sync {
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     fn announce_interrupted(&self);
 
+    /// A once-ever line about the **session**, said before the turn's own
+    /// lines rather than inside them.
+    ///
+    /// # Why this is on the port beside [`Self::announce_interrupted`]
+    ///
+    /// Row 13 of [the second look-and-feel audit] measured the order a person
+    /// reads on the first turn of a session: `✓ turn 1 answered · 1
+    /// exchange(s) · 4.22s`, then [ADR-0011] D2's three-row `bare tier has no
+    /// membrane…` notice, then the answer. The notice was pushed onto
+    /// `Ran::lines`, which the pane paints as a block **after** the race, so
+    /// everything the turn narrated while it ran was already on the screen —
+    /// a person read a conclusion, then a standing fact about the tier, then
+    /// the thing they asked for.
+    ///
+    /// The fix is where the line is said and not what it says: the notice is a
+    /// fact about the session, and the session began before the turn.
+    /// [ADR-0028] D3's stream order is untouched — this is not a loop event
+    /// and it is not reconstructed from one — which is the same boundary
+    /// [`Self::announce_interrupted`] sits on and for the same reason: it is a
+    /// thing a narrating consumer must be told that
+    /// [`zaru_core::iteration::Event`] cannot carry, and widening D3's event
+    /// list is [ADR-0008]'s decision rather than an implementer's.
+    ///
+    /// **It takes the sentence**, where the interruption takes nothing,
+    /// because which of the two once-ever lines is owed is
+    /// [`crate::compose::Owed`]'s answer and is already spelled by the carrier
+    /// that hands it over. Composing anything here would be a second spelling
+    /// of a line [`crate::compose::prose`] already holds.
+    ///
+    /// # A consumer that is absent is not a consumer that says nothing
+    ///
+    /// `zaru "<task>"` has no pane, no narrator and no interleaved stream:
+    /// its lines are printed in the order `Ran::lines` holds them, so that
+    /// order **is** the order there. The caller keeps the push for that
+    /// surface, and both surfaces obey one rule — the session's line comes
+    /// before the turn's.
+    ///
+    /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
+    /// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
+    fn announce_session_notice(&self, sentence: &str);
+
     /// Say it, and hand back the proof that it was said.
     ///
     /// # The witness, because the mutation reddened nothing

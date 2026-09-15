@@ -870,6 +870,25 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
             }
         }
     }
+
+    /// The session's own once-ever line, painted before the turn narrates
+    /// anything.
+    ///
+    /// [`Register::Plain`], which is the register the notice had when it
+    /// arrived inside `Ran::lines`: it is neither a failure nor an
+    /// announcement of something that just happened, and giving it a marker
+    /// here would be a rendering decision no record makes. **Nothing is
+    /// composed** — the sentence is the caller's, from
+    /// [`crate::compose::prose`].
+    fn announce_session_notice(&self, sentence: &str) {
+        match self.pane.try_lock() {
+            Ok(mut pane) => pane.note(Line::new(Register::Plain, sentence.to_owned())),
+            Err(_) => {
+                self.contended
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// [ADR-0011] D3's question, asked and answered in the pane.
