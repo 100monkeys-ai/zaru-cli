@@ -144,7 +144,7 @@ pub const UNREACHABLE: &str = "notes unreachable";
 ///
 /// **It carries a time and not a duration**, because the time is a fact the
 /// file holds and a duration is arithmetic over a clock that may have moved.
-/// [`stamp`](crate::terminal::corpus::stamp) renders it and this is the lead,
+/// [`stamp`] renders it and this is the lead,
 /// joined the way [`NOTHING_CACHED`] joins its own halves.
 ///
 /// One line and short, for the reason every line in this module is short: the
@@ -299,8 +299,8 @@ impl NotesTrie {
     /// A fast tier over the corpus `corpus.jsonl` was holding, serving from
     /// the first beat while a refresh runs behind it.
     ///
-    /// [ADR-0005] D8's whole point, and the state is [`Population::Reached`]
-    /// rather than a sixth one: what the strip has is a corpus, and a person
+    /// [ADR-0005] D8's whole point, and the state is the reached one rather
+    /// than a sixth: what the strip has is a corpus, and a person
     /// completing against it is not waiting for anything. `fetched` is
     /// remembered so that a refresh which never lands can say when this was
     /// taken — see [`Self::unreachable`].

@@ -135,7 +135,11 @@ fn a_second_session_completes_from_the_file_before_any_refresh_answers() {
         None,
         "and it has nothing to say, because it is not waiting for anything"
     );
-    assert_eq!(second.cached(), 3, "the whole corpus came back, not a prefix");
+    assert_eq!(
+        second.cached(),
+        3,
+        "the whole corpus came back, not a prefix"
+    );
 }
 
 /// A refresh that lands replaces the corpus in hand and the line on disk.
@@ -441,12 +445,18 @@ fn the_cache_file_holds_the_paths_and_titles_the_strip_completes_against() {
     drop(refresh_from(Ok(entries), &cache, HOST, WORKSPACE, FETCHED));
 
     let raw = std::fs::read_to_string(cache.path()).expect("the file was written");
-    assert!(raw.contains("adrs/0005"), "the path is not in the file: {raw}");
+    assert!(
+        raw.contains("adrs/0005"),
+        "the path is not in the file: {raw}"
+    );
     assert!(
         raw.contains("Ω ✦ the composer"),
         "the title is not in the file, byte for byte as the server spelled it: {raw}"
     );
-    assert!(raw.contains(HOST), "the key's host is not in the file: {raw}");
+    assert!(
+        raw.contains(HOST),
+        "the key's host is not in the file: {raw}"
+    );
     assert!(
         raw.contains(WORKSPACE),
         "the key's workspace is not in the file: {raw}"

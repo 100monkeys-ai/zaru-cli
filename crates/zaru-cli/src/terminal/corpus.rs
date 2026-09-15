@@ -305,8 +305,7 @@ impl CorpusCache {
         Ok(self
             .lines()?
             .into_iter()
-            .filter(|line| line.host == host && line.workspace == workspace)
-            .next_back()
+            .rfind(|line| line.host == host && line.workspace == workspace)
             .map(|line| CachedCorpus {
                 entries: line
                     .entries

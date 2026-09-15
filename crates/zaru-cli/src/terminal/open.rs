@@ -344,7 +344,7 @@ impl Populating {
 /// What one fetch's answer does to [ADR-0005] D8's file, and what the strip is
 /// then told.
 ///
-/// **Separate from [`Populating::refresh`] because the decision is the whole
+/// **Separate from `Populating::refresh` because the decision is the whole
 /// of D8's freshness rule and the fetch is a socket.** A check cannot open an
 /// instance, and driving this with a staged answer exercises the same branch,
 /// the same writes and the same sentences the binary takes — see

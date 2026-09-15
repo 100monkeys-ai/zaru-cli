@@ -108,7 +108,10 @@ fn the_last_line_for_a_key_wins_and_compaction_leaves_exactly_it() {
         "the last matching line is the answer before any compaction"
     );
 
-    assert!(cache.compact().expect("the file rewrites"), "three lines for one key became one");
+    assert!(
+        cache.compact().expect("the file rewrites"),
+        "three lines for one key became one"
+    );
     let lines = cache.lines().expect("the file reads");
     assert_eq!(lines.len(), 2, "one line per key: {lines:?}");
     assert_eq!(lines[0].workspace, "docs", "the file's own order is kept");
@@ -165,7 +168,11 @@ fn a_trailing_fragment_is_never_counted_as_a_line() {
     std::fs::write(cache.path(), raw).expect("the file writes");
 
     let lines = cache.lines().expect("a fragment is tolerated");
-    assert_eq!(lines.len(), 1, "the half-written line was counted: {lines:?}");
+    assert_eq!(
+        lines.len(),
+        1,
+        "the half-written line was counted: {lines:?}"
+    );
     assert!(
         cache.read("h", "main").expect("the file reads").is_none(),
         "and it answers for no key"
@@ -179,8 +186,18 @@ fn a_trailing_fragment_is_never_counted_as_a_line() {
 fn a_machine_that_has_never_fetched_reads_as_no_corpus() {
     let root = scratch("absent");
     let cache = CorpusCache::under(&root);
-    assert!(cache.lines().expect("an absent file is not an error").is_empty());
-    assert!(cache.read("h", "docs").expect("an absent file is not an error").is_none());
+    assert!(
+        cache
+            .lines()
+            .expect("an absent file is not an error")
+            .is_empty()
+    );
+    assert!(
+        cache
+            .read("h", "docs")
+            .expect("an absent file is not an error")
+            .is_none()
+    );
     assert!(!cache.compact().expect("an absent file is not an error"));
     std::fs::remove_dir_all(&root).expect("the scratch directory goes");
 }
