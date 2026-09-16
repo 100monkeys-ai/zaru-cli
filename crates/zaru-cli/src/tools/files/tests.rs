@@ -429,6 +429,45 @@ async fn a_search_answers_on_contents_and_on_filenames() {
     );
 }
 
+/// A conceptual query reaches a declaration even when it is not a literal
+/// substring of one line. The result remains grounded: it is a path, a source
+/// line, and the declaration the caller can immediately read with `fs.read`.
+#[tokio::test]
+async fn a_search_falls_back_to_bounded_structural_code_retrieval() {
+    let scratch = Scratch::new();
+    std::fs::write(
+        scratch.at("turn_clock.rs"),
+        "/// Keeps the elapsed display moving during tool calls.\n\
+         pub async fn refreshTurnClock() {}\n",
+    )
+    .expect("staging: a Rust declaration");
+    std::fs::write(scratch.at("notes.txt"), "tool calls have no syntax tree\n")
+        .expect("staging: ordinary text remains searchable");
+
+    let found = search(&scratch.0, "turn_clock tool calls", roomy()).await;
+    assert_eq!(found.exit_code, 0, "retrieval ran: {}", found.stderr);
+    assert!(
+        found.stdout.contains("symbol:")
+            && found
+                .stdout
+                .contains("turn_clock.rs:2: function refreshTurnClock"),
+        "a structural hit needs a citable declaration, not an opaque score: {}",
+        found.stdout
+    );
+    assert!(
+        found
+            .stdout
+            .contains("elapsed display moving during tool calls"),
+        "the bounded local context which made the conceptual match is absent: {}",
+        found.stdout
+    );
+    assert!(
+        !found.stdout.contains("notes.txt"),
+        "an unsupported text file was misrepresented as a code declaration: {}",
+        found.stdout
+    );
+}
+
 /// **Security corpus.** A file over the caller's ceiling is named as skipped
 /// and its contents are never read.
 ///

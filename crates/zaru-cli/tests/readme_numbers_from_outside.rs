@@ -93,6 +93,12 @@ fn spelled(count: usize) -> &'static str {
         15 => "fifteen",
         16 => "sixteen",
         17 => "seventeen",
+        18 => "eighteen",
+        19 => "nineteen",
+        20 => "twenty",
+        21 => "twenty-one",
+        22 => "twenty-two",
+        23 => "twenty-three",
         other => panic!("the README spells no number as large as {other}"),
     }
 }

@@ -313,21 +313,22 @@ cargo test --workspace
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
-build needs a registry: `Cargo.lock` resolves 327 packages, six of which are
-this workspace's own. The third-party set is sixteen rows in
+build needs a registry: `Cargo.lock` resolves 336 packages, six of which are
+this workspace's own. The third-party set is twenty-three rows in
 `[workspace.dependencies]`: `rmcp` for the Nuclear Notes client with `futures`
 and `sse-stream`, the two types its own transport trait is spelled in;
 `ratatui` and `tui-textarea` for the composer; `pulldown-cmark` for the
 markdown the pane renders; `serde` and `serde_json` for the credential store;
 `aes-gcm` and `keyring` for sealing that store; `toml` for
-`~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`; `regex` and `boon` for
-two of a declared validator's four `expect` kinds; `ignore` for what
+`~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`; `tree-sitter` with its
+Rust, Python, JavaScript/TypeScript, Go and Java grammars for local code
+search; `regex` and `boon` for two of a declared validator's four `expect` kinds; `ignore` for what
 `.gitignore` says about the composer's path corpus; `reqwest` for the provider
 client **and for `web.fetch`, which share one builder** — a second caller for a
 crate already carried rather than a new dependency; and `tokio` for the
 client's channels, for polling that provider's futures, for the binary crate's
 own check that drives a session end to end, and for polling the loop's futures
-under `#[tokio::test]` — and what those sixteen pull in. `boon` needs the URL
+under `#[tokio::test]` — and what those twenty-three pull in. `boon` needs the URL
 and Unicode machinery `$ref` resolution asks for, and would be the largest
 single dependency here had `reqwest` not
 already brought most of it. Which dependencies the harness may carry is
