@@ -344,7 +344,7 @@ pub const NAME_MATCH_PREFIX: &str = "name: ";
 /// than closed with a second ceiling nobody chose.
 ///
 /// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
-pub(crate) fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Captured {
+pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Captured {
     if needle.is_empty() {
         return failed(String::from(
             "the string to search for is empty, which occurs everywhere in every file. fs.search \
@@ -352,7 +352,7 @@ pub(crate) fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Capture
         ));
     }
 
-    let metadata = match std::fs::symlink_metadata(root) {
+    let metadata = match tokio::fs::symlink_metadata(root).await {
         Ok(metadata) => metadata,
         Err(source) => return failed(format!("could not search {}: {source}", root.display())),
     };
@@ -369,7 +369,7 @@ pub(crate) fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Capture
     let mut skipped: Vec<String> = Vec::new();
 
     if metadata.is_file() {
-        consider(root, &metadata, needle, ceiling, &mut found, &mut skipped);
+        consider(root, &metadata, needle, ceiling, &mut found, &mut skipped).await;
     } else {
         // An explicit stack rather than recursion: a tree deep enough to
         // exhaust the stack is a tree a model can name, and a classifier that
@@ -378,7 +378,7 @@ pub(crate) fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Capture
         // existing_ancestor` already carries for its own loop.
         let mut pending = vec![root.to_path_buf()];
         while let Some(directory) = pending.pop() {
-            let reading = match std::fs::read_dir(&directory) {
+            let mut reading = match tokio::fs::read_dir(&directory).await {
                 Ok(reading) => reading,
                 Err(source) => {
                     skipped.push(format!("{}: {source}", directory.display()));
@@ -389,17 +389,24 @@ pub(crate) fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Capture
             // a property of the filesystem, and a search that answers twice
             // in two orders is one a model cannot reason about.
             let mut entries: Vec<std::path::PathBuf> = Vec::new();
-            for entry in reading {
-                match entry {
-                    Ok(entry) => entries.push(entry.path()),
-                    Err(source) => skipped.push(format!("{}: {source}", directory.display())),
+            loop {
+                match reading.next_entry().await {
+                    Ok(Some(entry)) => entries.push(entry.path()),
+                    Ok(None) => break,
+                    Err(source) => {
+                        skipped.push(format!("{}: {source}", directory.display()));
+                        break;
+                    }
                 }
             }
             entries.sort();
             for path in entries {
-                let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-                    skipped.push(format!("{}: could not be read", path.display()));
-                    continue;
+                let metadata = match tokio::fs::symlink_metadata(&path).await {
+                    Ok(metadata) => metadata,
+                    Err(source) => {
+                        skipped.push(format!("{}: {source}", path.display()));
+                        continue;
+                    }
                 };
                 if metadata.file_type().is_symlink() {
                     skipped.push(format!(
@@ -409,7 +416,7 @@ pub(crate) fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Capture
                 } else if metadata.is_dir() {
                     pending.push(path);
                 } else {
-                    consider(&path, &metadata, needle, ceiling, &mut found, &mut skipped);
+                    consider(&path, &metadata, needle, ceiling, &mut found, &mut skipped).await;
                 }
             }
         }
@@ -425,7 +432,7 @@ pub(crate) fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Capture
 }
 
 /// Match one file by name and, where it is small enough to read, by content.
-fn consider(
+async fn consider(
     path: &Path,
     metadata: &std::fs::Metadata,
     needle: &str,
@@ -452,7 +459,7 @@ fn consider(
         return;
     }
 
-    let bytes = match std::fs::read(path) {
+    let bytes = match tokio::fs::read(path).await {
         Ok(bytes) => bytes,
         Err(source) => {
             skipped.push(format!("{}: {source}", path.display()));
