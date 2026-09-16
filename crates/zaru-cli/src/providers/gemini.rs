@@ -541,6 +541,13 @@ impl GeminiClient {
             };
             map::request_from(request, &mut answered)?
         };
+        let needed = map::request_bytes(&body);
+        if needed > self.context_tokens {
+            return Err(GeminiFailure::ContextWindowExceeded {
+                needed,
+                window: self.context_tokens,
+            });
+        }
         let url = self.endpoint.url_for(&self.model);
 
         let mut response = self

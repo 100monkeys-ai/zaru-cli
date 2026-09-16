@@ -468,6 +468,10 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
             status: "INVALID_ARGUMENT".to_owned(),
             detail: "bad request".to_owned(),
         },
+        GeminiFailure::ContextWindowExceeded {
+            needed: 2_413,
+            window: 2_000,
+        },
         GeminiFailure::ToolSchemaUnreadable {
             tool: "fs.read".to_owned(),
             parser: "expected value".to_owned(),
@@ -478,6 +482,56 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
             + u8::from(failure.is_defect());
         assert_eq!(classes, 1, "{failure:?} is in {classes} classes, not one");
     }
+}
+
+#[test]
+fn only_an_explicit_remote_capacity_refusal_is_read_as_context() {
+    let capacity = GeminiFailure::RequestRefused {
+        code: 400,
+        status: "INVALID_ARGUMENT".to_owned(),
+        detail: "request exceeds the maximum context token limit".to_owned(),
+    };
+    assert!(capacity.is_context_refusal());
+
+    let malformed = GeminiFailure::RequestRefused {
+        code: 400,
+        status: "INVALID_ARGUMENT".to_owned(),
+        detail: "function declaration has an invalid schema".to_owned(),
+    };
+    assert!(!malformed.is_context_refusal());
+}
+
+/// The whole native request, including the tool protocol history, is checked
+/// before a socket can be opened. A deliberately unusable endpoint makes a
+/// network attempt distinguishable from the local refusal this asserts.
+#[tokio::test]
+async fn an_oversized_request_is_refused_before_it_reaches_the_network() {
+    let secret = Secret::provider(ProviderKind::Gemini, provider_secret_nonce())
+        .expect("a provider secret is built from a nonce");
+    let client = super::GeminiClient::new(
+        ProviderEndpoint::new("http://127.0.0.1:1").expect("a well-formed endpoint"),
+        model("gemini-3.6-flash"),
+        Alias::new("provider.gemini").expect("a well-formed alias"),
+        secret,
+        1,
+    )
+    .expect("constructing a client does not contact the endpoint");
+    let prompt = prompt("a request that cannot fit one byte");
+
+    let failure = client
+        .exchange(&ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &[],
+        })
+        .await
+        .expect_err("the locally measured request exceeds one byte");
+
+    let GeminiFailure::ContextWindowExceeded { needed, window } = failure else {
+        panic!("the oversized request reached the endpoint instead of being refused locally")
+    };
+    assert!(needed > window);
+    assert_eq!(window, 1);
 }
 
 // Which statuses mean "your key", measured against the documentation rather

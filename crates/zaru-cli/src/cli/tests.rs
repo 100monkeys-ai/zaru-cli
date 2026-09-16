@@ -2577,6 +2577,64 @@ fn a_turn_that_will_not_fit_its_window_is_user_correctable_and_names_the_key() {
     }
 }
 
+/// Provider-native request history is part of the same configured window as
+/// the assembled prompt. It must therefore reach the existing actionable
+/// context presentation rather than becoming a generic classifier defect.
+#[test]
+fn an_in_turn_gemini_context_refusal_names_its_window_and_key() {
+    use crate::failure::{Class, Classified, SessionEvidence};
+    use crate::providers::{GeminiFailure, ProviderFailure, ProviderKind};
+
+    let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let classified = surface.provider_failure(
+        &ProviderFailure::Gemini(GeminiFailure::ContextWindowExceeded {
+            needed: 2413,
+            window: 2000,
+        }),
+        SessionEvidence::NoSessionExists,
+    );
+
+    assert_eq!(classified.class(), Class::UserCorrectable);
+    let Classified::UserCorrectable { statement, remedy } = classified else {
+        unreachable!("the class was asserted above")
+    };
+    assert!(statement.as_str().contains("2413") && statement.as_str().contains("2000"));
+    assert!(remedy.actions().any(|action| {
+        action
+            .lead()
+            .as_str()
+            .contains(ProviderKind::Gemini.context_tokens_key().as_str())
+    }));
+}
+
+#[test]
+fn a_remote_gemini_capacity_refusal_is_actionable_and_preserves_its_safe_reason() {
+    use crate::failure::{Class, Classified, SessionEvidence};
+    use crate::providers::{GeminiFailure, ProviderFailure, ProviderKind};
+
+    let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let classified = surface.provider_failure(
+        &ProviderFailure::Gemini(GeminiFailure::RequestRefused {
+            code: 400,
+            status: "INVALID_ARGUMENT".to_owned(),
+            detail: "request exceeds the maximum context token limit".to_owned(),
+        }),
+        SessionEvidence::NoSessionExists,
+    );
+
+    assert_eq!(classified.class(), Class::UserCorrectable);
+    let Classified::UserCorrectable { statement, remedy } = classified else {
+        unreachable!("the class was asserted above")
+    };
+    assert!(statement.as_str().contains("context token limit"));
+    assert!(remedy.actions().any(|action| {
+        action
+            .lead()
+            .as_str()
+            .contains(ProviderKind::Gemini.context_tokens_key().as_str())
+    }));
+}
+
 /// [ADR-0014] D6 on `provider.<kind>.context_tokens`: a project lowers a
 /// window and may not raise one.
 ///
