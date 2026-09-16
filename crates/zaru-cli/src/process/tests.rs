@@ -23,6 +23,7 @@ use crate::process::environment::{Environment, HARNESS_PREFIX, MINIMUM, NotForAC
 use crate::process::line::{CommandLine, NotACommandLine, REFUSED_CONSTRUCTS};
 use crate::process::spawn::{Ended, SIGNALLED_EXIT_BASE, Spawn, SpawnFailure};
 use crate::tools::fixtures::ScratchTree;
+use crate::tools::port::Subprocess as _;
 use crate::tools::tree::WorkingDirectory;
 use core::time::Duration;
 
@@ -602,6 +603,42 @@ async fn a_program_that_will_not_start_names_itself() {
     assert!(
         failure.to_string().contains(ascii_core(&missing)),
         "the failure does not name the program, so a reader cannot tell which command to fix: {failure}"
+    );
+}
+
+/// A missing `cmd.run` program is a failed tool result, not a failed turn.
+///
+/// The model can read the command and PATH remedy from stderr and try a
+/// different command; carrying it as a tools-port failure would instead make
+/// the outer classifier call it a harness defect and stop the turn.
+#[tokio::test]
+async fn a_missing_cmd_run_program_stays_in_the_tool_result_channel() {
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let spawn = Spawn::new(
+        &working,
+        Environment::inherited_minimum().expect("the five"),
+        generous(),
+    );
+    let missing = awkward_nonce("no-such-command");
+
+    let captured = spawn
+        .run(&CommandLine::of(&missing, []).expect("a command line"))
+        .await
+        .expect("a missing program is reported to the tool caller");
+
+    assert_eq!(
+        captured.exit_code, 127,
+        "a missing program did not carry the shell command-not-found status"
+    );
+    assert!(
+        captured.stdout.is_empty(),
+        "a program that never started wrote stdout"
+    );
+    assert!(
+        captured.stderr.contains(ascii_core(&missing)) && captured.stderr.contains("PATH"),
+        "the tool result did not name the missing command and its remedy: {:?}",
+        captured.stderr
     );
 }
 

@@ -62,7 +62,7 @@
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
 use crate::process::line::CommandLine;
-use crate::process::spawn::{Outcome, Spawn};
+use crate::process::spawn::{Outcome, Spawn, SpawnFailure};
 use crate::tools::output::Captured;
 use crate::tools::port::Subprocess;
 use core::future::Future;
@@ -105,10 +105,20 @@ impl Subprocess for Spawn<'_> {
     /// the same signature: the compiler checks the `Send` bound on the future
     /// this produces, so nothing is weakened by spelling it the short way.
     async fn run(&self, line: &CommandLine) -> Result<Captured, PortFailure> {
-        self.execute(line)
-            .await
-            .map(captured)
-            .map_err(|failure| PortFailure::new(failure.to_string()))
+        match self.execute(line).await {
+            Ok(outcome) => Ok(captured(outcome)),
+            // A missing program is a property of the command the model chose,
+            // not an infrastructure failure. Keep it in the ordinary tool
+            // result channel so the model sees the actionable PATH/install
+            // explanation and can choose another command on its next exchange.
+            // `127` is the shell convention for a command that was not found.
+            Err(failure @ SpawnFailure::CouldNotStart { .. }) => Ok(Captured {
+                exit_code: 127,
+                stdout: String::new(),
+                stderr: failure.to_string(),
+            }),
+            Err(failure @ SpawnFailure::Lost { .. }) => Err(PortFailure::new(failure.to_string())),
+        }
     }
 }
 
