@@ -5403,8 +5403,8 @@ fn arming_and_disarming_write_the_bracketed_paste_sequences() {
     crate::terminal::driver::arm(&mut armed).expect("a vector never fails to be written to");
     assert_eq!(
         String::from_utf8(armed.clone()).expect("the sequence is ASCII"),
-        "\u{1b}[?2004h",
-        "arming wrote {:?}, and a terminal that was not asked frames no paste",
+        "\u{1b}[?2004h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1015h\u{1b}[?1006h",
+        "arming wrote {:?}, and a terminal that was not asked reports wheel movement as arrows",
         String::from_utf8_lossy(&armed)
     );
 
@@ -5412,9 +5412,9 @@ fn arming_and_disarming_write_the_bracketed_paste_sequences() {
     crate::terminal::driver::disarm(&mut disarmed);
     assert_eq!(
         String::from_utf8(disarmed.clone()).expect("the sequence is ASCII"),
-        "\u{1b}[?2004l",
-        "disarming wrote {:?}, and a terminal left armed tells every later program that a paste \
-         is bracketed",
+        "\u{1b}[?1006l\u{1b}[?1015l\u{1b}[?1003l\u{1b}[?1002l\u{1b}[?1000l\u{1b}[?2004l",
+        "disarming wrote {:?}, and a terminal left armed tells every later program that wheel \
+         movement is input",
         String::from_utf8_lossy(&disarmed)
     );
 }

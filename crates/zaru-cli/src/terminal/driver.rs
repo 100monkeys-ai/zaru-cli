@@ -3890,7 +3890,11 @@ impl Crossterm {
 ///
 /// When the sequence cannot be written to the terminal.
 pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
-    ratatui::crossterm::execute!(out, ratatui::crossterm::event::EnableBracketedPaste)
+    ratatui::crossterm::execute!(
+        out,
+        ratatui::crossterm::event::EnableBracketedPaste,
+        ratatui::crossterm::event::EnableMouseCapture,
+    )
 }
 
 /// Stop asking, on the way out. See [`arm`].
@@ -3902,7 +3906,11 @@ pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
 /// one that will not take the alternate screen's either, which
 /// `ratatui::restore` is about to try anyway.
 pub(crate) fn disarm(out: &mut impl std::io::Write) {
-    let _ = ratatui::crossterm::execute!(out, ratatui::crossterm::event::DisableBracketedPaste);
+    let _ = ratatui::crossterm::execute!(
+        out,
+        ratatui::crossterm::event::DisableMouseCapture,
+        ratatui::crossterm::event::DisableBracketedPaste,
+    );
 }
 
 impl Restore for Crossterm {
