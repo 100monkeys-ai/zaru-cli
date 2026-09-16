@@ -69,6 +69,19 @@ pub enum GeminiFailure {
         /// here. See [`GeminiFailure::redacted_detail`].
         detail: String,
     },
+    /// The complete request for the next exchange would exceed this
+    /// provider's configured context window.
+    ///
+    /// This is checked before I/O. `needed` is the complete native request
+    /// measured in the conservative byte accounting used for context windows,
+    /// including the provider-required prior model turns and every tool
+    /// result accumulated in this turn.
+    ContextWindowExceeded {
+        /// Bytes the next request needs.
+        needed: u64,
+        /// Configured capacity for this provider.
+        window: u64,
+    },
     /// The provider failed on its own side, or was unreachable.
     Unavailable {
         /// The HTTP status, or `None` when the exchange never got one.
@@ -148,6 +161,11 @@ impl fmt::Display for GeminiFailure {
                  {detail}. Nothing the reader typed produced that shape -- this harness built \
                  the request",
             ),
+            Self::ContextWindowExceeded { needed, window } => write!(
+                f,
+                "the next provider request needs {needed} byte(s), exceeding this provider's \
+                 configured context window of {window} token(s); it was not sent",
+            ),
             Self::Unavailable { code, detail } => match code {
                 Some(code) => write!(f, "the provider answered HTTP {code}: {detail}"),
                 None => write!(f, "the provider could not be reached: {detail}"),
@@ -215,7 +233,10 @@ impl GeminiFailure {
     /// asserts the mapping — cannot disagree about which class a failure is.
     #[must_use]
     pub const fn is_user_correctable(&self) -> bool {
-        matches!(self, Self::CredentialRejected { .. })
+        matches!(
+            self,
+            Self::CredentialRejected { .. } | Self::ContextWindowExceeded { .. }
+        )
     }
 
     /// Whether this is environmental, per ADR-0016 D1.
@@ -234,6 +255,26 @@ impl GeminiFailure {
                 | Self::ToolSchemaUnreadable { .. }
                 | Self::ResultsDoNotMatchCalls { .. }
         )
+    }
+
+    /// Whether a redacted remote 4xx explicitly says the request exceeded a
+    /// context or token capacity.
+    ///
+    /// A malformed shape is this client's defect. A provider that names a
+    /// capacity limit is instead describing the configured model boundary;
+    /// the surface can direct the reader to its context-window setting. The
+    /// marker is deliberately narrow: ordinary 400s keep their defect class.
+    #[must_use]
+    pub fn is_context_refusal(&self) -> bool {
+        let Self::RequestRefused { detail, .. } = self else {
+            return false;
+        };
+        let detail = detail.to_ascii_lowercase();
+        (detail.contains("context") || detail.contains("token"))
+            && (detail.contains("exceed")
+                || detail.contains("maximum")
+                || detail.contains("limit")
+                || detail.contains("too large"))
     }
 
     /// Which of AIP-193's statuses mean the credential was rejected.

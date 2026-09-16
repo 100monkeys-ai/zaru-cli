@@ -1869,6 +1869,14 @@ impl Surface<'_> {
                 failure,
                 run("replace the key", &format!("providers keys add {kind}")),
             ),
+            F::ContextWindowExceeded { needed, window } => {
+                Self::context_window_exceeded(*needed, *window, ProviderKind::Gemini)
+            }
+            F::RequestRefused { .. } if failure.is_context_refusal() => correctable(
+                failure,
+                act(SET_THE_WINDOW_OR_READ_LESS
+                    .replace("{key}", ProviderKind::Gemini.context_tokens_key().as_str())),
+            ),
             // "5xx, or the socket never opened -- environmental: nothing the
             // reader typed caused it and nothing they type fixes it."
             //

@@ -271,6 +271,17 @@ pub fn request_from(
     })
 }
 
+/// How many bytes the complete Gemini-native request occupies on the wire.
+///
+/// The context subsystem deliberately uses byte accounting as its conservative
+/// upper bound for provider tokens. Measuring the serialized request here is
+/// the only way to include model-call records that Gemini requires the client
+/// to retain between tool exchanges.
+#[must_use]
+pub fn request_bytes(request: &wire::Request) -> u64 {
+    serde_json::to_string(request).map_or(0, |rendered| rendered.len() as u64)
+}
+
 /// This kind's wire shape for a set of tool descriptors.
 ///
 /// **One spelling, called twice**: by [`request_from`], which sends them, and
