@@ -367,9 +367,19 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
 
     let mut found: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut symbols = Vec::new();
 
     if metadata.is_file() {
-        consider(root, &metadata, needle, ceiling, &mut found, &mut skipped).await;
+        consider(
+            root,
+            &metadata,
+            needle,
+            ceiling,
+            &mut found,
+            &mut skipped,
+            &mut symbols,
+        )
+        .await;
     } else {
         // An explicit stack rather than recursion: a tree deep enough to
         // exhaust the stack is a tree a model can name, and a classifier that
@@ -416,12 +426,24 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
                 } else if metadata.is_dir() {
                     pending.push(path);
                 } else {
-                    consider(&path, &metadata, needle, ceiling, &mut found, &mut skipped).await;
+                    consider(
+                        &path,
+                        &metadata,
+                        needle,
+                        ceiling,
+                        &mut found,
+                        &mut skipped,
+                        &mut symbols,
+                    )
+                    .await;
                 }
             }
         }
     }
 
+    if found.is_empty() {
+        found = crate::tools::codebase::retrieve(&symbols, needle);
+    }
     found.sort();
     skipped.sort();
     Captured {
@@ -439,6 +461,7 @@ async fn consider(
     ceiling: SizeCeiling,
     found: &mut Vec<String>,
     skipped: &mut Vec<String>,
+    symbols: &mut Vec<crate::tools::codebase::Symbol>,
 ) {
     if path
         .file_name()
@@ -473,6 +496,7 @@ async fn consider(
         ));
         return;
     };
+    crate::tools::codebase::collect(path, &text, symbols);
     for (at, line) in text.lines().enumerate() {
         if line.contains(needle) {
             found.push(format!("{}:{}: {line}", path.display(), at + 1));
