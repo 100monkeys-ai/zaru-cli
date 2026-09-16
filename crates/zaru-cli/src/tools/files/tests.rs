@@ -429,6 +429,44 @@ async fn a_search_answers_on_contents_and_on_filenames() {
     );
 }
 
+/// Build output and Git metadata are not source context. Walking either makes
+/// a code search depend on the size of a prior build and can flood the model
+/// with skipped binary-file notices before it receives a useful result.
+#[tokio::test]
+async fn a_search_prunes_build_artifacts_and_repository_metadata() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.at("target/debug/deps")).expect("staging: build output");
+    std::fs::create_dir_all(scratch.at(".git/objects")).expect("staging: repository metadata");
+    std::fs::write(scratch.at("src.rs"), "const NEEDLE: &str = \"source\";\n")
+        .expect("staging: source file");
+    std::fs::write(
+        scratch.at("target/debug/deps/generated.rs"),
+        "const NEEDLE: &str = \"build output\";\n",
+    )
+    .expect("staging: generated file");
+    std::fs::write(scratch.at(".git/objects/index"), "NEEDLE in metadata\n")
+        .expect("staging: metadata file");
+
+    let found = search(&scratch.0, "NEEDLE", roomy()).await;
+
+    assert_eq!(found.exit_code, 0, "search ran: {}", found.stderr);
+    assert!(
+        found.stdout.contains("src.rs:1: const NEEDLE"),
+        "the ordinary source sibling was not searched: {}",
+        found.stdout
+    );
+    assert!(
+        !found.stdout.contains("generated.rs") && !found.stdout.contains(".git/objects"),
+        "build output or repository metadata reached the model: {}",
+        found.stdout
+    );
+    assert!(
+        !found.stderr.contains("generated.rs") && !found.stderr.contains(".git/objects"),
+        "a pruned tree produced a skipped-file flood: {}",
+        found.stderr
+    );
+}
+
 /// A conceptual query reaches a declaration even when it is not a literal
 /// substring of one line. The result remains grounded: it is a path, a source
 /// line, and the declaration the caller can immediately read with `fs.read`.

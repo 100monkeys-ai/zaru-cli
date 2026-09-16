@@ -311,6 +311,14 @@ mod tests;
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub const NAME_MATCH_PREFIX: &str = "name: ";
 
+/// Directory entries that are repository metadata or reproducible build output,
+/// rather than project source.
+///
+/// These are pruned only while walking a parent. A reader who explicitly
+/// addresses one as the search root still receives the ordinary filesystem
+/// answer for that root.
+const PRUNED_DIRECTORIES: [&str; 2] = [".git", "target"];
+
 /// Content and filename search. `fs.search`.
 ///
 /// # The vocabulary here is deliberately the smallest one that answers D1
@@ -336,12 +344,13 @@ pub const NAME_MATCH_PREFIX: &str = "name: ";
 ///   matched on its name, because emitting undecodable bytes into a model's
 ///   prompt is a different decision from finding a literal in them.
 ///
-/// # What is not bounded
+/// # What is bounded
 ///
-/// The ceiling bounds one file. **Nothing bounds the walk**: a search rooted
-/// at a huge tree reads every file under it, and `cmd.run`'s wall-clock
-/// ceiling has no counterpart here. Named as a hazard on ADR-0011 D5 rather
-/// than closed with a second ceiling nobody chose.
+/// The ceiling bounds one file, and the walk prunes `.git` metadata and
+/// `target` build output before it opens an entry beneath either. Those trees
+/// are neither project source nor useful model context; traversing them makes
+/// a source query proportional to a previous build and can produce a larger
+/// skipped-file report than the codebase itself.
 ///
 /// [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> Captured {
@@ -418,6 +427,9 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
                         continue;
                     }
                 };
+                if metadata.is_dir() && is_pruned_directory(&path) {
+                    continue;
+                }
                 if metadata.file_type().is_symlink() {
                     skipped.push(format!(
                         "{}: a symbolic link, which is not followed",
@@ -451,6 +463,14 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
         stdout: found.join("\n"),
         stderr: skipped.join("\n"),
     }
+}
+
+/// Whether a child directory is build output or repository machinery that a
+/// source-tree search deliberately does not descend into.
+fn is_pruned_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| PRUNED_DIRECTORIES.contains(&name))
 }
 
 /// Match one file by name and, where it is small enough to read, by content.
