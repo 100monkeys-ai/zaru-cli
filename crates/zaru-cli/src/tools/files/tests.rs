@@ -432,8 +432,8 @@ async fn a_search_answers_on_contents_and_on_filenames() {
 /// A conceptual query reaches a declaration even when it is not a literal
 /// substring of one line. The result remains grounded: it is a path, a source
 /// line, and the declaration the caller can immediately read with `fs.read`.
-#[test]
-fn a_search_falls_back_to_bounded_structural_code_retrieval() {
+#[tokio::test]
+async fn a_search_falls_back_to_bounded_structural_code_retrieval() {
     let scratch = Scratch::new();
     std::fs::write(
         scratch.at("turn_clock.rs"),
@@ -444,7 +444,7 @@ fn a_search_falls_back_to_bounded_structural_code_retrieval() {
     std::fs::write(scratch.at("notes.txt"), "tool calls have no syntax tree\n")
         .expect("staging: ordinary text remains searchable");
 
-    let found = search(&scratch.0, "turn_clock tool calls", roomy());
+    let found = search(&scratch.0, "turn_clock tool calls", roomy()).await;
     assert_eq!(found.exit_code, 0, "retrieval ran: {}", found.stderr);
     assert!(
         found.stdout.contains("symbol:")
