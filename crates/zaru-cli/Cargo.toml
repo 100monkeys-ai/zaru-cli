@@ -139,6 +139,13 @@ ignore = { workspace = true }
 # is left is `crossterm` itself, `parking_lot`, `signal-hook` and the `winapi`
 # shims no Linux build compiles.
 ratatui = { workspace = true, features = ["crossterm"] }
+tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-go = { workspace = true }
+tree-sitter-java = { workspace = true }
 
 [dev-dependencies]
 # The two halves of the outside-caller check in `tests/notes_scope_from_outside.rs`,

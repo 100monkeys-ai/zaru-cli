@@ -92,6 +92,18 @@ serde_json = { version = "1.0.151", default-features = false, features = [
     "std",
 ] }
 
+# ADR-0003 amendment 7: local concrete-syntax parsing for ADR-0035.  These
+# grammars compile into the binary and parse bytes already admitted by the
+# filesystem boundary; none opens a network connection or downloads grammar
+# data at runtime.
+tree-sitter = { version = "0.25.10", default-features = false }
+tree-sitter-rust = "0.24.2"
+tree-sitter-python = "0.23.6"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-go = "0.23.4"
+tree-sitter-java = "0.23.5"
+
 # `rmcp` is D2's first row: the official MCP SDK, and the whole reason
 # `zaru-notes` exists. Default features are off because they are
 # `[base64, macros, server]` and `server` is the wrong half for a client --

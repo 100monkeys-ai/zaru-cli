@@ -1,126 +1,237 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Local structural retrieval for [`super::files::search`].
+//! Parser-backed local code retrieval for [`super::files::search`].
 //!
-//! This is intentionally an in-memory index, not a cache and not an embedding
-//! store. It is built from bytes the search has already been permitted to read
-//! and dropped with the call. The extractors are explicit: a file is either a
-//! supported declaration grammar or ordinary text. Calling a line-oriented
-//! declaration extractor an AST would be dishonest; it is the portable
-//! structural layer on which language AST adapters can be added without
-//! changing the filesystem boundary or result contract.
+//! Every structural fact here comes from a Tree-sitter concrete syntax tree.
+//! A source file that does not parse is not given a guessed declaration.
 
 use std::path::Path;
+use tree_sitter::{Language, Node, Parser};
 
-/// One grounded declaration available to a query.
+/// A citable declaration, import, or reference from a concrete syntax tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Symbol {
     path: String,
     line: usize,
     kind: &'static str,
     name: String,
-    signature: String,
+    scope: String,
     context: String,
 }
 
 impl Symbol {
     fn render(&self) -> String {
+        let scope = (!self.scope.is_empty()).then(|| format!(" in {}", self.scope));
         format!(
-            "symbol: {}:{}: {} {} — {}",
-            self.path, self.line, self.kind, self.name, self.context
+            "symbol: {}:{}: {} {}{} — {}",
+            self.path,
+            self.line,
+            self.kind,
+            self.name,
+            scope.unwrap_or_default(),
+            self.context
         )
     }
 }
 
-/// Add the declarations in one supported source file to `symbols`.
+/// Parse one supported file and collect only tree-derived facts.
 pub(crate) fn collect(path: &Path, text: &str, symbols: &mut Vec<Symbol>) {
-    let Some(language) = path.extension().and_then(|extension| extension.to_str()) else {
+    let Some(language) = language_for(path) else {
         return;
     };
-    if !matches!(
-        language,
-        "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "go" | "java"
-    ) {
+    let mut parser = Parser::new();
+    if parser.set_language(&language).is_err() {
         return;
     }
-    for (offset, raw) in text.lines().enumerate() {
-        let line = raw.trim();
-        let declaration = match language {
-            "rs" => rust_declaration(line),
-            "py" => python_declaration(line),
-            "js" | "jsx" | "ts" | "tsx" => javascript_declaration(line),
-            "go" => go_declaration(line),
-            "java" => java_declaration(line),
-            _ => None,
-        };
-        if let Some((kind, name)) = declaration {
-            let signature = compact(line);
-            let context = nearby_context(text, offset, &signature);
-            symbols.push(Symbol {
-                path: path.display().to_string(),
-                line: offset + 1,
-                kind,
-                name: name.to_owned(),
-                signature,
-                context,
-            });
-        }
+    let Some(tree) = parser.parse(text, None) else {
+        return;
+    };
+    if tree.root_node().has_error() {
+        return;
     }
+    visit(tree.root_node(), text, path, "", symbols);
 }
 
-/// Return bounded, deterministic structural retrieval results.
+/// Return the twelve highest-scoring deterministic structural results.
 pub(crate) fn retrieve(symbols: &[Symbol], query: &str) -> Vec<String> {
-    const LIMIT: usize = 12;
-    let terms = terms(query);
-    if terms.is_empty() {
+    let query = terms(query);
+    if query.is_empty() {
         return Vec::new();
     }
     let mut ranked: Vec<(usize, &Symbol)> = symbols
         .iter()
-        .filter_map(|symbol| score(symbol, &terms).map(|score| (score, symbol)))
+        .filter_map(|symbol| score(symbol, &query).map(|score| (score, symbol)))
         .collect();
-    ranked.sort_by(|(left_score, left), (right_score, right)| {
-        right_score
-            .cmp(left_score)
+    ranked.sort_by(|(ls, left), (rs, right)| {
+        rs.cmp(ls)
             .then_with(|| left.path.cmp(&right.path))
             .then_with(|| left.line.cmp(&right.line))
             .then_with(|| left.name.cmp(&right.name))
     });
     ranked
         .into_iter()
-        .take(LIMIT)
+        .take(12)
         .map(|(_, symbol)| symbol.render())
         .collect()
 }
 
+fn language_for(path: &Path) -> Option<Language> {
+    Some(match path.extension()?.to_str()? {
+        "rs" => tree_sitter_rust::LANGUAGE.into(),
+        "py" => tree_sitter_python::LANGUAGE.into(),
+        "js" | "jsx" => tree_sitter_javascript::LANGUAGE.into(),
+        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        "go" => tree_sitter_go::LANGUAGE.into(),
+        "java" => tree_sitter_java::LANGUAGE.into(),
+        _ => return None,
+    })
+}
+
+fn visit(node: Node<'_>, text: &str, path: &Path, scope: &str, symbols: &mut Vec<Symbol>) {
+    let kind = node_kind(node.kind());
+    let name = node
+        .child_by_field_name("name")
+        .and_then(|node| node_text(node, text));
+    let next_scope = if let (Some(kind), Some(name)) = (kind, name) {
+        push(path, node, kind, name, scope, text, symbols);
+        if matches!(kind, "import" | "reference") {
+            scope.to_owned()
+        } else {
+            join_scope(scope, name)
+        }
+    } else if is_import(node.kind()) {
+        let import = compact(node_text(node, text).unwrap_or_default());
+        if !import.is_empty() {
+            push(path, node, "import", &import, scope, text, symbols);
+        }
+        scope.to_owned()
+    } else if node.kind() == "identifier" && is_reference(node) {
+        if let Some(name) = node_text(node, text) {
+            push(path, node, "reference", name, scope, text, symbols);
+        }
+        scope.to_owned()
+    } else {
+        scope.to_owned()
+    };
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit(child, text, path, &next_scope, symbols);
+    }
+}
+
+fn node_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "function_item"
+        | "function_definition"
+        | "function_declaration"
+        | "method_declaration"
+        | "method_definition" => "function",
+        "struct_item" | "class_definition" | "class_declaration" => "class",
+        "enum_item" | "enum_declaration" => "enum",
+        "trait_item" | "interface_declaration" => "interface",
+        "impl_item" => "implementation",
+        "mod_item" | "module" => "module",
+        "type_item" | "type_alias_declaration" | "type_declaration" => "type",
+        "const_item" => "constant",
+        _ => return None,
+    })
+}
+
+fn is_import(kind: &str) -> bool {
+    matches!(
+        kind,
+        "use_declaration"
+            | "import_statement"
+            | "import_from_statement"
+            | "import_declaration"
+            | "package_clause"
+    )
+}
+fn is_reference(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    parent
+        .child_by_field_name("name")
+        .is_none_or(|name| name.id() != node.id())
+}
+fn push(
+    path: &Path,
+    node: Node<'_>,
+    kind: &'static str,
+    name: &str,
+    scope: &str,
+    text: &str,
+    symbols: &mut Vec<Symbol>,
+) {
+    symbols.push(Symbol {
+        path: path.display().to_string(),
+        line: node.start_position().row + 1,
+        kind,
+        name: name.to_owned(),
+        scope: scope.to_owned(),
+        context: excerpt(node, text),
+    });
+}
+fn node_text<'a>(node: Node<'_>, text: &'a str) -> Option<&'a str> {
+    text.get(node.byte_range())
+}
+fn join_scope(scope: &str, name: &str) -> String {
+    if scope.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{scope}::{name}")
+    }
+}
+fn compact(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+fn excerpt(node: Node<'_>, text: &str) -> String {
+    let start = node.start_position().row;
+    let leading = text
+        .lines()
+        .skip(start.saturating_sub(3))
+        .take(start.saturating_sub(start.saturating_sub(3)))
+        .map(str::trim)
+        .filter(|line| line.starts_with("///") || line.starts_with("//") || line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{leading} {}",
+        node_text(node, text).map(compact).unwrap_or_default()
+    )
+    .chars()
+    .take(240)
+    .collect()
+}
 fn score(symbol: &Symbol, query: &[String]) -> Option<usize> {
     let name = terms(&symbol.name);
-    let signature = terms(&symbol.signature);
+    let scope = terms(&symbol.scope);
     let context = terms(&symbol.context);
     let path = terms(&symbol.path);
     let mut score = 0;
     for term in query {
         let in_name = name.iter().any(|value| value == term);
-        let in_signature = signature.iter().any(|value| value == term);
+        let in_scope = scope.iter().any(|value| value == term);
         let in_context = context.iter().any(|value| value == term);
         let in_path = path.iter().any(|value| value == term);
-        if !(in_name || in_signature || in_context || in_path) {
+        if !(in_name || in_scope || in_context || in_path) {
             return None;
         }
         score += if in_name {
             16
-        } else if in_signature {
-            8
+        } else if in_scope {
+            10
         } else if in_context {
-            4
+            5
         } else {
             2
         };
     }
     Some(score)
 }
-
 fn terms(value: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
@@ -149,140 +260,47 @@ fn terms(value: &str) -> Vec<String> {
     words
 }
 
-fn nearby_context(text: &str, declaration_line: usize, signature: &str) -> String {
-    const CONTEXT_LINES: usize = 3;
-    const CONTEXT_BYTES: usize = 240;
-    let context = text
-        .lines()
-        .skip(declaration_line.saturating_sub(CONTEXT_LINES))
-        .take(CONTEXT_LINES * 2 + 1)
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let context = if context.is_empty() {
-        signature.to_owned()
-    } else {
-        context
-    };
-    context.chars().take(CONTEXT_BYTES).collect()
-}
-
-fn compact(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-fn after<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
-    line.strip_prefix(prefix).and_then(identifier)
-}
-fn identifier(value: &str) -> Option<&str> {
-    let end = value
-        .char_indices()
-        .take_while(|(_, character)| character.is_ascii_alphanumeric() || *character == '_')
-        .last()
-        .map_or(0, |(index, character)| index + character.len_utf8());
-    (end > 0).then_some(&value[..end])
-}
-fn rust_declaration(line: &str) -> Option<(&'static str, &str)> {
-    for (prefix, kind) in [
-        ("pub async fn ", "function"),
-        ("pub fn ", "function"),
-        ("async fn ", "function"),
-        ("fn ", "function"),
-        ("pub struct ", "struct"),
-        ("struct ", "struct"),
-        ("pub enum ", "enum"),
-        ("enum ", "enum"),
-        ("pub trait ", "trait"),
-        ("trait ", "trait"),
-        ("pub mod ", "module"),
-        ("mod ", "module"),
-        ("pub type ", "type"),
-        ("type ", "type"),
-        ("impl ", "implementation"),
-    ] {
-        if let Some(name) = after(line, prefix) {
-            return Some((kind, name));
-        }
-    }
-    None
-}
-fn python_declaration(line: &str) -> Option<(&'static str, &str)> {
-    after(line, "async def ")
-        .map(|name| ("function", name))
-        .or_else(|| after(line, "def ").map(|name| ("function", name)))
-        .or_else(|| after(line, "class ").map(|name| ("class", name)))
-}
-fn javascript_declaration(line: &str) -> Option<(&'static str, &str)> {
-    for (prefix, kind) in [
-        ("export async function ", "function"),
-        ("export function ", "function"),
-        ("async function ", "function"),
-        ("function ", "function"),
-        ("export class ", "class"),
-        ("class ", "class"),
-        ("export interface ", "interface"),
-        ("interface ", "interface"),
-        ("export type ", "type"),
-        ("type ", "type"),
-    ] {
-        if let Some(name) = after(line, prefix) {
-            return Some((kind, name));
-        }
-    }
-    None
-}
-fn go_declaration(line: &str) -> Option<(&'static str, &str)> {
-    after(line, "func ")
-        .map(|name| ("function", name))
-        .or_else(|| after(line, "type ").map(|name| ("type", name)))
-}
-fn java_declaration(line: &str) -> Option<(&'static str, &str)> {
-    for (prefix, kind) in [
-        ("public class ", "class"),
-        ("class ", "class"),
-        ("public interface ", "interface"),
-        ("interface ", "interface"),
-        ("public enum ", "enum"),
-        ("enum ", "enum"),
-    ] {
-        if let Some(name) = after(line, prefix) {
-            return Some((kind, name));
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::{collect, retrieve};
     use std::path::Path;
     #[test]
-    fn a_normalised_concept_query_returns_a_grounded_rust_declaration() {
+    fn tree_sitter_returns_a_scoped_rust_declaration_and_reference() {
         let mut symbols = Vec::new();
         collect(
-            Path::new("src/turn_clock.rs"),
-            "/// Refreshes elapsed time during tool calls.\npub async fn refreshTurnClock() {}",
+            Path::new("src/clock.rs"),
+            "mod turn_clock { pub fn refreshTurnClock() { refreshTurnClock(); } }",
             &mut symbols,
         );
-        assert_eq!(
-            retrieve(&symbols, "turn_clock tool calls"),
-            vec![
-                "symbol: src/turn_clock.rs:2: function refreshTurnClock — /// Refreshes elapsed time during tool calls. pub async fn refreshTurnClock() {}"
-            ]
+        let hit = retrieve(&symbols, "turn_clock refresh").join("\n");
+        assert!(
+            hit.contains("function refreshTurnClock in turn_clock"),
+            "{hit}"
         );
+        assert!(hit.contains("reference refreshTurnClock"), "{hit}");
     }
     #[test]
-    fn ranking_is_deterministic_and_bounded() {
+    fn a_syntax_error_is_not_promoted_to_a_guessed_symbol() {
         let mut symbols = Vec::new();
-        for number in 0..20 {
-            collect(
-                Path::new("src/search.rs"),
-                &format!("fn search_{number}() {{}}"),
-                &mut symbols,
-            );
-        }
-        let first = retrieve(&symbols, "search");
-        assert_eq!(first, retrieve(&symbols, "search"));
-        assert_eq!(first.len(), 12);
+        collect(
+            Path::new("broken.rs"),
+            "fn not actually valid(",
+            &mut symbols,
+        );
+        assert!(symbols.is_empty());
+    }
+    #[test]
+    fn typescript_is_parsed_by_its_own_grammar() {
+        let mut symbols = Vec::new();
+        collect(
+            Path::new("view.ts"),
+            "export interface TurnClock { refreshTurnClock(): void }",
+            &mut symbols,
+        );
+        assert!(
+            retrieve(&symbols, "turn clock")
+                .join("\n")
+                .contains("interface TurnClock")
+        );
     }
 }
