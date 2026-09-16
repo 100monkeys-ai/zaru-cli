@@ -2437,13 +2437,24 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
             core::future::ready(())
         }
     }
+    impl zaru_core::iteration::Clock for Counted {
+        fn now(&self) -> core::time::Duration {
+            crate::terminal::source::TICK
+                * u32::try_from(self.0.load(Ordering::SeqCst)).expect("the staged beat count fits")
+        }
+    }
 
     let mut shell = shell();
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
     let pace = Counted(Arc::clone(&beats));
     let painted = {
-        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
+        let pane = std::sync::Mutex::new(TurnPane::metered_during(
+            &mut shell,
+            &mut surface,
+            &pace,
+            core::time::Duration::ZERO,
+        ));
         let confirm = PaneConfirm::over(&pane, &source, &pace);
         confirm
             .confirm(&Question {
@@ -2466,6 +2477,14 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
          blocked on the channel instead of pacing could not have got here",
         beats.load(Ordering::SeqCst)
     );
+    let rows = status_rows(&surface);
+    for beat in 1..=3 {
+        let expected = crate::terminal::vocabulary::seconds(crate::terminal::source::TICK * beat);
+        assert!(
+            rows.iter().any(|row| row.contains(&expected)),
+            "the standing question never painted {expected:?}; its rows were {rows:#?}"
+        );
+    }
     // One frame for the question, then one per beat waited, then one for the
     // answer. The floor is what discriminates a loop that painted once.
     assert!(

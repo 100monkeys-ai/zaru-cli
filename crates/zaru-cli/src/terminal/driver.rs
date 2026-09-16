@@ -500,6 +500,13 @@ pub struct Pane<'a, S: Surface + Send> {
     /// down. `SystemClock` holds an `Instant` and satisfies it; a clock that
     /// did not could not be borrowed by a turn at all.
     clock: &'a (dyn zaru_core::iteration::Clock + Sync),
+    /// The meter's start, when this pane is rendering a live turn.
+    ///
+    /// A permission question is answered synchronously inside a tool call,
+    /// while the race that normally drives [`Meter`] is suspended. Keeping
+    /// this one number on the pane lets that question refresh the same
+    /// turn-wide elapsed figure on each of its beats.
+    meter_started: Option<Duration>,
     /// When the exchange now generating began, or `None` between exchanges.
     ///
     /// `Some` means an exchange is in flight and has produced no text yet, so
@@ -543,6 +550,29 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
             surface,
             first_failure: None,
             clock,
+            meter_started: None,
+            generating_since: None,
+            said_generating: false,
+        }
+    }
+
+    /// Borrow a shell and terminal for a turn whose meter has already begun.
+    ///
+    /// The caller supplies [`Meter::started`]'s exact reading so the normal
+    /// asynchronous race and a synchronous permission question measure one
+    /// uninterrupted span.
+    pub(crate) fn metered_during(
+        shell: &'a mut Shell,
+        surface: &'a mut S,
+        clock: &'a (dyn zaru_core::iteration::Clock + Sync),
+        meter_started: Duration,
+    ) -> Self {
+        Self {
+            shell,
+            surface,
+            first_failure: None,
+            clock,
+            meter_started: Some(meter_started),
             generating_since: None,
             said_generating: false,
         }
@@ -659,6 +689,18 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
         {
             self.said_generating = true;
             self.say_still_generating();
+        }
+        self.paint();
+    }
+
+    /// Refresh the live turn's elapsed figure while a synchronous permission
+    /// question owns the event loop.
+    fn tick_confirmation(&mut self) {
+        if let Some(started) = self.meter_started {
+            self.shell
+                .set_elapsed(Some(crate::terminal::vocabulary::seconds(
+                    self.clock.now().saturating_sub(started),
+                )));
         }
         self.paint();
     }
@@ -952,7 +994,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
         })?;
 
         pane.shell.ask(question_for_the_shell(question));
-        pane.paint();
+        pane.tick_confirmation();
 
         // A standing question takes every key: `Shell::key` gives the composer
         // nothing while one stands, so this cannot be typed past.
@@ -982,7 +1024,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                 // rather than a wildcard so that a third kind of event cannot
                 // arrive here already decided.
                 Taken::Struck(Struck::Pasted(_)) => {
-                    pane.paint();
+                    pane.tick_confirmation();
                     self.pace.wait();
                     continue;
                 }
@@ -993,7 +1035,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                 // terminal that lost its screen recovers here as it does
                 // there.
                 Taken::Nothing => {
-                    pane.paint();
+                    pane.tick_confirmation();
                     self.pace.wait();
                     continue;
                 }
@@ -1014,7 +1056,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
             let acted = pane
                 .shell
                 .key(input, region, now, &NoEntries, &NoVocabulary, &NoPaths);
-            pane.paint();
+            pane.tick_confirmation();
             // A question is not a prompt a user can leave past either: this
             // call is what a tool is waiting on and there is nowhere for a
             // `Leave` to be returned to. `Shell::key` absorbs everything but
@@ -1382,7 +1424,8 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let meter = Meter::started(&clock, &reported);
 
     let outcome: Result<crate::compose::Ran, Turned> = {
-        let pane = std::sync::Mutex::new(Pane::during(shell, surface, &clock));
+        let pane =
+            std::sync::Mutex::new(Pane::metered_during(shell, surface, &clock, meter.started));
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
         let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
