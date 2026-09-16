@@ -506,7 +506,7 @@ where
                 Ok(files::edit(target.resolved(), old, new))
             }
             (Subject::Search { root, needle }, Requested::Builtin(Call::Search { .. })) => {
-                Ok(files::search(root.resolved(), needle, self.search_ceiling))
+                Ok(files::search(root.resolved(), needle, self.search_ceiling).await)
             }
             (Subject::Command(line), Requested::Builtin(Call::Run { .. })) => {
                 self.subprocess.run(line).await

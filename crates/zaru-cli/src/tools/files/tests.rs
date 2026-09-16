@@ -392,8 +392,8 @@ fn roomy() -> SizeCeiling {
 /// find, so a search that only ever did one of the two reddens.
 ///
 /// The mutant: dropping either half.
-#[test]
-fn a_search_answers_on_contents_and_on_filenames() {
+#[tokio::test]
+async fn a_search_answers_on_contents_and_on_filenames() {
     let scratch = Scratch::new();
     std::fs::write(
         scratch.at("plain.txt"),
@@ -405,7 +405,7 @@ fn a_search_answers_on_contents_and_on_filenames() {
     std::fs::write(scratch.at("quiet.txt"), "neither one nor the other\n")
         .expect("staging: a file that matches neither");
 
-    let found = search(&scratch.0, "NEEDLE", roomy());
+    let found = search(&scratch.0, "NEEDLE", roomy()).await;
     assert_eq!(found.exit_code, 0, "a search that ran: {}", found.stderr);
     println!("{}", found.stdout);
 
@@ -436,8 +436,8 @@ fn a_search_answers_on_contents_and_on_filenames() {
 /// ceiling that bounds the report rather than the memory; and dropping the
 /// skipped notice, which is how a model concludes a string is absent from a
 /// tree nobody looked at all of.
-#[test]
-fn a_file_over_the_ceiling_is_named_as_skipped_and_never_read() {
+#[tokio::test]
+async fn a_file_over_the_ceiling_is_named_as_skipped_and_never_read() {
     let scratch = Scratch::new();
     let ceiling = SizeCeiling::new(64).expect("sixty-four is not zero");
 
@@ -453,7 +453,7 @@ fn a_file_over_the_ceiling_is_named_as_skipped_and_never_read() {
     .expect("staging: a file over the ceiling");
     std::fs::write(scratch.at("z-small.txt"), "NEEDLE late\n").expect("staging");
 
-    let found = search(&scratch.0, "NEEDLE", ceiling);
+    let found = search(&scratch.0, "NEEDLE", ceiling).await;
     println!("stdout:\n{}\nstderr:\n{}", found.stdout, found.stderr);
 
     assert!(
@@ -497,8 +497,8 @@ fn a_file_over_the_ceiling_is_named_as_skipped_and_never_read() {
 ///
 /// The mutant: `metadata` in place of `symlink_metadata`, which follows the
 /// link and reports it as an ordinary directory.
-#[test]
-fn a_search_never_follows_a_symbolic_link_out_of_its_root() {
+#[tokio::test]
+async fn a_search_never_follows_a_symbolic_link_out_of_its_root() {
     let scratch = Scratch::new();
     let inside = scratch.at("inside");
     let outside = scratch.at("outside");
@@ -512,7 +512,7 @@ fn a_search_never_follows_a_symbolic_link_out_of_its_root() {
     std::os::unix::fs::symlink(outside.join("secret.txt"), inside.join("shortcut.txt"))
         .expect("staging: a link to a file");
 
-    let found = search(&inside, "NEEDLE", roomy());
+    let found = search(&inside, "NEEDLE", roomy()).await;
     println!("stdout:\n{}\nstderr:\n{}", found.stdout, found.stderr);
 
     assert!(
@@ -535,7 +535,7 @@ fn a_search_never_follows_a_symbolic_link_out_of_its_root() {
     );
 
     // And a root that IS a link is refused outright rather than followed.
-    let refused = search(&inside.join("escape"), "NEEDLE", roomy());
+    let refused = search(&inside.join("escape"), "NEEDLE", roomy()).await;
     assert_eq!(
         refused.exit_code, 1,
         "a search rooted at a link is refused: {}",
@@ -553,13 +553,13 @@ fn a_search_never_follows_a_symbolic_link_out_of_its_root() {
 ///
 /// The mutant: decoding lossily, which puts undecodable bytes into a model's
 /// prompt as replacement characters and reports matches in text nobody wrote.
-#[test]
-fn a_file_that_is_not_utf8_is_named_as_skipped_and_still_matched_by_name() {
+#[tokio::test]
+async fn a_file_that_is_not_utf8_is_named_as_skipped_and_still_matched_by_name() {
     let scratch = Scratch::new();
     std::fs::write(scratch.at("NEEDLE.bin"), b"NEEDLE \xff\xfe rest").expect("staging");
     std::fs::write(scratch.at("ordinary.txt"), "NEEDLE here\n").expect("staging");
 
-    let found = search(&scratch.0, "NEEDLE", roomy());
+    let found = search(&scratch.0, "NEEDLE", roomy()).await;
     println!("stdout:\n{}\nstderr:\n{}", found.stdout, found.stderr);
 
     assert!(
@@ -592,14 +592,14 @@ fn a_file_that_is_not_utf8_is_named_as_skipped_and_still_matched_by_name() {
 ///
 /// The mutant: dropping the sort, which makes a search's answer a property of
 /// the filesystem's own directory order rather than of the tree.
-#[test]
-fn a_search_answers_in_a_stable_order_and_refuses_an_empty_needle() {
+#[tokio::test]
+async fn a_search_answers_in_a_stable_order_and_refuses_an_empty_needle() {
     let scratch = Scratch::new();
     for name in ["c.txt", "a.txt", "b.txt", "d.txt"] {
         std::fs::write(scratch.at(name), "NEEDLE\n").expect("staging");
     }
-    let first = search(&scratch.0, "NEEDLE", roomy());
-    let second = search(&scratch.0, "NEEDLE", roomy());
+    let first = search(&scratch.0, "NEEDLE", roomy()).await;
+    let second = search(&scratch.0, "NEEDLE", roomy()).await;
     assert_eq!(
         first.stdout, second.stdout,
         "two identical searches answered differently, so the order is the filesystem's"
@@ -613,7 +613,7 @@ fn a_search_answers_in_a_stable_order_and_refuses_an_empty_needle() {
     );
     println!("{}", first.stdout);
 
-    let refused = search(&scratch.0, "", roomy());
+    let refused = search(&scratch.0, "", roomy()).await;
     assert_eq!(
         refused.exit_code, 1,
         "an empty needle occurs everywhere, so it names no match: {}",
