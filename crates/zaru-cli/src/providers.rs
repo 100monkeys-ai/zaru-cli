@@ -58,6 +58,7 @@
 
 pub mod alias;
 pub mod capability;
+pub mod capacity;
 pub mod client;
 pub mod endpoint;
 pub mod gemini;

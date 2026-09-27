@@ -646,15 +646,15 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
             status: "INVALID_ARGUMENT".to_owned(),
             detail: "bad request".to_owned(),
         },
-        GeminiFailure::CapacityRefused {
+        GeminiFailure::CapacityRefused(crate::providers::capacity::Refused {
             code: 400,
-            status: "INVALID_ARGUMENT".to_owned(),
+            status: Some("INVALID_ARGUMENT".to_owned()),
             detail: "request exceeds the maximum context token limit".to_owned(),
-        },
-        GeminiFailure::ContextWindowExceeded {
+        }),
+        GeminiFailure::ContextWindowExceeded(crate::providers::capacity::Exceeded {
             needed: 2_413,
             window: 2_000,
-        },
+        }),
         GeminiFailure::ToolSchemaUnreadable {
             tool: "fs.read".to_owned(),
             parser: "expected value".to_owned(),
@@ -669,14 +669,15 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
 
 #[test]
 fn only_an_explicit_remote_capacity_refusal_is_read_as_context() {
-    assert!(GeminiFailure::names_a_capacity(
+    use crate::providers::capacity::names_a_capacity;
+    assert!(names_a_capacity(
         "request exceeds the maximum context token limit"
     ));
-    assert!(!GeminiFailure::names_a_capacity(
+    assert!(!names_a_capacity(
         "function declaration has an invalid schema"
     ));
     // A detail withheld because it carried the key names nothing.
-    assert!(!GeminiFailure::names_a_capacity(DETAIL_WITHHELD));
+    assert!(!names_a_capacity(DETAIL_WITHHELD));
 }
 
 /// The whole native request, including the tool protocol history, is checked
@@ -705,7 +706,11 @@ async fn an_oversized_request_is_refused_before_it_reaches_the_network() {
         .await
         .expect_err("the locally measured request exceeds one byte");
 
-    let GeminiFailure::ContextWindowExceeded { needed, window } = failure else {
+    let GeminiFailure::ContextWindowExceeded(crate::providers::capacity::Exceeded {
+        needed,
+        window,
+    }) = failure
+    else {
         panic!("the oversized request reached the endpoint instead of being refused locally")
     };
     assert!(needed > window);

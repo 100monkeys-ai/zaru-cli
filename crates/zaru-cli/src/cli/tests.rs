@@ -2587,10 +2587,12 @@ fn an_in_turn_gemini_context_refusal_names_its_window_and_key() {
 
     let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
     let classified = surface.provider_failure(
-        &ProviderFailure::Gemini(GeminiFailure::ContextWindowExceeded {
-            needed: 2413,
-            window: 2000,
-        }),
+        &ProviderFailure::Gemini(GeminiFailure::ContextWindowExceeded(
+            crate::providers::capacity::Exceeded {
+                needed: 2413,
+                window: 2000,
+            },
+        )),
         SessionEvidence::NoSessionExists,
     );
 
@@ -2614,11 +2616,13 @@ fn a_remote_gemini_capacity_refusal_is_actionable_and_preserves_its_safe_reason(
 
     let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
     let classified = surface.provider_failure(
-        &ProviderFailure::Gemini(GeminiFailure::CapacityRefused {
-            code: 400,
-            status: "INVALID_ARGUMENT".to_owned(),
-            detail: "request exceeds the maximum context token limit".to_owned(),
-        }),
+        &ProviderFailure::Gemini(GeminiFailure::CapacityRefused(
+            crate::providers::capacity::Refused {
+                code: 400,
+                status: Some("INVALID_ARGUMENT".to_owned()),
+                detail: "request exceeds the maximum context token limit".to_owned(),
+            },
+        )),
         SessionEvidence::NoSessionExists,
     );
 
