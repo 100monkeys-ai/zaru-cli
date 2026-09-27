@@ -364,33 +364,46 @@ fn the_built_binary_says_no_sentence_with_a_hole_in_it() {
     // input are never read, because the key is refused first.
     let not_a_key = "zzznothex";
 
-    for arguments in [
-        ["--runtime", "nonsense", "runtime"].as_slice(),
-        ["sessions", "rm", "not-a-ulid"].as_slice(),
-        ["providers", "keys", "add", "gemini"].as_slice(),
+    // Whether each invocation reads standard input. Only `providers keys add`
+    // does: it reads the value before the store seals it, so with an empty
+    // pipe the refusal is the empty secret's and the sealing sentence — the
+    // one row 7 measured — is never reached. The word it is given is not a
+    // credential and never becomes one; the sealing key is refused first.
+    //
+    // **The other two are handed no pipe at all.** Until 2026-09-27 every
+    // invocation was handed a word on a pipe, and a child that refuses
+    // without reading can exit before the word is written: the write then
+    // fails with `EPIPE` and this check went red for a race of its own, not
+    // for a sentence. Measured by `test-env-isolation` when the decoy re-run
+    // doubled how often the race was run.
+    for (arguments, reads_standard_input) in [
+        (["--runtime", "nonsense", "runtime"].as_slice(), false),
+        (["sessions", "rm", "not-a-ulid"].as_slice(), false),
+        (["providers", "keys", "add", "gemini"].as_slice(), true),
     ] {
-        // Standard input carries a word, because `providers keys add` reads
-        // the value before the store seals it: with an empty pipe the
-        // refusal is the empty secret's and the sealing sentence — the one
-        // row 7 measured — is never reached. The word is not a credential
-        // and never becomes one; the sealing key is refused first.
         let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
             .args(arguments)
             .env_clear()
             .env("HOME", &home)
             .env("ZARU_CREDENTIAL_KEY", not_a_key)
             .current_dir(&home)
-            .stdin(Stdio::piped())
+            .stdin(if reads_standard_input {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("failed to execute the built zaru binary");
-        child
-            .stdin
-            .take()
-            .expect("the child was given a pipe")
-            .write_all(b"not-a-credential\n")
-            .expect("the child reads its input");
+        if reads_standard_input {
+            child
+                .stdin
+                .take()
+                .expect("the child was given a pipe")
+                .write_all(b"not-a-credential\n")
+                .expect("the child reads its input");
+        }
         let output = child
             .wait_with_output()
             .expect("the built zaru binary answered");
