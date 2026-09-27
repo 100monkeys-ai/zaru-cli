@@ -2499,22 +2499,41 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::of(Arc::clone(&restores));
     let pace = Counted(Arc::clone(&beats));
+    let mut now = core::time::Duration::ZERO;
+    let trie = NotesTrie::nothing_cached(WORKSPACE);
+    // The meter `run_a_turn` hands the race, on the same clock the pane
+    // reads, and the question asked from **inside** the raced future, which
+    // is where a tool call's confirmation is asked from in a turn. The pane
+    // is built the way `run_a_turn` builds it and is told nothing about the
+    // meter: its start reaching the question is the race's hand-off, so a
+    // turn that lost it would freeze the row here too.
+    let meter = crate::terminal::driver::Meter::started(&pace, &|| None);
     let painted = {
-        let pane = std::sync::Mutex::new(TurnPane::metered_during(
-            &mut shell,
-            &mut surface,
-            &pace,
-            core::time::Duration::ZERO,
-        ));
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &pace));
         let confirm = PaneConfirm::over(&pane, &source, &pace);
-        confirm
-            .confirm(&Question {
-                statement: "write build/out.txt".to_owned(),
-                detail: Vec::new(),
-                prominent: false,
-                answers: crate::tools::prompt::Answers::ToolCall,
-            })
-            .expect("the pane answered")
+        let raced = futures_lite_block_on(crate::terminal::driver::race(
+            &pane,
+            &source,
+            &pace,
+            &trie,
+            &Vocabulary,
+            &crate::terminal::ProjectPaths::under(None),
+            &mut now,
+            None,
+            Some(&meter),
+            async {
+                confirm.confirm(&Question {
+                    statement: "write build/out.txt".to_owned(),
+                    detail: Vec::new(),
+                    prominent: false,
+                    answers: crate::tools::prompt::Answers::ToolCall,
+                })
+            },
+        ));
+        let crate::terminal::driver::Raced::Ran(answered) = raced else {
+            panic!("the question did not finish inside the race: {raced:?}")
+        };
+        answered.expect("the pane answered")
     };
     assert_eq!(
         painted,
