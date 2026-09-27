@@ -39,8 +39,13 @@ impl Drop for Root {
 }
 
 /// The condition under which the one tip is still undiscovered.
+///
+/// The mouse is not captured here, so the selection tip's condition does not
+/// hold and every check written for the one tip before 2026-09-27 still reads
+/// that one tip.
 const UNDISCOVERED: Conditions = Conditions {
     composer_token: false,
+    mouse_captured: false,
 };
 
 /// [ADR-0002] D8: "a standing tip is suppressed after three displays without
@@ -156,6 +161,7 @@ fn a_tip_whose_capability_the_user_has_found_is_not_offered_however_low_its_coun
 
     let found = Conditions {
         composer_token: true,
+        mouse_captured: false,
     };
     assert_eq!(
         eligible(true, found, &tips).expect("the tips read"),
@@ -390,5 +396,67 @@ fn a_session_that_resolved_no_provider_still_has_room_for_a_tip() {
         !super::room_for_a_tip(Some(&crate::compose::Owed::default()), true),
         "the switch overrode an `Owed` that said no, so the first arm would pass on a harness \
          that always answered yes"
+    );
+}
+
+/// While the harness holds the mouse, the tip that says how to select text is
+/// offered, and it is offered **before** the notes tip.
+///
+/// # Why first
+///
+/// D8's budget is one tip per session, so two eligible tips need an order,
+/// and this function's own documentation declined to invent one while there
+/// was one tip. The rule taken on 2026-09-27, open to Jeshua's veto: **a tip
+/// that says how to get back something the harness took outranks a tip about
+/// a capability it adds.** Capturing the mouse took the terminal's plain
+/// click-and-drag selection, and a person who reaches for it and finds it gone
+/// is met with a regression. A person who has not found note search has not
+/// lost anything.
+///
+/// # What discriminates
+///
+/// Four stagings. Capture on and no composer token offers the selection tip;
+/// capture off offers the notes tip (the sibling, so a selection tip offered
+/// unconditionally reddens); capture on with a token offers the selection tip
+/// alone; and the selection tip shown three times hands the budget back to
+/// the notes tip, so the order is a priority and not an exclusion.
+///
+/// The mutant: `Tip::ALL` in the other order, which prints the first arm.
+#[test]
+fn the_selection_tip_is_offered_while_the_mouse_is_held_and_ahead_of_the_notes_tip() {
+    let root = Root::new("selection");
+    let tips = root.tips();
+    let held = Conditions {
+        composer_token: false,
+        mouse_captured: true,
+    };
+    assert_eq!(
+        eligible(true, held, &tips).expect("the tips read"),
+        Some(Tip::Selection),
+        "with the mouse held and no composer token, the session was offered something other \
+         than how to select text"
+    );
+    assert_eq!(
+        eligible(true, UNDISCOVERED, &tips).expect("the tips read"),
+        Some(Tip::NotesToken),
+        "the sibling: with the mouse not held there is nothing to say about selecting"
+    );
+    let held_and_found = Conditions {
+        composer_token: true,
+        mouse_captured: true,
+    };
+    assert_eq!(
+        eligible(true, held_and_found, &tips).expect("the tips read"),
+        Some(Tip::Selection),
+        "a composer token discovers note search, not selection"
+    );
+    for _ in 0..SUPPRESS_AFTER {
+        tips.record_a_showing(Tip::Selection, "2026-09-27")
+            .expect("the showing records");
+    }
+    assert_eq!(
+        eligible(true, held, &tips).expect("the tips read"),
+        Some(Tip::NotesToken),
+        "three showings of the selection tip should hand the session's one tip to the next"
     );
 }

@@ -546,6 +546,8 @@ pub fn shell_for(
         composer_token: store
             .as_ref()
             .is_some_and(|store| store.composer().is_some()),
+        // The shell always asks for the buttons: `driver::arm`.
+        mouse_captured: true,
     };
 
     Ok((shell, transcript, trie, populating, resumed, conditions))

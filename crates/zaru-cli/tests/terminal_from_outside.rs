@@ -352,3 +352,60 @@ fn pointer_reports_that_are_not_the_wheel_paint_nothing() {
          they are input nothing reads"
     );
 }
+
+/// **A fresh session says how to select text**, in the hint strip, because
+/// holding the mouse took the terminal's plain click-and-drag.
+///
+/// [ADR-0002] D8's standing tip: a capability the person has not discovered,
+/// on an empty prompt, one line, at most three sessions. The modifier is
+/// Shift in Windows Terminal, in the VS Code terminal off macOS, and in most
+/// others.
+///
+/// **The mutant:** the selection tip's condition never holding, which prints
+/// what the first frames carried instead.
+///
+/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
+#[test]
+fn a_fresh_session_says_how_to_select_text() {
+    let session = InATerminal::open();
+    session.until(b"\x1b[?25h", "the session's first frame");
+    std::thread::sleep(Duration::from_millis(1000));
+    let painted = glyphs(&session.bytes());
+    assert!(
+        painted.contains("holdShifttoselecttext"),
+        "a fresh session with the mouse held never said how to select text; its first frames \
+         painted {painted:?}"
+    );
+}
+
+/// What a frame's bytes paint, with every control sequence and every blank
+/// taken out.
+///
+/// ratatui writes only the cells that changed, and moves the cursor over a
+/// blank rather than writing it, so a sentence reaches the terminal as its
+/// words with a cursor move between each. Taking the sequences and the blanks
+/// out leaves the words run together in paint order, which is what a check for
+/// a sentence can compare against without reimplementing a terminal.
+fn glyphs(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::new();
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\u{1b}' {
+            if characters.peek() == Some(&'[') {
+                characters.next();
+                // Parameters and intermediates, then one final byte.
+                for next in characters.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if !character.is_whitespace() {
+            out.push(character);
+        }
+    }
+    out
+}
