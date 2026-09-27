@@ -968,3 +968,120 @@ fn the_request_asks_for_exactly_the_window_the_descriptor_declares() {
         );
     }
 }
+
+// --- ADR-0036: a request that outgrows the window ----------------------------
+
+/// What this client's `/api/chat` answers when the request outgrows the
+/// window, as Ollama's own source composes it: `llama-server` refuses with
+/// HTTP 400 and its own envelope, and Ollama carries that body **verbatim as
+/// the string** of its flat `{"error": "…"}`.
+///
+/// Read in `ollama/ollama` at `16b4376`: `llm/llama_server.go`'s `Chat`
+/// returns `api.StatusError{StatusCode: res.StatusCode, ErrorMessage:
+/// s.statusErrorMessage(bodyBytes)}`, whose message is the trimmed body; and
+/// `server/routes.go`'s `streamResponse` writes an error that arrives before
+/// any content as `c.JSON(status, gin.H{"error": e})`. The inner body is
+/// `llama.cpp`'s at `4da6337`, `tools/server/server-context.cpp:3220` and
+/// `server-common.cpp:68`. The token counts are invented; the words are the
+/// server's.
+const LLAMA_SERVER_CAPACITY: &str = r#"{"error":"{\"error\":{\"code\":400,\"message\":\"request (5123 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":5123,\"n_ctx\":4096}}"}"#;
+
+// ADR-0036 D2 for this kind: a refusal naming a context or token capacity is
+// the reader's, names `provider.ollama.context_tokens`, and does not claim the
+// harness malfunctioned. Held where a person reads it: the body through the
+// client's own `from_status`, `Surface::provider_failure` and
+// `Presentation::of`, the text the binary writes and the pane paints. No
+// socket and no wire fake: the body is bytes handed to the function the
+// transport hands them to.
+//
+// The accepting sibling is the recorded malformed-request 400, which is still
+// the harness's defect, so the capacity reading cannot pass by reclassifying
+// every refused request.
+#[test]
+fn adr_0036_d2_an_ollama_capacity_refusal_names_its_cause_and_its_key() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let surface = Surface::new("0.0.0", "https://example.invalid/report");
+    let shown = |code: u16, body: &str| -> Presentation {
+        Presentation::of(&surface.provider_failure(
+            &ProviderFailure::Ollama(OllamaFailure::from_status(
+                code,
+                body.as_bytes(),
+                "llama3.2:3b",
+            )),
+            SessionEvidence::NoSessionExists,
+        ))
+    };
+
+    let capacity = shown(400, LLAMA_SERVER_CAPACITY);
+    println!("HTTP 400: {capacity}");
+    let misses = crate::providers::capacity::fixtures::misses(
+        ProviderKind::Ollama,
+        &capacity,
+        "exceeds the available context size (4096 tokens)",
+    );
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+    assert_eq!(capacity.class.exit_code(), 2);
+
+    let malformed = shown(400, RECORDED_BAD_REQUEST);
+    assert_eq!(
+        malformed.class,
+        Class::Defect,
+        "a refused request that names no capacity is still the harness's: {malformed}"
+    );
+}
+
+// ADR-0036 D1 for this kind: "Before a provider sends any exchange, it
+// measures the complete provider-native request … A request that cannot fit is
+// refused locally before network I/O." The endpoint is a closed port, so an
+// attempt to send is distinguishable from the local refusal: it would come
+// back as `Unreachable`, naming the endpoint and not the window.
+//
+// Why this matters more for this kind than for any other: Ollama's `/api/chat`
+// **truncates in silence** by default (`server/prompt.go`'s `chatPrompt` and
+// `truncateNativeChatMessages` in `server/routes.go` at `16b4376`, both on
+// unless the request says `"truncate": false`), dropping the oldest messages
+// until the prompt fits `num_ctx` -- ADR-0036 D4's "silent history loss", on
+// the server. The preflight is what stops a request reaching that code.
+#[tokio::test]
+async fn adr_0036_d1_an_oversized_ollama_request_is_refused_before_it_reaches_the_network() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let client = super::OllamaClient::new(
+        ProviderEndpoint::new("http://127.0.0.1:1").expect("a well-formed endpoint"),
+        model("llama3.2:3b"),
+        64,
+    )
+    .expect("constructing a client does not contact the endpoint");
+    let prompt = prompt("a request whose body alone is larger than sixty-four bytes");
+    let failure = client
+        .exchange(&ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &[],
+        })
+        .await
+        .expect_err("the locally measured request exceeds sixty-four bytes");
+
+    let presented = Presentation::of(
+        &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+            &ProviderFailure::Ollama(failure),
+            SessionEvidence::NoSessionExists,
+        ),
+    );
+    let said = presented.to_string();
+    println!("{said}");
+    assert_eq!(presented.class, Class::UserCorrectable, "{said}");
+    // The statement is the one every kind's window refusal renders, the
+    // classifier's `context_window_exceeded`; what differs by kind is the key.
+    assert!(
+        !said.contains("nothing answered")
+            && said.contains("window allows 64")
+            && said.contains(ProviderKind::Ollama.context_tokens_key().as_str()),
+        "the request was not refused locally with its window and the key that sizes it: {said}"
+    );
+}

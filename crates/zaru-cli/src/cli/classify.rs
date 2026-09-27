@@ -1872,6 +1872,15 @@ impl Surface<'_> {
                      server already holds"
                 )),
             ),
+            // ADR-0036: the window is `provider.ollama.context_tokens`, the
+            // reader's number, whether this client refused before sending or
+            // the server refused what it was sent.
+            F::ContextWindowExceeded(exceeded) => Self::context_window_exceeded(
+                exceeded.needed,
+                exceeded.window,
+                ProviderKind::Ollama,
+            ),
+            F::CapacityRefused(refused) => Self::capacity_refused(refused, ProviderKind::Ollama),
             // The server failed on its own side -- the one class this kind
             // shares with a hosted provider, for the same reason it does.
             F::Unavailable { .. } => Classified::Environmental {

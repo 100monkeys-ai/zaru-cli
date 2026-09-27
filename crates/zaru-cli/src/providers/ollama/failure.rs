@@ -44,6 +44,7 @@
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
+use crate::providers::capacity::{Exceeded, Refused};
 use crate::providers::endpoint::ProviderEndpoint;
 use core::fmt;
 
@@ -87,6 +88,24 @@ pub enum OllamaFailure {
         /// What the server said.
         detail: String,
     },
+    /// The server refused the request for exceeding the model's context or
+    /// token capacity, in words that say so.
+    ///
+    /// **The reader's**, per [ADR-0036] D2: the window is
+    /// `provider.ollama.context_tokens`, the number this client also sends as
+    /// `num_ctx`. The type and its sentence are
+    /// [`crate::providers::capacity`]'s, shared with the other two clients.
+    ///
+    /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
+    CapacityRefused(Refused),
+    /// The complete request for the next exchange would exceed the window this
+    /// client was configured with, and was not sent.
+    ///
+    /// See [`crate::providers::capacity::preflight`]. For this kind it is also
+    /// what stops a request reaching the server's own silent truncation: at
+    /// `16b4376`, Ollama's `/api/chat` drops the oldest messages until the
+    /// prompt fits `num_ctx` unless the request says `"truncate": false`.
+    ContextWindowExceeded(Exceeded),
     /// The server failed on its own side.
     ///
     /// **Neither's**, which is the one class this kind shares with a hosted
@@ -156,6 +175,8 @@ impl fmt::Display for OllamaFailure {
                 f,
                 "the server refused this request with HTTP {code}: {detail}",
             ),
+            Self::CapacityRefused(refused) => fmt::Display::fmt(refused, f),
+            Self::ContextWindowExceeded(exceeded) => fmt::Display::fmt(exceeded, f),
             Self::Unavailable { code, detail } => {
                 write!(f, "the server answered HTTP {code}: {detail}")
             }
@@ -207,6 +228,21 @@ impl OllamaFailure {
                 model: model.to_owned(),
                 detail,
             },
+            // ADR-0036 D2: a 4xx whose sentence names a context or token
+            // capacity is the reader's. **This is the one reading here made
+            // from prose**, and it is narrow for the reason `capacity` gives.
+            // The form this server sends, read in its source at `16b4376`:
+            // `llama-server`'s own envelope carried verbatim as the string of
+            // this one, "request (N tokens) exceeds the available context size
+            // (M tokens), try increasing it". A sentence it does not read
+            // keeps the arm below it.
+            400..=499 if crate::providers::capacity::names_a_capacity(&detail) => {
+                Self::CapacityRefused(Refused {
+                    code,
+                    status: None,
+                    detail,
+                })
+            }
             400 => Self::RequestRefused { code, detail },
             _ => Self::Unavailable { code, detail },
         }

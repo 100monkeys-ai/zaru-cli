@@ -170,3 +170,50 @@ pub fn preflight(request: &impl serde::Serialize, window: u64) -> Result<(), Exc
     }
     Ok(())
 }
+
+/// What a check of a capacity refusal reads, shared by the three clients'
+/// checks so that the three kinds are held to one list of clauses.
+#[cfg(test)]
+pub mod fixtures {
+    use crate::providers::ProviderKind;
+
+    /// Every clause of a capacity refusal as a person reads it, each miss
+    /// reported, for one rendering.
+    pub fn misses(
+        kind: ProviderKind,
+        presented: &crate::failure::Presentation,
+        theirs: &str,
+    ) -> Vec<String> {
+        use crate::failure::Class;
+        let said = presented.to_string();
+        let mut misses = Vec::new();
+        if presented.class != Class::UserCorrectable {
+            misses.push(format!(
+                "a capacity refusal is the reader's to fix, and this one is {:?} at exit {}",
+                presented.class,
+                presented.class.exit_code()
+            ));
+        }
+        if said.contains("malformed")
+            || said.contains("this harness built")
+            || said.contains("bug in Zaru")
+        {
+            misses.push("it claims the harness malfunctioned".to_owned());
+        }
+        if !(presented.headline.contains("capacity") && presented.headline.contains(theirs)) {
+            misses.push(
+                "the statement does not name the capacity beside the provider's words".to_owned(),
+            );
+        }
+        if !said.contains(kind.context_tokens_key().as_str()) {
+            misses.push(format!(
+                "the remedy does not name `{}`",
+                kind.context_tokens_key().as_str()
+            ));
+        }
+        if !misses.is_empty() {
+            misses.push(format!("rendered: {said}"));
+        }
+        misses
+    }
+}
