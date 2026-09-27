@@ -1,0 +1,151 @@
+# Copyright 2026 100monkeys AI, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# The dependency audit: every package in Cargo.lock checked against the RustSec
+# advisory database.
+#
+# It is a workflow of its own rather than a ninth job in ci.yml because its
+# verdict has a second input the tree does not hold. Every gate in ci.yml is a
+# function of the commit and the pinned toolchain, so a green commit stays
+# green. This one also reads the advisory database, which is fetched when the
+# job runs, so the same commit can be green on Monday and red on Tuesday with
+# no diff behind it. That is the point of an audit -- RUSTSEC-2026-0285 reached
+# this lock as rustls 0.23.43 eleven days before anything here looked -- but it
+# means the verdict has to say which database produced it, and a red that
+# arrives on the calendar rather than on a push has to be put where someone
+# reads it. The two steps and the second job below exist for those two things.
+#
+# Pinned, as ci.yml pins: actions/checkout by commit SHA, and cargo-audit by
+# exact version AND by the SHA-256 of the release archive, so the tool that
+# gives the verdict cannot change underneath a run. It is the prebuilt musl
+# binary from the RustSec release rather than `cargo install`, which would
+# compile the tool on every run and would resolve its own dependencies from
+# the registry at run time. No third-party action is used, for ci.yml's reason.
+#
+# What fails the job: a vulnerability advisory against any locked package.
+# What does not: an informational warning (unmaintained, unsound, yanked). Those
+# are printed in the log and in the run summary, and they do not turn the job
+# red, which is cargo-audit's own default -- three stand on this lock through
+# ratatui 0.29 and no lockfile-only update closes them.
+#
+# Whether this check is REQUIRED on main is the ruleset's, and the ruleset is
+# human-owned. Nothing here changes it.
+
+name: Audit
+
+on:
+  # Every branch, for ci.yml's reason: an arc reads the audit on its own branch
+  # before it asks for a merge token, rather than after landing.
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  # Daily, because the database moves daily and nothing else in this
+  # repository would otherwise look.
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_AUDIT_VERSION: '0.22.2'
+  CARGO_AUDIT_ARCHIVE: cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz
+  CARGO_AUDIT_SHA256: 7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428
+  ADVISORY_DB: https://github.com/RustSec/advisory-db.git
+
+jobs:
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cargo-audit, pinned by version and by archive hash
+        run: |
+          set -euo pipefail
+          url="https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/${CARGO_AUDIT_ARCHIVE}"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$RUNNER_TEMP/$CARGO_AUDIT_ARCHIVE" "$url"
+          echo "${CARGO_AUDIT_SHA256}  $RUNNER_TEMP/$CARGO_AUDIT_ARCHIVE" | sha256sum --check --strict
+          tar --extract --gzip --file "$RUNNER_TEMP/$CARGO_AUDIT_ARCHIVE" --directory "$RUNNER_TEMP"
+          install -D --mode 0755 "$RUNNER_TEMP/${CARGO_AUDIT_ARCHIVE%.tgz}/cargo-audit" "$RUNNER_TEMP/bin/cargo-audit"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/cargo-audit" audit --version
+
+      # The database is cloned here, once, and the audit is told not to fetch
+      # it again, so the commit printed below is the commit the verdict was
+      # read against rather than a guess about what cargo-audit fetched.
+      - name: Fetch the advisory database and name the commit the verdict is read against
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 "$ADVISORY_DB" "$RUNNER_TEMP/advisory-db"
+          db=$(git -C "$RUNNER_TEMP/advisory-db" log -1 --format='%H, committed %cI')
+          echo "advisory-db: $db"
+          {
+            echo "### Dependency audit"
+            echo
+            echo "- tree: \`$GITHUB_SHA\` (event \`$GITHUB_EVENT_NAME\`)"
+            echo "- cargo-audit: \`$CARGO_AUDIT_VERSION\`, archive sha256 \`$CARGO_AUDIT_SHA256\`"
+            echo "- advisory-db: \`$db\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: cargo audit
+        run: |
+          set -uo pipefail
+          status=0
+          cargo-audit audit --db "$RUNNER_TEMP/advisory-db" --no-fetch --file Cargo.lock \
+            > "$RUNNER_TEMP/audit.out" 2> "$RUNNER_TEMP/audit.err" || status=$?
+          cat "$RUNNER_TEMP/audit.out"
+          cat "$RUNNER_TEMP/audit.err" >&2
+          {
+            echo
+            echo "cargo-audit exit status: \`$status\`"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/audit.err" "$RUNNER_TEMP/audit.out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  # A red on a push or a pull request is seen where it happened: on the commit
+  # and in the pull request's checks. A red on the schedule happens on nobody's
+  # commit, and GitHub's own notice of a failed scheduled run goes only to
+  # whichever account last edited the cron line. So a scheduled verdict is
+  # written into the repository's issues instead: a red opens one issue with a
+  # fixed title, or comments on it if it is already open, and the next green
+  # closes it. One open issue means the audit is red on main today; none means
+  # it is not.
+  scheduled-verdict:
+    name: scheduled-verdict
+    needs: audit
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: 'Scheduled dependency audit is red on main'
+      RESULT: ${{ needs.audit.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open, update or close the audit issue
+        run: |
+          set -euo pipefail
+          open=$(gh issue list --state open --limit 200 --json number,title \
+            --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          echo "audit job result: $RESULT; open audit issue: ${open:-none}"
+          if [ "$RESULT" = success ]; then
+            if [ -n "$open" ]; then
+              gh issue close "$open" --comment "The scheduled audit is green again on \`$GITHUB_SHA\`: $RUN_URL"
+            fi
+            exit 0
+          fi
+          body="The scheduled dependency audit on \`$GITHUB_SHA\` ended \`$RESULT\`. The advisory, the database commit it was read against and the cargo-audit version are in the run summary: $RUN_URL"
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body"
+          fi
