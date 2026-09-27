@@ -1892,7 +1892,11 @@ impl Surface<'_> {
             F::ContextWindowExceeded { needed, window } => {
                 Self::context_window_exceeded(*needed, *window, ProviderKind::Gemini)
             }
-            F::RequestRefused { .. } if failure.is_context_refusal() => correctable(
+            // ADR-0036 D2: a remote refusal naming a context or token
+            // capacity is the reader's, with the preflight's remedy. Its
+            // statement is the variant's own sentence, which names the
+            // capacity and says nothing about the request's shape.
+            F::CapacityRefused { .. } => correctable(
                 failure,
                 act(SET_THE_WINDOW_OR_READ_LESS
                     .replace("{key}", ProviderKind::Gemini.context_tokens_key().as_str())),

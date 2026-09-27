@@ -502,6 +502,97 @@ fn adr_0036_clause_4_a_remote_refusal_renders_no_credential_it_carried() {
     }
 }
 
+// ADR-0036 D2: a remote refusal that names a context or token capacity is the
+// reader's to fix, rendered with the context-token remedy, and "does not claim
+// the harness malfunctioned".
+//
+// Held where a person reads it: an AIP-193 body through the client's own
+// `classify`, `Surface::provider_failure` and `Presentation::of`, the text the
+// binary writes to standard error and the pane paints. Until 2026-09-27 the
+// capacity refusal was a `RequestRefused`, whose sentence says the request was
+// malformed and that this harness built it, so one rendering told the reader
+// both that the fix was theirs and that the harness had built a bad request.
+//
+// The accepting sibling is a 400 that names no capacity: that one is still the
+// harness's defect, so the capacity reading cannot pass by reclassifying every
+// refused request.
+#[test]
+fn adr_0036_d2_a_remote_capacity_refusal_names_its_cause_and_never_a_malformed_request() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let client = super::GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model("gemini-3.6-flash"),
+        Alias::new("provider.gemini").expect("a well-formed alias"),
+        Secret::provider(ProviderKind::Gemini, provider_secret_nonce())
+            .expect("a nonce is a provider secret"),
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let surface = Surface::new("0.0.0", "https://example.invalid/report");
+    let shown = |code: u16, status: &str, message: &str| -> Presentation {
+        let body = serde_json::json!({
+            "error": { "code": code, "message": message, "status": status }
+        })
+        .to_string();
+        Presentation::of(&surface.provider_failure(
+            &ProviderFailure::Gemini(client.classify(code, body.as_bytes())),
+            SessionEvidence::NoSessionExists,
+        ))
+    };
+
+    // Every clause is checked and every miss reported, so one red names all
+    // of what is wrong with the rendering rather than the first.
+    let prose = "request exceeds the maximum context token limit";
+    let mut misses = Vec::new();
+    for (code, status) in [(400, "INVALID_ARGUMENT"), (413, "FAILED_PRECONDITION")] {
+        let before = misses.len();
+        let capacity = shown(code, status, prose);
+        let said = capacity.to_string();
+        println!("HTTP {code}: {said}");
+        if capacity.class != Class::UserCorrectable {
+            misses.push(format!(
+                "HTTP {code}: a capacity refusal is the reader's to fix, and this one is {:?}",
+                capacity.class
+            ));
+        }
+        if said.contains("malformed") || said.contains("this harness built") {
+            misses.push(format!(
+                "HTTP {code}: a capacity refusal the reader can fix claims the harness built a \
+                 malformed request"
+            ));
+        }
+        if !(capacity.headline.contains("capacity") && capacity.headline.contains(prose)) {
+            misses.push(format!(
+                "HTTP {code}: the statement does not name the capacity cause in its own words \
+                 beside the provider's"
+            ));
+        }
+        if !said.contains(ProviderKind::Gemini.context_tokens_key().as_str()) {
+            misses.push(format!(
+                "HTTP {code}: the remedy does not name the context-token key"
+            ));
+        }
+        if misses.len() > before {
+            misses.push(format!("HTTP {code} rendered: {said}"));
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+
+    let malformed = shown(
+        400,
+        "INVALID_ARGUMENT",
+        "function declaration has an invalid schema",
+    );
+    assert_eq!(
+        malformed.class,
+        Class::Defect,
+        "a refused request that names no capacity is still the harness's: {malformed}"
+    );
+}
+
 // ADR-0016 D1's classes, by provenance. The credential arm names the alias
 // and the kind and never the key; the malformed-body arm reports a length and
 // never a content.
@@ -555,6 +646,11 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
             status: "INVALID_ARGUMENT".to_owned(),
             detail: "bad request".to_owned(),
         },
+        GeminiFailure::CapacityRefused {
+            code: 400,
+            status: "INVALID_ARGUMENT".to_owned(),
+            detail: "request exceeds the maximum context token limit".to_owned(),
+        },
         GeminiFailure::ContextWindowExceeded {
             needed: 2_413,
             window: 2_000,
@@ -573,19 +669,14 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
 
 #[test]
 fn only_an_explicit_remote_capacity_refusal_is_read_as_context() {
-    let capacity = GeminiFailure::RequestRefused {
-        code: 400,
-        status: "INVALID_ARGUMENT".to_owned(),
-        detail: "request exceeds the maximum context token limit".to_owned(),
-    };
-    assert!(capacity.is_context_refusal());
-
-    let malformed = GeminiFailure::RequestRefused {
-        code: 400,
-        status: "INVALID_ARGUMENT".to_owned(),
-        detail: "function declaration has an invalid schema".to_owned(),
-    };
-    assert!(!malformed.is_context_refusal());
+    assert!(GeminiFailure::names_a_capacity(
+        "request exceeds the maximum context token limit"
+    ));
+    assert!(!GeminiFailure::names_a_capacity(
+        "function declaration has an invalid schema"
+    ));
+    // A detail withheld because it carried the key names nothing.
+    assert!(!GeminiFailure::names_a_capacity(DETAIL_WITHHELD));
 }
 
 /// The whole native request, including the tool protocol history, is checked

@@ -2614,7 +2614,7 @@ fn a_remote_gemini_capacity_refusal_is_actionable_and_preserves_its_safe_reason(
 
     let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
     let classified = surface.provider_failure(
-        &ProviderFailure::Gemini(GeminiFailure::RequestRefused {
+        &ProviderFailure::Gemini(GeminiFailure::CapacityRefused {
             code: 400,
             status: "INVALID_ARGUMENT".to_owned(),
             detail: "request exceeds the maximum context token limit".to_owned(),

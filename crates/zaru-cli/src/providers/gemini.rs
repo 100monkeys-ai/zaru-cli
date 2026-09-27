@@ -712,6 +712,13 @@ impl GeminiClient {
                 status: error.status,
             };
         }
+        if (400..500).contains(&code) && GeminiFailure::names_a_capacity(&detail) {
+            return GeminiFailure::CapacityRefused {
+                code,
+                status: error.status,
+                detail,
+            };
+        }
         if (400..500).contains(&code) {
             return GeminiFailure::RequestRefused {
                 code,
