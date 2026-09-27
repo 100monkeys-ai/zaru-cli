@@ -841,7 +841,7 @@ pub fn prepare(
     let tool_call_ceiling = match crate::runtime::tool_call_ceiling_for(resolution) {
         Ok(ceiling) => ceiling,
         Err(refusal) => {
-            return Err(Box::new(Ran::refused(Surface::iteration_ceiling(&refusal))));
+            return Err(Box::new(Ran::refused(Surface::exchange_limit(&refusal))));
         }
     };
 

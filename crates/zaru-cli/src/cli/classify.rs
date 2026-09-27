@@ -1261,6 +1261,26 @@ impl Surface<'_> {
         }
     }
 
+    /// `runtime.max_tool_exchanges` holds something that is not a limit.
+    ///
+    /// Always the reader's: [ADR-0034] D2 has no tier or placement in which
+    /// the key means anything but a positive count, so there is no capability
+    /// arm here as there is in [`Self::iteration_ceiling`]. The statement says
+    /// how to ask for no limit; the remedy names the command that shows which
+    /// layer set the value.
+    ///
+    /// [ADR-0034]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0034-tool-call-exchange-limits
+    #[must_use]
+    pub fn exchange_limit(refusal: &crate::runtime::ExchangeLimitRefused) -> Classified {
+        correctable(
+            refusal,
+            run(
+                "see every layer's value for it",
+                &format!("config explain {}", refusal.key()),
+            ),
+        )
+    }
+
     /// A project set an endpoint this harness cannot use.
     #[must_use]
     pub fn endpoint(kind: ProviderKind, refusal: &crate::providers::EndpointRefused) -> Classified {
