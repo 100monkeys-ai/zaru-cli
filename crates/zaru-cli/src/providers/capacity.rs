@@ -122,8 +122,9 @@ impl std::error::Error for Exceeded {}
 /// exceeded a context or token capacity.
 ///
 /// **A prose marker, and deliberately narrow.** A capacity word — "context"
-/// or "token" — beside an exceeding word — "exceed", "maximum", "limit" or
-/// "too large". It reads every capacity sentence found in the providers'
+/// or "token" — beside an exceeding word — "exceed", "maximum", "limit",
+/// "too large" or "overflow", the last for LM Studio's "Trying to keep the
+/// first N tokens when context the overflows". It reads every capacity sentence found in the providers'
 /// own sources and published errors on 2026-09-27 (listed where each client
 /// calls it) and reads none of the malformed-request sentences those clients
 /// have recorded. A refusal it does not read keeps its old class.
@@ -134,7 +135,8 @@ pub fn names_a_capacity(detail: &str) -> bool {
         && (detail.contains("exceed")
             || detail.contains("maximum")
             || detail.contains("limit")
-            || detail.contains("too large"))
+            || detail.contains("too large")
+            || detail.contains("overflow"))
 }
 
 /// A native request's size in the byte accounting a window is compared in.
@@ -197,6 +199,7 @@ pub mod fixtures {
         if said.contains("malformed")
             || said.contains("this harness built")
             || said.contains("bug in Zaru")
+            || said.contains("defect in Zaru")
         {
             misses.push("it claims the harness malfunctioned".to_owned());
         }

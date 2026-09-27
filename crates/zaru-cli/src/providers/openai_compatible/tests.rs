@@ -756,15 +756,18 @@ fn a_404_naming_the_model_is_a_missing_model_and_a_404_naming_a_route_is_not() {
 
 #[test]
 fn both_servers_error_envelopes_are_read_although_they_type_code_differently() {
-    // The reason `wire::ErrorBody` declares neither `code` nor `param`.
-    let ollama: wire::ErrorEnvelope = serde_json::from_str(BAD_REQUEST).expect("code: null parses");
-    let llama: wire::ErrorEnvelope =
-        serde_json::from_str(BAD_REQUEST_NUMERIC_CODE).expect("code: 400 parses");
+    // The reason `wire::ErrorBody` reads `code` untyped and `param` not at all.
+    let ollama = serde_json::from_str::<wire::ErrorEnvelope>(BAD_REQUEST)
+        .expect("code: null parses")
+        .into_body();
+    let llama = serde_json::from_str::<wire::ErrorEnvelope>(BAD_REQUEST_NUMERIC_CODE)
+        .expect("code: 400 parses")
+        .into_body();
 
-    assert!(ollama.error.message.contains("cannot unmarshal"));
-    assert_eq!(ollama.error.kind.as_deref(), Some("invalid_request_error"));
-    assert!(llama.error.message.contains("to be an array"));
-    assert_eq!(llama.error.kind.as_deref(), Some("invalid_request_error"));
+    assert!(ollama.message.contains("cannot unmarshal"));
+    assert_eq!(ollama.kind.as_deref(), Some("invalid_request_error"));
+    assert!(llama.message.contains("to be an array"));
+    assert_eq!(llama.kind.as_deref(), Some("invalid_request_error"));
 
     // And the proof that the two really do disagree, so this check cannot pass
     // on two fixtures that happen to be the same shape.
@@ -1410,5 +1413,258 @@ fn a_transport_chain_is_bounded_and_a_link_that_repeats_its_parent_is_dropped() 
         super::failure::transport_detail(&Parent),
         "the same sentence",
         "a link that only repeats its parent costs the reader a clause and says nothing",
+    );
+}
+
+// --- ADR-0036: a request that outgrows the window ----------------------------
+
+/// Every context-length refusal found for this kind on 2026-09-27, in each
+/// server's own words, with the words that must reach the reader. The token
+/// counts are invented; the sentences and the shapes are the servers'.
+///
+/// - OpenAI's API: HTTP 400, `code` `context_length_exceeded`, `type`
+///   `invalid_request_error` — as published in its error reference and
+///   quoted in its developer forum.
+/// - `llama-server` (`llama.cpp` at `4da6337`,
+///   `tools/server/server-context.cpp:3220` and `server-common.cpp:68`): HTTP
+///   400, `type` `exceed_context_size_error`, `code` a number.
+/// - vLLM at `73859fe` (`vllm/renderers/params.py:499`,
+///   `vllm/entrypoints/serve/engine/protocol.py:79`): HTTP 400, nested,
+///   `type` `BadRequestError`, `code` a number.
+/// - vLLM at `v0.6.0` (`vllm/entrypoints/openai/protocol.py:64` and
+///   `serving_engine.py:264`): HTTP 400, **flat** — `object`, `message`,
+///   `type` and `code` at the top level, with no `error` key at all.
+/// - LM Studio (`lmstudio-ai/lmstudio-bug-tracker` issue 237): HTTP 400,
+///   `error` a **string**.
+/// - Ollama's own `/v1` at `16b4376` (`openai/openai.go`'s `NewError`): HTTP
+///   400, nested, `code` null, and `message` carrying `llama-server`'s whole
+///   body as text.
+const CAPACITY_FORMS: [(&str, &str, &str); 6] = [
+    (
+        "OpenAI",
+        r#"{"error":{"message":"This model's maximum context length is 128000 tokens. However, your messages resulted in 130411 tokens. Please reduce the length of the messages.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}"#,
+        "maximum context length is 128000 tokens",
+    ),
+    (
+        "llama-server",
+        r#"{"error":{"code":400,"message":"request (5123 tokens) exceeds the available context size (4096 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":5123,"n_ctx":4096}}"#,
+        "exceeds the available context size (4096 tokens)",
+    ),
+    (
+        "vLLM, nested",
+        r#"{"error":{"message":"This model's maximum context length is 4096 tokens. However, you requested 256 output tokens and your prompt contains 5123 input tokens, for a total of 5379 tokens. Please reduce the length of the input prompt or the number of requested output tokens.","type":"BadRequestError","param":"input_tokens","code":400}}"#,
+        "maximum context length is 4096 tokens",
+    ),
+    (
+        "vLLM 0.6, flat",
+        r#"{"object":"error","message":"This model's maximum context length is 4096 tokens. However, you requested 5123 tokens in the messages, Please reduce the length of the messages.","type":"BadRequestError","param":null,"code":400}"#,
+        "maximum context length is 4096 tokens",
+    ),
+    (
+        "LM Studio",
+        r#"{"error":"Trying to keep the first 5123 tokens when context the overflows. However, the model is loaded with context length of only 4096 tokens, which is not enough. Try to load the model with a larger context length, or provide a shorter input. Error Data: n/a, Additional Data: n/a"}"#,
+        "context length of only 4096 tokens",
+    ),
+    (
+        "Ollama /v1",
+        r#"{"error":{"message":"{\"error\":{\"code\":400,\"message\":\"request (5123 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":5123,\"n_ctx\":4096}}","type":"invalid_request_error","param":null,"code":null}}"#,
+        "exceeds the available context size (4096 tokens)",
+    ),
+];
+
+fn presented(code: u16, body: &str, key: &str) -> crate::failure::Presentation {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+    Presentation::of(
+        &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+            &ProviderFailure::OpenAiCompatible(OpenAiCompatibleFailure::from_status(
+                code,
+                body.as_bytes(),
+                "llama3.2:3b",
+                &alias(),
+                key,
+            )),
+            SessionEvidence::NoSessionExists,
+        ),
+    )
+}
+
+// ADR-0036 D2 for this kind: every recognised form names its cause and
+// `provider.openai-compatible.context_tokens`, at exit 2, and claims no
+// harness malfunction. Held where a person reads it, through `from_status`,
+// `Surface::provider_failure` and `Presentation::of`; no socket and no wire
+// fake. Every form is checked and every miss reported, so one red names all
+// of them.
+//
+// The accepting siblings: both recorded malformed-request 400s stay the
+// harness's defect, and so does a 400 whose body names no capacity in any
+// form this client reads -- an unrecognised form degrades to what it was
+// rather than to a remedy that would not work.
+#[test]
+fn adr_0036_d2_an_openai_compatible_capacity_refusal_names_its_cause_and_its_key_in_every_form() {
+    use crate::failure::Class;
+
+    let mut misses = Vec::new();
+    for (server, body, theirs) in CAPACITY_FORMS {
+        let shown = presented(400, body, A_KEY);
+        println!("{server}: {shown}");
+        for miss in crate::providers::capacity::fixtures::misses(
+            ProviderKind::OpenAiCompatible,
+            &shown,
+            theirs,
+        ) {
+            misses.push(format!("{server}: {miss}"));
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+
+    for body in [
+        BAD_REQUEST,
+        BAD_REQUEST_NUMERIC_CODE,
+        r#"{"error":{"message":"Input validation error: the request could not be parsed","type":"validation"}}"#,
+    ] {
+        let shown = presented(400, body, A_KEY);
+        assert_eq!(
+            shown.class,
+            Class::Defect,
+            "a refused request that names no capacity is still the harness's: {shown}"
+        );
+    }
+}
+
+// ADR-0036 clause 4 for this kind: "a test proves a credential-shaped detail
+// is not rendered". The detail is the key this client holds -- the one
+// credential `crate::redaction` can know -- spoken back inside capacity prose
+// verbatim and through `{:?}`, in both a nested and a flat body, at 400 and
+// 413. The accepting sibling is the same prose without the key, whose words
+// must reach the rendering, or every absence below is satisfied by a path that
+// renders nothing.
+#[test]
+fn adr_0036_clause_4_an_openai_compatible_capacity_refusal_renders_no_key_it_carried() {
+    let core = ascii_core(A_KEY).to_owned();
+    let prose = "This model's maximum context length is 4096 tokens";
+
+    let clean = presented(
+        400,
+        &serde_json::json!({ "error": { "message": prose, "type": "invalid_request_error" } })
+            .to_string(),
+        A_KEY,
+    )
+    .to_string();
+    assert!(
+        clean.contains(prose)
+            && clean.contains(ProviderKind::OpenAiCompatible.context_tokens_key().as_str()),
+        "a capacity refusal with no key in it must render the server's sentence and the \
+         context-token key, or the absences below prove nothing: {clean}"
+    );
+
+    for (form, message) in [
+        ("verbatim", format!("{prose}; credential {A_KEY} was sent")),
+        ("escaped", format!("{prose}; credential {A_KEY:?} was sent")),
+    ] {
+        assert!(message.contains(&core), "the {form} fixture lacks the core");
+        for body in [
+            serde_json::json!({ "error": { "message": message, "code": "context_length_exceeded" } }),
+            serde_json::json!({ "object": "error", "message": message, "code": 400 }),
+            serde_json::json!({ "error": message }),
+        ] {
+            for code in [400, 413] {
+                let shown = presented(code, &body.to_string(), A_KEY).to_string();
+                assert!(
+                    !shown.contains(A_KEY) && !shown.contains(&core),
+                    "a refusal (HTTP {code}) carrying the key {form} rendered it: {shown}"
+                );
+                assert!(
+                    !shown.trim().is_empty(),
+                    "a refusal (HTTP {code}) rendered nothing at all, which hides the key by \
+                     hiding everything"
+                );
+            }
+        }
+    }
+}
+
+// ADR-0036 D1 for this kind: the request is measured and refused before any
+// network I/O. The endpoint is a closed port, so an attempt to send would come
+// back as `Unreachable`, naming the endpoint rather than the window.
+#[tokio::test]
+async fn adr_0036_d1_an_oversized_openai_compatible_request_is_refused_before_it_reaches_the_network()
+ {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let client = super::OpenAiCompatibleClient::new(
+        endpoint("http://127.0.0.1:1/v1"),
+        model("llama3.2:3b"),
+        alias(),
+        None,
+        Some(64),
+    )
+    .expect("constructing a client does not contact the endpoint");
+    let prompt = prompt("a request whose body alone is larger than sixty-four bytes");
+    let failure = client
+        .exchange(&ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            results: &[],
+        })
+        .await
+        .expect_err("the locally measured request exceeds sixty-four bytes");
+
+    let shown = Presentation::of(
+        &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+            &ProviderFailure::OpenAiCompatible(failure),
+            SessionEvidence::NoSessionExists,
+        ),
+    );
+    let said = shown.to_string();
+    println!("{said}");
+    assert_eq!(shown.class, Class::UserCorrectable, "{said}");
+    assert!(
+        !said.contains("nothing answered")
+            && said.contains("window allows 64")
+            && said.contains(ProviderKind::OpenAiCompatible.context_tokens_key().as_str()),
+        "the request was not refused locally with its window and the key that sizes it: {said}"
+    );
+}
+
+// The two structured markers hold on their own. Every recorded form above also
+// says "context" in prose, so without this check either marker could be
+// deleted and nothing would redden. The sentences here are invented and name
+// no capacity -- a server that rewords its prose keeps its field -- and the
+// accepting sibling is the same sentence with neither field, which stays the
+// harness's defect.
+#[test]
+fn a_capacity_named_only_in_a_structured_field_is_still_the_readers() {
+    use crate::failure::Class;
+
+    let reworded = "Please shorten the request.";
+    for (field, body) in [
+        (
+            "OpenAI's code",
+            serde_json::json!({ "error": {
+                "message": reworded, "type": "invalid_request_error",
+                "code": "context_length_exceeded" } }),
+        ),
+        (
+            "llama-server's type",
+            serde_json::json!({ "error": {
+                "code": 400, "message": reworded, "type": "exceed_context_size_error" } }),
+        ),
+    ] {
+        let shown = presented(400, &body.to_string(), A_KEY);
+        assert_eq!(
+            shown.class,
+            Class::UserCorrectable,
+            "{field} alone did not make the refusal the reader's: {shown}"
+        );
+    }
+    let plain = serde_json::json!({ "error": {
+        "message": reworded, "type": "invalid_request_error", "code": null } });
+    assert_eq!(
+        presented(400, &plain.to_string(), A_KEY).class,
+        Class::Defect
     );
 }

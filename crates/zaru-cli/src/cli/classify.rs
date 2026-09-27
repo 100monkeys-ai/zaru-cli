@@ -1807,6 +1807,17 @@ impl Surface<'_> {
                 failure,
                 act("set `model.default` to a model this endpoint serves".to_owned()),
             ),
+            // ADR-0036: the window is `provider.openai_compatible.context_tokens`,
+            // the reader's number, whether this client refused before sending
+            // or the server refused what it was sent.
+            F::ContextWindowExceeded(exceeded) => Self::context_window_exceeded(
+                exceeded.needed,
+                exceeded.window,
+                ProviderKind::OpenAiCompatible,
+            ),
+            F::CapacityRefused(refused) => {
+                Self::capacity_refused(refused, ProviderKind::OpenAiCompatible)
+            }
             // The server failed on its own side -- a 5xx before the stream, or
             // an error frame inside it. The one class this kind shares with a
             // hosted provider, for the same reason it does.
