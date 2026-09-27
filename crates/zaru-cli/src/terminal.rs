@@ -29,11 +29,19 @@
 //! when the loop returns early, and a panic leaves the user's terminal in raw
 //! mode with no echo — which is [ADR-0016] D3's defect arriving in the worst
 //! possible register, because the user cannot read the report. [`Guard`] holds
-//! the restorer and gives it back on drop, so every exit path restores, and
-//! `ratatui::init` installs a panic hook that restores as well. Both are
-//! checkable without a terminal: [`Restore`] is a port and
+//! the restorer and gives it back on drop, so every path that runs `Drop`
+//! restores: an ordinary exit, an early return, and an unwind. `ratatui::init`
+//! installs a panic hook that restores as well. Both are checkable without a
+//! terminal: [`Restore`] is a port and
 //! `the_terminal_is_restored_when_the_shell_panics` catches an unwind and
 //! counts.
+//!
+//! **A signal runs no `Drop`**, so that sentence was false of a session a
+//! signal ended until 2026-09-27. `open` now takes `SIGTERM`, `SIGINT` and
+//! `SIGHUP` and gives the terminal back before exiting with `128 + n`, and
+//! `a_session_ended_by_a_signal_gives_the_terminal_back` holds it on the real
+//! binary in a pseudo-terminal. **`SIGKILL` is the one ending that still
+//! leaves the terminal as it was**, because no process can catch it.
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
@@ -45,6 +53,7 @@
 
 pub mod corpus;
 pub mod driver;
+pub mod mouse;
 pub mod open;
 pub mod paths;
 pub mod source;

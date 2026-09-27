@@ -5441,21 +5441,32 @@ fn painted_at(shell: &Shell, width: u16, height: u16) -> Vec<String> {
         .collect()
 }
 
-/// The escape sequences bracketed paste is armed and disarmed with.
+/// The escape sequences the terminal is armed and disarmed with.
 ///
 /// `Crossterm` cannot be constructed here — it is three system calls against a
 /// terminal a check does not have, which that type's own documentation says —
 /// so the sequence is asserted over a writer instead of argued for in a
-/// comment. The literals are the ones the look-and-feel survey measured the
+/// comment. The paste literal is the one the look-and-feel survey measured the
 /// gap by: its row 13 reads "`ESC[?2004h` appears nowhere in any capture".
+///
+/// **The mouse is asked for two modes and no more**: `?1000`, which reports
+/// buttons and therefore the wheel, and `?1006`, which spells the report in
+/// SGR form so a column past 223 survives. `crossterm`'s `EnableMouseCapture`
+/// asks for five, and two of the other three are the cost: `?1003` reports
+/// every movement of the pointer, measured on the release binary at `2a7544b`
+/// as 300 repaints and 8,100 bytes for 300 reports, and `?1002` every drag.
+/// Nothing reads either.
+///
+/// **The mutant:** `EnableMouseCapture` back in `arm`.
 #[test]
-fn arming_and_disarming_write_the_bracketed_paste_sequences() {
+fn arming_and_disarming_write_the_paste_and_wheel_sequences_and_nothing_else() {
     let mut armed = Vec::new();
-    crate::terminal::driver::arm(&mut armed).expect("a vector never fails to be written to");
+    crate::terminal::driver::arm(&mut armed, true).expect("a vector never fails to be written to");
     assert_eq!(
         String::from_utf8(armed.clone()).expect("the sequence is ASCII"),
-        "\u{1b}[?2004h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1015h\u{1b}[?1006h",
-        "arming wrote {:?}, and a terminal that was not asked reports wheel movement as arrows",
+        "\u{1b}[?2004h\u{1b}[?1000h\u{1b}[?1006h",
+        "arming wrote {:?}, where the terminal is owed bracketed paste, button reports and \
+         their SGR spelling and nothing else: motion and drag reports are input nothing reads",
         String::from_utf8_lossy(&armed)
     );
 
@@ -5463,9 +5474,9 @@ fn arming_and_disarming_write_the_bracketed_paste_sequences() {
     crate::terminal::driver::disarm(&mut disarmed);
     assert_eq!(
         String::from_utf8(disarmed.clone()).expect("the sequence is ASCII"),
-        "\u{1b}[?1006l\u{1b}[?1015l\u{1b}[?1003l\u{1b}[?1002l\u{1b}[?1000l\u{1b}[?2004l",
-        "disarming wrote {:?}, and a terminal left armed tells every later program that wheel \
-         movement is input",
+        "\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?2004l",
+        "disarming wrote {:?}, and a terminal left armed tells every later program that the \
+         wheel is input",
         String::from_utf8_lossy(&disarmed)
     );
 }
@@ -7037,5 +7048,108 @@ fn an_admitted_skill_is_a_row_in_the_picker() {
     assert!(
         painted.contains("/tidy project skill"),
         "and an undescribed one says where it came from and which kind it is: {painted}"
+    );
+}
+
+/// A pointer event that is not the wheel is nothing: no keystroke, so no
+/// repaint and no move of the composer's debounce clock.
+///
+/// Until 2026-09-27 every such event reached the shell as
+/// `Struck::Key(Input::default())`. That went through `Composer::key` to
+/// `refreshed`, which sets `last_edit = now`, so a moving mouse kept ADR-0005
+/// D3's 250 ms debounce from ever elapsing and repainted the frame once per
+/// report: 300 repaints and 8,100 bytes for 300 reports, measured on the
+/// release binary at `2a7544b`.
+///
+/// **The mutant:** the old arm, `_ => Struck::Key(Input::default())`, which
+/// prints the event and what it became.
+#[test]
+fn a_pointer_event_that_is_not_the_wheel_is_nothing() {
+    use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let at = |kind| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 12,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Down(MouseButton::Right),
+        MouseEventKind::Moved,
+        MouseEventKind::ScrollLeft,
+        MouseEventKind::ScrollRight,
+    ] {
+        let became = crate::terminal::source::struck_for(at(kind));
+        assert_eq!(
+            became, None,
+            "the pointer event {kind:?} became {became:?}, and anything it becomes repaints the \
+             frame and restarts the composer's debounce"
+        );
+    }
+}
+
+/// The wheel is its own input, and a key is still a key.
+///
+/// **The accepting sibling** of the check above: an implementation that
+/// dropped every pointer event would satisfy that one and lose the wheel.
+///
+/// **The mutant:** the pre-2026-09-27 spelling, `Shift+PageUp`, which prints
+/// what a notch became.
+#[test]
+fn the_wheel_is_its_own_input_and_a_key_is_still_a_key() {
+    use ratatui::crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    };
+    use zaru_tui::shell::{Struck, Wheel};
+    let at = |kind| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 12,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    for (kind, wheel) in [
+        (MouseEventKind::ScrollUp, Wheel::Up),
+        (MouseEventKind::ScrollDown, Wheel::Down),
+    ] {
+        let became = crate::terminal::source::struck_for(at(kind));
+        assert_eq!(
+            became,
+            Some(Struck::Wheel(wheel)),
+            "a wheel notch {kind:?} became {became:?} rather than an input of its own"
+        );
+    }
+    let page_up = crate::terminal::source::struck_for(Event::Key(KeyEvent::new(
+        KeyCode::PageUp,
+        KeyModifiers::SHIFT,
+    )));
+    assert!(
+        matches!(&page_up, Some(Struck::Key(input)) if input.key == zaru_tui::shell::Key::PageUp && input.shift),
+        "a physical Shift+PageUp became {page_up:?}"
+    );
+}
+
+/// With `terminal.mouse = false`, arming asks for bracketed paste and no mouse
+/// mode, and disarming still resets both, so a terminal something else left
+/// holding the mouse is given back clean too.
+///
+/// **The accepting sibling** of the check above, which an `arm` that ignored
+/// its argument would satisfy.
+///
+/// **The mutant:** `arm` writing the wheel's modes whatever it is told.
+#[test]
+fn arming_with_the_mouse_left_to_the_terminal_asks_for_paste_alone() {
+    let mut armed = Vec::new();
+    crate::terminal::driver::arm(&mut armed, false).expect("a vector never fails to be written to");
+    assert_eq!(
+        String::from_utf8(armed.clone()).expect("the sequence is ASCII"),
+        "\u{1b}[?2004h",
+        "with the mouse left to the terminal, arming wrote {:?}",
+        String::from_utf8_lossy(&armed)
     );
 }

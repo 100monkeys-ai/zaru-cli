@@ -1028,6 +1028,15 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                     self.pace.wait();
                     continue;
                 }
+                // A wheel notch is not an answer either, and it is absorbed
+                // here as it was when it arrived spelled as a key: a question
+                // that stands takes the pane's attention with it, and moving
+                // the window under a prompt is a change nobody has ruled.
+                Taken::Struck(Struck::Wheel(_)) => {
+                    pane.tick_confirmation();
+                    self.pace.wait();
+                    continue;
+                }
                 // **The pane keeps painting while the question stands.**
                 // Nothing on it changes on a bare beat -- see `TICK` -- but
                 // the paint is what makes this loop a repaint rather than a
@@ -1968,6 +1977,14 @@ fn read_while_busy<S: Surface + Send>(
             pane.shell
                 .composer_mut()
                 .paste(&text, now, entries, vocabulary, paths);
+            pane.paint();
+        }
+        // The window moves under a running turn exactly as it does at the
+        // prompt, which is the moment it matters most: see the arm below.
+        Struck::Wheel(wheel) => {
+            if let Ok(area) = pane.surface.area() {
+                pane.shell.wheel(wheel, Shell::regions(area)[1]);
+            }
             pane.paint();
         }
         Struck::Key(input) if input.key == zaru_tui::shell::Key::Enter => {
@@ -3852,18 +3869,21 @@ impl Crossterm {
     /// second answer to a question the library already answers, and the two
     /// would have to be kept agreeing.
     ///
+    /// `hold_the_mouse` is `terminal.mouse`, resolved by the caller; see
+    /// [`crate::terminal::mouse`].
+    ///
     /// # Errors
     ///
     /// When the terminal cannot be put into raw mode or the alternate screen
     /// cannot be entered.
-    pub fn take() -> std::io::Result<Self> {
+    pub fn take(hold_the_mouse: bool) -> std::io::Result<Self> {
         let terminal = ratatui::try_init()?;
         // Armed **after** the alternate screen and disarmed before it is left,
         // in this one place, so no exit path can hand a terminal back still
         // telling every later program that a paste is bracketed. If the arm
         // itself fails the terminal is given back before the error leaves, so
         // a half-taken terminal is never returned.
-        if let Err(failure) = arm(&mut std::io::stdout()) {
+        if let Err(failure) = arm(&mut std::io::stdout(), hold_the_mouse) {
             ratatui::restore();
             return Err(failure);
         }
@@ -3890,12 +3910,59 @@ impl Crossterm {
 /// # Errors
 ///
 /// When the sequence cannot be written to the terminal.
-pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
-    ratatui::crossterm::execute!(
-        out,
-        ratatui::crossterm::event::EnableBracketedPaste,
-        ratatui::crossterm::event::EnableMouseCapture,
-    )
+///
+/// # And for the wheel, unless `terminal.mouse` says not to
+///
+/// `hold_the_mouse` is that key's answer. With it `false` no mouse mode is
+/// asked for and the terminal keeps its own selection and its own wheel; see
+/// [`crate::terminal::mouse`] for what that costs.
+pub(crate) fn arm(out: &mut impl std::io::Write, hold_the_mouse: bool) -> std::io::Result<()> {
+    if hold_the_mouse {
+        ratatui::crossterm::execute!(
+            out,
+            ratatui::crossterm::event::EnableBracketedPaste,
+            AskForTheWheel,
+        )
+    } else {
+        ratatui::crossterm::execute!(out, ratatui::crossterm::event::EnableBracketedPaste)
+    }
+}
+
+/// Ask the terminal to report its buttons, and so its wheel, in SGR form:
+/// `ESC[?1000h ESC[?1006h`, and nothing else.
+///
+/// # Why not `crossterm`'s `EnableMouseCapture`
+///
+/// That command asks for five modes: `?1000` buttons, `?1002` drags, `?1003`
+/// every movement of the pointer, `?1015` urxvt coordinates and `?1006` SGR
+/// coordinates. The pane reads the wheel and nothing else, and a terminal
+/// reports what it was asked for whether anything reads it or not. Measured on
+/// the release binary at `2a7544b`: with `?1003` on, 300 pointer movements over
+/// three seconds cost **300 repaints and 8,100 bytes** of output, and each one
+/// reached the composer as a keystroke. `?1006` supersedes `?1015` wherever
+/// both are understood, and SGR is the one that carries a column past 223.
+///
+/// **What capture still costs is the terminal's own selection**, which a
+/// terminal gives back while its bypass modifier is held: Shift in Windows
+/// Terminal, in the VS Code terminal off macOS, and in most others. That
+/// trade is [ADR-0005]'s, decided on its amendments on 2026-09-27.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+struct AskForTheWheel;
+
+impl ratatui::crossterm::Command for AskForTheWheel {
+    fn write_ansi(&self, f: &mut impl core::fmt::Write) -> core::fmt::Result {
+        f.write_str("\x1b[?1000h\x1b[?1006h")
+    }
+}
+
+/// Stop asking for what [`AskForTheWheel`] asked for, in the reverse order.
+struct ReleaseTheWheel;
+
+impl ratatui::crossterm::Command for ReleaseTheWheel {
+    fn write_ansi(&self, f: &mut impl core::fmt::Write) -> core::fmt::Result {
+        f.write_str("\x1b[?1006l\x1b[?1000l")
+    }
 }
 
 /// Stop asking, on the way out. See [`arm`].
@@ -3909,20 +3976,33 @@ pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
 pub(crate) fn disarm(out: &mut impl std::io::Write) {
     let _ = ratatui::crossterm::execute!(
         out,
-        ratatui::crossterm::event::DisableMouseCapture,
+        ReleaseTheWheel,
         ratatui::crossterm::event::DisableBracketedPaste,
     );
 }
 
 impl Restore for Crossterm {
     fn restore(&mut self) {
-        // Before the alternate screen is left, and on every path `Guard` runs
-        // on: an ordinary exit, an early return, and an unwind. `ratatui`'s
-        // own panic hook calls `ratatui::restore` and knows nothing about
-        // bracketed paste, so this is the only thing that disarms it.
-        disarm(&mut std::io::stdout());
-        ratatui::restore();
+        give_back();
     }
+}
+
+/// Give the terminal back: disarm what [`arm`] asked for, leave raw mode, and
+/// leave the alternate screen.
+///
+/// **One function with two callers**, because there are two ways a session
+/// ends that can restore. [`Guard`] calls it through [`Restore`] on an ordinary
+/// exit, an early return and an unwind. `terminal::open`'s signal listener
+/// calls it directly when a signal ends the session, because a process ending
+/// on a signal runs no `Drop`. Neither needs the [`Crossterm`] value: raw mode
+/// is a property of the terminal, and the sequences go to standard output.
+///
+/// The disarm comes **before** the alternate screen is left, on both paths.
+/// `ratatui`'s own panic hook calls `ratatui::restore` and knows nothing about
+/// bracketed paste or the mouse, so this is the only thing that disarms them.
+pub(crate) fn give_back() {
+    disarm(&mut std::io::stdout());
+    ratatui::restore();
 }
 
 impl Surface for Crossterm {

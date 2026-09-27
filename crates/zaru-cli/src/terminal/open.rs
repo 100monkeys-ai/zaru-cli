@@ -546,6 +546,8 @@ pub fn shell_for(
         composer_token: store
             .as_ref()
             .is_some_and(|store| store.composer().is_some()),
+        // `terminal.mouse`, the same answer `open` gave `driver::arm`.
+        mouse_captured: crate::terminal::mouse::held(&resolution),
     };
 
     Ok((shell, transcript, trie, populating, resumed, conditions))
@@ -1258,8 +1260,29 @@ pub fn open(
     // defect as a user error".
     let runtime = crate::compose::turn::runtime()
         .expect("a current-thread runtime with the io and time drivers");
-    let crossterm = Crossterm::take().map_err(|_| Box::new(Exit::Succeeded))?;
+
+    // **The signals are taken before the terminal is**, so there is no moment
+    // at which the terminal is ours and a signal would leave it raw. The
+    // `expect` is the runtime's own, for the runtime's own reason: an
+    // operating system that refuses `sigaction` is ADR-0016 D3's defect, not
+    // the person's error.
+    let signals = {
+        let _inside = runtime.enter();
+        Signals::take().expect("the session's runtime registers SIGTERM, SIGINT and SIGHUP")
+    };
+    // `terminal.mouse` is read before the terminal is taken, because it
+    // decides what taking it asks for; a configuration that will not resolve
+    // is refused here, on the screen the person is looking at, exactly as
+    // `shell_for` would refuse it a moment later.
+    let hold_the_mouse = crate::cli::layers::resolve_from_process(home, overrides)
+        .map(|resolution| crate::terminal::mouse::held(&resolution))
+        .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
+    let crossterm = Crossterm::take(hold_the_mouse).map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
+    // Polled whenever the pump is, which is whenever a session is open: every
+    // session runs inside `runtime.block_on`, and the pump awaits between
+    // beats. Dropped with the runtime when this function returns.
+    runtime.spawn(signals.give_the_terminal_back());
 
     // The terminal's own reader, on a thread of its own, and one for every
     // session: a second reader would race the first for the same keystrokes.
@@ -1299,6 +1322,78 @@ pub fn open(
     drop(source);
     guard.restore_now();
     Ok(exit)
+}
+
+/// The three signals that can end a session and still give the terminal back.
+///
+/// # Why a session takes signals at all
+///
+/// The terminal is restored by [`Guard`]'s `Drop`, which runs on an ordinary
+/// exit, an early return and an unwind. **A process a signal ends runs no
+/// `Drop`.** Measured on the release binary at `2a7544b`, before this existed:
+/// a `SIGTERM` wrote no reset at all. The person's shell was left reading
+/// `-isig -icanon -echo`, on the alternate screen, with bracketed paste and
+/// every mouse mode on, so each movement of the mouse typed a report into
+/// their prompt.
+///
+/// # Which signals, and the one that cannot be taken
+///
+/// `SIGTERM` is what `kill` and most supervisors send. `SIGHUP` is what a
+/// closing terminal or a dropped connection sends. `SIGINT` arrives only as a
+/// signal someone sent: raw mode turns off the terminal's `ISIG`, so `Ctrl-C`
+/// is a key the shell reads, never this signal. **`SIGKILL` cannot be caught
+/// by any process**, so a `kill -9` still leaves the terminal as it was, and
+/// `reset` is the person's remedy.
+///
+/// # What happens, in order
+///
+/// The terminal is given back ([`crate::terminal::driver::give_back`], the
+/// function [`Guard`] reaches too), and then the process exits with
+/// [`crate::failure::signalled`]: `128 + n`, the status a shell already
+/// reported for a process that signal ended. Nothing else is flushed or
+/// finalised, and nothing needs to be. [ADR-0010] D2's transcript is written a
+/// record at a time precisely so that a killed process loses at most the event
+/// in flight, and this is a killed process that tidied the terminal first.
+///
+/// # When it runs
+///
+/// The listener is a task on the session's current-thread runtime, so it
+/// runs when the pump yields, which it does between beats. Between the end of
+/// the last session and the process exiting, a signal is taken and not acted
+/// on, because tokio never returns a caught signal to its default action. That
+/// window is the terminal already having been given back and `main` writing
+/// its outcome.
+///
+/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+struct Signals {
+    terminate: tokio::signal::unix::Signal,
+    interrupt: tokio::signal::unix::Signal,
+    hang_up: tokio::signal::unix::Signal,
+}
+
+impl Signals {
+    /// Register the three, on the runtime the caller has entered.
+    fn take() -> std::io::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            terminate: signal(SignalKind::terminate())?,
+            interrupt: signal(SignalKind::interrupt())?,
+            hang_up: signal(SignalKind::hangup())?,
+        })
+    }
+
+    /// Wait for the first of the three, give the terminal back, and exit.
+    async fn give_the_terminal_back(mut self) {
+        // The numbers are POSIX's, and the same on every Unix: `SIGHUP` 1,
+        // `SIGINT` 2, `SIGTERM` 15.
+        let number: u8 = tokio::select! {
+            _ = self.terminate.recv() => 15,
+            _ = self.interrupt.recv() => 2,
+            _ = self.hang_up.recv() => 1,
+        };
+        crate::terminal::driver::give_back();
+        std::process::exit(i32::from(crate::failure::signalled(number)));
+    }
 }
 
 /// Which session `--continue` means, per [ADR-0010] D4.

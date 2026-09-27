@@ -225,6 +225,18 @@ pub enum Tip {
     /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
     /// [the look-and-feel survey]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel
     NotesToken,
+    /// The harness holds the mouse, so a plain click-and-drag no longer
+    /// selects text, and the terminal's own selection is behind a modifier.
+    ///
+    /// The shell asks the terminal for its buttons so that the wheel scrolls
+    /// the pane (`terminal::driver::arm`), and a terminal that reports its
+    /// buttons stops selecting with them. Holding the terminal's bypass
+    /// modifier gives the selection back: Shift in Windows Terminal, in the VS
+    /// Code terminal off macOS, and in most others. Added 2026-09-27 under the
+    /// coordinator's delegated ruling on [ADR-0005]'s amendments.
+    ///
+    /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+    Selection,
 }
 
 impl Tip {
@@ -232,7 +244,12 @@ impl Tip {
     ///
     /// The length is annotated, so a second fails to compile here as well as
     /// in every exhaustive match below.
-    pub const ALL: [Self; 1] = [Self::NotesToken];
+    ///
+    /// **The order is the offer order**, because D8's budget is one tip per
+    /// session and [`eligible`] takes the first that passes. The rule, taken
+    /// 2026-09-27 and open to Jeshua's veto: a tip that says how to get back
+    /// something the harness took outranks a tip about a capability it adds.
+    pub const ALL: [Self; 2] = [Self::Selection, Self::NotesToken];
 
     /// The stable identifier `~/.zaru/tips.jsonl` records.
     ///
@@ -244,6 +261,7 @@ impl Tip {
     pub const fn name(self) -> &'static str {
         match self {
             Self::NotesToken => "notes-token",
+            Self::Selection => "select-text",
         }
     }
 
@@ -264,6 +282,11 @@ impl Tip {
     pub const fn line(self) -> &'static str {
         match self {
             Self::NotesToken => "search your notes here · /notes tokens",
+            // Twenty-five columns. It names Shift and nothing else, because
+            // Shift is the modifier on every terminal this harness's platforms
+            // (Linux and WSL) put in front of it; iTerm2's Option and
+            // Terminal.app's Fn are macOS's.
+            Self::Selection => "hold Shift to select text",
         }
     }
 }
@@ -280,6 +303,9 @@ pub struct Conditions {
     ///
     /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
     pub composer_token: bool,
+    /// Whether the shell asked the terminal for its mouse buttons, which is
+    /// what takes the terminal's plain click-and-drag selection away.
+    pub mouse_captured: bool,
 }
 
 impl Conditions {
@@ -291,6 +317,7 @@ impl Conditions {
     pub const fn holds(self, tip: Tip) -> bool {
         match tip {
             Tip::NotesToken => !self.composer_token,
+            Tip::Selection => self.mouse_captured,
         }
     }
 }
@@ -627,10 +654,9 @@ pub fn room_for_a_tip(owed: Option<&crate::compose::Owed>, tips: bool) -> bool {
 ///    is also D8's "without action".
 /// 3. [`Tips::suppressed`] is the three showings.
 ///
-/// The first tip of [`Tip::ALL`] that passes all three is the one, which with
-/// one variant is not yet an ordering anybody chose — a second tip needs a
-/// rule for which of two eligible ones is offered, and that rule is not
-/// invented here.
+/// The first tip of [`Tip::ALL`] that passes all three is the one. That order
+/// became a decision on 2026-09-27, when the second tip arrived. It is stated
+/// on [`Tip::ALL`].
 ///
 /// # Errors
 ///

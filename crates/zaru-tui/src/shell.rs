@@ -108,6 +108,24 @@ pub enum Struck {
     Key(Input),
     /// A block the terminal framed as a paste, with its own newlines.
     Pasted(String),
+    /// One notch of the mouse wheel.
+    ///
+    /// **Its own input and not an encoded key.** A key a person presses and a
+    /// notch their wheel turns are two inputs, and spelling the second as the
+    /// first (as `Shift+PageUp`, until 2026-09-27) made a physical
+    /// `Shift+PageUp` move one row. The host sends this only because it asked
+    /// the terminal to report its buttons. Every other pointer event is nothing
+    /// and never reaches this crate.
+    Wheel(Wheel),
+}
+
+/// Which way a wheel notch turned. See [`Struck::Wheel`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wheel {
+    /// Away from the person, toward older rows.
+    Up,
+    /// Toward the person, toward the tail.
+    Down,
 }
 
 impl From<Input> for Struck {
@@ -1249,6 +1267,19 @@ impl Shell {
         }
     }
 
+    /// Move the pane one wrapped row for one wheel notch, in `pane`.
+    ///
+    /// **Whatever else is standing.** A wheel notch is not an answer, a
+    /// keystroke or text, so it reaches no question and no composer. It moves
+    /// the window, and nothing else. The pump that owns a standing question
+    /// decides whether to call this at all.
+    pub fn wheel(&mut self, wheel: Wheel, pane: Rect) {
+        match wheel {
+            Wheel::Up => self.line_up(pane.height, pane.width),
+            Wheel::Down => self.line_down(pane.height, pane.width),
+        }
+    }
+
     /// Hold the window at the first row of the transcript.
     pub const fn to_top(&mut self) {
         self.viewing = Viewing::At(0);
@@ -1369,10 +1400,10 @@ impl Shell {
     ///
     /// # Which keys, and the two that are conditional
     ///
-    /// `PageUp` and `PageDown` always move the pane. Their shifted forms move
-    /// one wrapped transcript row, which is how mouse-wheel input reaches the
-    /// pane. Nothing is taken from
-    /// the composer by that: `tui-textarea` reads them as its own viewport's
+    /// `PageUp` and `PageDown` always move the pane, by a page, with or
+    /// without `Shift`: the wheel is [`Struck::Wheel`] and reaches
+    /// [`Self::wheel`], never this table. Nothing is taken from the composer
+    /// by that: `tui-textarea` reads them as its own viewport's
     /// scrolling, and this composer stopped painting through that widget on
     /// 2026-09-13, when [`Composer::input_row`] began composing its one row.
     ///
@@ -1407,8 +1438,6 @@ impl Shell {
             return false;
         }
         match &input.key {
-            Key::PageUp if input.shift => self.line_up(pane.height, pane.width),
-            Key::PageDown if input.shift => self.line_down(pane.height, pane.width),
             Key::PageUp => self.page_up(pane.height, pane.width),
             Key::PageDown => self.page_down(pane.height, pane.width),
             Key::Home if self.composer.text().is_empty() => self.to_top(),
@@ -1667,6 +1696,10 @@ impl Shell {
             Struck::Key(input) => self.key(input, pane, now, entries, vocabulary, paths),
             Struck::Pasted(text) => {
                 self.pasted(&text, now, entries, vocabulary, paths);
+                Action::Idle
+            }
+            Struck::Wheel(wheel) => {
+                self.wheel(wheel, pane);
                 Action::Idle
             }
         }
