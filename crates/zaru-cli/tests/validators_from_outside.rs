@@ -178,7 +178,11 @@ expect = "exit-zero"
             .collect::<Vec<_>>()
     );
 
-    let environment = Environment::inherited_minimum().expect("the harness's own values pass on");
+    let environment = Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+        "PATH",
+        "/usr/bin:/bin",
+    )]))
+    .expect("the harness's own values pass on");
     let spawn = Spawn::new(&working, environment, process_ceiling);
     let patterns = Patterns::new(pattern_ceiling);
     let schemas = SchemaFiles::new(&working, files);
@@ -307,7 +311,11 @@ expect = { json_schema = "schema/output.json" }
     std::os::unix::fs::symlink(&outside, &inside).expect("staging: the escaping link");
 
     let plan = Plan::from_declared(manifest.validators().to_vec()).expect("one validator");
-    let environment = Environment::inherited_minimum().expect("the harness's own values");
+    let environment = Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+        "PATH",
+        "/usr/bin:/bin",
+    )]))
+    .expect("the harness's own values");
     let spawn = Spawn::new(&working, environment, process_ceiling);
     let patterns = Patterns::new(pattern_ceiling);
     let schemas = SchemaFiles::new(&working, files);
@@ -375,7 +383,11 @@ async fn corpus_an_unusable_pattern_is_refused_from_outside_without_being_quoted
         .expect("an unusable pattern is still well-formed TOML and a non-empty string")
         .expect("it is there");
     let plan = Plan::from_declared(manifest.validators().to_vec()).expect("one validator");
-    let environment = Environment::inherited_minimum().expect("the harness's own values");
+    let environment = Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+        "PATH",
+        "/usr/bin:/bin",
+    )]))
+    .expect("the harness's own values");
     let spawn = Spawn::new(&working, environment, process_ceiling);
     let patterns = Patterns::new(pattern_ceiling);
     let schemas = SchemaFiles::new(&working, files);
@@ -416,7 +428,11 @@ async fn corpus_an_unusable_pattern_is_refused_from_outside_without_being_quoted
         .expect("well formed")
         .expect("there");
     let plan = Plan::from_declared(manifest.validators().to_vec()).expect("one validator");
-    let environment = Environment::inherited_minimum().expect("the harness's own values");
+    let environment = Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+        "PATH",
+        "/usr/bin:/bin",
+    )]))
+    .expect("the harness's own values");
     let spawn = Spawn::new(&working, environment, process_ceiling);
     let schemas = SchemaFiles::new(&working, files);
     let dispatch = Dispatch::new(&plan, &spawn, &patterns, &schemas);
@@ -430,4 +446,19 @@ async fn corpus_an_unusable_pattern_is_refused_from_outside_without_being_quoted
         .expect("the same value in a pattern that compiles");
     assert_eq!(reports[0].outcome, ValidatorOutcome::Passed);
     println!("   sibling: the same value in a usable pattern passed");
+}
+
+// --------------------------------- a home and an environment nobody handed
+
+#[path = "support/decoy.rs"]
+mod decoy;
+
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
+#[test]
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
+    );
 }

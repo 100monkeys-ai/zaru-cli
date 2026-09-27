@@ -275,8 +275,9 @@ impl Keyring for OsKeyring {
 /// for the reason [`crate::config::environment::read`] takes its variables as a
 /// parameter: [`std::env::set_var`] is `unsafe` in this edition and the
 /// workspace denies `unsafe_code`, so a check that staged one could not exist.
-/// [`Self::from_process`] is the product path and passes
-/// [`std::env::var`]; a check passes a value it owns. One function, two callers.
+/// [`Self::within`] is the product path and reads it out of the
+/// [`Variables`](crate::config::Variables) the binary's `main` read once; a
+/// check hands either a value it owns. One precedence, every caller.
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 pub struct HarnessKeys<'a> {
@@ -298,15 +299,17 @@ impl<'a> HarnessKeys<'a> {
         Self { keyring, variable }
     }
 
-    /// Take a keyring and read the variable from this process.
+    /// Take a keyring and whatever [`CREDENTIAL_KEY_VARIABLE`] holds in
+    /// `variables`.
     ///
-    /// The product path. **This is the one function here that reads the
-    /// environment**, the shape [`SessionId::mint`](crate::session::SessionId::mint)
-    /// and [`Home::of_this_user`](crate::config::Home::of_this_user)
-    /// already use: one named impure function, findable by one search.
+    /// The product path. **Until 2026-09-27 this was `from_process` and read
+    /// the variable from the process itself**, at seven call sites, so a
+    /// caller holding other variables — a check, above all — still had the
+    /// sealing key come from the developer's shell. It reads the value the
+    /// binary's `main` read once now; see [`crate::config::Variables`].
     #[must_use]
-    pub fn from_process(keyring: &'a (dyn Keyring + Sync)) -> Self {
-        Self::new(keyring, std::env::var(CREDENTIAL_KEY_VARIABLE).ok())
+    pub fn within(keyring: &'a (dyn Keyring + Sync), variables: &crate::config::Variables) -> Self {
+        Self::new(keyring, variables.credential_key())
     }
 }
 

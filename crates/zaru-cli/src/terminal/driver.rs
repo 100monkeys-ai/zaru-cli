@@ -2512,6 +2512,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                     match crate::terminal::open::resolve(
                         &opening,
                         runner.home,
+                        runner.variables,
                         runner.version,
                         runner.report_at,
                         &crate::cli::invocation::Overrides::default(),
@@ -3851,7 +3852,7 @@ pub struct Crossterm {
     /// Held here because the terminal is the thing that knows: it is taken
     /// once per session, and `NO_COLOR` is a fact about the process rather
     /// than about the shell's state. See
-    /// [`crate::terminal::open::palette_from_environment`].
+    /// [`crate::terminal::open::palette_of`].
     palette: Palette,
 }
 
@@ -3865,13 +3866,15 @@ impl Crossterm {
     /// would have to be kept agreeing.
     ///
     /// `hold_the_mouse` is `terminal.mouse`, resolved by the caller; see
-    /// [`crate::terminal::mouse`].
+    /// [`crate::terminal::mouse`]. `palette` is `NO_COLOR`'s answer, read by
+    /// the caller out of the variables `main` read once; see
+    /// [`crate::terminal::open::palette_of`].
     ///
     /// # Errors
     ///
     /// When the terminal cannot be put into raw mode or the alternate screen
     /// cannot be entered.
-    pub fn take(hold_the_mouse: bool) -> std::io::Result<Self> {
+    pub fn take(hold_the_mouse: bool, palette: Palette) -> std::io::Result<Self> {
         let terminal = ratatui::try_init()?;
         // Armed **after** the alternate screen and disarmed before it is left,
         // in this one place, so no exit path can hand a terminal back still
@@ -3882,10 +3885,8 @@ impl Crossterm {
             ratatui::restore();
             return Err(failure);
         }
-        // Read here, once, after the terminal is taken and armed: `NO_COLOR`
-        // is a fact about the process and the terminal is the thing that
-        // knows whether it paints colour.
-        let palette = crate::terminal::open::palette_from_environment();
+        // Held here, once per terminal: the terminal is the thing that knows
+        // whether it paints colour.
         Ok(Self { terminal, palette })
     }
 }

@@ -308,14 +308,36 @@ fn an_unnameable_name_or_value_is_refused() {
     ));
 }
 
+/// What a check hands a child's minimum: a `PATH` every Unix runner has, and
+/// nothing of the developer's.
+///
+/// The spawns in `tests/terminal_from_outside.rs` hand their binary the same
+/// `PATH`, for the same reason: a check whose child found its programs
+/// through the developer's `PATH` is a check that passes on their machine.
+fn a_childs_variables() -> crate::config::Variables {
+    crate::config::Variables::of([("PATH", "/usr/bin:/bin")])
+}
+
 /// The inherited minimum is exactly the named five, and no more.
 ///
 /// Asserted against [`MINIMUM`] rather than against a list retyped here, and
-/// against the harness's own process for which of them exist — so the check
-/// measures the rule rather than this machine.
+/// against variables this check owns for which of them exist — so the check
+/// measures the rule rather than this machine. Four of the five are planted
+/// and the fifth is not, beside a `ZARU_` name and an unrelated one, so
+/// "carried only what is there" and "carried nothing else" each have
+/// something to be wrong about.
 #[test]
 fn the_inherited_minimum_is_the_named_five_and_nothing_else() {
-    let environment = Environment::inherited_minimum().expect("the harness's own values pass on");
+    let variables = crate::config::Variables::of([
+        ("PATH", "/usr/bin:/bin"),
+        ("HOME", "/nonexistent-home"),
+        ("LANG", "C.UTF-8"),
+        ("TMPDIR", "/tmp"),
+        ("ZARU_MODEL_DEFAULT", "planted-by-this-check"),
+        ("EDITOR", "planted-by-this-check"),
+    ]);
+    let environment =
+        Environment::inherited_minimum(&variables).expect("the check's own values pass on");
 
     // The five are written here as literals rather than read back out of
     // `MINIMUM`. [Verification lessons] §11: at least one arm of a comparison
@@ -346,19 +368,19 @@ fn the_inherited_minimum_is_the_named_five_and_nothing_else() {
     // the sort rather than the membership.
     let mut expected: Vec<&str> = five
         .into_iter()
-        .filter(|name| std::env::var_os(name).is_some())
+        .filter(|name| variables.get(name).is_some())
         .collect();
     expected.sort_unstable();
     let mut carried_sorted = carried.clone();
     carried_sorted.sort_unstable();
     assert_eq!(
         carried_sorted, expected,
-        "the inherited minimum is not the named five this process actually has"
+        "the inherited minimum is not the named five these variables actually have"
     );
     // The staging: without a name to carry, every assertion above is vacuous.
     assert!(
         carried.contains(&"PATH"),
-        "this process has no PATH, so nothing above was measured. ADR-0011 D1's `cmd.run` \
+        "no PATH was carried, so nothing above was measured. ADR-0011 D1's `cmd.run` \
          resolves a program through PATH and a check with none cannot exercise it"
     );
 }
@@ -402,7 +424,7 @@ async fn a_child_starts_at_the_boundarys_root() {
     let working = WorkingDirectory::at(tree.project_by_link()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -432,7 +454,7 @@ async fn a_childs_exit_code_is_the_works_own() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -461,7 +483,7 @@ async fn stdout_and_stderr_are_captured_separately() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -511,7 +533,7 @@ async fn a_capture_larger_than_a_pipe_buffer_completes() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -551,7 +573,7 @@ async fn the_ceiling_kills_a_child_that_outlasts_it() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         ceiling,
     );
 
@@ -586,7 +608,7 @@ async fn a_program_that_will_not_start_names_itself() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
     let missing = awkward_nonce("no-such-program");
@@ -617,7 +639,7 @@ async fn a_missing_cmd_run_program_stays_in_the_tool_result_channel() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
     let missing = awkward_nonce("no-such-command");
@@ -660,7 +682,7 @@ async fn nothing_contains_a_child_at_bare_and_the_check_says_so() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -701,64 +723,54 @@ async fn nothing_contains_a_child_at_bare_and_the_check_says_so() {
 
 // ------------------------------------- the harness's own environment, planted
 
-/// The environment variable the parent plants in the child test binary.
+/// The environment variable planted in the harness's own environment.
 const PLANTED_NAME: &str = "ZARU_PROVIDER_ANTHROPIC_KEY";
 
-/// Where the parent tells the re-invoked child to root its working directory.
-const CHILD_ROOT: &str = "PR_CHILD_ROOT";
-
-/// How the re-invoked child marks a line of its grandchild's environment.
-const ENV_MARKER: &str = "PR-ENV ";
-
-/// A `ZARU_*` variable of the harness's own process never reaches a child.
+/// A `ZARU_*` variable of the harness's own environment never reaches a child.
 ///
-/// # Why this needs a second process
+/// # Why this no longer needs a second process
 ///
-/// The rule is about a variable the **harness itself** holds, and planting one
-/// means changing this process's environment — which is `unsafe` in edition
-/// 2024 and is racy against every other check in this binary. So the check
-/// re-invokes this crate's own test binary with the variable set on *that*
-/// command, which is safe and touches nothing shared, and the child runs `env`
-/// through a real [`Spawn`] and reports what its grandchild saw.
+/// The rule is about a variable the **harness itself** holds. Until
+/// 2026-09-27 the harness's environment was the process's, read inside
+/// [`Environment::inherited_minimum`], and planting one meant changing this
+/// process's environment -- `unsafe` in edition 2024, and racy against every
+/// other check in this binary -- so this check re-invoked its own test binary
+/// with the variable set on that command and had the child report what its
+/// grandchild saw. The harness's environment is a value now,
+/// [`crate::config::Variables`], read once by `main`; so the variable is
+/// planted in the value the product reads, in this process, and the child
+/// that reports is the real `env` run through a real [`Spawn`].
 ///
-/// It is the same shape `session::tests`'s kill check already uses, and the
-/// parent prints a newline before spawning so that its own progress framing
-/// cannot be glued to the child's first line ([Verification lessons] §60).
-///
-/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-#[test]
-fn the_harnesss_own_configuration_never_reaches_a_child() {
+/// Planted beside the five and beside a name that is neither, so the
+/// accepting arm (`PATH` arrives) and the allowlist arm (nothing else does)
+/// each have something to be wrong about.
+#[tokio::test]
+async fn the_harnesss_own_configuration_never_reaches_a_child() {
     let tree = ScratchTree::new();
     let planted = awkward_nonce("layer-four-secret");
+    let variables = crate::config::Variables::of([
+        ("PATH", "/usr/bin:/bin".to_owned()),
+        (PLANTED_NAME, planted.clone()),
+        ("EDITOR", "planted-beside-the-five".to_owned()),
+    ]);
 
-    println!();
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("the test binary knows where it is"),
-    )
-    .args([
-        "--exact",
-        "process::tests::the_environment_checks_child_reports_what_its_grandchild_saw",
-        "--ignored",
-        "--nocapture",
-        "--test-threads=1",
-    ])
-    .env(PLANTED_NAME, &planted)
-    .env(CHILD_ROOT, tree.project())
-    .output()
-    .expect("could not spawn this crate's own test binary");
-
-    let said = String::from_utf8_lossy(&output.stdout).into_owned();
-    let seen: Vec<&str> = said
-        .lines()
-        .filter_map(|line| line.strip_prefix(ENV_MARKER))
-        .collect();
+    let working = WorkingDirectory::at(tree.project()).expect("the working directory resolves");
+    let spawn = Spawn::new(
+        &working,
+        Environment::inherited_minimum(&variables).expect("the five"),
+        generous(),
+    );
+    let outcome = spawn
+        .execute(&CommandLine::split("env").expect("a command line"))
+        .await
+        .unwrap_or_else(|failure| panic!("`env` did not run: {failure}"));
+    let seen: Vec<&str> = outcome.stdout.lines().collect();
 
     // The staging, before any absence is believed: the child ran and reported.
     assert!(
         !seen.is_empty(),
-        "the re-invoked child reported no environment at all, so nothing below was measured. It \
-         printed: {said:?} / {:?}",
-        String::from_utf8_lossy(&output.stderr),
+        "`env` reported no environment at all, so nothing below was measured: stderr was {:?}",
+        outcome.stderr,
     );
 
     let names: Vec<&str> = seen
@@ -766,16 +778,16 @@ fn the_harnesss_own_configuration_never_reaches_a_child() {
         .map(|line| line.split_once('=').map_or(*line, |(name, _)| name))
         .collect();
 
-    // The accepting arm: an environment that reached the grandchild at all.
+    // The accepting arm: an environment that reached the child at all.
     assert!(
         names.contains(&"PATH"),
-        "the grandchild saw no PATH, so an implementation passing nothing would pass this check. \
+        "the child saw no PATH, so an implementation passing nothing would pass this check. \
          It saw: {names:?}"
     );
     // The rule.
     assert!(
         !names.iter().any(|name| name.starts_with(HARNESS_PREFIX)),
-        "a {HARNESS_PREFIX}-prefixed variable of the harness's own process reached a child: \
+        "a {HARNESS_PREFIX}-prefixed variable of the harness's own environment reached a child: \
          {names:?}"
     );
     let core = ascii_core(&planted);
@@ -783,45 +795,18 @@ fn the_harnesss_own_configuration_never_reaches_a_child() {
         !seen
             .iter()
             .any(|line| line.contains(&planted) || line.contains(core)),
-        "the planted value reached the grandchild's environment. Asserted on the raw value and \
-         on its ASCII core, because an escaping renderer can publish every byte of a value in a \
-         form the raw comparison does not recognise"
+        "the planted value reached the child's environment. Asserted on the raw value and on its \
+         ASCII core, because an escaping renderer can publish every byte of a value in a form \
+         the raw comparison does not recognise"
     );
     // And the environment is an allowlist rather than an inheritance: every
-    // name the grandchild saw is one of the five.
+    // name the child saw is one of the five.
     let outside: Vec<&&str> = names.iter().filter(|n| !MINIMUM.contains(*n)).collect();
     assert!(
         outside.is_empty(),
-        "the grandchild saw {outside:?}, which ADR-0011 D2's five do not name — so the \
-         environment was inherited rather than cleared and set"
+        "the child saw {outside:?}, which ADR-0011 D2's five do not name — so the environment \
+         was inherited rather than cleared and set"
     );
-}
-
-/// The child half of the check above. Never run on its own.
-#[tokio::test]
-#[ignore = "re-invoked by `the_harnesss_own_configuration_never_reaches_a_child`"]
-async fn the_environment_checks_child_reports_what_its_grandchild_saw() {
-    let root = std::env::var(CHILD_ROOT)
-        .unwrap_or_else(|_| panic!("{CHILD_ROOT} names the working directory this child uses"));
-    assert!(
-        std::env::var(PLANTED_NAME).is_ok(),
-        "the parent did not plant {PLANTED_NAME}, so this child cannot say anything about it"
-    );
-
-    let working = WorkingDirectory::at(&root).expect("the working directory resolves");
-    let spawn = Spawn::new(
-        &working,
-        Environment::inherited_minimum().expect("the five"),
-        generous(),
-    );
-    let outcome = spawn
-        .execute(&CommandLine::split("env").expect("a command line"))
-        .await
-        .unwrap_or_else(|failure| panic!("`env` did not run: {failure}"));
-
-    for line in outcome.stdout.lines() {
-        println!("{ENV_MARKER}{line}");
-    }
 }
 
 // -------------------------------------------- the runtime, while a child runs
@@ -909,7 +894,7 @@ async fn the_runtime_is_still_polled_while_a_child_runs() {
     let line = scripted(&tree, "waits-for-a-gate.sh", &waits_for(&gate));
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -980,7 +965,7 @@ async fn an_interrupt_during_a_child_ends_the_child() {
     let line = scripted(&tree, "reports-its-pid.sh", &body);
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -1070,7 +1055,7 @@ async fn a_child_that_ignores_the_signal_is_ended_anyway() {
     let line = scripted(&tree, "ignores-the-signal.sh", &body);
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
 
@@ -1160,7 +1145,7 @@ fn the_sessions_own_runtime_can_run_a_child() {
     let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
     let spawn = Spawn::new(
         &working,
-        Environment::inherited_minimum().expect("the five"),
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
         generous(),
     );
     let runtime = crate::compose::turn::runtime().expect("the session's own runtime");

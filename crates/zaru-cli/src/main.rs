@@ -77,7 +77,7 @@
 
 use std::process::ExitCode;
 use zaru_cli::cli::{Run, classify::Surface, parse_process};
-use zaru_cli::config::Home;
+use zaru_cli::config::{Home, Variables};
 use zaru_cli::failure::{Exit, Guarded, SessionEvidence, guard};
 
 /// Everything the binary does, inside the boundary.
@@ -92,6 +92,10 @@ fn run() -> Exit {
     // the seventeen places that each asked for themselves until 2026-09-27,
     // and why a check could not point them anywhere.
     let home = Home::of_this_user();
+    // The environment, read **here and nowhere else**, for the same reason
+    // and by the same shape. See `zaru_cli::config::Variables` for the four
+    // readers that each asked the process for themselves until 2026-09-27.
+    let variables = Variables::of_this_process();
 
     let outcome = match parse_process() {
         // ADR-0010 D4's two readings, one per reader. A person at a terminal
@@ -99,33 +103,36 @@ fn run() -> Exit {
         // nothing else. See `zaru_cli::terminal::open`, which carries the
         // decision and the reason. This is the only branch in this file that
         // is not parse, execute, write.
-        Ok(line) => match zaru_cli::terminal::take_over(&line, &home, version, report_at) {
-            // **The terminal path's ending is an `Outcome` like every other,
-            // and until 2026-09-15 it was a `return` that went past the
-            // writing below.** A person whose session would not open -- no
-            // session to continue, a session that does not exist, a
-            // `zaru.toml` refused by name, a runtime tier that names none, a
-            // checkpoint this harness did not write -- got the exit code and
-            // not one byte of the sentence, which is ADR-0016 D2's "an error
-            // message whose reader cannot act" with the grammar removed too.
-            //
-            // There are no lines, because what the terminal path had to show
-            // it painted itself. `terminal::open` gives the terminal back
-            // before it hands this up -- `guard.restore_now()` on both of its
-            // exits -- so the refusal is written to the screen the person is
-            // looking at rather than into an alternate screen that is about
-            // to be discarded with it.
-            Some(exit) => zaru_cli::cli::Outcome {
-                lines: Vec::new(),
-                exit,
-            },
-            None => Run {
-                version,
-                report_at,
-                home: &home,
+        Ok(line) => {
+            match zaru_cli::terminal::take_over(&line, &home, &variables, version, report_at) {
+                // **The terminal path's ending is an `Outcome` like every other,
+                // and until 2026-09-15 it was a `return` that went past the
+                // writing below.** A person whose session would not open -- no
+                // session to continue, a session that does not exist, a
+                // `zaru.toml` refused by name, a runtime tier that names none, a
+                // checkpoint this harness did not write -- got the exit code and
+                // not one byte of the sentence, which is ADR-0016 D2's "an error
+                // message whose reader cannot act" with the grammar removed too.
+                //
+                // There are no lines, because what the terminal path had to show
+                // it painted itself. `terminal::open` gives the terminal back
+                // before it hands this up -- `guard.restore_now()` on both of its
+                // exits -- so the refusal is written to the screen the person is
+                // looking at rather than into an alternate screen that is about
+                // to be discarded with it.
+                Some(exit) => zaru_cli::cli::Outcome {
+                    lines: Vec::new(),
+                    exit,
+                },
+                None => Run {
+                    version,
+                    report_at,
+                    home: &home,
+                    variables: &variables,
+                }
+                .execute(&line),
             }
-            .execute(&line),
-        },
+        }
         Err(refusal) => zaru_cli::cli::Outcome {
             lines: Vec::new(),
             exit: Exit::Failed(Surface::new(version, report_at).command(&refusal)),

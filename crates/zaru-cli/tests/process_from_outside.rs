@@ -102,7 +102,11 @@ fn generous() -> ProcessCeiling {
 
 /// The five names ADR-0011 D2 gives a child.
 fn minimum() -> Environment {
-    Environment::inherited_minimum().expect("the harness's own values pass on")
+    Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+        "PATH",
+        "/usr/bin:/bin",
+    )]))
+    .expect("the harness's own values pass on")
 }
 
 /// A value no other call produces, carrying text no implementation invents
@@ -1596,5 +1600,20 @@ async fn an_uninterrupted_round_leaves_a_matched_pair_for_both_calls() {
         "a turn that finished was reported as having a call in flight, so the check above cannot \
          tell an interrupt from an ordinary round: {:?}",
         restored.interrupted
+    );
+}
+
+// --------------------------------- a home and an environment nobody handed
+
+#[path = "support/decoy.rs"]
+mod decoy;
+
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
+#[test]
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
 }

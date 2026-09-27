@@ -27,7 +27,7 @@
 
 use crate::cli::classify::Surface as Classify;
 use crate::cli::invocation::{CommandLine, Overrides, Request};
-use crate::config::Home;
+use crate::config::{Home, Variables};
 use crate::failure::{Exit, SessionEvidence};
 use crate::runtime::ResolvedTier;
 use crate::session::{MetaFile, Resumed, SessionId, SessionStore};
@@ -115,11 +115,13 @@ pub fn a_person_is_watching() -> bool {
 /// case is not an edge nobody meets — `NO_COLOR=` is what a shell leaves
 /// behind when a variable is cleared rather than unset.
 ///
-/// **This is the only place in any crate that reads it.** `zaru-tui` names no
-/// environment variable at all, because [`Palette`] reaches the renderer as an
-/// argument; so the value cannot drift between one frame and the next, and a
-/// check can paint either palette without touching the process's environment
-/// (which is shared state a suite running in one process would owe back).
+/// **This is the only place in any crate that reads it**, and since
+/// 2026-09-27 it reads it out of the [`Variables`] the binary's `main` read
+/// once rather than out of the process. `zaru-tui` names no environment
+/// variable at all, because [`Palette`] reaches the renderer as an argument;
+/// so the value cannot drift between one frame and the next, and a check can
+/// paint either palette without touching the process's environment (which is
+/// shared state a suite running in one process would owe back).
 ///
 /// No `zaru.toml` key and no flag: neither exists, and [ADR-0015] D2's flag
 /// surface is a closed set whose own count is annotated so an eighth fails to
@@ -147,8 +149,8 @@ pub fn a_person_is_watching() -> bool {
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
 #[must_use]
-pub fn palette_from_environment() -> Palette {
-    palette_for(std::env::var_os("NO_COLOR").as_deref())
+pub fn palette_of(variables: &Variables) -> Palette {
+    palette_for(variables.get_os("NO_COLOR"))
 }
 
 /// The convention itself, as a function of the value rather than of the
@@ -238,12 +240,13 @@ fn credential_store(home: &Home) -> Option<crate::credentials::CredentialStore> 
 /// which entry serves, over the store [`credential_store`] opened.
 fn composer_reader(
     store: &crate::credentials::CredentialStore,
+    variables: &Variables,
     workspace: &str,
     cache: CorpusCache,
 ) -> Option<Populating> {
     let (alias, host) = crate::credentials::composer_token(store)?;
     let keyring = crate::credentials::OsKeyring::for_store(store.root());
-    let keys = crate::credentials::HarnessKeys::from_process(&keyring);
+    let keys = crate::credentials::HarnessKeys::within(&keyring, variables);
     let secret = store.secret(&alias, &keys).ok()?;
     Some(Populating {
         workspace: workspace.to_owned(),
@@ -435,13 +438,14 @@ pub fn refresh_from(
 pub fn shell_for(
     id: &SessionId,
     home: &Home,
+    variables: &Variables,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<Opened, Box<Exit>> {
     let classify = Classify::new(version, report_at);
 
-    let resolution = crate::cli::layers::resolve_from_process(home, overrides)
+    let resolution = crate::cli::layers::resolve_for(home, variables, overrides)
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
     let tier = ResolvedTier::from_configuration(&resolution)
         .map_err(|refusal| Box::new(Exit::Failed(classify.tier(&refusal))))?;
@@ -517,7 +521,7 @@ pub fn shell_for(
     let populating = store
         .as_ref()
         .filter(|_| !attached.is_empty())
-        .and_then(|store| composer_reader(store, &attached, cache));
+        .and_then(|store| composer_reader(store, variables, &attached, cache));
     // **ADR-0005 D8, and the reason clause 10b existed.** A session that has a
     // token and a pin asks the file first: where the last session left a
     // corpus for this instance and this workspace, the strip completes from
@@ -675,6 +679,7 @@ pub fn restored_context(
 pub fn resolve(
     opening: &Opening,
     home: &Home,
+    variables: &Variables,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
@@ -699,7 +704,7 @@ pub fn resolve(
             Ok(id.clone())
         }
         Opening::MostRecentHere => most_recent_in_store(root, version, report_at),
-        Opening::New => mint(home, version, report_at, overrides),
+        Opening::New => mint(home, variables, version, report_at, overrides),
     }
 }
 
@@ -728,6 +733,7 @@ pub fn resolve(
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 pub fn mint(
     home: &Home,
+    variables: &Variables,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
@@ -735,7 +741,7 @@ pub fn mint(
     let classify = Classify::new(version, report_at);
     let root = SessionStore::root_in(home)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
-    let resolution = crate::cli::layers::resolve_from_process(home, overrides)
+    let resolution = crate::cli::layers::resolve_for(home, variables, overrides)
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
     let tier = ResolvedTier::from_configuration(&resolution)
         .map_err(|refusal| Box::new(Exit::Failed(classify.tier(&refusal))))?;
@@ -745,7 +751,8 @@ pub fn mint(
     // could not: D1 makes the field optional, and a session that records a
     // kind it never reached would be a worse record than one that records
     // none.
-    let prepared = crate::compose::turn::prepare(home, version, report_at, &resolution).ok();
+    let prepared =
+        crate::compose::turn::prepare(home, variables, version, report_at, &resolution).ok();
     let provider = prepared.as_ref().map(crate::compose::Prepared::kind);
     // ADR-0013's window is the prepared provider's, and this session may have
     // none -- see `cli::layers::WINDOW_WHEN_NO_PROVIDER` for what a session
@@ -757,7 +764,8 @@ pub fn mint(
     // refresh is dropped here rather than spawned: this function mints a
     // session and returns, and `one_session` opens the same session moments
     // later with its own runtime and starts the refresh there.
-    let mut serving = crate::compose::persona::for_session(home, &resolution, workspace.as_deref());
+    let mut serving =
+        crate::compose::persona::for_session(home, variables, &resolution, workspace.as_deref());
     drop(serving.take_refreshing());
     let (session, _) = crate::compose::turn::start(
         root,
@@ -798,6 +806,7 @@ pub fn mint(
 fn one_session(
     id: &SessionId,
     home: &Home,
+    variables: &Variables,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
@@ -807,7 +816,7 @@ fn one_session(
     saying: Vec<zaru_tui::shell::Line>,
 ) -> Result<crate::terminal::driver::Pumped, Box<Exit>> {
     let (mut shell, _, trie, populating, resumed, conditions) =
-        shell_for(id, home, version, report_at, overrides)?;
+        shell_for(id, home, variables, version, report_at, overrides)?;
 
     // What the switch that opened this session had to say, put on the pane
     // before anything else. Empty for a switch the person asked for; see
@@ -870,9 +879,9 @@ fn one_session(
     // zero bytes each. See `cli::Outcome::written`, which is the one writer
     // now.
     let classify = Classify::new(version, report_at);
-    let resolution = crate::cli::layers::resolve_from_process(home, overrides)
+    let resolution = crate::cli::layers::resolve_for(home, variables, overrides)
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
-    let prepared = crate::compose::turn::prepare(home, version, report_at, &resolution);
+    let prepared = crate::compose::turn::prepare(home, variables, version, report_at, &resolution);
     let root = SessionStore::root_in(home)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
     let store = SessionStore::reading(root);
@@ -978,7 +987,7 @@ fn one_session(
     // exists at all.
     let pinned = attached_workspace(&store.sessions_directory().join(id.as_str()));
     let mut serving =
-        crate::compose::persona::for_session(home, &resolution, Some(pinned.as_str()));
+        crate::compose::persona::for_session(home, variables, &resolution, Some(pinned.as_str()));
     let context = restored_context(
         &resumed,
         &classify,
@@ -1168,6 +1177,7 @@ fn one_session(
         version,
         report_at,
         home,
+        variables,
     };
 
     // The guard is what restores, and it is the caller's: a switch keeps the
@@ -1241,11 +1251,12 @@ fn one_session(
 pub fn open(
     opening: &Opening,
     home: &Home,
+    variables: &Variables,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<Exit, Box<Exit>> {
-    let mut id = resolve(opening, home, version, report_at, overrides)?;
+    let mut id = resolve(opening, home, variables, version, report_at, overrides)?;
 
     // **One runtime for the whole shell, built before the terminal is taken.**
     // Every turn of every session it opens is polled on it, and it is what
@@ -1274,10 +1285,11 @@ pub fn open(
     // decides what taking it asks for; a configuration that will not resolve
     // is refused here, on the screen the person is looking at, exactly as
     // `shell_for` would refuse it a moment later.
-    let hold_the_mouse = crate::cli::layers::resolve_from_process(home, overrides)
+    let hold_the_mouse = crate::cli::layers::resolve_for(home, variables, overrides)
         .map(|resolution| crate::terminal::mouse::held(&resolution))
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
-    let crossterm = Crossterm::take(hold_the_mouse).map_err(|_| Box::new(Exit::Succeeded))?;
+    let crossterm = Crossterm::take(hold_the_mouse, palette_of(variables))
+        .map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
     // Polled whenever the pump is, which is whenever a session is open: every
     // session runs inside `runtime.block_on`, and the pump awaits between
@@ -1296,6 +1308,7 @@ pub fn open(
         match one_session(
             &id,
             home,
+            variables,
             version,
             report_at,
             overrides,
@@ -1430,13 +1443,26 @@ pub fn most_recent_in_store(
 /// Returns `None` when this invocation is not a session or nobody is watching,
 /// which is the signal to fall through to the out-of-session surface.
 #[must_use]
-pub fn take_over(line: &CommandLine, home: &Home, version: &str, report_at: &str) -> Option<Exit> {
+pub fn take_over(
+    line: &CommandLine,
+    home: &Home,
+    variables: &Variables,
+    version: &str,
+    report_at: &str,
+) -> Option<Exit> {
     let opening = opening_for(&line.request)?;
     if !a_person_is_watching() {
         return None;
     }
     Some(
-        match open(&opening, home, version, report_at, &line.overrides) {
+        match open(
+            &opening,
+            home,
+            variables,
+            version,
+            report_at,
+            &line.overrides,
+        ) {
             Ok(exit) => exit,
             Err(exit) => *exit,
         },

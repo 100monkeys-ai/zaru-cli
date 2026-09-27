@@ -639,8 +639,8 @@ pub fn schema() -> Schema {
 /// [`crate::config::environment::read`] takes one: `std::env::set_var` is
 /// `unsafe` in this edition and the workspace denies `unsafe_code`, so a check
 /// that read the process's own environment would be a check whose answer
-/// depends on whatever the runner was started with. [`resolve_from_process`]
-/// is the product path.
+/// depends on whatever the runner was started with. [`resolve_for`] is the
+/// product path, over the variables `main` read once.
 ///
 /// # Errors
 ///
@@ -666,17 +666,28 @@ pub fn resolve(
     Resolution::resolve(&schema, contributions).map_err(LoadFailure::Refused)
 }
 
-/// Fold the layers over this process's own environment, with layer 2 under
-/// `home`.
+/// Fold the layers for one invocation: layer 2 under `home`, layer 4 from
+/// `variables`.
+///
+/// **`variables` is the caller's, since 2026-09-27**, and was
+/// `std::env::vars()` here — so a caller that had named a home and handed
+/// [`resolve`] its own pairs still had layer 4 read from whatever the process
+/// was started with, and a check was red or green by whose shell ran it. See
+/// [`crate::config::Variables`].
 ///
 /// # Errors
 ///
 /// [`LoadFailure`].
-pub fn resolve_from_process(
+pub fn resolve_for(
     home: &crate::config::Home,
+    variables: &crate::config::Variables,
     overrides: &Overrides,
 ) -> Result<Resolution, LoadFailure> {
-    resolve(overrides, std::env::vars(), &Files::of_this_process(home))
+    resolve(
+        overrides,
+        variables.prefixed(environment::PREFIX),
+        &Files::of_this_process(home),
+    )
 }
 
 /// How long a child process started by [ADR-0011] D1's `cmd.run` may run.

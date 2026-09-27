@@ -614,10 +614,13 @@ pub async fn persona_at(
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 /// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 #[must_use]
-pub fn composer_secret(store: &CredentialStore) -> Option<(Alias, String, Secret)> {
+pub fn composer_secret(
+    store: &CredentialStore,
+    variables: &crate::config::Variables,
+) -> Option<(Alias, String, Secret)> {
     let (alias, host) = composer_token(store)?;
     let keyring = crate::credentials::OsKeyring::for_store(store.root());
-    let keys = crate::credentials::HarnessKeys::from_process(&keyring);
+    let keys = crate::credentials::HarnessKeys::within(&keyring, variables);
     let secret = store.secret(&alias, &keys).ok()?;
     Some((alias, host, secret))
 }

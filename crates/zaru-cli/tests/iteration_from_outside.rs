@@ -332,7 +332,11 @@ fn drive_narrating<P: ContextPolicy + Sync>(
     let destructive = NothingDestructive;
     let membrane = NoMembrane;
     let unbuilt = Unbuilt;
-    let environment = Environment::inherited_minimum().expect("a child environment");
+    let environment = Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+        "PATH",
+        "/usr/bin:/bin",
+    )]))
+    .expect("a child environment");
     let spawn = Spawn::new(
         &working,
         environment,
@@ -963,7 +967,11 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
             let destructive = NothingDestructive;
             let membrane = NoMembrane;
             let unbuilt = Unbuilt;
-            let environment = Environment::inherited_minimum().expect("a child environment");
+            let environment = Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+                "PATH",
+                "/usr/bin:/bin",
+            )]))
+            .expect("a child environment");
             let spawn = Spawn::new(
                 &working,
                 environment,
@@ -1415,4 +1423,19 @@ fn one_emission_of_the_inner_loops_stream_reaches_the_transcript_and_a_subscribe
              tried, what failed and what changed, and this stream carried {kinds:?}"
         );
     }
+}
+
+// --------------------------------- a home and an environment nobody handed
+
+#[path = "support/decoy.rs"]
+mod decoy;
+
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
+#[test]
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
+    );
 }
