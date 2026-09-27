@@ -1076,12 +1076,58 @@ async fn adr_0036_d1_an_oversized_ollama_request_is_refused_before_it_reaches_th
     let said = presented.to_string();
     println!("{said}");
     assert_eq!(presented.class, Class::UserCorrectable, "{said}");
-    // The statement is the one every kind's window refusal renders, the
-    // classifier's `context_window_exceeded`; what differs by kind is the key.
+    // The statement is `capacity::Exceeded`'s, one for every kind; what
+    // differs by kind is the key.
     assert!(
         !said.contains("nothing answered")
-            && said.contains("window allows 64")
+            && said.contains("configured context window of 64 token(s); it was not sent")
             && said.contains(ProviderKind::Ollama.context_tokens_key().as_str()),
         "the request was not refused locally with its window and the key that sizes it: {said}"
     );
+}
+
+// ADR-0036 D1 counts bytes against a window in tokens, deliberately, and for
+// this kind the built-in window is 4,096 -- so the preflight must leave a
+// first turn room at that default, or every `ollama` turn a person starts
+// without configuring anything would be refused. Measured 2026-09-27 from the
+// debug binary through the whole composition against a closed port with a
+// scratch home and nothing configured but the kind, the model and the
+// endpoint: the first request for "say ok" with every built-in offered was
+// 1,941 bytes, 1,619 of them the tool declarations.
+//
+// This holds the same thing at the client: the seven built-ins, a prompt
+// larger than the one measured, and the built-in window, sent at a closed
+// port. Passing the preflight is observable as reaching the port.
+#[tokio::test]
+async fn a_first_turn_offering_every_built_in_fits_the_default_ollama_window() {
+    let prompt = prompt(&"a first turn's persona line and a one-line task. ".repeat(8));
+    let request = ModelRequest {
+        prompt: &prompt,
+        tools: crate::tools::descriptor_set(),
+        results: &[],
+    };
+    let window = crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS;
+    let body = map::request_from(
+        &request,
+        &mut map::Answered::default(),
+        "llama3.2:3b",
+        window,
+    )
+    .expect("the built-ins map");
+    let needed = crate::providers::capacity::request_bytes(&body);
+    println!("a first request needs {needed} bytes of a {window}-token window");
+
+    let client = super::OllamaClient::new(
+        ProviderEndpoint::new("http://127.0.0.1:1").expect("a well-formed endpoint"),
+        model("llama3.2:3b"),
+        window,
+    )
+    .expect("constructing a client does not contact the endpoint");
+    match client.exchange(&request).await {
+        Err(OllamaFailure::Unreachable { .. }) => {}
+        other => panic!(
+            "a first turn needing {needed} bytes did not get past the preflight at the default \
+             window of {window}: {other:?}"
+        ),
+    }
 }

@@ -1624,7 +1624,7 @@ async fn adr_0036_d1_an_oversized_openai_compatible_request_is_refused_before_it
     assert_eq!(shown.class, Class::UserCorrectable, "{said}");
     assert!(
         !said.contains("nothing answered")
-            && said.contains("window allows 64")
+            && said.contains("configured context window of 64 token(s); it was not sent")
             && said.contains(ProviderKind::OpenAiCompatible.context_tokens_key().as_str()),
         "the request was not refused locally with its window and the key that sizes it: {said}"
     );

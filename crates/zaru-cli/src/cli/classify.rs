@@ -1653,6 +1653,31 @@ impl Surface<'_> {
         )
     }
 
+    /// A provider request refused before it was sent, because it would not
+    /// fit the window.
+    ///
+    /// [ADR-0036] D1's preflight, for every kind. **Its own statement rather
+    /// than [`Self::context_window_exceeded`]'s**, because the two measure
+    /// different things in different words: that one is the turn's assembled
+    /// context, and this one is the provider-native request, counted in
+    /// "the workspace's conservative byte accounting" against a window
+    /// configured in tokens. Rendered through the turn-level sentence it read
+    /// "the assembled context needs N tokens", naming a byte count as tokens,
+    /// so a reader sizing the window from it was sizing it from the wrong
+    /// unit. [`crate::providers::capacity::Exceeded`]'s sentence states both
+    /// units; the remedy is the same key.
+    ///
+    /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
+    fn request_window_exceeded(
+        exceeded: &crate::providers::capacity::Exceeded,
+        kind: ProviderKind,
+    ) -> Classified {
+        correctable(
+            exceeded,
+            act(SET_THE_WINDOW_OR_READ_LESS.replace("{key}", kind.context_tokens_key().as_str())),
+        )
+    }
+
     /// A provider's own refusal naming a context or token capacity.
     ///
     /// [ADR-0036] D2: "A remote provider refusal that explicitly names a
@@ -1810,11 +1835,9 @@ impl Surface<'_> {
             // ADR-0036: the window is `provider.openai_compatible.context_tokens`,
             // the reader's number, whether this client refused before sending
             // or the server refused what it was sent.
-            F::ContextWindowExceeded(exceeded) => Self::context_window_exceeded(
-                exceeded.needed,
-                exceeded.window,
-                ProviderKind::OpenAiCompatible,
-            ),
+            F::ContextWindowExceeded(exceeded) => {
+                Self::request_window_exceeded(exceeded, ProviderKind::OpenAiCompatible)
+            }
             F::CapacityRefused(refused) => {
                 Self::capacity_refused(refused, ProviderKind::OpenAiCompatible)
             }
@@ -1886,11 +1909,9 @@ impl Surface<'_> {
             // ADR-0036: the window is `provider.ollama.context_tokens`, the
             // reader's number, whether this client refused before sending or
             // the server refused what it was sent.
-            F::ContextWindowExceeded(exceeded) => Self::context_window_exceeded(
-                exceeded.needed,
-                exceeded.window,
-                ProviderKind::Ollama,
-            ),
+            F::ContextWindowExceeded(exceeded) => {
+                Self::request_window_exceeded(exceeded, ProviderKind::Ollama)
+            }
             F::CapacityRefused(refused) => Self::capacity_refused(refused, ProviderKind::Ollama),
             // The server failed on its own side -- the one class this kind
             // shares with a hosted provider, for the same reason it does.
@@ -1933,11 +1954,9 @@ impl Surface<'_> {
                 failure,
                 run("replace the key", &format!("providers keys add {kind}")),
             ),
-            F::ContextWindowExceeded(exceeded) => Self::context_window_exceeded(
-                exceeded.needed,
-                exceeded.window,
-                ProviderKind::Gemini,
-            ),
+            F::ContextWindowExceeded(exceeded) => {
+                Self::request_window_exceeded(exceeded, ProviderKind::Gemini)
+            }
             F::CapacityRefused(refused) => Self::capacity_refused(refused, ProviderKind::Gemini),
             // "5xx, or the socket never opened -- environmental: nothing the
             // reader typed caused it and nothing they type fixes it."

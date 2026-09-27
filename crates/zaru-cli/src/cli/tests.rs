@@ -3022,3 +3022,61 @@ fn the_opening_line_names_the_working_directory_and_how_to_ask() {
          sentence: {line:?}"
     );
 }
+
+/// ADR-0036 D1's preflight counts **bytes** -- "the workspace's conservative
+/// byte accounting" -- against a window configured in **tokens**, and its
+/// refusal must say so. Until this check the three kinds rendered it through
+/// the turn-level sentence, "the assembled context needs N tokens and the
+/// window allows M", which named a byte count as tokens: a reader told
+/// "needs 5200 tokens" against 4096 raises the window to 5200, a number that
+/// happens to work, or to what their model's tokenizer says the request
+/// costs, which does not. The statement is `capacity::Exceeded`'s own
+/// sentence, one for every kind, and the remedy still names the kind's key.
+#[test]
+fn an_in_turn_window_refusal_states_the_bytes_it_measured_on_every_kind() {
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::capacity::Exceeded;
+    use crate::providers::{
+        GeminiFailure, OllamaFailure, OpenAiCompatibleFailure, ProviderFailure, ProviderKind,
+    };
+
+    let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
+    let exceeded = Exceeded {
+        needed: 5200,
+        window: 4096,
+    };
+    let mut misses = Vec::new();
+    for (kind, failure) in [
+        (
+            ProviderKind::Gemini,
+            ProviderFailure::Gemini(GeminiFailure::ContextWindowExceeded(exceeded)),
+        ),
+        (
+            ProviderKind::Ollama,
+            ProviderFailure::Ollama(OllamaFailure::ContextWindowExceeded(exceeded)),
+        ),
+        (
+            ProviderKind::OpenAiCompatible,
+            ProviderFailure::OpenAiCompatible(OpenAiCompatibleFailure::ContextWindowExceeded(
+                exceeded,
+            )),
+        ),
+    ] {
+        let shown =
+            Presentation::of(&surface.provider_failure(&failure, SessionEvidence::NoSessionExists));
+        let said = shown.to_string();
+        println!("{kind}: {said}");
+        if shown.class != Class::UserCorrectable
+            || !shown.headline.contains("5200 byte(s)")
+            || !shown.headline.contains("4096 token(s)")
+            || said.contains("5200 tokens")
+            || !said.contains(kind.context_tokens_key().as_str())
+        {
+            misses.push(format!(
+                "{kind}: the refusal does not state the bytes it measured against the window \
+                 in tokens, with the kind's key: {said}"
+            ));
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
