@@ -1622,6 +1622,305 @@ fn a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it() {
     );
 }
 
+/// [ADR-0034] trigger clause 2: "A positive value in a project's `zaru.toml`
+/// reaches the outer loop and exhausts exactly at that exchange count."
+///
+/// # Why this one check does not run a turn through the built binary
+///
+/// Every other check in this file runs the artefact, and this one runs it only
+/// for the configuration half. The binary's turn reaches a model through
+/// `ProviderClient`, a closed set of three real clients, so the only way to
+/// put a model that keeps asking for tools behind it is a loopback listener
+/// serving a provider's protocol -- the fake at the wire that the rulings of
+/// 2026-09-05 and 2026-09-14 refuse anywhere in this suite
+/// (`iteration_from_outside.rs` and `transport_from_outside.rs` record both).
+/// So the clause is driven here in four steps, each through the product's own
+/// public functions and the one after it reading what the one before produced:
+///
+/// 1. **The binary** reads the project's `./zaru.toml`, and `config explain`
+///    marks layer 3 as the source of the effective limit.
+/// 2. **The same file**, at the same path, is folded by `cli::layers::resolve`
+///    over `Files::at` -- the fold `main` runs, over the files it reads -- and
+///    turned into the loop's ceiling by `runtime::tool_call_ceiling_for`, which
+///    is the function `compose::turn::prepare` calls for the turn.
+/// 3. **The outer loop**, `zaru_core::tool_call::run`, takes that ceiling over
+///    a model scripted to ask for a tool on every exchange but its last. Under
+///    the project's limit the turn ends `Exhausted` at exactly that many
+///    rounds, having asked the model exactly that many times; the same script
+///    under a project limit one higher is answered on its final exchange. The
+///    pair is what "exactly" is held to: one exchange short of the script
+///    stops it, and one more lets it finish.
+/// 4. **What a person reads**: the binary renders `Exhausted` as
+///    `Surface::turn_exhausted` at [ADR-0016] D5's `1`, and that presentation
+///    names the count in the expected register -- distinct from a success,
+///    which is `0`, and from a failure, which is in the error register.
+///
+/// **Not exercised, and stated rather than implied:** the hand-off inside
+/// `compose::turn` from `Prepared`'s ceiling to `tool_call::run`, which no
+/// check can reach without a scripted model behind the binary. The tools are
+/// staged too: the clause counts exchanges, and a tool's work is not its
+/// subject.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+/// [ADR-0034]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0034-tool-call-exchange-limits
+#[test]
+fn adr_0034_clause_2_a_projects_exchange_limit_reaches_the_loop_and_exhausts_at_that_count() {
+    use zaru_cli::cli::Overrides;
+    use zaru_cli::cli::classify::Surface;
+    use zaru_cli::cli::layers::{Files, resolve};
+    use zaru_cli::failure::{Class, Presentation, SUCCESS};
+    use zaru_cli::redaction::HeldSecrets;
+    use zaru_cli::tools::WorkingDirectory;
+    use zaru_core::iteration::{Clock, ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn};
+    use zaru_core::redaction::Redacted;
+    use zaru_core::tool_call::{
+        Capabilities, Event, EventSink, InnerLoop, Model, ModelRequest, ModelResponse, Outcome,
+        Ports, Start, TokenUsage, ToolCallCeiling, ToolCalling, ToolDecision, ToolDescriptor,
+        ToolExecutor, ToolOutcome, ToolRequest, ToolResult, TurnEnding, run,
+    };
+
+    /// A model that asks for `fs.read` on every exchange its script holds a
+    /// call for, then answers, and counts how often it was asked.
+    struct Scripted {
+        script: std::sync::Mutex<std::collections::VecDeque<ModelResponse>>,
+        asked: std::sync::atomic::AtomicU32,
+    }
+    impl Scripted {
+        fn asking_for_tools(times: u32) -> Self {
+            let mut script: std::collections::VecDeque<ModelResponse> = (0..times)
+                .map(|n| ModelResponse::Calls {
+                    calls: vec![ToolRequest {
+                        id: format!("call-{n}"),
+                        name: String::from("fs.read"),
+                        arguments: String::from(r#"{"path":"notes.txt"}"#),
+                    }],
+                    tokens: TokenUsage::default(),
+                })
+                .collect();
+            script.push_back(ModelResponse::Text {
+                text: String::from("done"),
+                tokens: TokenUsage::default(),
+            });
+            Self {
+                script: std::sync::Mutex::new(script),
+                asked: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+    }
+    impl Model for Scripted {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { tool_calling: true }
+        }
+        async fn respond(&self, _request: &ModelRequest<'_>) -> Result<ModelResponse, PortFailure> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.script
+                .lock()
+                .expect("the script is not poisoned")
+                .pop_front()
+                .ok_or_else(|| PortFailure::new("the script ran out"))
+        }
+    }
+
+    /// Every call completes: the clause counts exchanges, not what a tool did.
+    struct Answering;
+    impl ToolExecutor for Answering {
+        fn descriptors(&self) -> &[ToolDescriptor] {
+            zaru_cli::tools::descriptor_set()
+        }
+        async fn execute(&mut self, request: &ToolRequest) -> Result<ToolOutcome, PortFailure> {
+            Ok(ToolOutcome::Completed {
+                decision: ToolDecision {
+                    statement: String::from("read notes.txt"),
+                    permitted: true,
+                },
+                result: ToolResult {
+                    id: request.id.clone(),
+                    content: Redacted::by(&HeldSecrets::none(), "the notes"),
+                    failed: false,
+                },
+            })
+        }
+    }
+
+    struct Stopped;
+    impl Clock for Stopped {
+        fn now(&self) -> core::time::Duration {
+            core::time::Duration::ZERO
+        }
+    }
+
+    struct Task;
+    impl ContextPolicy for Task {
+        async fn assemble(&self, turn: &Turn<'_>) -> Result<Prompt, ContextRefusal> {
+            let text = match turn {
+                Turn::Initial { task } => (*task).to_owned(),
+                Turn::Refinement { refinement } => refinement.as_str().to_owned(),
+                Turn::Resumed { interrupted } => interrupted.call().to_owned(),
+            };
+            Ok(Prompt::new(Redacted::by(&HeldSecrets::none(), &text)))
+        }
+    }
+
+    struct NeverIterates;
+    impl InnerLoop for NeverIterates {
+        async fn iterate(&self, _task: &str) -> Result<zaru_core::iteration::Outcome, PortFailure> {
+            unreachable!("this project declares no validators")
+        }
+    }
+
+    #[derive(Default)]
+    struct Endings(Vec<(TurnEnding, u32)>);
+    impl EventSink for Endings {
+        fn emit(&mut self, event: &Event) {
+            if let Event::TurnEnded { ending, rounds, .. } = event {
+                self.0.push((*ending, *rounds));
+            }
+        }
+    }
+
+    const LIMIT: u32 = 3;
+    let home = Home::new("exchange-limit-exhausts");
+    std::fs::write(home.project().join("notes.txt"), "the notes\n").expect("a file to read");
+    let manifest = |limit: u32| {
+        std::fs::write(
+            home.project().join("zaru.toml"),
+            format!("[project]\nname = \"acme\"\n\n[runtime]\nmax_tool_exchanges = {limit}\n"),
+        )
+        .expect("the manifest is written");
+    };
+
+    // The project's limit as the product folds it and hands it to the loop:
+    // the same files, the same fold, the same function `prepare` calls. The
+    // harness's home is the `~/.zaru` the binary was handed through `HOME`.
+    let harness_home = zaru_cli::config::Home::at(home.path().join(".zaru"));
+    let ceiling_from_the_project = || -> ToolCallCeiling {
+        let files = Files::at(
+            harness_home.root(),
+            Some(WorkingDirectory::at(home.project()).expect("the project resolves")),
+        );
+        let resolution = resolve(&Overrides::default(), Vec::new(), &files)
+            .expect("a manifest with a positive limit loads");
+        zaru_cli::runtime::tool_call_ceiling_for(&resolution)
+            .expect("a positive whole number is a limit")
+    };
+
+    // The loop, over a script that needs `LIMIT + 1` exchanges to answer.
+    let turn = |ceiling: ToolCallCeiling| -> (Outcome, u32, Vec<(TurnEnding, u32)>) {
+        let model = Scripted::asking_for_tools(LIMIT);
+        let mut tools = Answering;
+        let mut endings = Endings::default();
+        let outcome = zaru_cli::compose::turn::runtime()
+            .expect("a runtime builds")
+            .block_on(run::<_, _, _, _, _, NeverIterates>(
+                1,
+                Start::Task("read the notes until told to stop"),
+                ceiling,
+                ToolCalling::required(&model, "scripted").expect("the script can call tools"),
+                Ports {
+                    model: &model,
+                    tools: &mut tools,
+                    context: &Task,
+                    clock: &Stopped,
+                    redactor: &HeldSecrets::none(),
+                },
+                None,
+                &mut [&mut endings],
+            ))
+            .expect("no port failed");
+        println!("   under {ceiling:?}: {outcome:?}");
+        (
+            outcome,
+            model.asked.load(std::sync::atomic::Ordering::SeqCst),
+            endings.0,
+        )
+    };
+
+    // --- 1. the binary reads the project's limit from `./zaru.toml` --------
+    manifest(LIMIT);
+    let explained = zaru(
+        &home,
+        &[],
+        &["config", "explain", "runtime.max_tool_exchanges"],
+    );
+    assert_eq!(explained.code, 0, "{}", explained.everything());
+    assert!(
+        explained
+            .stdout
+            .contains(&format!("runtime.max_tool_exchanges = {LIMIT}")),
+        "the binary must resolve the project's {LIMIT} as the effective limit: {}",
+        explained.stdout
+    );
+    assert!(
+        explained.stdout.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("3  ")
+                && line.contains("zaru.toml")
+                && line.trim_end().ends_with("\u{2190} effective")
+        }),
+        "`config explain` must name the project file, layer 3, as the limit's source: {}",
+        explained.stdout
+    );
+
+    // --- 2 and 3. the same file reaches the loop, which stops at LIMIT ------
+    //
+    // Asserted on what the loop did rather than on the ceiling's value, so a
+    // limit lost or shifted anywhere between the file and the loop is caught
+    // by the behaviour the clause names.
+    let (outcome, asked, endings) = turn(ceiling_from_the_project());
+    let Outcome::Exhausted { rounds, calls, .. } = outcome else {
+        panic!(
+            "a project limit of {LIMIT} did not exhaust a turn whose model asked for a tool on \
+             each of its first {LIMIT} exchanges; the turn ended {outcome:?}"
+        )
+    };
+    assert_eq!(
+        (rounds, asked),
+        (LIMIT, LIMIT),
+        "a project limit of {LIMIT} must exhaust at exactly {LIMIT} exchange(s); the turn made \
+         {rounds} round(s) and asked the model {asked} time(s)"
+    );
+    assert_eq!(
+        calls, LIMIT,
+        "each exchange asked for one tool, so {LIMIT} should have run"
+    );
+    assert_eq!(
+        endings,
+        vec![(TurnEnding::CeilingReached, LIMIT)],
+        "the turn must end once, at the ceiling, after {LIMIT} rounds"
+    );
+
+    // --- the accepting sibling: one more exchange lets the script answer ----
+    manifest(LIMIT + 1);
+    let (answered, asked, _) = turn(ceiling_from_the_project());
+    assert!(
+        matches!(answered, Outcome::Answered { rounds, .. } if rounds == LIMIT + 1),
+        "a project limit of {} must let the script answer on its final exchange, or the \
+         exhaustion above may be every limit's; the turn ended {answered:?}",
+        LIMIT + 1
+    );
+    assert_eq!(asked, LIMIT + 1);
+
+    // --- 4. what a person reads: the count, in neither success nor error ---
+    let shown = Surface::turn_exhausted(rounds, calls);
+    let presentation = Presentation::of(&shown);
+    let said = presentation.to_string();
+    println!("   a person reads: {said}");
+    assert!(
+        said.contains(&format!("ceiling of {LIMIT} exchange(s)")),
+        "the exhaustion must name the count the project set: {said}"
+    );
+    assert_eq!(
+        (shown.class(), shown.exit_code()),
+        (Class::Expected, 1),
+        "exhaustion is ADR-0016 D1's expected class at D5's 1: {said}"
+    );
+    assert_ne!(shown.exit_code(), SUCCESS, "exhaustion is not a success");
+    assert!(
+        !presentation.is_the_error_register(),
+        "exhaustion is not a failure and must not render in the error register: {said}"
+    );
+}
+
 /// [ADR-0034] trigger clause 3: "Zero, negative, and non-integer values are
 /// refused with the key and actionable reason named."
 ///

@@ -506,6 +506,13 @@ pub struct Pane<'a, S: Surface + Send> {
     /// while the race that normally drives [`Meter`] is suspended. Keeping
     /// this one number on the pane lets that question refresh the same
     /// turn-wide elapsed figure on each of its beats.
+    ///
+    /// **Set by [`race`] from the meter it is given, and by nothing else.**
+    /// Until 2026-09-27 a constructor took it as a second argument beside the
+    /// meter `run_a_turn` handed the race, so the pane's start and the race's
+    /// meter were two hand-offs of one number and only one of them was
+    /// reachable by an offline check: with the constructor's argument
+    /// dropped, the prompt froze the row again and every check stayed green.
     meter_started: Option<Duration>,
     /// When the exchange now generating began, or `None` between exchanges.
     ///
@@ -551,28 +558,6 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
             first_failure: None,
             clock,
             meter_started: None,
-            generating_since: None,
-            said_generating: false,
-        }
-    }
-
-    /// Borrow a shell and terminal for a turn whose meter has already begun.
-    ///
-    /// The caller supplies [`Meter::started`]'s exact reading so the normal
-    /// asynchronous race and a synchronous permission question measure one
-    /// uninterrupted span.
-    pub(crate) fn metered_during(
-        shell: &'a mut Shell,
-        surface: &'a mut S,
-        clock: &'a (dyn zaru_core::iteration::Clock + Sync),
-        meter_started: Duration,
-    ) -> Self {
-        Self {
-            shell,
-            surface,
-            first_failure: None,
-            clock,
-            meter_started: Some(meter_started),
             generating_since: None,
             said_generating: false,
         }
@@ -1433,8 +1418,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let meter = Meter::started(&clock, &reported);
 
     let outcome: Result<crate::compose::Ran, Turned> = {
-        let pane =
-            std::sync::Mutex::new(Pane::metered_during(shell, surface, &clock, meter.started));
+        let pane = std::sync::Mutex::new(Pane::during(shell, surface, &clock));
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
         let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
@@ -1821,6 +1805,17 @@ pub async fn race<S: Surface + Send, P: Pace + Sync, T>(
     meter: Option<&Meter<'_>>,
     running: impl Future<Output = T>,
 ) -> Raced<T> {
+    // The meter's start, on the pane before anything runs, so a permission
+    // question -- which holds the pane for as long as it stands, while this
+    // loop is suspended inside `running` -- refreshes the same elapsed figure
+    // the beat below does. One hand-off serves both: a caller that gives this
+    // race its meter cannot forget to give the pane its start.
+    if let Some(meter) = meter {
+        match pane.lock() {
+            Ok(mut pane) => pane.meter_started = Some(meter.started),
+            Err(poisoned) => poisoned.into_inner().meter_started = Some(meter.started),
+        }
+    }
     let mut running = core::pin::pin!(running);
     let mut deltas = deltas;
     loop {
