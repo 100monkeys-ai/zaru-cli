@@ -7,7 +7,7 @@ use crate::shell::fixtures::{
     SECRET_NONCE, StagedTranscript, StagedVocabulary, TRANSCRIPT_NONCE, cells, painted,
 };
 use crate::shell::port::{Answers, CommandVocabulary, Confirmation, Line, Palette, Register, Row};
-use crate::shell::{Action, Answered, COMPOSER_ROWS, Leaving, Segment, Shell, Status};
+use crate::shell::{Action, Answered, COMPOSER_ROWS, Leaving, Segment, Shell, Status, Wheel};
 use core::time::Duration;
 use ratatui::style::Color;
 use tui_textarea::{Input, Key};
@@ -3837,58 +3837,78 @@ fn page_up_and_page_down_move_by_one_page_and_land_back_at_the_tail() {
     }
 }
 
-/// A shifted page key is the terminal's one-row scroll gesture.
+/// A wheel notch moves the pane one wrapped row, and the matching notch back
+/// follows the tail again.
 ///
-/// The CLI maps mouse-wheel events to this form: physical page keys retain
-/// their page-sized movement, while every wheel notch moves exactly one
-/// wrapped row and reaches the tail again after the matching down gesture.
+/// **The wheel is its own input**, `Struck::Wheel`, and not an encoded key.
+/// Until 2026-09-27 the terminal reader spelled a notch as `Shift+PageUp`, so a
+/// physical `Shift+PageUp` moved one row too: one spelling for two inputs is
+/// how either one's meaning changes without anybody deciding it. See
+/// [`a_shifted_page_key_moves_a_page_like_the_unshifted_one`].
+///
+/// **The mutant:** `Shell::wheel` moving by a page, which holds more than one
+/// row below.
 #[test]
-fn shifted_page_keys_move_the_pane_one_row_at_a_time() {
+fn a_wheel_notch_moves_the_pane_one_row_at_a_time() {
     for (width, height) in SIZES {
         let mut shell = shell_of(60);
         let pane = region(width, height);
-        let wheel_up = Input {
-            key: Key::PageUp,
-            shift: true,
-            ..Input::default()
-        };
-        let wheel_down = Input {
-            key: Key::PageDown,
-            shift: true,
-            ..Input::default()
-        };
 
-        assert!(
-            shell.moved(
-                &wheel_up,
-                pane,
-                NOW,
-                &TrieOf::new(0),
-                &StagedVocabulary,
-                &NoPaths,
-            ),
-            "the one-row scroll gesture did not reach the pane at {width}x{height}"
-        );
+        shell.wheel(Wheel::Up, pane);
         assert_eq!(
             shell.rows_below(pane.height, pane.width),
             1,
-            "one upward gesture must hold exactly one wrapped row at {width}x{height}"
+            "one wheel notch up must hold exactly one wrapped row at {width}x{height}"
         );
-        assert!(
-            shell.moved(
-                &wheel_down,
-                pane,
-                NOW,
-                &TrieOf::new(0),
-                &StagedVocabulary,
-                &NoPaths,
-            ),
-            "the one-row scroll gesture did not return to the pane at {width}x{height}"
-        );
+        shell.wheel(Wheel::Down, pane);
         assert_eq!(
             shell.viewing(),
             crate::shell::Viewing::Tail,
-            "one downward gesture must resume following at {width}x{height}"
+            "one wheel notch down must resume following at {width}x{height}"
+        );
+    }
+}
+
+/// A physical `Shift+PageUp` is a page, exactly as `PageUp` is.
+///
+/// `Shell::moved` reads `ctrl` and `alt` as "not this table's" and does not
+/// read `shift` at all, so the shifted key reaches the same arm as the plain
+/// one. That is a statement about the key table and nothing else: the wheel
+/// has an input of its own.
+///
+/// **The mutant:** the pre-2026-09-27 table, where `PageUp if input.shift`
+/// moved one row, which prints how many rows it held.
+#[test]
+fn a_shifted_page_key_moves_a_page_like_the_unshifted_one() {
+    for (width, height) in SIZES {
+        let pane = region(width, height);
+        let mut plain = shell_of(60);
+        let mut shifted = shell_of(60);
+        let key = |shift| Input {
+            key: Key::PageUp,
+            shift,
+            ..Input::default()
+        };
+        for (shell, shift) in [(&mut plain, false), (&mut shifted, true)] {
+            assert!(
+                shell.moved(
+                    &key(shift),
+                    pane,
+                    NOW,
+                    &TrieOf::new(0),
+                    &StagedVocabulary,
+                    &NoPaths,
+                ),
+                "PageUp (shift {shift}) did not reach the pane at {width}x{height}"
+            );
+        }
+        assert_eq!(
+            shifted.rows_below(pane.height, pane.width),
+            plain.rows_below(pane.height, pane.width),
+            "a physical Shift+PageUp held {} rows below where PageUp holds {} at \
+             {width}x{height}: the key was read as a wheel notch",
+            shifted.rows_below(pane.height, pane.width),
+            plain.rows_below(pane.height, pane.width),
         );
     }
 }

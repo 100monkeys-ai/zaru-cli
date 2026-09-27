@@ -462,7 +462,7 @@ impl Drop for Reader {
 /// a check does not have. Everything around it is checked: the channel, the
 /// locking, the flag and the join.
 fn read_until_stopped(sender: &UnboundedSender<Struck>, stop: &AtomicBool) {
-    use ratatui::crossterm::event::{Event, poll, read};
+    use ratatui::crossterm::event::{poll, read};
 
     while !stop.load(Ordering::Acquire) {
         match poll(POLL) {
@@ -475,39 +475,54 @@ fn read_until_stopped(sender: &UnboundedSender<Struck>, stop: &AtomicBool) {
             Ok(true) => {}
         }
         let struck = match read() {
-            Ok(Event::Key(key)) => Struck::Key(translate(key)),
-            // Mouse capture makes wheel movement an event rather than the
-            // terminal's legacy Up/Down escape sequence. Those arrows walk
-            // prompt history; a wheel belongs to the transcript pane. Shift
-            // distinguishes its one-row movement from a physical Page key.
-            Ok(Event::Mouse(mouse)) => match mouse.kind {
-                ratatui::crossterm::event::MouseEventKind::ScrollUp => Struck::Key(Input {
-                    key: zaru_tui::shell::Key::PageUp,
-                    shift: true,
-                    ..Input::default()
-                }),
-                ratatui::crossterm::event::MouseEventKind::ScrollDown => Struck::Key(Input {
-                    key: zaru_tui::shell::Key::PageDown,
-                    shift: true,
-                    ..Input::default()
-                }),
-                _ => Struck::Key(Input::default()),
+            Ok(event) => match struck_for(event) {
+                Some(struck) => struck,
+                None => continue,
             },
-            // A block the terminal framed as a paste, which it does only
-            // because `arm` pushed bracketed paste when the alternate screen
-            // was entered. Its newlines are text of one prompt -- ADR-0005
-            // D1 and D2's 2026-09-13 amendment -- so it crosses whole rather
-            // than as the keystrokes it would otherwise have arrived as.
-            Ok(Event::Paste(text)) => Struck::Pasted(text),
-            // Everything else is redrawn around rather than acted on. A resize
-            // changes the regions, which the next draw reads from the frame's
-            // own area, so an empty input is the whole response.
-            Ok(_) => Struck::Key(Input::default()),
             Err(_) => return,
         };
         if sender.send(struck).is_err() {
             // The shell dropped the source. Nothing is listening.
             return;
+        }
+    }
+}
+
+/// What one terminal event is to the shell, or nothing.
+///
+/// **A pointer event that is not the wheel is nothing.** The session asks the
+/// terminal for its buttons (`?1000`, see `driver::arm`) because that is the
+/// only way to be told about the wheel, and the buttons come with it. None of
+/// them means anything to the shell. Before 2026-09-27 they reached it as
+/// an empty keystroke, which went through the composer, moved its debounce
+/// clock and repainted the frame once per report. So `None` is returned, and
+/// the reader sends nothing.
+///
+/// **The wheel is its own input**, [`Struck::Wheel`], rather than a key
+/// spelled for it, so a physical `Shift+PageUp` stays whatever the key table
+/// says it is.
+///
+/// Everything else that is not a key or a paste (a resize, a focus change)
+/// arrives as an empty keystroke, so that the next frame is drawn at the
+/// terminal's new size, and that is unchanged.
+pub(crate) fn struck_for(event: ratatui::crossterm::event::Event) -> Option<Struck> {
+    use ratatui::crossterm::event::{Event, MouseEventKind};
+    use zaru_tui::shell::Wheel;
+    match event {
+        Event::Key(key) => Some(Struck::Key(translate(key))),
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::ScrollUp => Some(Struck::Wheel(Wheel::Up)),
+            MouseEventKind::ScrollDown => Some(Struck::Wheel(Wheel::Down)),
+            MouseEventKind::Down(_)
+            | MouseEventKind::Up(_)
+            | MouseEventKind::Drag(_)
+            | MouseEventKind::Moved
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => None,
+        },
+        Event::Paste(text) => Some(Struck::Pasted(text)),
+        Event::FocusGained | Event::FocusLost | Event::Resize(..) => {
+            Some(Struck::Key(Input::default()))
         }
     }
 }

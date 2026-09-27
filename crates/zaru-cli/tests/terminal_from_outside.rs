@@ -302,3 +302,53 @@ fn a_session_asks_the_terminal_for_the_wheel_and_nothing_more() {
          drag report is input nothing reads, and the terminal still sends it"
     );
 }
+
+/// **A pointer report that is not the wheel paints nothing.**
+///
+/// The session asks for `?1000` alone, so a terminal sends buttons and no
+/// motion. But a terminal may send more than it was asked for: a multiplexer
+/// in between, or a mode another program left on. So this writes the reports
+/// a pointer makes (motion, press, release, drag) straight into the terminal
+/// and measures what the binary paints in answer, after the first frame has
+/// settled.
+///
+/// Measured on the release binary at `2a7544b`: 300 motion reports over three
+/// seconds cost 300 repaints and 8,100 bytes.
+///
+/// **The mutant:** a non-wheel pointer event reaching the shell as an empty
+/// keystroke again, which prints how many bytes the reports cost.
+#[test]
+fn pointer_reports_that_are_not_the_wheel_paint_nothing() {
+    use std::io::Write;
+    let mut session = InATerminal::open();
+    session.until(b"\x1b[?25h", "the session's first frame");
+    // Settle: the first frames, the strip's absence line and the status row.
+    std::thread::sleep(Duration::from_millis(1500));
+    let settled = session.bytes().len();
+    let mut reports = Vec::new();
+    for step in 0..100_u32 {
+        let (column, row) = (10 + step % 50, 5 + step % 10);
+        // SGR spellings: motion with no button (35), press and release of the
+        // left button (0 … M, 0 … m), and a drag with it held (32).
+        for cb in ["35", "0", "32"] {
+            reports.extend_from_slice(format!("\x1b[<{cb};{column};{row}M").as_bytes());
+        }
+        reports.extend_from_slice(format!("\x1b[<0;{column};{row}m").as_bytes());
+    }
+    let stdin = session
+        .child
+        .stdin
+        .as_mut()
+        .expect("standard input was piped");
+    stdin
+        .write_all(&reports)
+        .expect("the reports reach the terminal");
+    stdin.flush().expect("the reports are flushed");
+    std::thread::sleep(Duration::from_millis(1500));
+    let painted = session.bytes().len() - settled;
+    assert_eq!(
+        painted, 0,
+        "400 pointer reports that are not the wheel cost {painted} bytes of painting, where \
+         they are input nothing reads"
+    );
+}

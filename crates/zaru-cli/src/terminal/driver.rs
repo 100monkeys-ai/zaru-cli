@@ -1028,6 +1028,15 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                     self.pace.wait();
                     continue;
                 }
+                // A wheel notch is not an answer either, and it is absorbed
+                // here as it was when it arrived spelled as a key: a question
+                // that stands takes the pane's attention with it, and moving
+                // the window under a prompt is a change nobody has ruled.
+                Taken::Struck(Struck::Wheel(_)) => {
+                    pane.tick_confirmation();
+                    self.pace.wait();
+                    continue;
+                }
                 // **The pane keeps painting while the question stands.**
                 // Nothing on it changes on a bare beat -- see `TICK` -- but
                 // the paint is what makes this loop a repaint rather than a
@@ -1968,6 +1977,14 @@ fn read_while_busy<S: Surface + Send>(
             pane.shell
                 .composer_mut()
                 .paste(&text, now, entries, vocabulary, paths);
+            pane.paint();
+        }
+        // The window moves under a running turn exactly as it does at the
+        // prompt, which is the moment it matters most: see the arm below.
+        Struck::Wheel(wheel) => {
+            if let Ok(area) = pane.surface.area() {
+                pane.shell.wheel(wheel, Shell::regions(area)[1]);
+            }
             pane.paint();
         }
         Struck::Key(input) if input.key == zaru_tui::shell::Key::Enter => {

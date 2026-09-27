@@ -7050,3 +7050,86 @@ fn an_admitted_skill_is_a_row_in_the_picker() {
         "and an undescribed one says where it came from and which kind it is: {painted}"
     );
 }
+
+/// A pointer event that is not the wheel is nothing: no keystroke, so no
+/// repaint and no move of the composer's debounce clock.
+///
+/// Until 2026-09-27 every such event reached the shell as
+/// `Struck::Key(Input::default())`. That went through `Composer::key` to
+/// `refreshed`, which sets `last_edit = now`, so a moving mouse kept ADR-0005
+/// D3's 250 ms debounce from ever elapsing and repainted the frame once per
+/// report: 300 repaints and 8,100 bytes for 300 reports, measured on the
+/// release binary at `2a7544b`.
+///
+/// **The mutant:** the old arm, `_ => Struck::Key(Input::default())`, which
+/// prints the event and what it became.
+#[test]
+fn a_pointer_event_that_is_not_the_wheel_is_nothing() {
+    use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let at = |kind| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 12,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Down(MouseButton::Right),
+        MouseEventKind::Moved,
+        MouseEventKind::ScrollLeft,
+        MouseEventKind::ScrollRight,
+    ] {
+        let became = crate::terminal::source::struck_for(at(kind));
+        assert_eq!(
+            became, None,
+            "the pointer event {kind:?} became {became:?}, and anything it becomes repaints the \
+             frame and restarts the composer's debounce"
+        );
+    }
+}
+
+/// The wheel is its own input, and a key is still a key.
+///
+/// **The accepting sibling** of the check above: an implementation that
+/// dropped every pointer event would satisfy that one and lose the wheel.
+///
+/// **The mutant:** the pre-2026-09-27 spelling, `Shift+PageUp`, which prints
+/// what a notch became.
+#[test]
+fn the_wheel_is_its_own_input_and_a_key_is_still_a_key() {
+    use ratatui::crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    };
+    use zaru_tui::shell::{Struck, Wheel};
+    let at = |kind| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 12,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    for (kind, wheel) in [
+        (MouseEventKind::ScrollUp, Wheel::Up),
+        (MouseEventKind::ScrollDown, Wheel::Down),
+    ] {
+        let became = crate::terminal::source::struck_for(at(kind));
+        assert_eq!(
+            became,
+            Some(Struck::Wheel(wheel)),
+            "a wheel notch {kind:?} became {became:?} rather than an input of its own"
+        );
+    }
+    let page_up = crate::terminal::source::struck_for(Event::Key(KeyEvent::new(
+        KeyCode::PageUp,
+        KeyModifiers::SHIFT,
+    )));
+    assert!(
+        matches!(&page_up, Some(Struck::Key(input)) if input.key == zaru_tui::shell::Key::PageUp && input.shift),
+        "a physical Shift+PageUp became {page_up:?}"
+    );
+}
