@@ -541,13 +541,10 @@ impl GeminiClient {
             };
             map::request_from(request, &mut answered)?
         };
-        let needed = map::request_bytes(&body);
-        if needed > self.context_tokens {
-            return Err(GeminiFailure::ContextWindowExceeded {
-                needed,
-                window: self.context_tokens,
-            });
-        }
+        // ADR-0036 D1, before any network I/O: the whole native request,
+        // including the model's own prior turns this client gives back.
+        crate::providers::capacity::preflight(&body, self.context_tokens)
+            .map_err(GeminiFailure::ContextWindowExceeded)?;
         let url = self.endpoint.url_for(&self.model);
 
         let mut response = self
@@ -712,12 +709,12 @@ impl GeminiClient {
                 status: error.status,
             };
         }
-        if (400..500).contains(&code) && GeminiFailure::names_a_capacity(&detail) {
-            return GeminiFailure::CapacityRefused {
+        if (400..500).contains(&code) && crate::providers::capacity::names_a_capacity(&detail) {
+            return GeminiFailure::CapacityRefused(crate::providers::capacity::Refused {
                 code,
-                status: error.status,
+                status: Some(error.status),
                 detail,
-            };
+            });
         }
         if (400..500).contains(&code) {
             return GeminiFailure::RequestRefused {

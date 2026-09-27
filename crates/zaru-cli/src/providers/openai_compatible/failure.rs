@@ -44,6 +44,7 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
 use crate::credentials::Alias;
+use crate::providers::capacity::{Exceeded, Refused};
 use crate::providers::endpoint::ProviderEndpoint;
 use crate::providers::kind::ProviderKind;
 use core::fmt;
@@ -90,6 +91,21 @@ pub enum OpenAiCompatibleFailure {
         /// The server's own sentence.
         detail: String,
     },
+    /// The server refused the request for exceeding the model's context or
+    /// token capacity, in a field or in words that say so.
+    ///
+    /// **The reader's**, per [ADR-0036] D2: the window is
+    /// `provider.openai_compatible.context_tokens`, which this kind has no
+    /// default for. The type and its sentence are
+    /// [`crate::providers::capacity`]'s, shared with the other two clients.
+    ///
+    /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
+    CapacityRefused(Refused),
+    /// The complete request for the next exchange would exceed the window this
+    /// client was configured with, and was not sent.
+    ///
+    /// See [`crate::providers::capacity::preflight`].
+    ContextWindowExceeded(Exceeded),
     /// The server failed on its own side.
     Unavailable {
         /// The 5xx, where there was one.
@@ -168,6 +184,8 @@ impl fmt::Display for OpenAiCompatibleFailure {
                 f,
                 "the endpoint refused this request with HTTP {code}: {detail}",
             ),
+            Self::CapacityRefused(refused) => fmt::Display::fmt(refused, f),
+            Self::ContextWindowExceeded(exceeded) => fmt::Display::fmt(exceeded, f),
             Self::Unavailable { code, detail } => match code {
                 Some(code) => write!(f, "the endpoint answered HTTP {code}: {detail}"),
                 None => write!(f, "the endpoint could not be reached: {detail}"),
@@ -266,16 +284,48 @@ impl OpenAiCompatibleFailure {
     /// telling someone to change `model.default` when they have the wrong path
     /// is D2's "a stack trace with better grammar" with a wrong suggestion
     /// attached. Then the rest of 4xx as a defect, because this harness built
-    /// the request. Then everything else as the server's own.
+    /// the request — **except** a 4xx that names a context or token capacity,
+    /// which is the reader's ([ADR-0036] D2). Then everything else as the
+    /// server's own.
+    ///
+    /// # A capacity is recognised in a field or in prose, and never guessed
+    ///
+    /// [`super::wire::ErrorBody::names_a_capacity`] reads the two structured
+    /// markers found, and [`crate::providers::capacity::names_a_capacity`] the
+    /// sentence; the forms each server sends are listed on
+    /// [`super::wire::ErrorEnvelope`]. A refusal matching neither keeps the
+    /// arm it had, so an unrecognised form degrades to a defect rather than
+    /// to a remedy that would not work. **A sentence withheld for carrying
+    /// the key is not read as a capacity by either route**, which is what the
+    /// `gemini` client does with the same refusal: the reader is not told the
+    /// cause from a sentence they are not shown.
+    ///
+    /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
     #[must_use]
     pub fn from_status(code: u16, body: &[u8], model: &str, alias: &Alias, key: &str) -> Self {
-        let detail = match serde_json::from_slice::<super::wire::ErrorEnvelope>(body) {
-            Ok(envelope) => Self::redacted_detail(&envelope.error.message, key),
-            // A body that is not the documented envelope is still evidence, so
-            // its length is reported rather than its bytes -- the same rule
-            // `Unreadable` follows and for the same reason.
-            Err(_) => format!("{} bytes that are not an error envelope", body.len()),
-        };
+        let (detail, status, marked) =
+            match serde_json::from_slice::<super::wire::ErrorEnvelope>(body) {
+                Ok(envelope) => {
+                    let error = envelope.into_body();
+                    let marked = error.names_a_capacity();
+                    (
+                        Self::redacted_detail(&error.message, key),
+                        error.kind,
+                        marked,
+                    )
+                }
+                // A body that is not the documented envelope is still
+                // evidence, so its length is reported rather than its bytes
+                // -- the same rule `Unreadable` follows and for the same
+                // reason.
+                Err(_) => (
+                    format!("{} bytes that are not an error envelope", body.len()),
+                    None,
+                    false,
+                ),
+            };
+        let capacity = detail != DETAIL_WITHHELD
+            && (marked || crate::providers::capacity::names_a_capacity(&detail));
         match code {
             401 | 403 => Self::CredentialRejected {
                 alias: alias.clone(),
@@ -286,6 +336,11 @@ impl OpenAiCompatibleFailure {
                 model: model.to_owned(),
                 detail,
             },
+            400..=499 if capacity => Self::CapacityRefused(Refused {
+                code,
+                status,
+                detail,
+            }),
             400..=499 => Self::RequestRefused { code, detail },
             _ => Self::Unavailable {
                 code: Some(code),

@@ -274,6 +274,16 @@ impl OpenAiCompatibleClient {
             };
             map::request_from(request, &mut answered, self.model.as_str())?
         };
+        // ADR-0036 D1, before any network I/O: the whole native request, the
+        // model's own prior turns and every tool result included. A window
+        // nobody stated never reaches here from the composition --
+        // `require_context_size` refuses it by name before a loop starts,
+        // which is this kind having no default -- so `None` is the one case
+        // with nothing to measure against, and it is refused upstream.
+        if let Some(window) = self.context_tokens {
+            crate::providers::capacity::preflight(&body, window)
+                .map_err(OpenAiCompatibleFailure::ContextWindowExceeded)?;
+        }
 
         let mut sending = self.http.post(self.endpoint.chat_url());
         // **The one place the key is attached**, and a header rather than a

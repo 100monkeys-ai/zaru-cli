@@ -1653,6 +1653,55 @@ impl Surface<'_> {
         )
     }
 
+    /// A provider request refused before it was sent, because it would not
+    /// fit the window.
+    ///
+    /// [ADR-0036] D1's preflight, for every kind. **Its own statement rather
+    /// than [`Self::context_window_exceeded`]'s**, because the two measure
+    /// different things in different words: that one is the turn's assembled
+    /// context, and this one is the provider-native request, counted in
+    /// "the workspace's conservative byte accounting" against a window
+    /// configured in tokens. Rendered through the turn-level sentence it read
+    /// "the assembled context needs N tokens", naming a byte count as tokens,
+    /// so a reader sizing the window from it was sizing it from the wrong
+    /// unit. [`crate::providers::capacity::Exceeded`]'s sentence states both
+    /// units; the remedy is the same key.
+    ///
+    /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
+    fn request_window_exceeded(
+        exceeded: &crate::providers::capacity::Exceeded,
+        kind: ProviderKind,
+    ) -> Classified {
+        correctable(
+            exceeded,
+            act(SET_THE_WINDOW_OR_READ_LESS.replace("{key}", kind.context_tokens_key().as_str())),
+        )
+    }
+
+    /// A provider's own refusal naming a context or token capacity.
+    ///
+    /// [ADR-0036] D2: "A remote provider refusal that explicitly names a
+    /// context or token capacity is also user-correctable: its
+    /// already-redacted description is rendered with the same context-token
+    /// remedy." **One arm for every kind**, so what the reader is told cannot
+    /// differ by which client heard the refusal; each kind's arm supplies
+    /// only the kind, whose key the remedy names.
+    ///
+    /// The statement is [`crate::providers::capacity::Refused`]'s own
+    /// sentence, which names the capacity and says nothing about the
+    /// request's shape: it does not claim the harness malfunctioned.
+    ///
+    /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
+    fn capacity_refused(
+        refused: &crate::providers::capacity::Refused,
+        kind: ProviderKind,
+    ) -> Classified {
+        correctable(
+            refused,
+            act(SET_THE_WINDOW_OR_READ_LESS.replace("{key}", kind.context_tokens_key().as_str())),
+        )
+    }
+
     /// A summarisation that did not produce a summary, in its own class.
     ///
     /// # It reuses the provider's classification and adds no taxonomy
@@ -1783,6 +1832,15 @@ impl Surface<'_> {
                 failure,
                 act("set `model.default` to a model this endpoint serves".to_owned()),
             ),
+            // ADR-0036: the window is `provider.openai_compatible.context_tokens`,
+            // the reader's number, whether this client refused before sending
+            // or the server refused what it was sent.
+            F::ContextWindowExceeded(exceeded) => {
+                Self::request_window_exceeded(exceeded, ProviderKind::OpenAiCompatible)
+            }
+            F::CapacityRefused(refused) => {
+                Self::capacity_refused(refused, ProviderKind::OpenAiCompatible)
+            }
             // The server failed on its own side -- a 5xx before the stream, or
             // an error frame inside it. The one class this kind shares with a
             // hosted provider, for the same reason it does.
@@ -1848,6 +1906,13 @@ impl Surface<'_> {
                      server already holds"
                 )),
             ),
+            // ADR-0036: the window is `provider.ollama.context_tokens`, the
+            // reader's number, whether this client refused before sending or
+            // the server refused what it was sent.
+            F::ContextWindowExceeded(exceeded) => {
+                Self::request_window_exceeded(exceeded, ProviderKind::Ollama)
+            }
+            F::CapacityRefused(refused) => Self::capacity_refused(refused, ProviderKind::Ollama),
             // The server failed on its own side -- the one class this kind
             // shares with a hosted provider, for the same reason it does.
             F::Unavailable { .. } => Classified::Environmental {
@@ -1889,18 +1954,10 @@ impl Surface<'_> {
                 failure,
                 run("replace the key", &format!("providers keys add {kind}")),
             ),
-            F::ContextWindowExceeded { needed, window } => {
-                Self::context_window_exceeded(*needed, *window, ProviderKind::Gemini)
+            F::ContextWindowExceeded(exceeded) => {
+                Self::request_window_exceeded(exceeded, ProviderKind::Gemini)
             }
-            // ADR-0036 D2: a remote refusal naming a context or token
-            // capacity is the reader's, with the preflight's remedy. Its
-            // statement is the variant's own sentence, which names the
-            // capacity and says nothing about the request's shape.
-            F::CapacityRefused { .. } => correctable(
-                failure,
-                act(SET_THE_WINDOW_OR_READ_LESS
-                    .replace("{key}", ProviderKind::Gemini.context_tokens_key().as_str())),
-            ),
+            F::CapacityRefused(refused) => Self::capacity_refused(refused, ProviderKind::Gemini),
             // "5xx, or the socket never opened -- environmental: nothing the
             // reader typed caused it and nothing they type fixes it."
             //

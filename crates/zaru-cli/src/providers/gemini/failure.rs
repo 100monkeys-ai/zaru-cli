@@ -34,6 +34,7 @@
 
 use crate::credentials::Alias;
 use crate::providers::ProviderKind;
+use crate::providers::capacity::{Exceeded, Refused};
 use core::fmt;
 
 /// What the client could not do.
@@ -82,32 +83,18 @@ pub enum GeminiFailure {
     /// "does not claim the harness malfunctioned".
     ///
     /// Built only by the client's `classify`, from a 4xx whose already
-    /// redacted detail [`Self::names_a_capacity`]. A detail withheld because
-    /// it carried the key names nothing and stays a `RequestRefused`.
+    /// redacted detail [`crate::providers::capacity::names_a_capacity`]. A
+    /// detail withheld because it carried the key names nothing and stays a
+    /// `RequestRefused`. The type and its sentence are
+    /// [`crate::providers::capacity`]'s, shared with the other two clients.
     ///
     /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
-    CapacityRefused {
-        /// The HTTP status.
-        code: u16,
-        /// AIP-193's canonical status name.
-        status: String,
-        /// What the provider said, **checked free of the key** before it got
-        /// here. See [`GeminiFailure::redacted_detail`].
-        detail: String,
-    },
+    CapacityRefused(Refused),
     /// The complete request for the next exchange would exceed this
-    /// provider's configured context window.
+    /// provider's configured context window, and was not sent.
     ///
-    /// This is checked before I/O. `needed` is the complete native request
-    /// measured in the conservative byte accounting used for context windows,
-    /// including the provider-required prior model turns and every tool
-    /// result accumulated in this turn.
-    ContextWindowExceeded {
-        /// Bytes the next request needs.
-        needed: u64,
-        /// Configured capacity for this provider.
-        window: u64,
-    },
+    /// See [`crate::providers::capacity::preflight`], which every client calls.
+    ContextWindowExceeded(Exceeded),
     /// The provider failed on its own side, or was unreachable.
     Unavailable {
         /// The HTTP status, or `None` when the exchange never got one.
@@ -187,21 +174,8 @@ impl fmt::Display for GeminiFailure {
                  {detail}. Nothing the reader typed produced that shape -- this harness built \
                  the request",
             ),
-            Self::CapacityRefused {
-                code,
-                status,
-                detail,
-            } => write!(
-                f,
-                "the provider refused this request for exceeding the model's context or token \
-                 capacity (HTTP {code}, {status}): {detail}. The turn's conversation and tool \
-                 results have outgrown what the provider accepts in one request",
-            ),
-            Self::ContextWindowExceeded { needed, window } => write!(
-                f,
-                "the next provider request needs {needed} byte(s), exceeding this provider's \
-                 configured context window of {window} token(s); it was not sent",
-            ),
+            Self::CapacityRefused(refused) => fmt::Display::fmt(refused, f),
+            Self::ContextWindowExceeded(exceeded) => fmt::Display::fmt(exceeded, f),
             Self::Unavailable { code, detail } => match code {
                 Some(code) => write!(f, "the provider answered HTTP {code}: {detail}"),
                 None => write!(f, "the provider could not be reached: {detail}"),
@@ -272,8 +246,8 @@ impl GeminiFailure {
         matches!(
             self,
             Self::CredentialRejected { .. }
-                | Self::CapacityRefused { .. }
-                | Self::ContextWindowExceeded { .. }
+                | Self::CapacityRefused(_)
+                | Self::ContextWindowExceeded(_)
         )
     }
 
@@ -293,25 +267,6 @@ impl GeminiFailure {
                 | Self::ToolSchemaUnreadable { .. }
                 | Self::ResultsDoNotMatchCalls { .. }
         )
-    }
-
-    /// Whether a redacted remote 4xx's detail explicitly says the request
-    /// exceeded a context or token capacity.
-    ///
-    /// A malformed shape is this client's defect. A provider that names a
-    /// capacity limit is instead describing the configured model boundary, so
-    /// the client builds [`Self::CapacityRefused`] and the surface directs the
-    /// reader to the context-window setting. The marker is deliberately
-    /// narrow: ordinary 400s stay [`Self::RequestRefused`] and keep their
-    /// defect class.
-    #[must_use]
-    pub fn names_a_capacity(detail: &str) -> bool {
-        let detail = detail.to_ascii_lowercase();
-        (detail.contains("context") || detail.contains("token"))
-            && (detail.contains("exceed")
-                || detail.contains("maximum")
-                || detail.contains("limit")
-                || detail.contains("too large"))
     }
 
     /// Which of AIP-193's statuses mean the credential was rejected.

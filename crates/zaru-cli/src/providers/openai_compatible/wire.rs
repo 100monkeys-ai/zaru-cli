@@ -289,37 +289,84 @@ pub struct Usage {
     pub completion_tokens: u64,
 }
 
-/// An error body, in the shape this API family publishes.
+/// An error body, in any of the three shapes this API family's servers send.
 ///
 /// **It is read both from a non-200 response and from inside a 200 stream.**
 /// See [`super::OpenAiCompatibleClient::exchange`] for the second, which is
 /// the shape no published documentation prepares a client for.
+///
+/// # Three shapes, because "OpenAI-compatible" does not reach the error body
+///
+/// Read on 2026-09-27 in each server's source or published error, for the
+/// refusal a request that outgrows the window gets ([ADR-0036] D2):
+///
+/// - [`Self::Nested`], `{"error": {"message": …}}` — OpenAI's own API,
+///   `llama-server`, vLLM at `73859fe`, and Ollama's `/v1`.
+/// - [`Self::Bare`], `{"error": "…"}` — LM Studio (`lmstudio-bug-tracker`
+///   issue 237), the same flat string Ollama's native API sends.
+/// - [`Self::Flat`], `{"object": "error", "message": …}` with no `error` key
+///   — vLLM up to at least `v0.6.0` (`vllm/entrypoints/openai/protocol.py`).
+///
+/// Until 2026-09-27 only the first was read, so a refusal in either of the
+/// others reached the reader as a byte count and a defect whatever the server
+/// had said. **The order of the variants is the order they are tried**, and it
+/// matters: an `error` that is an object is the first, an `error` that is a
+/// string is the second, and only a body with no `error` at all is read as the
+/// third.
+///
+/// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ErrorEnvelope {
-    /// The error.
-    pub error: ErrorBody,
+#[serde(untagged)]
+pub enum ErrorEnvelope {
+    /// `{"error": {"message": …, "type": …, "code": …}}`.
+    Nested {
+        /// The error.
+        error: ErrorBody,
+    },
+    /// `{"error": "…"}`.
+    Bare {
+        /// The server's own sentence.
+        error: String,
+    },
+    /// `{"object": "error", "message": …, "type": …, "code": …}`.
+    Flat(ErrorBody),
+}
+
+impl ErrorEnvelope {
+    /// The error, whichever shape carried it.
+    #[must_use]
+    pub fn into_body(self) -> ErrorBody {
+        match self {
+            Self::Nested { error } | Self::Flat(error) => error,
+            Self::Bare { error } => ErrorBody {
+                message: error,
+                kind: None,
+                code: None,
+            },
+        }
+    }
 }
 
 /// The error itself.
 ///
-/// # `code` and `param` are deliberately not read, and the reason is measured
+/// # `code` is read untyped, and `param` is not read at all
 ///
-/// The two servers disagree about `code`'s **type**. Ollama's `/v1` sends
-/// `{"message":…,"type":"not_found_error","param":null,"code":null}` and
+/// The servers disagree about `code`'s **type**. Ollama's `/v1` sends
+/// `{"message":…,"type":"not_found_error","param":null,"code":null}`,
 /// `llama-server` sends `{"code":400,"message":…,"type":
-/// "invalid_request_error"}` — a JSON `null` in one and a JSON number in the
-/// other. A field typed for either fails to deserialise the other's body, and
-/// a client that failed to read an error envelope would report a defect where
-/// the server had given it a perfectly good sentence.
+/// "invalid_request_error"}`, and OpenAI's own API sends a string, such as
+/// `"code":"context_length_exceeded"` — a JSON `null`, a number and a string.
+/// A field typed for any one fails to deserialise the others' bodies, and a
+/// client that failed to read an error envelope would report a defect where
+/// the server had given it a perfectly good sentence. So `code` is a
+/// [`Value`], read for one thing only: whether it names a capacity
+/// ([`Self::names_a_capacity`]). The HTTP status is what this client
+/// classifies on otherwise, and it is already in hand. `param` is not
+/// declared.
 ///
-/// Nothing needs it: the HTTP status is what this client classifies on, and it
-/// is already in hand. So `code` and `param` are not declared, which is the
-/// narrowest thing that reads both.
-///
-/// **This is also why [`crate::providers::ollama::wire::ErrorEnvelope`] cannot
-/// be reused.** Ollama's native `/api/chat` sends a **flat string** —
-/// `{"error":"…"}` — where its own OpenAI surface sends this object. The same
-/// server, two APIs, two envelopes.
+/// **This is also why [`crate::providers::ollama::wire::ErrorEnvelope`] is
+/// not reused.** Ollama's native `/api/chat` sends only a **flat string** —
+/// `{"error":"…"}` — which is one of the three shapes here, not all of them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ErrorBody {
     /// The server's own sentence.
@@ -328,4 +375,24 @@ pub struct ErrorBody {
     /// keyword, hence the rename.
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
+    /// The server's own code, whatever JSON type it chose. See above.
+    #[serde(default)]
+    pub code: Option<Value>,
+}
+
+impl ErrorBody {
+    /// Whether a structured field says the request exceeded the context.
+    ///
+    /// Two markers, each read in the server's own source or published error
+    /// on 2026-09-27: OpenAI's `code` `context_length_exceeded`, and
+    /// `llama-server`'s `type` `exceed_context_size_error`
+    /// (`tools/server/server-common.cpp:68` at `4da6337`). Either says so in a
+    /// field rather than in prose, so it holds when the sentence beside it
+    /// changes. A body carrying neither may still say so in its sentence,
+    /// which [`crate::providers::capacity::names_a_capacity`] reads.
+    #[must_use]
+    pub fn names_a_capacity(&self) -> bool {
+        matches!(&self.code, Some(Value::String(code)) if code == "context_length_exceeded")
+            || self.kind.as_deref() == Some("exceed_context_size_error")
+    }
 }

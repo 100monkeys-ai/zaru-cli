@@ -257,6 +257,11 @@ impl OllamaClient {
                 self.context_tokens,
             )?
         };
+        // ADR-0036 D1, before any network I/O: the whole native request, the
+        // model's own prior turns and every tool result included, against the
+        // window this client also sends as `num_ctx`.
+        crate::providers::capacity::preflight(&body, self.context_tokens)
+            .map_err(OllamaFailure::ContextWindowExceeded)?;
 
         let mut response = self
             .http
