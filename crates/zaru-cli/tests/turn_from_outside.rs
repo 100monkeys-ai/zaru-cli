@@ -1622,6 +1622,305 @@ fn a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it() {
     );
 }
 
+/// [ADR-0034] trigger clause 3: "Zero, negative, and non-integer values are
+/// refused with the key and actionable reason named."
+///
+/// # Met where a person meets it
+///
+/// A `./zaru.toml` carrying `[runtime] max_tool_exchanges`, and a task run
+/// through the built binary. The provider is `ollama` at [`CLOSED_LOOPBACK`],
+/// so nothing needs a key and the one way a turn can get past the refusal is
+/// visibly: by dialling a port nothing listens on.
+///
+/// Two refusal sites are reached, and both are the product's own. A zero or a
+/// negative number is an integer, so the configuration loads and the turn's
+/// composition refuses it before any session exists; a fraction, a word and a
+/// boolean are not integers, so the file is refused at load -- the fraction by
+/// the reader, which admits no float to any key, and the other two by
+/// [ADR-0014]'s schema, which declares this key an integer.
+///
+/// **A quoted `"32"` is not among them, deliberately.** The schema coerces
+/// text that parses as a whole number at every layer -- the environment's
+/// values are all text -- so `"32"` is the integer 32 by the time anything
+/// reads it, and it is a limit rather than a non-integer.
+///
+/// # What "actionable" is held to
+///
+/// D2's own sentences: "Its absence is the explicit unlimited state; zero and
+/// negative values are refused rather than given a second meaning." A reader
+/// who wrote `0` meaning "no limit" -- the reading Alternative 2 rejects -- can
+/// act only if the refusal says how to ask for no limit. And Alternative 3
+/// rejects coupling this key to `runtime.max_iterations`, so a refusal
+/// calling it an *iteration ceiling* names a setting the reader did not set.
+///
+/// # The accepting sibling
+///
+/// `4`, the same file and the same task, gets past the composition and is
+/// refused by the kernel at the closed port. Without it, a harness refusing
+/// every value of the key would satisfy every assertion above it.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+/// [ADR-0034]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0034-tool-call-exchange-limits
+#[test]
+fn adr_0034_clause_3_a_zero_negative_or_non_integer_exchange_limit_is_refused_naming_the_key() {
+    let home = Home::new("exchange-limit-refused");
+    std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+    std::fs::write(
+        home.path().join(".zaru").join("config.toml"),
+        format!(
+            "[model]\ndefault = \"llama3.2:3b\"\n\n[provider.default]\nkind = \"ollama\"\n\n\
+             [provider.ollama]\nendpoint = \"{CLOSED_LOOPBACK}\"\n"
+        ),
+    )
+    .expect("a scratch user file");
+    let manifest = |value: &str| {
+        std::fs::write(
+            home.project().join("zaru.toml"),
+            format!("[project]\nname = \"acme\"\n\n[runtime]\nmax_tool_exchanges = {value}\n"),
+        )
+        .expect("the manifest is written");
+    };
+    let reached_the_socket = |ran: &Ran| {
+        ran.everything().contains("Connection refused")
+            || ran.everything().contains("nothing answered")
+    };
+
+    // --- zero and a negative: integers, refused by the turn's composition --
+    for value in ["0", "-3"] {
+        manifest(value);
+        let ran = zaru(&home, &[], &["say", "the", "word", "yes"]);
+        let said = ran.stderr.as_str();
+
+        assert_eq!(
+            ran.code,
+            2,
+            "`max_tool_exchanges = {value}` is the reader's to change, which is ADR-0016 D5's 2; \
+             this run exited {} saying: {}",
+            ran.code,
+            ran.everything()
+        );
+        assert!(
+            !reached_the_socket(&ran),
+            "`max_tool_exchanges = {value}` reached the provider, so it was not refused: {}",
+            ran.everything()
+        );
+        assert!(
+            home.sessions().is_empty(),
+            "a turn refused before it began is not a session, and `{value}` left one behind"
+        );
+        assert!(
+            said.contains("runtime.max_tool_exchanges") && said.contains(&format!("is {value}")),
+            "the refusal of `{value}` must name the key and the value the reader wrote: {said}"
+        );
+        assert!(
+            !said.contains("iteration ceiling"),
+            "the refusal of `{value}` calls the exchange limit an iteration ceiling, which is \
+             `runtime.max_iterations` -- a setting ADR-0034's Alternative 3 keeps apart from this \
+             one and the reader did not set: {said}"
+        );
+        assert!(
+            said.contains("unlimited"),
+            "the refusal of `{value}` must say how to ask for no limit, because ADR-0034 D2 makes \
+             absence the unlimited state and a reader who wrote {value} for it cannot otherwise \
+             act: {said}"
+        );
+        assert!(
+            said.contains("config explain runtime.max_tool_exchanges"),
+            "the remedy must name the command that shows which layer set it: {said}"
+        );
+    }
+
+    // --- a fraction and a quoted number: refused by the schema at load ----
+    let file = home.project().join("zaru.toml").display().to_string();
+    for (value, why) in [
+        ("2.5", "holds float"),
+        ("\"many\"", "the text given does not read as one"),
+        ("true", "was given a boolean"),
+    ] {
+        manifest(value);
+        let ran = zaru(&home, &[], &["say", "the", "word", "yes"]);
+        let said = ran.stderr.as_str();
+
+        assert_eq!(
+            ran.code,
+            2,
+            "`max_tool_exchanges = {value}` is the reader's to change; this run exited {} saying: \
+             {}",
+            ran.code,
+            ran.everything()
+        );
+        assert!(
+            !reached_the_socket(&ran),
+            "`max_tool_exchanges = {value}` reached the provider, so it was not refused: {}",
+            ran.everything()
+        );
+        assert!(
+            said.contains("runtime.max_tool_exchanges")
+                && (said.contains(&file) || said.contains("project config (layer 3)")),
+            "the refusal of `{value}` must name the key and where it was set: {said}"
+        );
+        assert!(
+            said.contains(why),
+            "the refusal of `{value}` must say why the value is not one the key takes: {said}"
+        );
+    }
+
+    // --- the accepting sibling: a positive whole number reaches the port ---
+    manifest("4");
+    let accepted = zaru(&home, &[], &["say", "the", "word", "yes"]);
+    assert!(
+        reached_the_socket(&accepted),
+        "`max_tool_exchanges = 4` never reached the provider, so the refusals above may be \
+         refusing every value of the key: {}",
+        accepted.everything()
+    );
+    assert!(
+        !accepted.everything().contains("max_tool_exchanges"),
+        "a positive limit was refused: {}",
+        accepted.everything()
+    );
+}
+
+/// [ADR-0034] trigger clause 4: "Configuration resolution preserves a
+/// higher-layer finite limit against a project attempt to raise or remove it,
+/// and `zaru config explain runtime.max_tool_exchanges` identifies its
+/// effective source."
+///
+/// # Met where a person meets it
+///
+/// The user's own `~/.zaru/config.toml` grants 9, and `./zaru.toml` is
+/// rewritten three ways, each read back through the built binary's `config
+/// explain`, which is the only place a person can see where a value came
+/// from. [ADR-0014] D3's block prints one row per layer, highest first, and
+/// marks the highest layer that set the key `← effective`.
+///
+/// - **Lowered to 3**: the project row is marked and carries 3; the user row
+///   carries 9 and is not marked. This is the accepting sibling -- without
+///   it, a harness refusing every project value of the key would pass the
+///   raise arm.
+/// - **Raised to 12**: refused at exit 2 naming the key and both numbers, and
+///   no block is printed that could read as the project's value having won.
+/// - **Removed** -- the project stops setting the key: the user's 9 is still
+///   the effective value and the user row is the one marked. A project has no
+///   spelling for "unlimited" but absence, and absence cannot remove what a
+///   layer below it set; the one other spelling a reader might try, `0`, is
+///   clause 3's refusal.
+///
+/// Not the environment layer: layer 4 is *above* the project's layer 3, so a
+/// project "lowering" an environment value is decided by precedence rather
+/// than by D6 -- the trap `a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it`
+/// records falling into once.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+/// [ADR-0034]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0034-tool-call-exchange-limits
+#[test]
+fn adr_0034_clause_4_a_users_exchange_limit_survives_the_project_and_explain_names_its_source() {
+    let home = Home::new("exchange-limit-explain");
+    std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+    std::fs::write(
+        home.path().join(".zaru/config.toml"),
+        "[runtime]\nmax_tool_exchanges = 9\n",
+    )
+    .expect("the user's configuration is written");
+    let manifest = |runtime: &str| {
+        std::fs::write(
+            home.project().join("zaru.toml"),
+            format!("[project]\nname = \"acme\"\n{runtime}"),
+        )
+        .expect("the manifest is written");
+    };
+    let explain = || {
+        zaru(
+            &home,
+            &[],
+            &["config", "explain", "runtime.max_tool_exchanges"],
+        )
+    };
+    // D3's row for one layer: `  <n>  <source>  <value>[  ← effective]`.
+    let row = |ran: &Ran, layer: char| -> String {
+        ran.stdout
+            .lines()
+            .find(|line| {
+                let line = line.trim_start();
+                line.starts_with(layer) && line[layer.len_utf8()..].starts_with("  ")
+            })
+            .unwrap_or_else(|| panic!("no row for layer {layer} in: {}", ran.stdout))
+            .to_owned()
+    };
+    let effective = "\u{2190} effective";
+
+    // --- lowered: the project's 3 wins, and explain says it was the project --
+    manifest("\n[runtime]\nmax_tool_exchanges = 3\n");
+    let lowered = explain();
+    assert_eq!(
+        lowered.code,
+        0,
+        "D6 permits a project lowering a limit a layer below granted: {}",
+        lowered.everything()
+    );
+    assert!(
+        lowered.stdout.contains("runtime.max_tool_exchanges = 3"),
+        "the project's lower limit is the effective one: {}",
+        lowered.stdout
+    );
+    let (project, user) = (row(&lowered, '3'), row(&lowered, '2'));
+    assert!(
+        project.contains("zaru.toml") && project.trim_end().ends_with(effective),
+        "explain must mark the project file as the effective source of a lowered limit: {}",
+        lowered.stdout
+    );
+    assert!(
+        user.contains(".zaru/config.toml") && user.trim_end().ends_with(" 9"),
+        "the user's 9 is shown against its own file and is not the effective one: {}",
+        lowered.stdout
+    );
+
+    // --- raised: refused, naming the key and both numbers -------------------
+    manifest("\n[runtime]\nmax_tool_exchanges = 12\n");
+    let raised = explain();
+    assert_eq!(
+        raised.code,
+        2,
+        "D6 forbids a project raising a user's finite limit; this run exited {} saying: {}",
+        raised.code,
+        raised.everything()
+    );
+    assert!(
+        raised.stderr.contains("runtime.max_tool_exchanges")
+            && raised.stderr.contains("12")
+            && raised.stderr.contains('9'),
+        "the refusal names the key, what the project asked and what the user granted: {}",
+        raised.stderr
+    );
+    assert!(
+        !raised.stdout.contains("runtime.max_tool_exchanges = 12"),
+        "a refused raise must not be explained as the effective value: {}",
+        raised.stdout
+    );
+
+    // --- removed: the user's 9 stands, and explain says it was the user -----
+    manifest("");
+    let removed = explain();
+    assert_eq!(removed.code, 0, "{}", removed.everything());
+    assert!(
+        removed.stdout.contains("runtime.max_tool_exchanges = 9"),
+        "a project that stops setting the key does not remove the user's limit: {}",
+        removed.stdout
+    );
+    let user = row(&removed, '2');
+    assert!(
+        user.contains(".zaru/config.toml") && user.trim_end().ends_with(effective),
+        "explain must mark the user's file as the effective source once the project sets \
+         nothing: {}",
+        removed.stdout
+    );
+    assert!(
+        !row(&removed, '3').contains(effective),
+        "the project sets nothing and must not be marked: {}",
+        removed.stdout
+    );
+}
+
 /// [ADR-0011] D2's line is a record in the transcript, so a later process
 /// knows it was said.
 ///

@@ -136,16 +136,17 @@ pub fn max_tool_exchanges_field() -> Field {
 ///
 /// # Errors
 ///
-/// [`CeilingRefused`] when a configured value is not a positive whole number.
+/// [`ExchangeLimitRefused`] when a configured value is not a positive whole
+/// number.
 pub fn tool_call_ceiling_for(
     resolution: &Resolution,
-) -> Result<zaru_core::tool_call::ToolCallCeiling, CeilingRefused> {
+) -> Result<zaru_core::tool_call::ToolCallCeiling, ExchangeLimitRefused> {
     let key = max_tool_exchanges_key();
     let Some(value) = resolution.get(&key) else {
         return Ok(zaru_core::tool_call::ToolCallCeiling::unlimited());
     };
     let Some(count) = value.as_integer() else {
-        return Err(CeilingRefused::WrongShape {
+        return Err(ExchangeLimitRefused::WrongShape {
             key,
             found: value.shape(),
         });
@@ -153,8 +154,75 @@ pub fn tool_call_ceiling_for(
     u32::try_from(count)
         .ok()
         .and_then(|count| zaru_core::tool_call::ToolCallCeiling::new(count).ok())
-        .ok_or(CeilingRefused::NotACount { key, found: count })
+        .ok_or(ExchangeLimitRefused::NotALimit { key, found: count })
 }
+
+/// Why `runtime.max_tool_exchanges` could not be taken as a limit.
+///
+/// **Its own type rather than [`CeilingRefused`]'s**, because the reason a
+/// reader is given is the part they act on and the two keys have different
+/// reasons. [ADR-0034] D2: "Its absence is the explicit unlimited state; zero
+/// and negative values are refused rather than given a second meaning" -- so a
+/// reader who wrote `0` meaning "no limit" is told that removing the key is
+/// how to ask for one. Until 2026-09-27 this key's refusal was
+/// [`CeilingRefused::NotACount`]'s, which called it "an iteration ceiling" --
+/// `runtime.max_iterations`, the setting that record's Alternative 3 keeps
+/// apart from this one -- and never said how to leave a turn unlimited.
+///
+/// [ADR-0034]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0034-tool-call-exchange-limits
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExchangeLimitRefused {
+    /// A layer set the key to an integer that is not a usable limit: zero, a
+    /// negative number, or one past what a `u32` count holds.
+    NotALimit {
+        /// The key.
+        key: Key,
+        /// What was set. An integer a user typed, never a secret.
+        found: i64,
+    },
+    /// A layer set the key to something that is not an integer at all.
+    ///
+    /// The schema declares the key an integer, so a configuration file cannot
+    /// reach this; a [`Resolution`] built by another caller can.
+    WrongShape {
+        /// The key.
+        key: Key,
+        /// What shape it held. **Never the value.**
+        found: &'static str,
+    },
+}
+
+impl ExchangeLimitRefused {
+    /// The key the refusal names.
+    #[must_use]
+    pub const fn key(&self) -> &Key {
+        match self {
+            Self::NotALimit { key, .. } | Self::WrongShape { key, .. } => key,
+        }
+    }
+}
+
+impl fmt::Display for ExchangeLimitRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotALimit { key, found } => write!(
+                f,
+                "`{key}` is {found}, and an exchange limit is a whole number from 1 to {}: the \
+                 most model exchanges one turn may make. Zero and negative values are refused \
+                 rather than given a meaning; a turn's exchanges are unlimited when no layer \
+                 sets this key",
+                u32::MAX
+            ),
+            Self::WrongShape { key, found } => write!(
+                f,
+                "`{key}` holds {found}, and an exchange limit is a whole number of at least 1; a \
+                 turn's exchanges are unlimited when no layer sets this key"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExchangeLimitRefused {}
 
 /// [`MAX_ITERATIONS_KEY`] as a [`Key`].
 ///

@@ -415,6 +415,93 @@ fn a_providers_message_is_withheld_when_it_carries_the_key() {
     assert_eq!(GeminiFailure::redacted_detail(clean, &key), clean);
 }
 
+// ADR-0036 trigger clause 4: "A remote provider refusal preserves only the
+// typed failure's redacted statement in its defect evidence; a test proves a
+// credential-shaped detail is not rendered."
+//
+// The check above holds the redaction function; this one holds the path a
+// reader meets. A provider's refusal body enters through the client's own
+// `classify` -- the one place `redacted_detail` is applied to a remote body
+// -- and leaves as `Presentation::of`, the rendering the binary writes to
+// standard error and the pane paints. No socket and no wire fake: the body is
+// bytes handed to the function the transport hands them to.
+//
+// **The credential-shaped detail is the key this client sent**, a synthetic
+// nonce, spoken back inside a provider's sentence verbatim and through `{:?}`.
+// `crate::redaction` decides that held values are what the harness redacts
+// and nothing pattern-based, so the key is the credential this path can know.
+//
+// **The sentence is capacity prose on purpose.** ADR-0036 D2 renders a
+// capacity refusal's detail to the reader with the context-token remedy, so
+// that is the arm where a provider's words are carried into the rendering and
+// where a detail that escaped redaction would be shown. The accepting sibling
+// is the same sentence without the key: its words must reach the rendering,
+// or every absence asserted here is satisfied by a path that renders nothing.
+#[test]
+fn adr_0036_clause_4_a_remote_refusal_renders_no_credential_it_carried() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let key = provider_secret_nonce();
+    let core = ascii_core(&key).to_owned();
+    let client = super::GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model("gemini-3.6-flash"),
+        Alias::new("provider.gemini").expect("a well-formed alias"),
+        Secret::provider(ProviderKind::Gemini, key.clone()).expect("a nonce is a provider secret"),
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let surface = Surface::new("0.0.0", "https://example.invalid/report");
+
+    let prose = "request exceeds the maximum context token limit";
+    let rendered = |code: u16, status: &str, message: &str| -> String {
+        let body = serde_json::json!({
+            "error": { "code": code, "message": message, "status": status }
+        })
+        .to_string();
+        let failure = client.classify(code, body.as_bytes());
+        let classified = surface.provider_failure(
+            &ProviderFailure::Gemini(failure),
+            SessionEvidence::NoSessionExists,
+        );
+        Presentation::of(&classified).to_string()
+    };
+
+    // --- the accepting sibling: the provider's words reach the reader -------
+    let clean = rendered(400, "INVALID_ARGUMENT", prose);
+    assert!(
+        clean.contains(prose) && clean.contains("provider.gemini.context_tokens"),
+        "a capacity refusal with no credential in it must render the provider's sentence and \
+         the context-token key, or the absences below prove nothing: {clean}"
+    );
+
+    // --- the credential, spoken back verbatim and escaped -------------------
+    for (form, message) in [
+        ("verbatim", format!("{prose}; credential {key} was sent")),
+        ("escaped", format!("{prose}; credential {key:?} was sent")),
+    ] {
+        assert!(
+            message.contains(&core),
+            "the {form} fixture does not carry the key's ASCII core"
+        );
+        for (code, status) in [(400, "INVALID_ARGUMENT"), (413, "FAILED_PRECONDITION")] {
+            let shown = rendered(code, status, &message);
+            assert!(
+                !shown.contains(&key) && !shown.contains(&core),
+                "a remote refusal (HTTP {code}) carrying the key {form} rendered it to the \
+                 reader: {shown}"
+            );
+            assert!(
+                !shown.trim().is_empty(),
+                "a remote refusal (HTTP {code}) rendered nothing at all, which hides the key by \
+                 hiding everything"
+            );
+        }
+    }
+}
+
 // ADR-0016 D1's classes, by provenance. The credential arm names the alias
 // and the kind and never the key; the malformed-body arm reports a length and
 // never a content.
