@@ -787,6 +787,236 @@ fn corpus_every_spawned_zaru_is_handed_a_home() {
     );
 }
 
+/// Every `.rs` file under each crate's `src/` in this workspace, as its path
+/// relative to `crates/` and its text, **leaving out the files that only a
+/// check compiles**: `tests.rs`, `fixtures.rs`, and anything under a `tests/`
+/// directory. Those read the environment for reasons of their own — a
+/// declared gate, a child's handshake — and are checks, not the product.
+fn product_sources() -> Vec<(String, String)> {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("this crate sits in `crates/`")
+        .to_path_buf();
+    let mut found = Vec::new();
+    for member in std::fs::read_dir(&crates).expect("the crates directory") {
+        let source = member.expect("an entry").path().join("src");
+        if !source.is_dir() {
+            continue;
+        }
+        let mut stack = vec![source];
+        while let Some(directory) = stack.pop() {
+            for entry in std::fs::read_dir(&directory).expect("a source directory") {
+                let path = entry.expect("an entry").path();
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                if path.is_dir() {
+                    if name.as_deref() != Some("tests") {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs")
+                    || matches!(name.as_deref(), Some("tests.rs" | "fixtures.rs"))
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("a readable source file");
+                let relative = path
+                    .strip_prefix(&crates)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                found.push((relative, text));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A source file as a walk reads it: its path and its text.
+type Source = (String, String);
+
+/// One place asks the operating system for the environment, and it is `main`.
+///
+/// # The defect this holds shut
+///
+/// Until 2026-09-27 four readers asked the process's environment for
+/// themselves, deep inside whatever called them: configuration layer 4
+/// (`std::env::vars()` inside `cli::layers`), the sealing key
+/// (`HarnessKeys::from_process`, at seven call sites), a child's five names
+/// (`Environment::inherited_minimum`) and `NO_COLOR`. So a caller holding
+/// other variables could not hand them over, and with one undeclared `ZARU_`
+/// variable in the developer's shell three in-process checks went red on
+/// their machine and stayed green on every runner. Measured by the
+/// `test-env-isolation` arc; see `zaru_cli::config::Variables`.
+///
+/// Two needles and where each may stand:
+///
+/// - `env::var`, which is every one of `var`, `var_os`, `vars` and
+///   `vars_os`, in the product of every crate here, and only in
+///   `zaru-cli/src/config/variables.rs`;
+/// - `Variables::of_this_process`, the one reading, in `zaru-cli/src/main.rs`
+///   and in the two linked checks whose operator sets the environment they
+///   run under, which never run on a runner — the exemption
+///   `corpus_one_thing_decides_where_the_harness_lives` already gives them
+///   for the home.
+///
+/// The mutant is a planted `std::env::var` under any reader — the shape every
+/// one of the four had — and it is caught here by name.
+#[test]
+fn corpus_one_thing_reads_the_environment() {
+    // Built at run time, so this check's own source does not carry the shapes
+    // it is looking for.
+    let asks_the_system = format!("env::{}", "var");
+    let reads_once = format!("Variables::{}", "of_this_process");
+
+    let product = product_sources();
+    let lines: usize = product.iter().map(|(_, text)| text.lines().count()).sum();
+    println!("scanned {} product file(s), {lines} line(s)", product.len());
+    assert!(
+        product.len() > 150
+            && lines > 50_000
+            && product
+                .iter()
+                .any(|(path, _)| path.starts_with("zaru-tui/"))
+            && product
+                .iter()
+                .any(|(path, _)| path.starts_with("zaru-core/")),
+        "this scan read {} product file(s) and {lines} line(s), which is too few to have \
+         asserted anything about who reads the environment",
+        product.len(),
+    );
+    assert!(
+        product.iter().all(|(path, _)| !path.ends_with("/tests.rs")),
+        "a file only a check compiles was scanned as product"
+    );
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut everything: Vec<(String, String)> = rust_sources_under(&manifest.join("src"))
+        .into_iter()
+        .chain(rust_sources_under(&manifest.join("tests")))
+        .map(|(relative, text)| (format!("zaru-cli/{relative}"), text))
+        .collect();
+    everything.sort();
+
+    let permitted: [(&str, &[Source], &[&str]); 2] = [
+        (
+            asks_the_system.as_str(),
+            &product,
+            &["zaru-cli/src/config/variables.rs"],
+        ),
+        (
+            reads_once.as_str(),
+            &everything,
+            &[
+                "zaru-cli/src/main.rs",
+                "zaru-cli/tests/provider_from_outside.rs",
+                "zaru-cli/tests/summariser_from_outside.rs",
+            ],
+        ),
+    ];
+
+    let mut offences: Vec<String> = Vec::new();
+    for (needle, sources, allowed) in permitted {
+        let mut seen_where_permitted = false;
+        for (relative, text) in sources {
+            for (number, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains(needle) {
+                    continue;
+                }
+                if allowed.contains(&relative.as_str()) {
+                    seen_where_permitted = true;
+                } else {
+                    offences.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            seen_where_permitted,
+            "`{needle}` appears nowhere it is permitted, so this walk is looking for a name the \
+             product no longer uses and cannot fail"
+        );
+    }
+    assert!(
+        offences.is_empty(),
+        "the environment is read in {} place(s) besides `main`, and a reader that asks for \
+         itself reads whatever the developer's shell exported, whatever variables its caller \
+         holds: {}",
+        offences.len(),
+        offences.join("\n  "),
+    );
+}
+
+/// Every test binary in this crate re-runs itself under a home and an
+/// environment none of its checks was handed.
+///
+/// `tests/support/decoy.rs` is the re-run, and it holds only in a binary that
+/// calls it: a test file added tomorrow without the guard is a binary whose
+/// checks may read the developer's `~/.zaru` or `ZARU_*` variables and nobody
+/// would know. The library's own checks carry theirs in `src/config/tests.rs`.
+#[test]
+fn corpus_every_test_binary_re_runs_itself_under_a_decoy() {
+    let guard = format!(
+        "{}_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
+        "corpus"
+    );
+    let declared = format!("fn {guard}()");
+    let called = "decoy::every_other_check_keeps_its_verdict(";
+    let named = format!("\"{guard}\"");
+    let included = "#[path = \"support/decoy.rs\"]";
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut binaries = 0usize;
+    let mut offences: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(manifest.join("tests")).expect("the tests directory") {
+        let path = entry.expect("an entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        binaries += 1;
+        let text = std::fs::read_to_string(&path).expect("a readable test file");
+        let missing: Vec<&str> = [
+            ("includes the decoy", included),
+            ("declares the guard", declared.as_str()),
+            ("calls it", called),
+            ("names itself to it", named.as_str()),
+        ]
+        .into_iter()
+        .filter(|(_, needle)| !text.contains(needle))
+        .map(|(what, _)| what)
+        .collect();
+        if !missing.is_empty() {
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            offences.push(format!("tests/{name} never {}", missing.join(", never ")));
+        }
+    }
+    let library = std::fs::read_to_string(manifest.join("src/config/tests.rs"))
+        .expect("the library's configuration checks");
+    if !library
+        .contains("fn no_check_in_this_crate_reads_a_home_or_an_environment_it_was_not_handed()")
+    {
+        offences.push("src/config/tests.rs never declares the library's own re-run".to_owned());
+    }
+
+    println!("walked {binaries} test binar(ies)");
+    assert!(
+        binaries > 30,
+        "this walk found {binaries} test binar(ies), which is too few to have looked at this \
+         crate's tests at all"
+    );
+    assert!(
+        offences.is_empty(),
+        "{} test binar(ies) do not re-run themselves under a decoy, so a check there that reads \
+         the process's own home or environment is red or green by whose machine runs it:\n  {}",
+        offences.len(),
+        offences.join("\n  "),
+    );
+}
+
 // --------------------------------- a home and an environment nobody handed
 
 #[path = "support/decoy.rs"]
