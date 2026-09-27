@@ -614,3 +614,175 @@ fn corpus_one_thing_decides_a_working_directory() {
         offences.join("\n  "),
     );
 }
+
+/// Every `.rs` file under `root`, as its path relative to this crate and its
+/// text.
+fn rust_sources_under(root: &Path) -> Vec<(String, String)> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory).expect("a source directory") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            let relative = path
+                .strip_prefix(manifest)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            found.push((relative, text));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// One place asks the environment where the harness lives, and it is `main`.
+///
+/// # The defect this holds shut
+///
+/// `~/.zaru` had one *spelling* from 2026-09-05 and seventeen *resolutions*:
+/// every reader of configuration layer 2, of the credential store, of the
+/// session store and of the persona cache called a function that read `$HOME`
+/// for itself, deep inside whatever called it. A caller holding a different
+/// home could hand it to one reader and have the next three read the person's
+/// real `~/.zaru`, and the workspace suite was red on every machine whose
+/// owner uses Zaru and green on every runner. Measured on 2026-09-27; see
+/// `zaru_cli::config::Home`.
+///
+/// **So this is a source walk, and it walks the checks as well as the
+/// product**, because the failure it prevents is a check reaching the
+/// person's home, and a check can do that by calling the resolver as easily
+/// as the product can. Two needles and where each may stand:
+///
+/// - `home_dir`, the environment's answer, in `src/config/home.rs` alone;
+/// - `Home::of_this_user`, the one resolution, in `src/main.rs` and in the two
+///   linked checks whose operator is told to set a scratch `HOME` before
+///   running them, and which never run on a runner.
+///
+/// The mutant is a planted `Home::of_this_user()` under any reader — the
+/// shape every one of the seventeen had — and it is caught here by name.
+#[test]
+fn corpus_one_thing_decides_where_the_harness_lives() {
+    // Built at run time, so this check's own source does not carry the shape
+    // it is looking for.
+    let asks_the_environment = format!("{}_dir", "home");
+    let resolves = format!("Home::{}", "of_this_user");
+    let permitted: [(&str, &[&str]); 2] = [
+        (asks_the_environment.as_str(), &["src/config/home.rs"]),
+        (
+            resolves.as_str(),
+            &[
+                "src/main.rs",
+                "src/config/home.rs",
+                "tests/provider_from_outside.rs",
+                "tests/summariser_from_outside.rs",
+            ],
+        ),
+    ];
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = rust_sources_under(&manifest.join("src"));
+    sources.extend(rust_sources_under(&manifest.join("tests")));
+    let lines: usize = sources.iter().map(|(_, text)| text.lines().count()).sum();
+    println!("scanned {} file(s), {lines} line(s)", sources.len());
+    assert!(
+        sources.len() > 150 && lines > 50_000,
+        "this scan read {} file(s) and {lines} line(s), which is too few to have asserted \
+         anything about where the harness lives",
+        sources.len(),
+    );
+
+    let mut offences: Vec<String> = Vec::new();
+    for (needle, allowed) in permitted {
+        let mut seen_where_permitted = false;
+        for (relative, text) in &sources {
+            for (number, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains(needle) {
+                    continue;
+                }
+                if allowed.contains(&relative.as_str()) {
+                    seen_where_permitted = true;
+                } else {
+                    offences.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            seen_where_permitted,
+            "`{needle}` appears nowhere it is permitted, so this walk is looking for a name the \
+             product no longer uses and cannot fail"
+        );
+    }
+    assert!(
+        offences.is_empty(),
+        "the harness's home is asked of the environment in {} place(s) besides `main`, and a \
+         reader that asks for itself reads the person's own `~/.zaru` whatever home its caller \
+         holds: {}",
+        offences.len(),
+        offences.join("\n  "),
+    );
+}
+
+/// Every `zaru` a check spawns is handed a home, and inherits nothing else.
+///
+/// The in-process half is [`corpus_one_thing_decides_where_the_harness_lives`];
+/// this is the other door. A spawned binary is the one place `Home::of_this_user`
+/// legitimately runs, so a child that inherits the process's `HOME` reads the
+/// person's own `~/.zaru` — and the environment is cleared as well, because
+/// [ADR-0014] D1's layer 4 is the person's own `ZARU_*` variables arriving the
+/// same way. Two bare spawns stood in this workspace until 2026-09-27, in
+/// `tests/version.rs` and `tests/failure_from_outside.rs`, and each passed
+/// only because a bare `zaru` happens to read nothing at start-up.
+///
+/// A spawn is the lines from the one naming the binary to the one that runs
+/// it, which is how every spawn here is written.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[test]
+fn corpus_every_spawned_zaru_is_handed_a_home() {
+    let binary = format!("env!(\"CARGO_BIN_EXE_{}\")", "zaru");
+    let clears = ".env_clear()";
+    let hands = ".env(\"HOME\"";
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut spawns = 0usize;
+    let mut offences: Vec<String> = Vec::new();
+    for (relative, text) in rust_sources_under(&manifest.join("tests")) {
+        let lines: Vec<&str> = text.lines().collect();
+        for (start, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains(&binary) {
+                continue;
+            }
+            spawns += 1;
+            let end = lines[start..]
+                .iter()
+                .position(|line| line.contains(".output()") || line.contains(".spawn()"))
+                .map_or(lines.len(), |offset| start + offset + 1);
+            let spawn = lines[start..end].join("\n");
+            if !(spawn.contains(clears) && spawn.contains(hands)) {
+                offences.push(format!("{relative}:{}", start + 1));
+            }
+        }
+    }
+    println!("{spawns} spawn(s) of the built binary");
+    assert!(
+        spawns >= 10,
+        "this walk found {spawns} spawn(s) of the built binary, which is too few to have looked \
+         at the checks that run it"
+    );
+    assert!(
+        offences.is_empty(),
+        "{} spawn(s) of the built binary run under an environment the check did not choose, so \
+         the child reads the person's own `~/.zaru` and `ZARU_*` variables: {}",
+        offences.len(),
+        offences.join(", "),
+    );
+}
