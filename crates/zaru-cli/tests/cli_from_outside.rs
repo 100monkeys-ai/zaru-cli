@@ -13,8 +13,8 @@
 //!
 //! # The scratch home is what makes it honest
 //!
-//! `SessionStore::default_root` and `CredentialStore::default_root` both go
-//! through `std::env::home_dir`, which on this platform reads `$HOME` —
+//! The binary's `main` resolves its one `zaru_cli::config::Home` through
+//! `std::env::home_dir`, which on this platform reads `$HOME` —
 //! measured rather than assumed, by running a probe binary with `HOME` set and
 //! with it unset. So each check gives the child its own `HOME` and the child
 //! writes to the paths the product actually writes to, inside it. That is

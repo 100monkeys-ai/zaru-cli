@@ -523,7 +523,12 @@ impl Files {
         }
     }
 
-    /// The two files this process would read.
+    /// The two files this process would read, with layer 2 under `home`.
+    ///
+    /// **`home` is the caller's, since 2026-09-27**, and was
+    /// `config::home::default_root()` here — a reading of `$HOME` inside the
+    /// loader, so a caller that had named a home for the session store still
+    /// had layer 2 read from the person's own. See [`crate::config::Home`].
     ///
     /// A machine with no home directory has no layer 2, and a process whose
     /// working directory cannot be canonicalised has no layer 3. Neither is a
@@ -542,11 +547,8 @@ impl Files {
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
     #[must_use]
-    pub fn from_process() -> Self {
-        Self::at(
-            crate::config::home::default_root().as_deref(),
-            WorkingDirectory::of_this_process().ok(),
-        )
+    pub fn of_this_process(home: &crate::config::Home) -> Self {
+        Self::at(home.root(), WorkingDirectory::of_this_process().ok())
     }
 
     /// Layer 2, if this caller has one.
@@ -657,13 +659,17 @@ pub fn resolve(
     Resolution::resolve(&schema, contributions).map_err(LoadFailure::Refused)
 }
 
-/// Fold the layers over this process's own environment.
+/// Fold the layers over this process's own environment, with layer 2 under
+/// `home`.
 ///
 /// # Errors
 ///
 /// [`LoadFailure`].
-pub fn resolve_from_process(overrides: &Overrides) -> Result<Resolution, LoadFailure> {
-    resolve(overrides, std::env::vars(), &Files::from_process())
+pub fn resolve_from_process(
+    home: &crate::config::Home,
+    overrides: &Overrides,
+) -> Result<Resolution, LoadFailure> {
+    resolve(overrides, std::env::vars(), &Files::of_this_process(home))
 }
 
 /// How long a child process started by [ADR-0011] D1's `cmd.run` may run.

@@ -142,10 +142,31 @@ fn pump_staged_over(
 /// The palette is a second axis rather than a second pump: every helper above
 /// reaches this one function, and the two that have no opinion about colour
 /// pass what the product passes when `NO_COLOR` is unset.
+///
+/// **Each pump owns a home**, removed when it returns. Until 2026-09-27 the
+/// runner here had no home to be handed, so every slash command a check typed
+/// read the person's own `~/.zaru` — see [`crate::config::Home`].
 fn pump_staged_painting(
     struck: Vec<zaru_tui::shell::Struck>,
     trie: &dyn zaru_tui::composer::Entries,
     palette: Palette,
+) -> (Shell, Recording, Exit) {
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    pump_in(
+        struck,
+        trie,
+        palette,
+        &crate::config::Home::at(scratch.store_root()),
+    )
+}
+
+/// The same, under a home a check chose, for a check that reads that home
+/// on both sides of the pump.
+fn pump_in(
+    struck: Vec<zaru_tui::shell::Struck>,
+    trie: &dyn zaru_tui::composer::Entries,
+    palette: Palette,
+    home: &crate::config::Home,
 ) -> (Shell, Recording, Exit) {
     let restores: Restores = Arc::new(AtomicUsize::new(0));
     let mut surface = Recording::painting(Arc::clone(&restores), 72, palette);
@@ -155,6 +176,7 @@ fn pump_staged_painting(
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
+        home,
     };
     shell.composer_mut().set_absence(trie.absence());
     let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
@@ -805,16 +827,29 @@ fn the_shells_leave_word_shadows_no_namespace_in_the_real_table() {
 /// its subcommand spelling runs, so the two spellings cannot come to disagree.
 #[test]
 fn a_slash_command_produces_what_its_subcommand_spelling_produces() {
+    // **One home for both spellings, and it is this check's.** Both read
+    // `~/.zaru` until 2026-09-27, so the comparison passed on any machine
+    // whose own configuration agreed with itself -- which is every machine --
+    // and `no_check_in_this_crate_reads_a_home_it_was_not_handed` is what
+    // found it.
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
+        home: &home,
     };
     let outside = runner.execute(&crate::cli::invocation::CommandLine {
         request: Request::Runtime,
         overrides: Overrides::default(),
     });
 
-    let (shell, _, _) = pump(typed("/runtime"));
+    let (shell, _, _) = pump_in(
+        typed("/runtime").into_iter().map(Into::into).collect(),
+        &NotesTrie::nothing_cached(WORKSPACE),
+        Palette::Coloured,
+        &home,
+    );
     let inside: Vec<String> = shell
         .pane_lines()
         .into_iter()
@@ -915,13 +950,26 @@ fn an_unbuilt_namespace_is_refused_in_the_pane_and_the_shell_stays_open() {
 /// So the count is taken through the product's own store, before and after,
 /// and an unreadable store on either side is the same answer on both. The
 /// staging is asserted too, so a pump that did nothing could not satisfy it.
+///
+/// **The store counted is the pump's own home, since 2026-09-27**, and until
+/// then it was the developer's real `~/.zaru` — read on purpose, because
+/// that was where an in-process mint would have landed. It is not any more:
+/// the runner takes its home from its caller, so the home a mint would reach
+/// is the one handed to it, and that is the one counted.
 #[test]
 fn a_task_is_answered_in_the_pane_and_mints_no_session() {
-    let before = sessions_on_this_machine();
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
+    let before = sessions_under(&home);
 
     let mut keys = typed("rename the widget");
     keys.extend(typed("/exit"));
-    let (shell, surface, exit) = pump(keys);
+    let (shell, surface, exit) = pump_in(
+        keys.into_iter().map(Into::into).collect(),
+        &NotesTrie::nothing_cached(WORKSPACE),
+        Palette::Coloured,
+        &home,
+    );
 
     let said: String = shell
         .pane_lines()
@@ -940,7 +988,7 @@ fn a_task_is_answered_in_the_pane_and_mints_no_session() {
         surface.frames.len()
     );
 
-    let after = sessions_on_this_machine();
+    let after = sessions_under(&home);
     assert_eq!(
         before, after,
         "typing a task at the prompt changed what sessions exist on this machine: \
@@ -1024,15 +1072,15 @@ fn the_typed_line_is_echoed_above_what_the_turn_said() {
     );
 }
 
-/// Every session id under this machine's own session root, or `None` when the
-/// root cannot be read at all.
+/// Every session id under `home`'s session root, or `None` when the root
+/// cannot be read at all.
 ///
-/// `None` on both sides of a pump is the same answer as an equal list: a
-/// machine with no `~/.zaru` is one where a session could only have been
-/// created by making the directory, which is exactly what is being asserted
-/// did not happen.
-fn sessions_on_this_machine() -> Option<Vec<crate::session::SessionId>> {
-    crate::session::SessionStore::default_root()
+/// `None` on both sides of a pump is the same answer as an equal list: a home
+/// with no `sessions/` is one where a session could only have been created by
+/// making the directory, which is exactly what is being asserted did not
+/// happen.
+fn sessions_under(home: &crate::config::Home) -> Option<Vec<crate::session::SessionId>> {
+    crate::session::SessionStore::root_in(home)
         .ok()
         .map(crate::session::SessionStore::reading)
         .and_then(|store| store.ids().ok())
@@ -1730,9 +1778,12 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         prominent: true,
         answers: crate::tools::prompt::Answers::ToolCall,
     }));
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
+        home: &home,
     };
     futures_lite_block_on(run(
         &mut shell,
@@ -5531,9 +5582,12 @@ fn a_queued_task_runs_when_the_turn_ends_with_no_keystroke() {
     let source = Source::scripted(typed("the first thing"));
     let pace = Held::default();
     let mut shell = shell();
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
+        home: &home,
     };
     // Staged as though an `Enter` during the first turn had queued it. The
     // pump's own mid-turn path is asserted by
@@ -5895,7 +5949,8 @@ fn the_control_passes_the_same_assertion() {
 /// `config::Key::new` accepts it and `request_for` produces a request; the
 /// **compiled-in schema** is what refuses it, inside `Run::execute`. The
 /// verdict is therefore the same on every machine whatever any configuration
-/// layer holds. `execute` reads `~/.zaru/config.toml` where one exists -- a
+/// layer holds. `execute` reads layer 2 under the home it is handed -- this
+/// check's own, since 2026-09-27, where it was the person's `~/.zaru` -- a
 /// read that tolerates absence and creates nothing. Nothing here writes or
 /// mints.
 ///
@@ -5905,10 +5960,14 @@ fn a_dispatched_command_puts_its_whole_refusal_on_the_pane() {
     the_control_passes_the_same_assertion();
 
     // `dispatch`'s own callee, so the expectation is what the layer under the
-    // site classified rather than what the site chose to render.
+    // site classified rather than what the site chose to render. One home,
+    // this check's, for both sides.
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
+        home: &home,
     };
     let key = crate::config::Key::new("zaru.no.such.key").expect("syntactically a key");
     let outcome = runner.execute(&crate::cli::invocation::CommandLine {
@@ -5919,7 +5978,15 @@ fn a_dispatched_command_puts_its_whole_refusal_on_the_pane() {
         panic!("the schema declares `zaru.no.such.key`, so this check refuses nothing")
     };
 
-    let (shell, _, _) = pump(typed("/config explain zaru.no.such.key"));
+    let (shell, _, _) = pump_in(
+        typed("/config explain zaru.no.such.key")
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        &NotesTrie::nothing_cached(WORKSPACE),
+        Palette::Coloured,
+        &home,
+    );
     let frame = cells_at(&shell, 100, 30, Palette::Coloured);
     a_whole_refusal_is_on_the_frame("a dispatched command", &frame, classified);
 }
@@ -5942,9 +6009,12 @@ fn a_refused_provider_key_puts_its_whole_refusal_on_the_pane() {
     the_control_passes_the_same_assertion();
 
     const OFFERED: &str = " a-key-with-a-leading-space";
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
+        home: &home,
     };
     let outcome = runner.store_a_provider_key(crate::providers::ProviderKind::Gemini, OFFERED);
     let Exit::Failed(classified) = &outcome.exit else {
@@ -5953,7 +6023,12 @@ fn a_refused_provider_key_puts_its_whole_refusal_on_the_pane() {
 
     let mut keys = typed("/providers keys add gemini");
     keys.extend(typed(OFFERED));
-    let (shell, _, _) = pump(keys);
+    let (shell, _, _) = pump_in(
+        keys.into_iter().map(Into::into).collect(),
+        &NotesTrie::nothing_cached(WORKSPACE),
+        Palette::Coloured,
+        &home,
+    );
     let frame = cells_at(&shell, 100, 30, Palette::Coloured);
     a_whole_refusal_is_on_the_frame("a refused provider key", &frame, classified);
 }
@@ -5972,8 +6047,11 @@ fn a_switch_that_will_not_resolve_puts_its_whole_refusal_on_the_pane() {
     the_control_passes_the_same_assertion();
 
     let id = crate::session::fixtures::id_at(1_700_000_000_000, 199);
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
     let refused = crate::terminal::open::resolve(
         &Opening::Existing(id.clone()),
+        &home,
         VERSION,
         REPORT_AT,
         &Overrides::default(),
@@ -5983,7 +6061,15 @@ fn a_switch_that_will_not_resolve_puts_its_whole_refusal_on_the_pane() {
         panic!("resolving an absent session is a failure, so this check refuses nothing")
     };
 
-    let (shell, _, _) = pump(typed(&format!("/session resume {id}")));
+    let (shell, _, _) = pump_in(
+        typed(&format!("/session resume {id}"))
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        &NotesTrie::nothing_cached(WORKSPACE),
+        Palette::Coloured,
+        &home,
+    );
     let frame = cells_at(&shell, 100, 30, Palette::Coloured);
     a_whole_refusal_is_on_the_frame("a switch that will not resolve", &frame, classified);
 }
@@ -6437,9 +6523,11 @@ fn pump_with_commands(
     let source = Source::staged(keys.into_iter().map(Into::into).collect());
     let pace = Held::default();
     let mut shell = shell();
+    let handed = crate::config::Home::at(home.clone());
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
+        home: &handed,
     };
     let trie = NotesTrie::nothing_cached(WORKSPACE);
     let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
@@ -6829,9 +6917,12 @@ fn a_shadowing_file_is_refused_at_the_door_naming_the_collision() {
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 #[test]
 fn adr_0002_d6s_two_commands_answer_the_same_thing_at_both_entry_points() {
+    let scratch = crate::credentials::fixtures::ScratchRoot::new();
+    let home = crate::config::Home::at(scratch.store_root());
     let runner = crate::cli::Run {
         version: "0.0.0",
         report_at: "https://example.invalid",
+        home: &home,
     };
 
     for (namespace, expected) in [

@@ -27,6 +27,7 @@
 
 use crate::cli::classify::Surface as Classify;
 use crate::cli::invocation::{CommandLine, Overrides, Request};
+use crate::config::Home;
 use crate::failure::{Exit, SessionEvidence};
 use crate::runtime::ResolvedTier;
 use crate::session::{MetaFile, Resumed, SessionId, SessionStore};
@@ -226,8 +227,8 @@ type Opened = (
 /// and so does the row.
 ///
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
-fn credential_store() -> Option<crate::credentials::CredentialStore> {
-    let root = crate::credentials::CredentialStore::default_root().ok()?;
+fn credential_store(home: &Home) -> Option<crate::credentials::CredentialStore> {
+    let root = crate::credentials::CredentialStore::root_in(home).ok()?;
     crate::credentials::CredentialStore::reading(root).ok()
 }
 
@@ -433,18 +434,19 @@ pub fn refresh_from(
 /// or the session does not exist.
 pub fn shell_for(
     id: &SessionId,
+    home: &Home,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<Opened, Box<Exit>> {
     let classify = Classify::new(version, report_at);
 
-    let resolution = crate::cli::layers::resolve_from_process(overrides)
+    let resolution = crate::cli::layers::resolve_from_process(home, overrides)
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
     let tier = ResolvedTier::from_configuration(&resolution)
         .map_err(|refusal| Box::new(Exit::Failed(classify.tier(&refusal))))?;
 
-    let root = SessionStore::default_root()
+    let root = SessionStore::root_in(home)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
     let store = SessionStore::reading(root);
     let directory = store.sessions_directory().join(id.as_str());
@@ -463,7 +465,7 @@ pub fn shell_for(
     // two things read it and one of them is not conditional on a workspace
     // being attached. `None` is a machine with no store, which is every
     // machine before the first `notes tokens add`.
-    let store = credential_store();
+    let store = credential_store(home);
 
     let mut status = Status::new(tier.tier().to_string(), id.to_string());
     // ADR-0007 D8's third marking place, and the only one that is a session's
@@ -652,41 +654,32 @@ pub fn restored_context(
 
 /// Which session an [`Opening`] names, minting one where it says to.
 ///
+/// # One home, for all three arms and everything the mint reads
+///
+/// A check has to be able to drive all three arms, including the one that
+/// mints, so the home is a parameter. **It was a session root until
+/// 2026-09-27, under the name `resolve_in`, and that was half a seam**: the
+/// mint wrote the session under the root it was handed and then read
+/// configuration layer 2, the credential store and the persona cache through
+/// the process's own `$HOME`. A check minting under a scratch root therefore
+/// recorded whichever provider the person running it had a key for — red on
+/// a machine whose owner uses Zaru and green on a CI runner. A [`Home`] is the
+/// whole of `~/.zaru`, so every reader below it reads the one it names.
+///
 /// # Errors
 ///
 /// The classified [`Exit`] for a store that cannot be reached, a directory
 /// that holds no session, or a session that cannot be minted.
 pub fn resolve(
     opening: &Opening,
+    home: &Home,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<SessionId, Box<Exit>> {
     let classify = Classify::new(version, report_at);
-    let root = SessionStore::default_root()
+    let root = SessionStore::root_in(home)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
-    resolve_in(opening, root, version, report_at, overrides)
-}
-
-/// The same, under a named session store.
-///
-/// **The root is a parameter for the reason `compose::turn::start`'s is**: the
-/// three arms below are one dispatch and a check has to be able to drive all
-/// three, including the one that mints. [`SessionStore::default_root`] reads
-/// `$HOME`, so a check driving [`resolve`] would mint into the developer's own
-/// `~/.zaru` — which it did, once, before this took a parameter.
-///
-/// # Errors
-///
-/// The classified [`Exit`] for a store that cannot be reached, a directory
-/// that holds no session, or a session that cannot be minted.
-pub fn resolve_in(
-    opening: &Opening,
-    root: std::path::PathBuf,
-    version: &str,
-    report_at: &str,
-    overrides: &Overrides,
-) -> Result<SessionId, Box<Exit>> {
     match opening {
         // **The session is checked to exist here, and that is what makes a
         // switch survivable.** Found by driving the built binary over a
@@ -698,14 +691,13 @@ pub fn resolve_in(
         // pane is, which is the argument `run`'s `Action::Run` arm already
         // makes for the lookup it does.
         Opening::Existing(id) => {
-            let classify = Classify::new(version, report_at);
             SessionStore::reading(root)
                 .existing(id)
                 .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
             Ok(id.clone())
         }
         Opening::MostRecentHere => most_recent_in_store(root, version, report_at),
-        Opening::New => mint(root, version, report_at, overrides),
+        Opening::New => mint(home, version, report_at, overrides),
     }
 }
 
@@ -733,13 +725,15 @@ pub fn resolve_in(
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 pub fn mint(
-    root: std::path::PathBuf,
+    home: &Home,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<SessionId, Box<Exit>> {
     let classify = Classify::new(version, report_at);
-    let resolution = crate::cli::layers::resolve_from_process(overrides)
+    let root = SessionStore::root_in(home)
+        .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
+    let resolution = crate::cli::layers::resolve_from_process(home, overrides)
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
     let tier = ResolvedTier::from_configuration(&resolution)
         .map_err(|refusal| Box::new(Exit::Failed(classify.tier(&refusal))))?;
@@ -749,7 +743,7 @@ pub fn mint(
     // could not: D1 makes the field optional, and a session that records a
     // kind it never reached would be a worse record than one that records
     // none.
-    let prepared = crate::compose::turn::prepare(version, report_at, &resolution).ok();
+    let prepared = crate::compose::turn::prepare(home, version, report_at, &resolution).ok();
     let provider = prepared.as_ref().map(crate::compose::Prepared::kind);
     // ADR-0013's window is the prepared provider's, and this session may have
     // none -- see `cli::layers::WINDOW_WHEN_NO_PROVIDER` for what a session
@@ -761,7 +755,7 @@ pub fn mint(
     // refresh is dropped here rather than spawned: this function mints a
     // session and returns, and `one_session` opens the same session moments
     // later with its own runtime and starts the refresh there.
-    let mut serving = crate::compose::persona::for_session(&resolution, workspace.as_deref());
+    let mut serving = crate::compose::persona::for_session(home, &resolution, workspace.as_deref());
     drop(serving.take_refreshing());
     let (session, _) = crate::compose::turn::start(
         root,
@@ -801,6 +795,7 @@ pub fn mint(
 )]
 fn one_session(
     id: &SessionId,
+    home: &Home,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
@@ -810,7 +805,7 @@ fn one_session(
     saying: Vec<zaru_tui::shell::Line>,
 ) -> Result<crate::terminal::driver::Pumped, Box<Exit>> {
     let (mut shell, _, trie, populating, resumed, conditions) =
-        shell_for(id, version, report_at, overrides)?;
+        shell_for(id, home, version, report_at, overrides)?;
 
     // What the switch that opened this session had to say, put on the pane
     // before anything else. Empty for a switch the person asked for; see
@@ -873,10 +868,10 @@ fn one_session(
     // zero bytes each. See `cli::Outcome::written`, which is the one writer
     // now.
     let classify = Classify::new(version, report_at);
-    let resolution = crate::cli::layers::resolve_from_process(overrides)
+    let resolution = crate::cli::layers::resolve_from_process(home, overrides)
         .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
-    let prepared = crate::compose::turn::prepare(version, report_at, &resolution);
-    let root = SessionStore::default_root()
+    let prepared = crate::compose::turn::prepare(home, version, report_at, &resolution);
+    let root = SessionStore::root_in(home)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
     let store = SessionStore::reading(root);
     let session = store
@@ -980,7 +975,8 @@ fn one_session(
     // second reading of the process, for the reason `attached_workspace`
     // exists at all.
     let pinned = attached_workspace(&store.sessions_directory().join(id.as_str()));
-    let mut serving = crate::compose::persona::for_session(&resolution, Some(pinned.as_str()));
+    let mut serving =
+        crate::compose::persona::for_session(home, &resolution, Some(pinned.as_str()));
     let context = restored_context(
         &resumed,
         &classify,
@@ -1166,7 +1162,11 @@ fn one_session(
     // which is `WorkingDirectory::of_this_process`'s own rule.
     let paths = crate::terminal::ProjectPaths::under(here.clone());
 
-    let runner = crate::cli::Run { version, report_at };
+    let runner = crate::cli::Run {
+        version,
+        report_at,
+        home,
+    };
 
     // The guard is what restores, and it is the caller's: a switch keeps the
     // terminal rather than giving it back and taking it again, which would
@@ -1238,11 +1238,12 @@ fn one_session(
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 pub fn open(
     opening: &Opening,
+    home: &Home,
     version: &str,
     report_at: &str,
     overrides: &Overrides,
 ) -> Result<Exit, Box<Exit>> {
-    let mut id = resolve(opening, version, report_at, overrides)?;
+    let mut id = resolve(opening, home, version, report_at, overrides)?;
 
     // **One runtime for the whole shell, built before the terminal is taken.**
     // Every turn of every session it opens is polled on it, and it is what
@@ -1271,6 +1272,7 @@ pub fn open(
     let exit = loop {
         match one_session(
             &id,
+            home,
             version,
             report_at,
             overrides,
@@ -1333,13 +1335,15 @@ pub fn most_recent_in_store(
 /// Returns `None` when this invocation is not a session or nobody is watching,
 /// which is the signal to fall through to the out-of-session surface.
 #[must_use]
-pub fn take_over(line: &CommandLine, version: &str, report_at: &str) -> Option<Exit> {
+pub fn take_over(line: &CommandLine, home: &Home, version: &str, report_at: &str) -> Option<Exit> {
     let opening = opening_for(&line.request)?;
     if !a_person_is_watching() {
         return None;
     }
-    Some(match open(&opening, version, report_at, &line.overrides) {
-        Ok(exit) => exit,
-        Err(exit) => *exit,
-    })
+    Some(
+        match open(&opening, home, version, report_at, &line.overrides) {
+            Ok(exit) => exit,
+            Err(exit) => *exit,
+        },
+    )
 }

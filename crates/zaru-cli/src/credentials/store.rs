@@ -451,13 +451,13 @@ pub struct CredentialStore {
 }
 
 impl CredentialStore {
-    /// Where the store lives when nobody says otherwise.
+    /// Where the store lives under `home`.
     ///
     /// # Errors
     ///
-    /// [`StoreError::NoHome`] when no home directory can be resolved.
-    pub fn default_root() -> Result<PathBuf, StoreError> {
-        crate::config::home::default_root().ok_or(StoreError::NoHome)
+    /// [`StoreError::NoHome`] when `home` names no directory.
+    pub fn root_in(home: &crate::config::Home) -> Result<PathBuf, StoreError> {
+        home.root().map(Path::to_path_buf).ok_or(StoreError::NoHome)
     }
 
     /// Open the store under `root`, creating the directory if it is absent.

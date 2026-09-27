@@ -302,7 +302,7 @@ impl<'a> HarnessKeys<'a> {
     ///
     /// The product path. **This is the one function here that reads the
     /// environment**, the shape [`SessionId::mint`](crate::session::SessionId::mint)
-    /// and [`CredentialStore::default_root`](crate::credentials::CredentialStore::default_root)
+    /// and [`Home::of_this_user`](crate::config::Home::of_this_user)
     /// already use: one named impure function, findable by one search.
     #[must_use]
     pub fn from_process(keyring: &'a (dyn Keyring + Sync)) -> Self {

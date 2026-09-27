@@ -2499,6 +2499,7 @@ pub async fn run<S: Surface + Send, P: Pace + Sync>(
                     // mints.
                     match crate::terminal::open::resolve(
                         &opening,
+                        runner.home,
                         runner.version,
                         runner.report_at,
                         &crate::cli::invocation::Overrides::default(),
@@ -3219,8 +3220,8 @@ fn said_of(outcome: crate::cli::run::Outcome) -> (Vec<Line>, bool) {
 /// store has no token, and refusing to store one because the file is
 /// unreadable would be a worse answer than the store's own refusal, which the
 /// caller is about to print.
-fn composer_token_now() -> Option<crate::credentials::Alias> {
-    let root = crate::credentials::CredentialStore::default_root().ok()?;
+fn composer_token_now(home: &crate::config::Home) -> Option<crate::credentials::Alias> {
+    let root = crate::credentials::CredentialStore::root_in(home).ok()?;
     let store = crate::credentials::CredentialStore::reading(root).ok()?;
     crate::credentials::composer_token(&store).map(|(alias, _)| alias)
 }
@@ -3375,7 +3376,7 @@ pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
 
     // Asked **before** the write, because the question is whether this add
     // changed the answer. See `NOTES_TOKEN_IS_STORED`.
-    let before = composer_token_now();
+    let before = composer_token_now(runner.home);
 
     // The pane borrows the shell for the length of the read and the write, so
     // everything that needs both is inside this block and the lines come out.
@@ -3448,7 +3449,7 @@ pub async fn add_a_notes_token<S: Surface + Send, P: Pace + Sync>(
     }
 
     let mut said = said;
-    let after = composer_token_now();
+    let after = composer_token_now(runner.home);
     let reopen = before != after;
     if reopen {
         said.push(Line::new(

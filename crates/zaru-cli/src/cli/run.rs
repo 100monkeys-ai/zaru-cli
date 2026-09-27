@@ -138,11 +138,19 @@ impl Outcome {
 /// metadata by its `main` rather than by this module's `env!`, for the reason
 /// `composition()` already reads the crate names out of the crates: a value
 /// retyped beside the binary is a value that drifts.
+///
+/// **The home is the third, and it is resolved by `main` for the same
+/// reason**: every command here that reads `~/.zaru` reads the one this
+/// field names, so an in-process caller — the terminal's slash commands, and
+/// every check that drives them — is obeyed by every reader rather than by
+/// whichever happened to take a parameter. See [`crate::config::Home`].
 pub struct Run<'a> {
     /// The harness version.
     pub version: &'a str,
     /// Where a defect is reported.
     pub report_at: &'a str,
+    /// `~/.zaru` for this invocation.
+    pub home: &'a crate::config::Home,
 }
 
 impl Run<'_> {
@@ -238,7 +246,7 @@ impl Run<'_> {
     /// `~/.zaru/sessions`.
     fn store(&self) -> Result<SessionStore, Box<Outcome>> {
         let surface = Surface::new(self.version, self.report_at);
-        SessionStore::default_root()
+        SessionStore::root_in(self.home)
             .map(SessionStore::reading)
             .map_err(|failure| Box::new(Outcome::failed(surface.session(&failure))))
     }
@@ -374,7 +382,7 @@ impl Run<'_> {
     /// asking a question creates nothing.
     fn provider_keys(&self) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
-        let root = match CredentialStore::default_root() {
+        let root = match CredentialStore::root_in(self.home) {
             Ok(root) => root,
             Err(failure) => {
                 return Outcome::failed(
@@ -475,7 +483,7 @@ impl Run<'_> {
             }
         };
 
-        let root = match CredentialStore::default_root() {
+        let root = match CredentialStore::root_in(self.home) {
             Ok(root) => root,
             Err(failure) => {
                 return Outcome::failed(
@@ -543,7 +551,7 @@ impl Run<'_> {
             // The user's, and it says which character to take out.
             Err(refusal) => return Outcome::failed(refusal.into()),
         };
-        let mut store = match Self::store_for_writing() {
+        let mut store = match self.store_for_writing() {
             Ok(store) => store,
             Err(failure) => {
                 return Outcome::failed(
@@ -582,7 +590,7 @@ impl Run<'_> {
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     fn notes_tokens_remove(&self, alias: &Alias) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
-        let mut store = match Self::store_for_writing() {
+        let mut store = match self.store_for_writing() {
             Ok(store) => store,
             Err(failure) => {
                 return Outcome::failed(
@@ -611,7 +619,7 @@ impl Run<'_> {
     fn provider_keys_remove(&self, kind: ProviderKind) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
         let alias = kind.credential_alias();
-        let mut store = match Self::store_for_writing() {
+        let mut store = match self.store_for_writing() {
             Ok(store) => store,
             Err(failure) => {
                 return Outcome::failed(
@@ -636,13 +644,13 @@ impl Run<'_> {
     /// resolved is one sentence. It hands back the store's own refusal rather
     /// than a rendered outcome, so the caller classifies it the same way it
     /// classifies everything else the store can say.
-    fn store_for_writing() -> Result<CredentialStore, StoreError> {
-        CredentialStore::open(CredentialStore::default_root()?)
+    fn store_for_writing(&self) -> Result<CredentialStore, StoreError> {
+        CredentialStore::open(CredentialStore::root_in(self.home)?)
     }
 
     fn notes_tokens(&self) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
-        let root = match CredentialStore::default_root() {
+        let root = match CredentialStore::root_in(self.home) {
             Ok(root) => root,
             Err(failure) => {
                 return Outcome::failed(
@@ -697,7 +705,7 @@ impl Run<'_> {
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     fn notes_use(&self, alias: &Alias) -> Outcome {
         let surface = Surface::new(self.version, self.report_at);
-        let root = match CredentialStore::default_root() {
+        let root = match CredentialStore::root_in(self.home) {
             Ok(root) => root,
             Err(failure) => {
                 return Outcome::failed(
@@ -866,7 +874,7 @@ impl Run<'_> {
             }
         };
 
-        let root = match CredentialStore::default_root() {
+        let root = match CredentialStore::root_in(self.home) {
             Ok(root) => root,
             Err(failure) => {
                 return Outcome::failed(
@@ -948,7 +956,13 @@ impl Run<'_> {
         // that was already parsed.
         let task = words.join(" ");
         self.configured(overrides, |resolution| {
-            let ran = crate::compose::turn::task(self.version, self.report_at, resolution, &task);
+            let ran = crate::compose::turn::task(
+                self.home,
+                self.version,
+                self.report_at,
+                resolution,
+                &task,
+            );
             Outcome {
                 lines: ran.lines,
                 exit: ran.exit,
@@ -966,7 +980,7 @@ impl Run<'_> {
         overrides: &Overrides,
         then: impl FnOnce(&Resolution) -> Outcome,
     ) -> Outcome {
-        match layers::resolve_from_process(overrides) {
+        match layers::resolve_from_process(self.home, overrides) {
             Ok(resolution) => then(&resolution),
             Err(failure) => Outcome::failed(Surface::load(&failure)),
         }

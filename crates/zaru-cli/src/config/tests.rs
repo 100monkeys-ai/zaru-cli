@@ -1494,3 +1494,116 @@ fn a_home_failure_says_whether_it_was_the_creation_or_the_mode() {
         "the failure does not say what was being attempted: {failure}",
     );
 }
+
+// ---------------------------------------------- the home a check was handed
+
+/// The full name of [`no_check_in_this_crate_reads_a_home_it_was_not_handed`],
+/// which the re-run it starts must skip or it would start itself for ever.
+const HOME_GUARD: &str = "config::tests::no_check_in_this_crate_reads_a_home_it_was_not_handed";
+
+/// The key the decoy's `config.toml` sets, and the word a failure quotes.
+const CANARY: &str = "canary_a_check_read_a_home_it_was_not_handed";
+
+/// Every file under `root` with its bytes, so a write is seen as well as a
+/// read.
+fn every_file_under(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory).expect("the decoy is readable") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                found.push((path.clone(), Vec::new()));
+                stack.push(path);
+            } else {
+                let bytes = std::fs::read(&path).expect("a decoy file is readable");
+                found.push((path, bytes));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Every other check in this crate, re-run under a home none of them was
+/// handed.
+///
+/// The integration twin is `corpus_no_check_here_reads_a_home_it_was_not_handed`
+/// in `tests/shell_from_outside.rs`, and its documentation carries the defect
+/// both exist for: a suite red on any machine whose owner uses Zaru and green
+/// on a CI runner, because checks reached the process's own `~/.zaru`. This
+/// one covers the library's own checks, and on the tree it was written
+/// against it found `terminal::tests::a_slash_command_produces_what_its_subcommand_spelling_produces`
+/// — a check that ran `/runtime` both ways through a runner reading the
+/// person's own layer 2 and compared the two answers, so it passed on any
+/// machine whose configuration agreed with itself, which is every machine.
+///
+/// The canary changes an answer rather than an access time: `config.toml`
+/// names a key no record declares, so [ADR-0014] D5 refuses any load that
+/// reads it, and `credentials.json` is not a store.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[test]
+fn no_check_in_this_crate_reads_a_home_it_was_not_handed() {
+    let decoy = std::env::temp_dir().join(format!("zaru-decoy-home-lib-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&decoy);
+    let zaru = decoy.join(".zaru");
+    std::fs::create_dir_all(&zaru).expect("a decoy home");
+    std::fs::write(zaru.join("config.toml"), format!("{CANARY} = true\n"))
+        .expect("the configuration canary");
+    std::fs::write(zaru.join("credentials.json"), format!("{CANARY}\n"))
+        .expect("the credential canary");
+    let planted = every_file_under(&decoy);
+
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("the test binary knows where it is"),
+    )
+    .args(["--skip", HOME_GUARD, "--exact"])
+    .env("HOME", &decoy)
+    .output()
+    .expect("the test binary re-runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let after = every_file_under(&decoy);
+    let _ = std::fs::remove_dir_all(&decoy);
+
+    let ran: usize = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("test result: "))
+        .filter_map(|result| result.split("; ").next())
+        .filter_map(|passed| passed.rsplit(' ').nth(1))
+        .filter_map(|count| count.parse::<usize>().ok())
+        .sum();
+    let failed: Vec<&str> = stdout
+        .split("\nfailures:\n")
+        .nth(2)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("test result"))
+        .collect();
+    println!("-- re-run under {} --", decoy.display());
+    println!("   {ran} passed; failed: {failed:?}");
+
+    assert!(
+        output.status.success(),
+        "{} check(s) in this crate fail under a HOME none of them was handed, so each reads the \
+         process's own `~/.zaru` instead of a home it was given, and is red or green by whose \
+         machine it runs on: {failed:?}\n{stderr}",
+        failed.len(),
+    );
+    assert!(
+        ran > 500,
+        "the re-run passed having run {ran} check(s), which is too few to have put this crate \
+         under the decoy at all:\n{stdout}"
+    );
+    assert_eq!(
+        after, planted,
+        "a check wrote into a home it was not handed"
+    );
+    assert!(
+        !stdout.contains(CANARY) && !stderr.contains(CANARY),
+        "the re-run passed and still quoted the canary, so something read the decoy and said so \
+         without failing"
+    );
+}

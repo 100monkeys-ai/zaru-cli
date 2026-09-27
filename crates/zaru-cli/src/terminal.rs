@@ -59,7 +59,7 @@ pub use driver::{
     question_for_the_shell, run, secret_for, secret_statement, switch_for,
 };
 pub use open::{
-    Opening, Populating, Refresh, refresh_from, resolve_in, restored_context, shell_for, take_over,
+    Opening, Populating, Refresh, refresh_from, resolve, restored_context, shell_for, take_over,
 };
 pub use paths::{NOTHING_TO_OFFER, ProjectPaths, WALK_CEILING};
 pub use source::{Beat, POLL, Pace, Source, TICK, Taken};
