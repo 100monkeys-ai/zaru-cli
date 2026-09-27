@@ -17,10 +17,10 @@
 //! store is `zaru-cli`'s and the row is `zaru-tui`'s.
 //!
 //! **It is evidence about the mechanism and must not be quoted as evidence
-//! about the binary.** `terminal::open::shell_for` reads `~/.zaru` from the
-//! process's own `HOME`, which no check here can set — this workspace denies
-//! `unsafe_code` and `std::env::set_var` is unsafe in this edition — and the
-//! row reaches a person only over a terminal, since `zaru --resume` on a pipe
+//! about the binary.** `terminal::open::shell_for` read `~/.zaru` from the
+//! process's own `HOME` until 2026-09-27, which no check here could set — this
+//! workspace denies `unsafe_code` and `std::env::set_var` is unsafe in this
+//! edition; it takes a `zaru_cli::config::Home` now — and the row reaches a person only over a terminal, since `zaru --resume` on a pipe
 //! prints through `cli::render` and not through this row at all. The arc's
 //! artefact drives the release binary over a real pseudo-terminal against a
 //! store on disk, and that is what covers `shell_for`'s own line.

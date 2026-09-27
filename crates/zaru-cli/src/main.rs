@@ -77,6 +77,7 @@
 
 use std::process::ExitCode;
 use zaru_cli::cli::{Run, classify::Surface, parse_process};
+use zaru_cli::config::Home;
 use zaru_cli::failure::{Exit, Guarded, SessionEvidence, guard};
 
 /// Everything the binary does, inside the boundary.
@@ -86,6 +87,11 @@ use zaru_cli::failure::{Exit, Guarded, SessionEvidence, guard};
 fn run() -> Exit {
     let version = env!("CARGO_PKG_VERSION");
     let report_at = env!("CARGO_PKG_REPOSITORY");
+    // `~/.zaru`, asked of the environment **here and nowhere else**, and
+    // handed to everything that reads it. See `zaru_cli::config::Home` for
+    // the seventeen places that each asked for themselves until 2026-09-27,
+    // and why a check could not point them anywhere.
+    let home = Home::of_this_user();
 
     let outcome = match parse_process() {
         // ADR-0010 D4's two readings, one per reader. A person at a terminal
@@ -93,7 +99,7 @@ fn run() -> Exit {
         // nothing else. See `zaru_cli::terminal::open`, which carries the
         // decision and the reason. This is the only branch in this file that
         // is not parse, execute, write.
-        Ok(line) => match zaru_cli::terminal::take_over(&line, version, report_at) {
+        Ok(line) => match zaru_cli::terminal::take_over(&line, &home, version, report_at) {
             // **The terminal path's ending is an `Outcome` like every other,
             // and until 2026-09-15 it was a `return` that went past the
             // writing below.** A person whose session would not open -- no
@@ -113,7 +119,12 @@ fn run() -> Exit {
                 lines: Vec::new(),
                 exit,
             },
-            None => Run { version, report_at }.execute(&line),
+            None => Run {
+                version,
+                report_at,
+                home: &home,
+            }
+            .execute(&line),
         },
         Err(refusal) => zaru_cli::cli::Outcome {
             lines: Vec::new(),

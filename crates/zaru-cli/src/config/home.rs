@@ -59,24 +59,84 @@ use std::path::{Path, PathBuf};
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub const CONFIG_FILE: &str = "config.toml";
 
-/// `~/.zaru`, where this machine's home directory is one.
+/// `~/.zaru` for one invocation: resolved once, then handed to every reader.
 ///
-/// **The one place this join is written.** It was written twice until
-/// 2026-09-05 — once in the credential store and once in the session store —
-/// and layer 2 would have been a third. Both call this now, and each keeps its
-/// own error for the absent case, because "no home directory" means different
-/// things to a store that is about to write and to a loader that is about to
+/// # Why a value, and not a function every reader calls
+///
+/// The join below was written twice until 2026-09-05 — once in the credential
+/// store and once in the session store — and was then made one function,
+/// `default_root`. That fixed the *spelling* and left the *resolution* in
+/// seventeen places: every reader of configuration layer 2, of the credential
+/// store, of the session store, of the persona and corpus caches, asked the
+/// process's own `$HOME` for itself, deep inside whatever called it. So a
+/// caller that had a home to give — a check, above all, since `set_var` is
+/// `unsafe` in this edition and the workspace denies `unsafe_code` — could
+/// hand it to one reader and have the next three read the person's real
+/// `~/.zaru` anyway.
+///
+/// **Measured on 2026-09-27 by the `test-home-isolation` arc.** `terminal::open`
+/// took a session root as a parameter and minted into it, then read layer 2
+/// through the process's home and the credential store through the process's
+/// home, so a check minting under a scratch root recorded `provider =
+/// "gemini"` on a machine whose owner holds a Gemini key and `None` on a CI
+/// runner: the workspace suite was red on every machine whose owner uses the
+/// product and green on every machine that does not.
+///
+/// So the home is a value. The binary's `main` resolves it once, with
+/// [`Home::of_this_user`], and everything below takes a `&Home`: one place asks
+/// the environment where the harness lives, and a caller that names a
+/// different directory is obeyed by every reader rather than by one. It is the
+/// shape [`crate::cli::layers::resolve`] already had for the environment and
+/// the two files, carried the rest of the way.
+///
+/// `root()` is `None` where no home directory can be resolved, which for a
+/// *loader* is not a failure: a machine with no home has no
+/// `~/.zaru/config.toml`, so [ADR-0014] D3 renders that layer as `(not set)`
+/// against its own label and no file is claimed to have been opened. Each
+/// store keeps its own error for the absent case, because "no home directory"
+/// means different things to a store about to write and a loader about to
 /// read.
 ///
-/// `None` where no home directory can be resolved, which for a *loader* is not
-/// a failure: a machine with no home has no `~/.zaru/config.toml`, so
-/// [ADR-0014] D3 renders that layer as `(not set)` against its own label and
-/// no file is claimed to have been opened.
-///
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
-#[must_use]
-pub fn default_root() -> Option<PathBuf> {
-    std::env::home_dir().map(|home| home.join(HOME_DIRECTORY))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Home {
+    root: Option<PathBuf>,
+}
+
+impl Home {
+    /// `~/.zaru` under this user's home directory, as the environment says.
+    ///
+    /// **Called once, by the binary's `main`, and nowhere else in the
+    /// product** — `corpus_one_thing_decides_where_the_harness_lives` in
+    /// `tests/files_from_outside.rs` walks the source for a second caller. A
+    /// reader that asked for itself would be the seventeenth resolution this
+    /// type exists to remove.
+    #[must_use]
+    pub fn of_this_user() -> Self {
+        Self {
+            root: std::env::home_dir().map(|home| home.join(HOME_DIRECTORY)),
+        }
+    }
+
+    /// A named directory, standing where `~/.zaru` would.
+    #[must_use]
+    pub fn at(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: Some(root.into()),
+        }
+    }
+
+    /// No home at all: the machine whose home directory cannot be resolved.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { root: None }
+    }
+
+    /// The directory, where there is one.
+    #[must_use]
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
 }
 
 /// `~/.zaru/` could not be made ready.

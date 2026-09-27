@@ -140,7 +140,12 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
         return;
     };
 
-    let root = CredentialStore::default_root().expect("a HOME is set");
+    // Reads the process's own home **because its operator set it**: the skip
+    // line above says to put a key under a scratch `HOME` and run it there.
+    // It never runs on a runner, which is what
+    // `corpus_one_thing_decides_where_the_harness_lives` exempts it for.
+    let root =
+        CredentialStore::root_in(&zaru_cli::config::Home::of_this_user()).expect("a HOME is set");
     let store =
         CredentialStore::reading(root.clone()).expect("the store at the scratch HOME opens");
     let keyring = OsKeyring::for_store(&root);

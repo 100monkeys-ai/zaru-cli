@@ -632,7 +632,8 @@ impl Owed {
 /// inode consequence: a turn that never began is not a session.
 ///
 /// `version` and `report_at` are the binary's own package metadata, for
-/// [ADR-0016] D3's report.
+/// [ADR-0016] D3's report. `home` is where the credential store is read from,
+/// and it is the caller's — see [`crate::config::Home`].
 ///
 /// # Errors
 ///
@@ -650,6 +651,7 @@ impl Owed {
     only thing that makes it reviewable is reading it top to bottom"
 )]
 pub fn prepare(
+    home: &crate::config::Home,
     version: &str,
     report_at: &str,
     resolution: &Resolution,
@@ -737,7 +739,7 @@ pub fn prepare(
     };
 
     // --- ADR-0007's store, and which kind this machine can reach -----------
-    let store_root = match CredentialStore::default_root() {
+    let store_root = match CredentialStore::root_in(home) {
         Ok(root) => root,
         Err(failure) => {
             return Err(Box::new(Ran::refused(
@@ -1817,9 +1819,15 @@ pub fn start(
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[must_use]
-pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str) -> Ran {
+pub fn task(
+    home: &crate::config::Home,
+    version: &str,
+    report_at: &str,
+    resolution: &Resolution,
+    task: &str,
+) -> Ran {
     let surface = Surface::new(version, report_at);
-    let prepared = match prepare(version, report_at, resolution) {
+    let prepared = match prepare(home, version, report_at, resolution) {
         Ok(prepared) => prepared,
         Err(refused) => return *refused,
     };
@@ -1847,7 +1855,7 @@ pub fn task(version: &str, report_at: &str, resolution: &Resolution, task: &str)
     // reached only by a refresh. `persona::refresh_now`'s own documentation
     // carries the measurement.
     let workspace = crate::manifest::attached_workspace(resolution);
-    let mut serving = crate::compose::persona::for_session(resolution, workspace.as_deref());
+    let mut serving = crate::compose::persona::for_session(home, resolution, workspace.as_deref());
 
     // --- ADR-0010 D1's session, and the first `meta.toml` a product writes --
     let (session, mut context) = match start(

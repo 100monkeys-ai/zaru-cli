@@ -17,9 +17,30 @@
 
 use std::process::Command;
 
+/// A home this check owns, removed when it ends.
+///
+/// A bare `zaru` reads nothing from its home today, and that is exactly why
+/// it is handed one: a child that inherits `HOME` passes by the accident of
+/// what the binary happens not to read, and the first change that reads
+/// configuration at start-up would make this check read the person's own
+/// `~/.zaru`. `corpus_every_spawned_zaru_is_handed_a_home` holds every spawn
+/// in this workspace to the same shape.
+struct Scratch(std::path::PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn the_built_binary_prints_the_version_it_was_compiled_with() {
+    let home =
+        Scratch(std::env::temp_dir().join(format!("zaru-version-home-{}", std::process::id())));
+    std::fs::create_dir_all(&home.0).expect("a scratch home");
     let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        .env_clear()
+        .env("HOME", &home.0)
         .output()
         .expect("failed to execute the built zaru binary");
 

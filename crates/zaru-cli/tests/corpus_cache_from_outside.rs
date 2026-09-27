@@ -12,11 +12,13 @@
 //!
 //! # What these are evidence about, and what they are not
 //!
-//! **The mechanism, not the binary.** `terminal::open::shell_for` reads
-//! `~/.zaru` from the process's own `HOME`, which no check here can set: this
-//! workspace denies `unsafe_code` and `std::env::set_var` is unsafe in this
-//! edition. That is `apex_marking_from_outside`'s own sentence and the same
-//! limit applies here. The arc's artefact drives the release binary over a
+//! **The mechanism, not the binary.** `terminal::open::shell_for` read
+//! `~/.zaru` from the process's own `HOME` until 2026-09-27, which no check
+//! here could set: this workspace denies `unsafe_code` and
+//! `std::env::set_var` is unsafe in this edition. It takes a
+//! `zaru_cli::config::Home` now, so that limit is gone and these checks have
+//! simply not been moved onto it; what they are evidence about is unchanged.
+//! The arc's artefact drives the release binary over a
 //! real pseudo-terminal against a fake instance on loopback, two sessions in
 //! one directory, and that is what covers `shell_for`'s own lines.
 //!

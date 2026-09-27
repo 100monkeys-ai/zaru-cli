@@ -195,9 +195,17 @@ fn a_caller_outside_the_crate_reports_three_of_five_steps() {
 #[test]
 fn the_built_binary_exits_with_adr_0016_d5s_code_for_what_it_did() {
     alone(|| {
+        // A home this check owns: a bare `zaru` reads nothing from one today,
+        // and a child that inherited `HOME` would pass by that accident rather
+        // than by construction. See `corpus_every_spawned_zaru_is_handed_a_home`.
+        let home = std::env::temp_dir().join(format!("zaru-failure-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a scratch home");
         let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+            .env_clear()
+            .env("HOME", &home)
             .output()
             .expect("failed to execute the built zaru binary");
+        let _ = std::fs::remove_dir_all(&home);
 
         let code = output
             .status

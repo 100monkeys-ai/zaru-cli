@@ -140,13 +140,15 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// Where sessions live when nobody says otherwise.
+    /// Where sessions live under `home`.
     ///
     /// # Errors
     ///
-    /// [`SessionError::NoHome`] when no home directory can be resolved.
-    pub fn default_root() -> Result<PathBuf, SessionError> {
-        crate::config::home::default_root().ok_or(SessionError::NoHome)
+    /// [`SessionError::NoHome`] when `home` names no directory.
+    pub fn root_in(home: &crate::config::Home) -> Result<PathBuf, SessionError> {
+        home.root()
+            .map(Path::to_path_buf)
+            .ok_or(SessionError::NoHome)
     }
 
     /// Open the store under `root`, making `root` and `root/sessions` ready.

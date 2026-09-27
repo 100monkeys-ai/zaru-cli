@@ -40,7 +40,7 @@
 //! through a port: [`SessionId::from_parts`] is what every check drives, and
 //! [`SessionId::mint`] is the one function that reads `/dev/urandom`. One
 //! named impure function, findable by one search — the shape
-//! [`CredentialStore::default_root`](crate::credentials::CredentialStore::default_root)
+//! [`Home::of_this_user`](crate::config::Home::of_this_user)
 //! and `zaru-core`'s `SystemClock` already use.
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing

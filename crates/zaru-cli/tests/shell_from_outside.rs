@@ -91,7 +91,7 @@ impl Scratch {
         // The session is built through the crate's public door -- the store,
         // the transcript writer, the record -- rather than by writing JSON, so
         // what the shell reads back is what the product writes.
-        // `SessionStore::default_root()` is `~/.zaru`, so a store whose root
+        // The binary's home is `$HOME/.zaru`, so a store whose root
         // is the scratch home itself would put sessions somewhere the binary
         // does not look. Measured by running the binary against one.
         let store =
@@ -132,6 +132,12 @@ impl Scratch {
 
     fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The scratch home's `~/.zaru`, handed to anything in-process that reads
+    /// one — which since 2026-09-27 is everything that reads one.
+    fn home(&self) -> zaru_cli::config::Home {
+        zaru_cli::config::Home::at(self.path.join(".zaru"))
     }
 }
 
@@ -256,13 +262,13 @@ fn typed(text: &str) -> Vec<Input> {
 fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
     let scratch = Scratch::new("open");
 
-    // `shell_for` reads `~/.zaru/sessions`, which is `std::env::home_dir` and
-    // therefore the process's own `HOME`. A check cannot set that -- the
-    // workspace denies `unsafe_code` and `set_var` is unsafe in this edition --
-    // so the pane is built from the store the check owns, through the same
-    // adapter `shell_for` uses. What that leaves unasserted is `shell_for`'s
-    // own three lines, and the pipe check below covers the same path in the
-    // product.
+    // The pane is built from the store the check owns, through the same
+    // adapter `shell_for` uses. This comment said until 2026-09-27 that a
+    // check could do nothing else, because `shell_for` read the process's own
+    // `HOME` and `set_var` is unsafe in this edition; `shell_for` takes a
+    // `Home` now, so that is no longer the reason, and what is left
+    // unasserted here is still `shell_for`'s own three lines, which the pipe
+    // check below covers in the product.
     let store = SessionStore::reading(scratch.path().join(".zaru"));
     let directory = store.sessions_directory().join(scratch.id.as_str());
     let resumed = zaru_cli::session::resume(&directory, usize::MAX).expect("the session resumes");
@@ -282,6 +288,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
     let runner = zaru_cli::cli::Run {
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
+        home: &scratch.home(),
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
@@ -540,6 +547,7 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
         let runner = zaru_cli::cli::Run {
             version: env!("CARGO_PKG_VERSION"),
             report_at: env!("CARGO_PKG_REPOSITORY"),
+            home: &scratch.home(),
         };
         zaru_cli::compose::turn::runtime()
             .expect("a runtime")
@@ -1577,22 +1585,23 @@ fn corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell() {
         .map(|entries| entries.count())
         .unwrap_or(0);
 
-    // **The whole dispatch, under a scratch root.** `resolve` reads `$HOME` to
-    // find the store, so a check driving it would mint into the developer's
-    // own `~/.zaru` -- which it did, once, before `resolve_in` took the root
-    // as a parameter. `resolve_in` is the implementation and `resolve` is it
-    // with the default root, so what is driven here is the product's own
-    // three-arm dispatch rather than a function beside it.
+    // **The whole dispatch, under a scratch home.** A check driving `resolve`
+    // over the process's own home minted into the developer's `~/.zaru` once;
+    // a root parameter then stopped the *mint* landing there, and left the
+    // configuration, the credential store and the persona cache the mint
+    // reads still reading it -- so this check recorded `provider = "gemini"`
+    // on a machine whose owner holds a Gemini key and `None` on a CI runner,
+    // measured 2026-09-27. The parameter is a whole `Home` now, and every one
+    // of those readers reads the one handed here.
     //
-    // This machine holds no provider key under a scratch home, so the mint
-    // takes the `None` branch -- which is the case that matters: a person on a
-    // fresh machine has no key, and refusing to *start* a session for them is
-    // the survey's row 1, that they could not reach the interactive surface at
-    // all.
+    // A scratch home holds no provider key, so the mint takes the `None`
+    // branch -- which is the case that matters: a person on a fresh machine
+    // has no key, and refusing to *start* a session for them is the survey's
+    // row 1, that they could not reach the interactive surface at all.
     let overrides = zaru_cli::cli::invocation::Overrides::default();
-    let minted = zaru_cli::terminal::resolve_in(
+    let minted = zaru_cli::terminal::resolve(
         &Opening::New,
-        scratch.path().join(".zaru"),
+        &scratch.home(),
         "0.0.0",
         "https://x",
         &overrides,
@@ -1638,11 +1647,11 @@ fn corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell() {
 
     // The accepting sibling: naming a session resolves to it and mints
     // nothing, so the assertions above cannot pass against a resolver that
-    // minted for every opening. This half reaches no `$HOME`, because
-    // `Opening::Existing` is answered without touching a store at all.
-    let named = zaru_cli::terminal::resolve_in(
+    // minted for every opening. It reads the same scratch home's store to
+    // find the session it names, and reads no other.
+    let named = zaru_cli::terminal::resolve(
         &Opening::Existing(scratch.id.clone()),
-        scratch.path().join(".zaru"),
+        &scratch.home(),
         "0.0.0",
         "https://x",
         &overrides,
@@ -1761,13 +1770,16 @@ const KEY_CONTROL: &str = "control-8ab27";
 /// and the question's own authored sentence is asserted present, so a build
 /// that never raised the question could not satisfy them by never asking.
 ///
-/// **The question is declined rather than answered**, and that is a limit of
-/// the check rather than a choice: `CredentialStore::default_root` reads the
-/// process's own `HOME`, this workspace denies `unsafe_code`, and `set_var` is
-/// unsafe in this edition — so a check that stored a key would write into the
-/// developer's real `~/.zaru`. The storing half is the arc's artefact, run
-/// over a pseudo-terminal with `HOME` set, and it must not be quoted from
-/// here.
+/// **The question is declined rather than answered.** Until 2026-09-27 that
+/// was forced: the credential store's root was the process's own `HOME`, this
+/// workspace denies `unsafe_code`, and `set_var` is unsafe in this edition, so
+/// a check that stored a key would have written into the developer's real
+/// `~/.zaru`. The runner now carries a [`zaru_cli::config::Home`] and the
+/// store is opened under it, so that reason is gone; what still stands
+/// between this check and the storing arm is the sealing key, which
+/// `HarnessKeys::from_process` reads from the process's own environment. The
+/// storing half is the arc's artefact, run over a pseudo-terminal with `HOME`
+/// set, and it must not be quoted from here.
 ///
 /// **The mutants**: `render::prompt_lines`' secret arm painting the buffer;
 /// `Shell::key`'s secret arm not short-circuiting, which sends the bytes to
@@ -1799,6 +1811,7 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
     let runner = zaru_cli::cli::Run {
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
+        home: &scratch.home(),
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
@@ -2373,6 +2386,7 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
     let runner = zaru_cli::cli::Run {
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
+        home: &scratch.home(),
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
@@ -2680,5 +2694,155 @@ fn the_sessions_once_ever_notice_is_painted_above_the_turns_own_lines() {
         "the session's once-ever notice is painted inside the turn's lines, so a person reads a \
          conclusion, then a standing fact about the tier, then the thing they asked for: \
          {painted:?}"
+    );
+}
+
+/// The name of [`corpus_no_check_here_reads_a_home_it_was_not_handed`], which
+/// the re-run it starts must skip or it would start itself for ever.
+const HOME_GUARD: &str = "corpus_no_check_here_reads_a_home_it_was_not_handed";
+
+/// A home nobody handed to any check, with a canary in each file the harness
+/// reads out of `~/.zaru`.
+///
+/// **A canary is a file whose reading changes an answer, not a file whose
+/// access time moves.** Access times are mount options, and a check that
+/// relied on `atime` would be green on every `noatime` machine for the reason
+/// it exists to catch. So `config.toml` names a key no record declares —
+/// [ADR-0014] D5 refuses the whole load, naming it — and `credentials.json` is
+/// not a store, which every reader that reports a store's failure reports.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+struct Decoy {
+    path: PathBuf,
+}
+
+/// The key the decoy's `config.toml` sets, and the word a failure quotes.
+const CANARY: &str = "canary_a_check_read_a_home_it_was_not_handed";
+
+impl Decoy {
+    fn planted(name: &str) -> Self {
+        let path =
+            std::env::temp_dir().join(format!("zaru-decoy-home-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let zaru = path.join(".zaru");
+        std::fs::create_dir_all(&zaru).expect("a decoy home");
+        std::fs::write(zaru.join("config.toml"), format!("{CANARY} = true\n"))
+            .expect("the configuration canary");
+        std::fs::write(zaru.join("credentials.json"), format!("{CANARY}\n"))
+            .expect("the credential canary");
+        Self { path }
+    }
+
+    /// Every file under the decoy with its bytes, so a write is seen as well
+    /// as a read.
+    fn contents(&self) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut found = Vec::new();
+        let mut stack = vec![self.path.clone()];
+        while let Some(directory) = stack.pop() {
+            for entry in std::fs::read_dir(&directory).expect("the decoy is readable") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    found.push((path.clone(), Vec::new()));
+                    stack.push(path);
+                } else {
+                    let bytes = std::fs::read(&path).expect("a decoy file is readable");
+                    found.push((path, bytes));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+}
+
+impl Drop for Decoy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Every other check in this file, re-run under a home none of them was handed.
+///
+/// # The defect this exists for
+///
+/// The workspace suite was red on any machine whose owner uses Zaru and green
+/// on a CI runner, and every arc's control run on the development machine
+/// began with a failure that was not its own. Measured on 2026-09-27 by the
+/// `test-home-isolation` arc: 1,502 passed and 1 failed under the real `HOME`,
+/// 1,503 and 0 under an empty one. `corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell`
+/// minted under a scratch root and the mint then read configuration and the
+/// credential store through the process's own `$HOME`, so it recorded
+/// `provider = "gemini"` for a person holding a Gemini key. A third run, under
+/// this function's decoy, failed that check **and one that had never been
+/// seen failing**: `a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves`
+/// ran `/runtime` through a runner that read the person's own layer 2, and
+/// passed only because this machine's `config.toml` sets no tier.
+///
+/// # Why a re-run, and not a check of each reader
+///
+/// A check here cannot set `HOME` for itself — `set_var` is `unsafe` in this
+/// edition and the workspace denies `unsafe_code` — so the only way to put
+/// this file's checks under a home they were not handed is to start them
+/// again in a process that has one. That is the shape
+/// `process::tests::the_harnesss_own_configuration_never_reaches_a_child`
+/// already uses. What it asserts is the property rather than a list of
+/// readers: **a check added tomorrow that reads the process's home fails
+/// here without anybody remembering to add it.**
+///
+/// Three arms, and the first is what keeps the other two from passing
+/// vacuously: the re-run ran checks, it passed, and the decoy is byte for
+/// byte what was planted.
+#[test]
+fn corpus_no_check_here_reads_a_home_it_was_not_handed() {
+    let decoy = Decoy::planted("shell");
+    let planted = decoy.contents();
+
+    let output = Command::new(std::env::current_exe().expect("the test binary knows where it is"))
+        .args(["--skip", HOME_GUARD, "--exact"])
+        .env("HOME", &decoy.path)
+        .output()
+        .expect("the test binary re-runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let ran: usize = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("test result: "))
+        .filter_map(|result| result.split("; ").next())
+        .filter_map(|passed| passed.rsplit(' ').nth(1))
+        .filter_map(|count| count.parse::<usize>().ok())
+        .sum();
+    let failed: Vec<&str> = stdout
+        .split("\nfailures:\n")
+        .nth(2)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("test result"))
+        .collect();
+    println!("-- re-run under {} --", decoy.path.display());
+    println!("   {ran} passed; failed: {failed:?}");
+
+    assert!(
+        output.status.success(),
+        "{} check(s) in this file fail under a HOME none of them was handed, so each reads the \
+         process's own `~/.zaru` instead of a home it was given, and is red or green by whose \
+         machine it runs on: {failed:?}\n{stdout}\n{stderr}",
+        failed.len(),
+    );
+    assert!(
+        ran > 20,
+        "the re-run passed having run {ran} check(s), which is too few to have put this file under \
+         the decoy at all:\n{stdout}"
+    );
+    assert_eq!(
+        decoy.contents(),
+        planted,
+        "a check wrote into a home it was not handed"
+    );
+    assert!(
+        !stdout.contains(CANARY) && !stderr.contains(CANARY),
+        "the re-run passed and still quoted the canary, so something read the decoy and said so \
+         without failing:\n{stdout}\n{stderr}"
     );
 }

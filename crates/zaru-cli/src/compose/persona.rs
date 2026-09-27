@@ -835,14 +835,18 @@ pub fn refresh_now(serving: &mut Serving) {
 ///
 /// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 #[must_use]
-pub fn for_session(resolution: &Resolution, workspace: Option<&str>) -> Serving {
+pub fn for_session(
+    home: &crate::config::Home,
+    resolution: &Resolution,
+    workspace: Option<&str>,
+) -> Serving {
     // ADR-0006 D5's pin. No pin is no workspace to read a page out of, and
     // there is nothing to fall back to: the handshake's `_grounding.you` was
     // measured on 2026-09-14 and does not name a workspace a token can read.
     let Some(workspace) = workspace.filter(|pinned| !pinned.is_empty()) else {
         return Serving::nothing();
     };
-    let Ok(root) = crate::credentials::CredentialStore::default_root() else {
+    let Ok(root) = crate::credentials::CredentialStore::root_in(home) else {
         return Serving::nothing();
     };
     let Ok(store) = crate::credentials::CredentialStore::reading(root) else {
