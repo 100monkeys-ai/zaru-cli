@@ -632,3 +632,18 @@ async fn no_refusal_renders_the_url_it_refused() {
         named.given_to_the_model[0]
     );
 }
+
+// --------------------------------- a home and an environment nobody handed
+
+#[path = "support/decoy.rs"]
+mod decoy;
+
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
+#[test]
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
+    );
+}

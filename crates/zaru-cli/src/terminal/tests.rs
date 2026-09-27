@@ -177,6 +177,7 @@ fn pump_in(
         version: VERSION,
         report_at: REPORT_AT,
         home,
+        variables: &crate::config::Variables::none(),
     };
     shell.composer_mut().set_absence(trie.absence());
     let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
@@ -827,17 +828,22 @@ fn the_shells_leave_word_shadows_no_namespace_in_the_real_table() {
 /// its subcommand spelling runs, so the two spellings cannot come to disagree.
 #[test]
 fn a_slash_command_produces_what_its_subcommand_spelling_produces() {
-    // **One home for both spellings, and it is this check's.** Both read
-    // `~/.zaru` until 2026-09-27, so the comparison passed on any machine
-    // whose own configuration agreed with itself -- which is every machine --
-    // and `no_check_in_this_crate_reads_a_home_it_was_not_handed` is what
-    // found it.
+    // **One home and one environment for both spellings, and both are this
+    // check's.** Both read `~/.zaru` until 2026-09-27, so the comparison
+    // passed on any machine whose own configuration agreed with itself --
+    // which is every machine -- and both folded layer 4 from the process's
+    // own `ZARU_*` variables until later the same day, so an undeclared one
+    // in the developer's shell refused both alike and the check found no
+    // output to compare. The library's re-run guard,
+    // `no_check_in_this_crate_reads_a_home_or_an_environment_it_was_not_handed`,
+    // is what found each.
     let scratch = crate::credentials::fixtures::ScratchRoot::new();
     let home = crate::config::Home::at(scratch.store_root());
     let runner = crate::cli::Run {
         version: VERSION,
         report_at: REPORT_AT,
         home: &home,
+        variables: &crate::config::Variables::none(),
     };
     let outside = runner.execute(&crate::cli::invocation::CommandLine {
         request: Request::Runtime,
@@ -1784,6 +1790,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         version: VERSION,
         report_at: REPORT_AT,
         home: &home,
+        variables: &crate::config::Variables::none(),
     };
     futures_lite_block_on(run(
         &mut shell,
@@ -5033,7 +5040,7 @@ fn adr_0010_d2s_conversation_replays_in_order_above_the_new_turn() {
 /// Everything else in this file that reads a colour paints a shell into a
 /// `TestBackend` directly. This one goes through `terminal::driver::run` and
 /// `Surface::draw` — the path a session takes — with `Recording` holding its
-/// palette exactly as `Crossterm` holds the one `palette_from_environment`
+/// palette exactly as `Crossterm` holds the one `palette_of`
 /// gave it. A palette that never reached the surface would satisfy every
 /// other check here and fail this one.
 ///
@@ -5618,6 +5625,7 @@ fn a_queued_task_runs_when_the_turn_ends_with_no_keystroke() {
         version: VERSION,
         report_at: REPORT_AT,
         home: &home,
+        variables: &crate::config::Variables::none(),
     };
     // Staged as though an `Enter` during the first turn had queued it. The
     // pump's own mid-turn path is asserted by
@@ -5998,6 +6006,7 @@ fn a_dispatched_command_puts_its_whole_refusal_on_the_pane() {
         version: VERSION,
         report_at: REPORT_AT,
         home: &home,
+        variables: &crate::config::Variables::none(),
     };
     let key = crate::config::Key::new("zaru.no.such.key").expect("syntactically a key");
     let outcome = runner.execute(&crate::cli::invocation::CommandLine {
@@ -6045,6 +6054,7 @@ fn a_refused_provider_key_puts_its_whole_refusal_on_the_pane() {
         version: VERSION,
         report_at: REPORT_AT,
         home: &home,
+        variables: &crate::config::Variables::none(),
     };
     let outcome = runner.store_a_provider_key(crate::providers::ProviderKind::Gemini, OFFERED);
     let Exit::Failed(classified) = &outcome.exit else {
@@ -6082,6 +6092,7 @@ fn a_switch_that_will_not_resolve_puts_its_whole_refusal_on_the_pane() {
     let refused = crate::terminal::open::resolve(
         &Opening::Existing(id.clone()),
         &home,
+        &crate::config::Variables::none(),
         VERSION,
         REPORT_AT,
         &Overrides::default(),
@@ -6558,6 +6569,7 @@ fn pump_with_commands(
         version: VERSION,
         report_at: REPORT_AT,
         home: &handed,
+        variables: &crate::config::Variables::none(),
     };
     let trie = NotesTrie::nothing_cached(WORKSPACE);
     let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
@@ -6953,6 +6965,7 @@ fn adr_0002_d6s_two_commands_answer_the_same_thing_at_both_entry_points() {
         version: "0.0.0",
         report_at: "https://example.invalid",
         home: &home,
+        variables: &crate::config::Variables::none(),
     };
 
     for (namespace, expected) in [

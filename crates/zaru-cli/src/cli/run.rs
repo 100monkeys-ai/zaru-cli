@@ -144,6 +144,10 @@ impl Outcome {
 /// field names, so an in-process caller — the terminal's slash commands, and
 /// every check that drives them — is obeyed by every reader rather than by
 /// whichever happened to take a parameter. See [`crate::config::Home`].
+///
+/// **The environment is the fourth, for the same reason again**: layer 4 and
+/// the sealing key are read out of the variables this field names, and never
+/// out of the process. See [`crate::config::Variables`].
 pub struct Run<'a> {
     /// The harness version.
     pub version: &'a str,
@@ -151,6 +155,8 @@ pub struct Run<'a> {
     pub report_at: &'a str,
     /// `~/.zaru` for this invocation.
     pub home: &'a crate::config::Home,
+    /// The environment for this invocation.
+    pub variables: &'a crate::config::Variables,
 }
 
 impl Run<'_> {
@@ -495,7 +501,7 @@ impl Run<'_> {
         // and `ZARU_CREDENTIAL_KEY` where there is not -- which is the
         // ordinary case on a headless machine, not just in CI.
         let keyring = OsKeyring::for_store(&root);
-        let keys = HarnessKeys::from_process(&keyring);
+        let keys = HarnessKeys::within(&keyring, self.variables);
 
         let mut store = match CredentialStore::open(root.clone()) {
             Ok(store) => store,
@@ -883,7 +889,7 @@ impl Run<'_> {
             }
         };
         let keyring = OsKeyring::for_store(&root);
-        let keys = HarnessKeys::from_process(&keyring);
+        let keys = HarnessKeys::within(&keyring, self.variables);
         let mut store = match CredentialStore::open(root) {
             Ok(store) => store,
             Err(failure) => {
@@ -958,6 +964,7 @@ impl Run<'_> {
         self.configured(overrides, |resolution| {
             let ran = crate::compose::turn::task(
                 self.home,
+                self.variables,
                 self.version,
                 self.report_at,
                 resolution,
@@ -980,7 +987,7 @@ impl Run<'_> {
         overrides: &Overrides,
         then: impl FnOnce(&Resolution) -> Outcome,
     ) -> Outcome {
-        match layers::resolve_from_process(self.home, overrides) {
+        match layers::resolve_for(self.home, self.variables, overrides) {
             Ok(resolution) => then(&resolution),
             Err(failure) => Outcome::failed(Surface::load(&failure)),
         }

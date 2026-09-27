@@ -289,6 +289,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
         home: &scratch.home(),
+        variables: &zaru_cli::config::Variables::none(),
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
@@ -548,6 +549,7 @@ fn a_caller_outside_this_crate_populates_the_fast_tier_and_reads_the_strip() {
             version: env!("CARGO_PKG_VERSION"),
             report_at: env!("CARGO_PKG_REPOSITORY"),
             home: &scratch.home(),
+            variables: &zaru_cli::config::Variables::none(),
         };
         zaru_cli::compose::turn::runtime()
             .expect("a runtime")
@@ -1602,6 +1604,7 @@ fn corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell() {
     let minted = zaru_cli::terminal::resolve(
         &Opening::New,
         &scratch.home(),
+        &zaru_cli::config::Variables::none(),
         "0.0.0",
         "https://x",
         &overrides,
@@ -1652,6 +1655,7 @@ fn corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell() {
     let named = zaru_cli::terminal::resolve(
         &Opening::Existing(scratch.id.clone()),
         &scratch.home(),
+        &zaru_cli::config::Variables::none(),
         "0.0.0",
         "https://x",
         &overrides,
@@ -1812,6 +1816,7 @@ fn corpus_a_secret_typed_in_a_session_reaches_no_frame_and_no_file() {
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
         home: &scratch.home(),
+        variables: &zaru_cli::config::Variables::none(),
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
@@ -2387,6 +2392,7 @@ fn a_refusal_names_every_word_that_was_typed_and_the_spelling_outside_a_session(
         version: env!("CARGO_PKG_VERSION"),
         report_at: env!("CARGO_PKG_REPOSITORY"),
         home: &scratch.home(),
+        variables: &zaru_cli::config::Variables::none(),
     };
     let trie = NotesTrie::nothing_cached("zaru");
     shell.composer_mut().set_absence(trie.absence());
@@ -2697,152 +2703,17 @@ fn the_sessions_once_ever_notice_is_painted_above_the_turns_own_lines() {
     );
 }
 
-/// The name of [`corpus_no_check_here_reads_a_home_it_was_not_handed`], which
-/// the re-run it starts must skip or it would start itself for ever.
-const HOME_GUARD: &str = "corpus_no_check_here_reads_a_home_it_was_not_handed";
+// --------------------------------- a home and an environment nobody handed
 
-/// A home nobody handed to any check, with a canary in each file the harness
-/// reads out of `~/.zaru`.
-///
-/// **A canary is a file whose reading changes an answer, not a file whose
-/// access time moves.** Access times are mount options, and a check that
-/// relied on `atime` would be green on every `noatime` machine for the reason
-/// it exists to catch. So `config.toml` names a key no record declares —
-/// [ADR-0014] D5 refuses the whole load, naming it — and `credentials.json` is
-/// not a store, which every reader that reports a store's failure reports.
-///
-/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
-struct Decoy {
-    path: PathBuf,
-}
+#[path = "support/decoy.rs"]
+mod decoy;
 
-/// The key the decoy's `config.toml` sets, and the word a failure quotes.
-const CANARY: &str = "canary_a_check_read_a_home_it_was_not_handed";
-
-impl Decoy {
-    fn planted(name: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("zaru-decoy-home-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        let zaru = path.join(".zaru");
-        std::fs::create_dir_all(&zaru).expect("a decoy home");
-        std::fs::write(zaru.join("config.toml"), format!("{CANARY} = true\n"))
-            .expect("the configuration canary");
-        std::fs::write(zaru.join("credentials.json"), format!("{CANARY}\n"))
-            .expect("the credential canary");
-        Self { path }
-    }
-
-    /// Every file under the decoy with its bytes, so a write is seen as well
-    /// as a read.
-    fn contents(&self) -> Vec<(PathBuf, Vec<u8>)> {
-        let mut found = Vec::new();
-        let mut stack = vec![self.path.clone()];
-        while let Some(directory) = stack.pop() {
-            for entry in std::fs::read_dir(&directory).expect("the decoy is readable") {
-                let path = entry.expect("an entry").path();
-                if path.is_dir() {
-                    found.push((path.clone(), Vec::new()));
-                    stack.push(path);
-                } else {
-                    let bytes = std::fs::read(&path).expect("a decoy file is readable");
-                    found.push((path, bytes));
-                }
-            }
-        }
-        found.sort();
-        found
-    }
-}
-
-impl Drop for Decoy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-/// Every other check in this file, re-run under a home none of them was handed.
-///
-/// # The defect this exists for
-///
-/// The workspace suite was red on any machine whose owner uses Zaru and green
-/// on a CI runner, and every arc's control run on the development machine
-/// began with a failure that was not its own. Measured on 2026-09-27 by the
-/// `test-home-isolation` arc: 1,502 passed and 1 failed under the real `HOME`,
-/// 1,503 and 0 under an empty one. `corpus_a_bare_zaru_at_a_terminal_opens_a_new_sessions_shell`
-/// minted under a scratch root and the mint then read configuration and the
-/// credential store through the process's own `$HOME`, so it recorded
-/// `provider = "gemini"` for a person holding a Gemini key. A third run, under
-/// this function's decoy, failed that check **and one that had never been
-/// seen failing**: `a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves`
-/// ran `/runtime` through a runner that read the person's own layer 2, and
-/// passed only because this machine's `config.toml` sets no tier.
-///
-/// # Why a re-run, and not a check of each reader
-///
-/// A check here cannot set `HOME` for itself — `set_var` is `unsafe` in this
-/// edition and the workspace denies `unsafe_code` — so the only way to put
-/// this file's checks under a home they were not handed is to start them
-/// again in a process that has one. That is the shape
-/// `process::tests::the_harnesss_own_configuration_never_reaches_a_child`
-/// already uses. What it asserts is the property rather than a list of
-/// readers: **a check added tomorrow that reads the process's home fails
-/// here without anybody remembering to add it.**
-///
-/// Three arms, and the first is what keeps the other two from passing
-/// vacuously: the re-run ran checks, it passed, and the decoy is byte for
-/// byte what was planted.
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
 #[test]
-fn corpus_no_check_here_reads_a_home_it_was_not_handed() {
-    let decoy = Decoy::planted("shell");
-    let planted = decoy.contents();
-
-    let output = Command::new(std::env::current_exe().expect("the test binary knows where it is"))
-        .args(["--skip", HOME_GUARD, "--exact"])
-        .env("HOME", &decoy.path)
-        .output()
-        .expect("the test binary re-runs");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let ran: usize = stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("test result: "))
-        .filter_map(|result| result.split("; ").next())
-        .filter_map(|passed| passed.rsplit(' ').nth(1))
-        .filter_map(|count| count.parse::<usize>().ok())
-        .sum();
-    let failed: Vec<&str> = stdout
-        .split("\nfailures:\n")
-        .nth(2)
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("test result"))
-        .collect();
-    println!("-- re-run under {} --", decoy.path.display());
-    println!("   {ran} passed; failed: {failed:?}");
-
-    assert!(
-        output.status.success(),
-        "{} check(s) in this file fail under a HOME none of them was handed, so each reads the \
-         process's own `~/.zaru` instead of a home it was given, and is red or green by whose \
-         machine it runs on: {failed:?}\n{stdout}\n{stderr}",
-        failed.len(),
-    );
-    assert!(
-        ran > 20,
-        "the re-run passed having run {ran} check(s), which is too few to have put this file under \
-         the decoy at all:\n{stdout}"
-    );
-    assert_eq!(
-        decoy.contents(),
-        planted,
-        "a check wrote into a home it was not handed"
-    );
-    assert!(
-        !stdout.contains(CANARY) && !stderr.contains(CANARY),
-        "the re-run passed and still quoted the canary, so something read the decoy and said so \
-         without failing:\n{stdout}\n{stderr}"
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
 }

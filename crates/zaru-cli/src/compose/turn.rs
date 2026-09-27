@@ -324,6 +324,12 @@ pub struct Prepared {
     /// borrows this one and a `Prepared` holding both would be
     /// self-referential. `ran` builds the borrower.
     keyring: OsKeyring,
+    /// The environment this session was opened under: where `ran` reads the
+    /// sealing key beside [`Self::keyring`], and what a child is handed its
+    /// five names from.
+    ///
+    /// The caller's, never the process's. See [`crate::config::Variables`].
+    variables: crate::config::Variables,
     /// The whole surface this session offers the model: D1's seven, then
     /// D5's projected tools, filtered to what was granted.
     ///
@@ -652,6 +658,7 @@ impl Owed {
 )]
 pub fn prepare(
     home: &crate::config::Home,
+    variables: &crate::config::Variables,
     version: &str,
     report_at: &str,
     resolution: &Resolution,
@@ -854,7 +861,7 @@ pub fn prepare(
     // unconditional; `ollama` is reached with no credential at all, and
     // reading a secret that does not exist would refuse a provider that works.
     let keyring = OsKeyring::for_store(&store_root);
-    let keys = HarnessKeys::from_process(&keyring);
+    let keys = HarnessKeys::within(&keyring, variables);
     let alias = kind.credential_alias();
     // **Read off `KeyUse` rather than `Requirement` since 2026-09-14.** The two
     // answered one question while every kind either needed a key or took none;
@@ -1102,6 +1109,7 @@ pub fn prepare(
         store_root,
         store,
         keyring,
+        variables: variables.clone(),
         declared_tools,
         window,
         reserved,
@@ -1466,7 +1474,7 @@ async fn ran(
     };
     let destructive = crate::tools::Shapes;
     let verdicts = crate::tools::NoMembrane;
-    let environment = match crate::process::Environment::inherited_minimum() {
+    let environment = match crate::process::Environment::inherited_minimum(&prepared.variables) {
         Ok(environment) => environment,
         Err(refusal) => {
             return Ran::refused_having_said(lines, Surface::child_environment(&refusal));
@@ -1482,7 +1490,7 @@ async fn ran(
     // ADR-0007 D5's projected servers. Built per turn like the spawner and the
     // web client, and it opens nothing: a session is opened on the first call
     // into an alias and by no turn that makes none.
-    let keys = HarnessKeys::from_process(&prepared.keyring);
+    let keys = HarnessKeys::within(&prepared.keyring, &prepared.variables);
     let projection = match crate::credentials::Projection::new(&prepared.store, &keys) {
         Ok(projection) => projection,
         Err(refusal) => {
@@ -1821,13 +1829,14 @@ pub fn start(
 #[must_use]
 pub fn task(
     home: &crate::config::Home,
+    variables: &crate::config::Variables,
     version: &str,
     report_at: &str,
     resolution: &Resolution,
     task: &str,
 ) -> Ran {
     let surface = Surface::new(version, report_at);
-    let prepared = match prepare(home, version, report_at, resolution) {
+    let prepared = match prepare(home, variables, version, report_at, resolution) {
         Ok(prepared) => prepared,
         Err(refused) => return *refused,
     };
@@ -1855,7 +1864,8 @@ pub fn task(
     // reached only by a refresh. `persona::refresh_now`'s own documentation
     // carries the measurement.
     let workspace = crate::manifest::attached_workspace(resolution);
-    let mut serving = crate::compose::persona::for_session(home, resolution, workspace.as_deref());
+    let mut serving =
+        crate::compose::persona::for_session(home, variables, resolution, workspace.as_deref());
 
     // --- ADR-0010 D1's session, and the first `meta.toml` a product writes --
     let (session, mut context) = match start(

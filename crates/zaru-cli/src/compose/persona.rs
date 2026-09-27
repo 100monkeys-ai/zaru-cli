@@ -837,6 +837,7 @@ pub fn refresh_now(serving: &mut Serving) {
 #[must_use]
 pub fn for_session(
     home: &crate::config::Home,
+    variables: &crate::config::Variables,
     resolution: &Resolution,
     workspace: Option<&str>,
 ) -> Serving {
@@ -852,14 +853,14 @@ pub fn for_session(
     let Ok(store) = crate::credentials::CredentialStore::reading(root) else {
         return Serving::nothing();
     };
-    let Some((_, host, secret)) = crate::credentials::composer_secret(&store) else {
+    let Some((_, host, secret)) = crate::credentials::composer_secret(&store, variables) else {
         return Serving::nothing();
     };
     // ADR-0008 clause 6's port, over every value the store holds. Built here
     // because the disk seam is redacted with the same redactor the prompt
     // seam uses -- see the module documentation.
     let keyring = crate::credentials::OsKeyring::for_store(store.root());
-    let keys = crate::credentials::HarnessKeys::from_process(&keyring);
+    let keys = crate::credentials::HarnessKeys::within(&keyring, variables);
     let Ok(held) = crate::redaction::held_secrets_for_redaction(&store, &keys) else {
         return Serving::nothing();
     };

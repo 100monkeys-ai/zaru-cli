@@ -1495,14 +1495,21 @@ fn a_home_failure_says_whether_it_was_the_creation_or_the_mode() {
     );
 }
 
-// ---------------------------------------------- the home a check was handed
+// ---------------------------- the home and the environment a check was handed
 
-/// The full name of [`no_check_in_this_crate_reads_a_home_it_was_not_handed`],
+/// The full name of [`no_check_in_this_crate_reads_a_home_or_an_environment_it_was_not_handed`],
 /// which the re-run it starts must skip or it would start itself for ever.
-const HOME_GUARD: &str = "config::tests::no_check_in_this_crate_reads_a_home_it_was_not_handed";
+const DECOY_GUARD: &str =
+    "config::tests::no_check_in_this_crate_reads_a_home_or_an_environment_it_was_not_handed";
 
-/// The key the decoy's `config.toml` sets, and the word a failure quotes.
-const CANARY: &str = "canary_a_check_read_a_home_it_was_not_handed";
+/// What the decoy's files and variables hold, and the word a failure quotes.
+const CANARY: &str = "canary_a_check_read_what_it_was_not_handed";
+
+/// A `ZARU_` name no record declares, so [ADR-0014] D5 refuses any fold that
+/// reads it.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+const UNDECLARED: &str = "ZARU_CANARY_NO_RECORD_DECLARES";
 
 /// Every file under `root` with its bytes, so a write is seen as well as a
 /// read.
@@ -1525,26 +1532,52 @@ fn every_file_under(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)
     found
 }
 
-/// Every other check in this crate, re-run under a home none of them was
-/// handed.
+/// The number after `word` in a `test result:` line, summed over every such
+/// line.
+fn summed(stdout: &str, word: &str) -> usize {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("test result: "))
+        .flat_map(|result| result.split("; "))
+        .filter_map(|part| part.strip_suffix(word))
+        .filter_map(|count| count.trim().rsplit(' ').next()?.parse::<usize>().ok())
+        .sum()
+}
+
+/// Every other check in this crate, re-run under a home and an environment
+/// none of them was handed.
 ///
-/// The integration twin is `corpus_no_check_here_reads_a_home_it_was_not_handed`
-/// in `tests/shell_from_outside.rs`, and its documentation carries the defect
-/// both exist for: a suite red on any machine whose owner uses Zaru and green
-/// on a CI runner, because checks reached the process's own `~/.zaru`. This
-/// one covers the library's own checks, and on the tree it was written
-/// against it found `terminal::tests::a_slash_command_produces_what_its_subcommand_spelling_produces`
-/// — a check that ran `/runtime` both ways through a runner reading the
-/// person's own layer 2 and compared the two answers, so it passed on any
-/// machine whose configuration agreed with itself, which is every machine.
+/// The integration twin is `tests/support/decoy.rs`, which every test binary
+/// in `tests/` carries, and its documentation carries both defects this holds
+/// shut. This one covers the library's own checks. On the tree it was first
+/// written against it found
+/// `terminal::tests::a_slash_command_produces_what_its_subcommand_spelling_produces`
+/// reading the person's own layer 2 (`test-home-isolation`, 2026-09-27); run
+/// again with the environment decoyed as well, it found the same check
+/// reaching layer 4 through `std::env::vars()` and refused by [ADR-0014] D5
+/// for an undeclared `ZARU_` variable nobody handed it (`test-env-isolation`,
+/// the same day).
 ///
-/// The canary changes an answer rather than an access time: `config.toml`
-/// names a key no record declares, so [ADR-0014] D5 refuses any load that
-/// reads it, and `credentials.json` is not a store.
+/// The canaries change an answer rather than an access time: `config.toml`
+/// names a key no record declares, `credentials.json` is not a store, an
+/// undeclared `ZARU_` variable is refused by D5, and `ZARU_CREDENTIAL_KEY`
+/// holds text that is not a key. Every `ZARU_` name this process inherited is
+/// removed from the re-run by name; no value is read.
 ///
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 #[test]
-fn no_check_in_this_crate_reads_a_home_it_was_not_handed() {
+fn no_check_in_this_crate_reads_a_home_or_an_environment_it_was_not_handed() {
+    let binary = std::env::current_exe().expect("the test binary knows where it is");
+    let listing = std::process::Command::new(&binary)
+        .args(["--list", "--format", "terse"])
+        .output()
+        .expect("the test binary lists its checks");
+    let others = String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .filter(|line| line.ends_with(": test"))
+        .count()
+        - 1;
+
     let decoy = std::env::temp_dir().join(format!("zaru-decoy-home-lib-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&decoy);
     let zaru = decoy.join(".zaru");
@@ -1555,25 +1588,26 @@ fn no_check_in_this_crate_reads_a_home_it_was_not_handed() {
         .expect("the credential canary");
     let planted = every_file_under(&decoy);
 
-    let output = std::process::Command::new(
-        std::env::current_exe().expect("the test binary knows where it is"),
-    )
-    .args(["--skip", HOME_GUARD, "--exact"])
-    .env("HOME", &decoy)
-    .output()
-    .expect("the test binary re-runs");
+    let mut rerun = std::process::Command::new(&binary);
+    rerun.args(["--skip", DECOY_GUARD, "--exact"]);
+    rerun.env("HOME", &decoy);
+    let mut removed = 0usize;
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("ZARU_") {
+            rerun.env_remove(&name);
+            removed += 1;
+        }
+    }
+    rerun.env(UNDECLARED, CANARY);
+    rerun.env(crate::credentials::CREDENTIAL_KEY_VARIABLE, CANARY);
+    let output = rerun.output().expect("the test binary re-runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let after = every_file_under(&decoy);
     let _ = std::fs::remove_dir_all(&decoy);
 
-    let ran: usize = stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("test result: "))
-        .filter_map(|result| result.split("; ").next())
-        .filter_map(|passed| passed.rsplit(' ').nth(1))
-        .filter_map(|count| count.parse::<usize>().ok())
-        .sum();
+    let passed = summed(&stdout, " passed");
+    let ignored = summed(&stdout, " ignored");
     let failed: Vec<&str> = stdout
         .split("\nfailures:\n")
         .nth(2)
@@ -1582,20 +1616,25 @@ fn no_check_in_this_crate_reads_a_home_it_was_not_handed() {
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with("test result"))
         .collect();
-    println!("-- re-run under {} --", decoy.display());
-    println!("   {ran} passed; failed: {failed:?}");
+    println!(
+        "-- re-run under {} with {removed} inherited `ZARU_` name(s) removed and two planted --",
+        decoy.display()
+    );
+    println!("   {passed} passed, {ignored} ignored, of {others} listed; failed: {failed:?}");
 
     assert!(
         output.status.success(),
-        "{} check(s) in this crate fail under a HOME none of them was handed, so each reads the \
-         process's own `~/.zaru` instead of a home it was given, and is red or green by whose \
-         machine it runs on: {failed:?}\n{stderr}",
+        "{} check(s) in this crate change their verdict under a home and an environment none of \
+         them was handed, so each reads the process's own `~/.zaru` or `ZARU_*` variables \
+         instead of what it was given, and is red or green by whose machine runs it: \
+         {failed:?}\n{stderr}",
         failed.len(),
     );
-    assert!(
-        ran > 500,
-        "the re-run passed having run {ran} check(s), which is too few to have put this crate \
-         under the decoy at all:\n{stdout}"
+    assert_eq!(
+        passed + ignored,
+        others,
+        "the re-run accounted for {passed} passed and {ignored} ignored check(s) where this crate \
+         lists {others} besides the guard, so it did not put every check under the decoy"
     );
     assert_eq!(
         after, planted,

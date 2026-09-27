@@ -553,3 +553,18 @@ fn every_refusal_this_sweep_touched_carries_the_value_as_offered() {
         "four refusals in this sweep take a string directly and this check reached {carried}"
     );
 }
+
+// --------------------------------- a home and an environment nobody handed
+
+#[path = "support/decoy.rs"]
+mod decoy;
+
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
+#[test]
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
+    );
+}

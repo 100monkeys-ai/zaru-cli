@@ -149,7 +149,10 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
     let store =
         CredentialStore::reading(root.clone()).expect("the store at the scratch HOME opens");
     let keyring = OsKeyring::for_store(&root);
-    let keys = HarnessKeys::from_process(&keyring);
+    // The sealing key, out of the environment its operator set, for the
+    // reason the home above is: `corpus_one_thing_reads_the_environment`
+    // exempts this check and names why.
+    let keys = HarnessKeys::within(&keyring, &zaru_cli::config::Variables::of_this_process());
 
     let alias = ProviderKind::credential_alias(ProviderKind::Gemini);
     let secret = store
@@ -272,5 +275,20 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
         tokens.prompt,
         tokens.completion,
         tokens.total()
+    );
+}
+
+// --------------------------------- a home and an environment nobody handed
+
+#[path = "support/decoy.rs"]
+mod decoy;
+
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
+#[test]
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
 }

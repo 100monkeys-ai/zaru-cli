@@ -71,6 +71,7 @@ pub mod refusal;
 pub mod resolve;
 pub mod schema;
 pub mod value;
+pub mod variables;
 
 pub use credential::CredentialRef;
 pub use explain::{Explanation, ExplanationRow};
@@ -83,6 +84,7 @@ pub use refusal::ConfigRefused;
 pub use resolve::Resolution;
 pub use schema::{CoercionFailure, Field, FieldKind, KeyFamily, ProjectPolicy, Schema};
 pub use value::{Table, Value};
+pub use variables::Variables;
 
 // `pub(crate)` rather than private, for the reason `credentials::fixtures`
 // already is: `crate::failure`'s checks drive the real load to produce

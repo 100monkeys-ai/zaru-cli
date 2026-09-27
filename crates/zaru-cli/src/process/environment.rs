@@ -183,21 +183,27 @@ impl Environment {
         Ok(self)
     }
 
-    /// The five names of [`MINIMUM`] the harness's own process has.
+    /// The five names of [`MINIMUM`] the harness's own environment has.
     ///
     /// A name the harness does not itself have is not carried, rather than
     /// carried empty: an empty `PATH` resolves differently from an absent one
     /// and neither is what the user's shell would do.
+    ///
+    /// **The harness's own environment is `variables`, since 2026-09-27**,
+    /// and was the process's, read here with `std::env::var` — so a caller
+    /// holding other variables still handed a child the developer's `PATH`
+    /// and `HOME`. It is what the binary's `main` read once. See
+    /// [`crate::config::Variables`].
     ///
     /// # Errors
     ///
     /// [`NotForAChild`] when one of the harness's own values cannot be passed
     /// on — a NUL in a value, which the operating system should not produce
     /// and which is reported rather than dropped.
-    pub fn inherited_minimum() -> Result<Self, NotForAChild> {
+    pub fn inherited_minimum(variables: &crate::config::Variables) -> Result<Self, NotForAChild> {
         let mut environment = Self::empty();
         for name in MINIMUM {
-            if let Ok(value) = std::env::var(name) {
+            if let Some(value) = variables.get(name) {
                 environment = environment.carrying(name, value)?;
             }
         }

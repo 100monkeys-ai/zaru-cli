@@ -131,9 +131,10 @@ fn family_key(schema: &Schema, variable: &str) -> Option<Key> {
 ///
 /// The variables are a parameter rather than read from the process, because
 /// [`std::env::set_var`] is `unsafe` in this edition and the workspace denies
-/// `unsafe_code`. That makes the seam the product's own: [`from_process`]
-/// passes [`std::env::vars`] and a check passes pairs it owns, both through
-/// this one function.
+/// `unsafe_code`. That makes the seam the product's own: the product passes
+/// the `ZARU_` pairs of the [`Variables`](crate::config::Variables) its `main`
+/// read once, and a check passes pairs it owns, both through this one
+/// function.
 ///
 /// Values arrive as text, so every one is [`Value::Text`]; the schema's
 /// [`coerce`](crate::config::schema::FieldKind::coerce) brings them to their
@@ -199,21 +200,6 @@ pub fn read(
         }
     }
     Ok(document)
-}
-
-/// Build layer 4's document from this process's own environment.
-///
-/// The product path. Nothing reaches it yet: no binary resolves configuration
-/// — ADR-0014 D3's `config explain` and [ADR-0015] D2's `/config` namespace
-/// both need a command surface that does not exist.
-///
-/// # Errors
-///
-/// As [`read`].
-///
-/// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
-pub fn from_process(schema: &Schema) -> Result<Table, ConfigRefused> {
-    read(schema, std::env::vars())
 }
 
 /// The declared variable name nearest to one nothing declares.

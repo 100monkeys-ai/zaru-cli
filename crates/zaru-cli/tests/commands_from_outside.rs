@@ -468,7 +468,11 @@ expect = { matches = "hello" }
         zaru_cli::config::SizeCeiling::new(zaru_cli::cli::FILE_CEILING_BYTES).expect("a mebibyte");
     let spawn = zaru_cli::process::Spawn::new(
         &working,
-        zaru_cli::process::Environment::inherited_minimum().expect("the harness's own values"),
+        zaru_cli::process::Environment::inherited_minimum(&zaru_cli::config::Variables::of([(
+            "PATH",
+            "/usr/bin:/bin",
+        )]))
+        .expect("the harness's own values"),
         zaru_cli::process::ProcessCeiling::new(core::time::Duration::from_secs(30))
             .expect("thirty seconds"),
     );
@@ -759,5 +763,20 @@ fn corpus_a_skills_run_line_reaches_the_question_and_a_decline_loads_none_of_it(
         after.validators_of("triage").len(),
         1,
         "the accepting sibling: admitted, the skill and its validator are there"
+    );
+}
+
+// --------------------------------- a home and an environment nobody handed
+
+#[path = "support/decoy.rs"]
+mod decoy;
+
+/// Every other check in this file, re-run under a home and an environment none
+/// of them was handed. See `tests/support/decoy.rs` for the two defects it
+/// holds shut and what the decoy is.
+#[test]
+fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
+    decoy::every_other_check_keeps_its_verdict(
+        "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
 }
