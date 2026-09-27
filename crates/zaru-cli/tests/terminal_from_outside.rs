@@ -79,6 +79,11 @@ impl InATerminal {
     /// Open a bare `zaru` — a session in a fresh `HOME` with nothing
     /// configured — at 100 × 30.
     fn open() -> Self {
+        Self::open_with(&[])
+    }
+
+    /// As [`Self::open`], with `environment` added to what `zaru` is given.
+    fn open_with(environment: &[(&str, &str)]) -> Self {
         let home = Scratch::new("home");
         let work = Scratch::new("work");
         let zaru = env!("CARGO_BIN_EXE_zaru");
@@ -99,6 +104,7 @@ impl InATerminal {
             .env("PATH", "/usr/bin:/bin")
             .env("TERM", "xterm-256color")
             .env("LANG", "C.UTF-8")
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -408,4 +414,87 @@ fn glyphs(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// **`terminal.mouse` is an [ADR-0014] key, `true` at layer 1**, so
+/// `zaru config explain` says where a session's answer comes from, and
+/// `ZARU_TERMINAL_MOUSE=false` at layer 4 turns it off.
+///
+/// **The mutant:** the key not declared, which prints the refusal
+/// `config explain` gives an unknown key.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+#[test]
+fn the_mouse_key_is_held_by_default_and_explained_by_layer() {
+    let home = Scratch::new("explain-home");
+    let explain = |environment: &[(&str, &str)]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+            .args(["config", "explain", "terminal.mouse"])
+            .current_dir(&home.0)
+            .env_clear()
+            .env("HOME", &home.0)
+            .envs(environment.iter().copied())
+            .output()
+            .expect("the built zaru runs");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    let (code, stdout, stderr) = explain(&[]);
+    assert_eq!(
+        code,
+        Some(0),
+        "`zaru config explain terminal.mouse` refused: {stderr}"
+    );
+    assert!(
+        stdout.lines().next() == Some("terminal.mouse = true")
+            && stdout.lines().any(|line| line.contains("built-in")
+                && line.contains("true")
+                && line.contains("← effective")),
+        "the mouse is not held by default at layer 1: {stdout}"
+    );
+
+    let (code, stdout, stderr) = explain(&[("ZARU_TERMINAL_MOUSE", "false")]);
+    assert_eq!(code, Some(0), "the layer-4 spelling refused: {stderr}");
+    assert!(
+        stdout.lines().next() == Some("terminal.mouse = false")
+            && stdout.lines().any(|line| {
+                line.contains("ZARU_TERMINAL_MOUSE")
+                    && line.contains("false")
+                    && line.contains("← effective")
+            }),
+        "ZARU_TERMINAL_MOUSE=false is not the effective answer: {stdout}"
+    );
+}
+
+/// **With `terminal.mouse = false` no mouse mode is asked for**, the wheel is
+/// the terminal's own, and the tip about selecting is not offered, because
+/// nothing took the selection away.
+///
+/// The cost, stated where the key is declared: in Windows Terminal and the VS
+/// Code terminal a wheel notch on the alternate screen then arrives as `Up` or
+/// `Down`, which walk the history on an empty prompt.
+///
+/// **The mutant:** `arm` ignoring the key, which prints the modes it asked
+/// for.
+#[test]
+fn a_session_with_the_mouse_key_off_asks_for_no_mouse_mode() {
+    let session = InATerminal::open_with(&[("ZARU_TERMINAL_MOUSE", "false")]);
+    let armed = session.until(b"\x1b[?25h", "the session's first frame");
+    let taken = private_modes(&session.bytes()[..armed], true);
+    assert_eq!(
+        taken,
+        [1049, 2004],
+        "with terminal.mouse = false the session asked the terminal for private modes {taken:?}, \
+         where it is owed the alternate screen and bracketed paste and no mouse mode"
+    );
+    std::thread::sleep(Duration::from_millis(1000));
+    let painted = glyphs(&session.bytes());
+    assert!(
+        !painted.contains("holdShifttoselecttext"),
+        "the session left the mouse to the terminal and still said to hold Shift: {painted:?}"
+    );
 }

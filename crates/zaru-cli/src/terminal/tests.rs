@@ -5461,7 +5461,7 @@ fn painted_at(shell: &Shell, width: u16, height: u16) -> Vec<String> {
 #[test]
 fn arming_and_disarming_write_the_paste_and_wheel_sequences_and_nothing_else() {
     let mut armed = Vec::new();
-    crate::terminal::driver::arm(&mut armed).expect("a vector never fails to be written to");
+    crate::terminal::driver::arm(&mut armed, true).expect("a vector never fails to be written to");
     assert_eq!(
         String::from_utf8(armed.clone()).expect("the sequence is ASCII"),
         "\u{1b}[?2004h\u{1b}[?1000h\u{1b}[?1006h",
@@ -7131,5 +7131,25 @@ fn the_wheel_is_its_own_input_and_a_key_is_still_a_key() {
     assert!(
         matches!(&page_up, Some(Struck::Key(input)) if input.key == zaru_tui::shell::Key::PageUp && input.shift),
         "a physical Shift+PageUp became {page_up:?}"
+    );
+}
+
+/// With `terminal.mouse = false`, arming asks for bracketed paste and no mouse
+/// mode, and disarming still resets both, so a terminal something else left
+/// holding the mouse is given back clean too.
+///
+/// **The accepting sibling** of the check above, which an `arm` that ignored
+/// its argument would satisfy.
+///
+/// **The mutant:** `arm` writing the wheel's modes whatever it is told.
+#[test]
+fn arming_with_the_mouse_left_to_the_terminal_asks_for_paste_alone() {
+    let mut armed = Vec::new();
+    crate::terminal::driver::arm(&mut armed, false).expect("a vector never fails to be written to");
+    assert_eq!(
+        String::from_utf8(armed.clone()).expect("the sequence is ASCII"),
+        "\u{1b}[?2004h",
+        "with the mouse left to the terminal, arming wrote {:?}",
+        String::from_utf8_lossy(&armed)
     );
 }

@@ -137,6 +137,12 @@ impl BuiltIn {
                 crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
             )),
         );
+        // Whether the shell holds the mouse. On by default, so the wheel
+        // scrolls the pane; see `terminal::mouse` for the trade and its cost.
+        document.insert_path(
+            &crate::terminal::mouse::key(),
+            Value::Bool(crate::terminal::mouse::BUILT_IN),
+        );
         Self { document }
     }
 }
@@ -607,6 +613,7 @@ pub fn schema() -> Schema {
     let declared = crate::compose::tips::declare(declared);
     let declared = crate::credentials::grant::declare(declared);
     let declared = crate::compose::persona::declare(declared);
+    let declared = crate::terminal::mouse::declare(declared);
     declared
         .with(crate::runtime::key(), crate::runtime::field())
         .with(

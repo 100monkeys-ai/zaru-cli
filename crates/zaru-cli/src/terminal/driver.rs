@@ -3869,18 +3869,21 @@ impl Crossterm {
     /// second answer to a question the library already answers, and the two
     /// would have to be kept agreeing.
     ///
+    /// `hold_the_mouse` is `terminal.mouse`, resolved by the caller; see
+    /// [`crate::terminal::mouse`].
+    ///
     /// # Errors
     ///
     /// When the terminal cannot be put into raw mode or the alternate screen
     /// cannot be entered.
-    pub fn take() -> std::io::Result<Self> {
+    pub fn take(hold_the_mouse: bool) -> std::io::Result<Self> {
         let terminal = ratatui::try_init()?;
         // Armed **after** the alternate screen and disarmed before it is left,
         // in this one place, so no exit path can hand a terminal back still
         // telling every later program that a paste is bracketed. If the arm
         // itself fails the terminal is given back before the error leaves, so
         // a half-taken terminal is never returned.
-        if let Err(failure) = arm(&mut std::io::stdout()) {
+        if let Err(failure) = arm(&mut std::io::stdout(), hold_the_mouse) {
             ratatui::restore();
             return Err(failure);
         }
@@ -3907,12 +3910,22 @@ impl Crossterm {
 /// # Errors
 ///
 /// When the sequence cannot be written to the terminal.
-pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
-    ratatui::crossterm::execute!(
-        out,
-        ratatui::crossterm::event::EnableBracketedPaste,
-        AskForTheWheel,
-    )
+///
+/// # And for the wheel, unless `terminal.mouse` says not to
+///
+/// `hold_the_mouse` is that key's answer. With it `false` no mouse mode is
+/// asked for and the terminal keeps its own selection and its own wheel; see
+/// [`crate::terminal::mouse`] for what that costs.
+pub(crate) fn arm(out: &mut impl std::io::Write, hold_the_mouse: bool) -> std::io::Result<()> {
+    if hold_the_mouse {
+        ratatui::crossterm::execute!(
+            out,
+            ratatui::crossterm::event::EnableBracketedPaste,
+            AskForTheWheel,
+        )
+    } else {
+        ratatui::crossterm::execute!(out, ratatui::crossterm::event::EnableBracketedPaste)
+    }
 }
 
 /// Ask the terminal to report its buttons, and so its wheel, in SGR form:

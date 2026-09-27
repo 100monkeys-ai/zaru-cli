@@ -546,8 +546,8 @@ pub fn shell_for(
         composer_token: store
             .as_ref()
             .is_some_and(|store| store.composer().is_some()),
-        // The shell always asks for the buttons: `driver::arm`.
-        mouse_captured: true,
+        // `terminal.mouse`, the same answer `open` gave `driver::arm`.
+        mouse_captured: crate::terminal::mouse::held(&resolution),
     };
 
     Ok((shell, transcript, trie, populating, resumed, conditions))
@@ -1270,7 +1270,14 @@ pub fn open(
         let _inside = runtime.enter();
         Signals::take().expect("the session's runtime registers SIGTERM, SIGINT and SIGHUP")
     };
-    let crossterm = Crossterm::take().map_err(|_| Box::new(Exit::Succeeded))?;
+    // `terminal.mouse` is read before the terminal is taken, because it
+    // decides what taking it asks for; a configuration that will not resolve
+    // is refused here, on the screen the person is looking at, exactly as
+    // `shell_for` would refuse it a moment later.
+    let hold_the_mouse = crate::cli::layers::resolve_from_process(home, overrides)
+        .map(|resolution| crate::terminal::mouse::held(&resolution))
+        .map_err(|failure| Box::new(Exit::Failed(Classify::load(&failure))))?;
+    let crossterm = Crossterm::take(hold_the_mouse).map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
     // Polled whenever the pump is, which is whenever a session is open: every
     // session runs inside `runtime.block_on`, and the pump awaits between

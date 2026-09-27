@@ -53,6 +53,7 @@
 
 pub mod corpus;
 pub mod driver;
+pub mod mouse;
 pub mod open;
 pub mod paths;
 pub mod source;
