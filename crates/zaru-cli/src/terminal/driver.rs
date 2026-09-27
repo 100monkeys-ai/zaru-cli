@@ -3894,8 +3894,45 @@ pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
     ratatui::crossterm::execute!(
         out,
         ratatui::crossterm::event::EnableBracketedPaste,
-        ratatui::crossterm::event::EnableMouseCapture,
+        AskForTheWheel,
     )
+}
+
+/// Ask the terminal to report its buttons, and so its wheel, in SGR form:
+/// `ESC[?1000h ESC[?1006h`, and nothing else.
+///
+/// # Why not `crossterm`'s `EnableMouseCapture`
+///
+/// That command asks for five modes: `?1000` buttons, `?1002` drags, `?1003`
+/// every movement of the pointer, `?1015` urxvt coordinates and `?1006` SGR
+/// coordinates. The pane reads the wheel and nothing else, and a terminal
+/// reports what it was asked for whether anything reads it or not. Measured on
+/// the release binary at `2a7544b`: with `?1003` on, 300 pointer movements over
+/// three seconds cost **300 repaints and 8,100 bytes** of output, and each one
+/// reached the composer as a keystroke. `?1006` supersedes `?1015` wherever
+/// both are understood, and SGR is the one that carries a column past 223.
+///
+/// **What capture still costs is the terminal's own selection**, which a
+/// terminal gives back while its bypass modifier is held: Shift in Windows
+/// Terminal, in the VS Code terminal off macOS, and in most others. That
+/// trade is [ADR-0005]'s, decided on its amendments on 2026-09-27.
+///
+/// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
+struct AskForTheWheel;
+
+impl ratatui::crossterm::Command for AskForTheWheel {
+    fn write_ansi(&self, f: &mut impl core::fmt::Write) -> core::fmt::Result {
+        f.write_str("\x1b[?1000h\x1b[?1006h")
+    }
+}
+
+/// Stop asking for what [`AskForTheWheel`] asked for, in the reverse order.
+struct ReleaseTheWheel;
+
+impl ratatui::crossterm::Command for ReleaseTheWheel {
+    fn write_ansi(&self, f: &mut impl core::fmt::Write) -> core::fmt::Result {
+        f.write_str("\x1b[?1006l\x1b[?1000l")
+    }
 }
 
 /// Stop asking, on the way out. See [`arm`].
@@ -3909,7 +3946,7 @@ pub(crate) fn arm(out: &mut impl std::io::Write) -> std::io::Result<()> {
 pub(crate) fn disarm(out: &mut impl std::io::Write) {
     let _ = ratatui::crossterm::execute!(
         out,
-        ratatui::crossterm::event::DisableMouseCapture,
+        ReleaseTheWheel,
         ratatui::crossterm::event::DisableBracketedPaste,
     );
 }

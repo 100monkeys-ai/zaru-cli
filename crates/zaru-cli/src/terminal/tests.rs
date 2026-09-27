@@ -5441,21 +5441,32 @@ fn painted_at(shell: &Shell, width: u16, height: u16) -> Vec<String> {
         .collect()
 }
 
-/// The escape sequences bracketed paste is armed and disarmed with.
+/// The escape sequences the terminal is armed and disarmed with.
 ///
 /// `Crossterm` cannot be constructed here — it is three system calls against a
 /// terminal a check does not have, which that type's own documentation says —
 /// so the sequence is asserted over a writer instead of argued for in a
-/// comment. The literals are the ones the look-and-feel survey measured the
+/// comment. The paste literal is the one the look-and-feel survey measured the
 /// gap by: its row 13 reads "`ESC[?2004h` appears nowhere in any capture".
+///
+/// **The mouse is asked for two modes and no more**: `?1000`, which reports
+/// buttons and therefore the wheel, and `?1006`, which spells the report in
+/// SGR form so a column past 223 survives. `crossterm`'s `EnableMouseCapture`
+/// asks for five, and two of the other three are the cost: `?1003` reports
+/// every movement of the pointer, measured on the release binary at `2a7544b`
+/// as 300 repaints and 8,100 bytes for 300 reports, and `?1002` every drag.
+/// Nothing reads either.
+///
+/// **The mutant:** `EnableMouseCapture` back in `arm`.
 #[test]
-fn arming_and_disarming_write_the_bracketed_paste_sequences() {
+fn arming_and_disarming_write_the_paste_and_wheel_sequences_and_nothing_else() {
     let mut armed = Vec::new();
     crate::terminal::driver::arm(&mut armed).expect("a vector never fails to be written to");
     assert_eq!(
         String::from_utf8(armed.clone()).expect("the sequence is ASCII"),
-        "\u{1b}[?2004h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1015h\u{1b}[?1006h",
-        "arming wrote {:?}, and a terminal that was not asked reports wheel movement as arrows",
+        "\u{1b}[?2004h\u{1b}[?1000h\u{1b}[?1006h",
+        "arming wrote {:?}, where the terminal is owed bracketed paste, button reports and \
+         their SGR spelling and nothing else: motion and drag reports are input nothing reads",
         String::from_utf8_lossy(&armed)
     );
 
@@ -5463,9 +5474,9 @@ fn arming_and_disarming_write_the_bracketed_paste_sequences() {
     crate::terminal::driver::disarm(&mut disarmed);
     assert_eq!(
         String::from_utf8(disarmed.clone()).expect("the sequence is ASCII"),
-        "\u{1b}[?1006l\u{1b}[?1015l\u{1b}[?1003l\u{1b}[?1002l\u{1b}[?1000l\u{1b}[?2004l",
-        "disarming wrote {:?}, and a terminal left armed tells every later program that wheel \
-         movement is input",
+        "\u{1b}[?1006l\u{1b}[?1000l\u{1b}[?2004l",
+        "disarming wrote {:?}, and a terminal left armed tells every later program that the \
+         wheel is input",
         String::from_utf8_lossy(&disarmed)
     );
 }

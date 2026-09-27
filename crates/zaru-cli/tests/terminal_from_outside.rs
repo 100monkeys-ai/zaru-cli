@@ -275,3 +275,30 @@ fn a_session_ended_by_a_signal_gives_the_terminal_back() {
         );
     }
 }
+
+/// **The binary asks the terminal for the alternate screen, bracketed paste,
+/// button reports and their SGR spelling, and nothing else.**
+///
+/// The unit check over `driver::arm` holds the function. This holds the
+/// binary: a second place that asked for more (a stray `EnableMouseCapture`
+/// anywhere on the path) would pass that check and fail this one.
+///
+/// Measured on the release binary at `2a7544b`: `?1002` and `?1003` were
+/// requested too, and 300 pointer movements over three seconds cost 300
+/// repaints and 8,100 bytes of output with nothing to show for them.
+///
+/// **The mutant:** `EnableMouseCapture` back in `arm`, which prints the five
+/// modes it asks for.
+#[test]
+fn a_session_asks_the_terminal_for_the_wheel_and_nothing_more() {
+    let session = InATerminal::open();
+    let armed = session.until(b"\x1b[?25h", "the session's first frame");
+    let taken = private_modes(&session.bytes()[..armed], true);
+    assert_eq!(
+        taken,
+        [1049, 2004, 1000, 1006],
+        "the session asked the terminal for private modes {taken:?}, where it is owed the \
+         alternate screen, bracketed paste, button reports and their SGR spelling: a motion or \
+         drag report is input nothing reads, and the terminal still sends it"
+    );
+}
