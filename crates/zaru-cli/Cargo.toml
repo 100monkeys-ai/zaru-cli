@@ -91,6 +91,15 @@ reqwest = { workspace = true }
 # ADR-0003 D2's table already names is that record's clause 7 caller-arrives
 # case, which is the shape D2 already blessed for `rmcp`'s transport and for
 # `ratatui`'s `crossterm`.
+#
+# **`signal` was added on 2026-09-27 so a terminal is given back when a signal
+# ends the session.** The terminal was restored only by `terminal::Guard`'s
+# `Drop`, which a signal never reaches: a `SIGTERM` left the person's shell raw,
+# on the alternate screen, with every mouse mode on. `terminal::open` now takes
+# `SIGTERM`, `SIGINT` and `SIGHUP` on the session's runtime and restores before
+# the process ends. It is the same clause-7 case as `process` above: a feature
+# of a crate D2 already names, whose one extra package (`signal-hook-registry`)
+# `process` had already brought into this crate's closure.
 tokio = { workspace = true, features = [
     "rt",
     "macros",
@@ -99,6 +108,7 @@ tokio = { workspace = true, features = [
     "sync",
     "process",
     "fs",
+    "signal",
 ] }
 # ADR-0009 D3's third `expect` kind. See `[workspace.dependencies]` for why
 # this crate and not `zaru-core`, and for what the two features buy.

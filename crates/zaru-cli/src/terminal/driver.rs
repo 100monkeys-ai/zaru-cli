@@ -3916,13 +3916,26 @@ pub(crate) fn disarm(out: &mut impl std::io::Write) {
 
 impl Restore for Crossterm {
     fn restore(&mut self) {
-        // Before the alternate screen is left, and on every path `Guard` runs
-        // on: an ordinary exit, an early return, and an unwind. `ratatui`'s
-        // own panic hook calls `ratatui::restore` and knows nothing about
-        // bracketed paste, so this is the only thing that disarms it.
-        disarm(&mut std::io::stdout());
-        ratatui::restore();
+        give_back();
     }
+}
+
+/// Give the terminal back: disarm what [`arm`] asked for, leave raw mode, and
+/// leave the alternate screen.
+///
+/// **One function with two callers**, because there are two ways a session
+/// ends that can restore. [`Guard`] calls it through [`Restore`] on an ordinary
+/// exit, an early return and an unwind. `terminal::open`'s signal listener
+/// calls it directly when a signal ends the session, because a process ending
+/// on a signal runs no `Drop`. Neither needs the [`Crossterm`] value: raw mode
+/// is a property of the terminal, and the sequences go to standard output.
+///
+/// The disarm comes **before** the alternate screen is left, on both paths.
+/// `ratatui`'s own panic hook calls `ratatui::restore` and knows nothing about
+/// bracketed paste or the mouse, so this is the only thing that disarms them.
+pub(crate) fn give_back() {
+    disarm(&mut std::io::stdout());
+    ratatui::restore();
 }
 
 impl Surface for Crossterm {

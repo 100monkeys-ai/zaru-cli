@@ -15,6 +15,21 @@ use core::fmt;
 /// it, so [`Exit`] is where the whole of that table lives.
 pub const SUCCESS: u8 = 0;
 
+/// The exit code for a session a signal ended: `128 + n`, the status a POSIX
+/// shell reports for a process that signal `n` killed.
+///
+/// **Not a sixth class and not a row D5's table authored.** A signal is not a
+/// failure of the run, so no class describes it. Before 2026-09-27 the
+/// harness took no signal at all, and the default action killed it, so a
+/// person's `$?` read `128 + n`. `terminal::open` now catches three signals so
+/// that it can give the terminal back first, and then exits with this code, so
+/// what a shell or a CI wrapper reads is unchanged. `SIGKILL` cannot be caught
+/// and still reaches the default action.
+#[must_use]
+pub const fn signalled(signal: u8) -> u8 {
+    128 + signal
+}
+
 /// One of ADR-0016 D1's five classes.
 ///
 /// **Closed.** Five variants and no sixth; every match on it below is

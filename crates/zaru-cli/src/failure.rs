@@ -94,7 +94,7 @@ pub mod present;
 pub mod remedy;
 pub mod wait;
 
-pub use class::{Class, Exit, SUCCESS};
+pub use class::{Class, Exit, SUCCESS, signalled};
 pub use classified::{Classified, Expected};
 pub use defect::{DefectReport, Location, SessionEvidence, SessionId, SessionIdRefused};
 pub use guard::{Caught, Guarded, OwnWords, guard};
