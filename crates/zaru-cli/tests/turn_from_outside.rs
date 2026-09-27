@@ -1781,6 +1781,146 @@ fn adr_0034_clause_3_a_zero_negative_or_non_integer_exchange_limit_is_refused_na
     );
 }
 
+/// [ADR-0034] trigger clause 4: "Configuration resolution preserves a
+/// higher-layer finite limit against a project attempt to raise or remove it,
+/// and `zaru config explain runtime.max_tool_exchanges` identifies its
+/// effective source."
+///
+/// # Met where a person meets it
+///
+/// The user's own `~/.zaru/config.toml` grants 9, and `./zaru.toml` is
+/// rewritten three ways, each read back through the built binary's `config
+/// explain`, which is the only place a person can see where a value came
+/// from. [ADR-0014] D3's block prints one row per layer, highest first, and
+/// marks the highest layer that set the key `← effective`.
+///
+/// - **Lowered to 3**: the project row is marked and carries 3; the user row
+///   carries 9 and is not marked. This is the accepting sibling -- without
+///   it, a harness refusing every project value of the key would pass the
+///   raise arm.
+/// - **Raised to 12**: refused at exit 2 naming the key and both numbers, and
+///   no block is printed that could read as the project's value having won.
+/// - **Removed** -- the project stops setting the key: the user's 9 is still
+///   the effective value and the user row is the one marked. A project has no
+///   spelling for "unlimited" but absence, and absence cannot remove what a
+///   layer below it set; the one other spelling a reader might try, `0`, is
+///   clause 3's refusal.
+///
+/// Not the environment layer: layer 4 is *above* the project's layer 3, so a
+/// project "lowering" an environment value is decided by precedence rather
+/// than by D6 -- the trap `a_project_may_lower_the_iteration_ceiling_and_may_not_raise_it`
+/// records falling into once.
+///
+/// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
+/// [ADR-0034]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0034-tool-call-exchange-limits
+#[test]
+fn adr_0034_clause_4_a_users_exchange_limit_survives_the_project_and_explain_names_its_source() {
+    let home = Home::new("exchange-limit-explain");
+    std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+    std::fs::write(
+        home.path().join(".zaru/config.toml"),
+        "[runtime]\nmax_tool_exchanges = 9\n",
+    )
+    .expect("the user's configuration is written");
+    let manifest = |runtime: &str| {
+        std::fs::write(
+            home.project().join("zaru.toml"),
+            format!("[project]\nname = \"acme\"\n{runtime}"),
+        )
+        .expect("the manifest is written");
+    };
+    let explain = || {
+        zaru(
+            &home,
+            &[],
+            &["config", "explain", "runtime.max_tool_exchanges"],
+        )
+    };
+    // D3's row for one layer: `  <n>  <source>  <value>[  ← effective]`.
+    let row = |ran: &Ran, layer: char| -> String {
+        ran.stdout
+            .lines()
+            .find(|line| {
+                let line = line.trim_start();
+                line.starts_with(layer) && line[layer.len_utf8()..].starts_with("  ")
+            })
+            .unwrap_or_else(|| panic!("no row for layer {layer} in: {}", ran.stdout))
+            .to_owned()
+    };
+    let effective = "\u{2190} effective";
+
+    // --- lowered: the project's 3 wins, and explain says it was the project --
+    manifest("\n[runtime]\nmax_tool_exchanges = 3\n");
+    let lowered = explain();
+    assert_eq!(
+        lowered.code,
+        0,
+        "D6 permits a project lowering a limit a layer below granted: {}",
+        lowered.everything()
+    );
+    assert!(
+        lowered.stdout.contains("runtime.max_tool_exchanges = 3"),
+        "the project's lower limit is the effective one: {}",
+        lowered.stdout
+    );
+    let (project, user) = (row(&lowered, '3'), row(&lowered, '2'));
+    assert!(
+        project.contains("zaru.toml") && project.trim_end().ends_with(effective),
+        "explain must mark the project file as the effective source of a lowered limit: {}",
+        lowered.stdout
+    );
+    assert!(
+        user.contains(".zaru/config.toml") && user.trim_end().ends_with(" 9"),
+        "the user's 9 is shown against its own file and is not the effective one: {}",
+        lowered.stdout
+    );
+
+    // --- raised: refused, naming the key and both numbers -------------------
+    manifest("\n[runtime]\nmax_tool_exchanges = 12\n");
+    let raised = explain();
+    assert_eq!(
+        raised.code,
+        2,
+        "D6 forbids a project raising a user's finite limit; this run exited {} saying: {}",
+        raised.code,
+        raised.everything()
+    );
+    assert!(
+        raised.stderr.contains("runtime.max_tool_exchanges")
+            && raised.stderr.contains("12")
+            && raised.stderr.contains('9'),
+        "the refusal names the key, what the project asked and what the user granted: {}",
+        raised.stderr
+    );
+    assert!(
+        !raised.stdout.contains("runtime.max_tool_exchanges = 12"),
+        "a refused raise must not be explained as the effective value: {}",
+        raised.stdout
+    );
+
+    // --- removed: the user's 9 stands, and explain says it was the user -----
+    manifest("");
+    let removed = explain();
+    assert_eq!(removed.code, 0, "{}", removed.everything());
+    assert!(
+        removed.stdout.contains("runtime.max_tool_exchanges = 9"),
+        "a project that stops setting the key does not remove the user's limit: {}",
+        removed.stdout
+    );
+    let user = row(&removed, '2');
+    assert!(
+        user.contains(".zaru/config.toml") && user.trim_end().ends_with(effective),
+        "explain must mark the user's file as the effective source once the project sets \
+         nothing: {}",
+        removed.stdout
+    );
+    assert!(
+        !row(&removed, '3').contains(effective),
+        "the project sets nothing and must not be marked: {}",
+        removed.stdout
+    );
+}
+
 /// [ADR-0011] D2's line is a record in the transcript, so a later process
 /// knows it was said.
 ///
