@@ -853,6 +853,64 @@ fn corpus_every_process_a_check_starts_is_owned() {
     assert!(complaints.is_empty(), "{}", complaints.join("\n"));
 }
 
+/// Every thread the harness starts is started through
+/// `zaru_cli::failure::thread`, so a panic on it is a defect the person sees.
+///
+/// # The defect this holds shut
+///
+/// The register's Low row, measured on 2026-09-27: a panic on the terminal
+/// reader's thread ended the session at exit 0 and printed nothing, because
+/// `main`'s boundary caught only its own thread's unwind. It now reports a
+/// panic on any thread named for the harness, and `failure::thread` is what
+/// names one. A thread started any other way is a thread whose panic reads,
+/// again, as a person leaving.
+///
+/// **The mutant is a thread started the old way** anywhere in the product of
+/// any crate, which this names by file and line.
+#[test]
+fn corpus_every_thread_the_harness_starts_is_its_own() {
+    // Built at run time, so this check's own source does not carry them.
+    let starts = [
+        format!("thread{}spawn(", "::"),
+        format!("thread{}Builder", "::"),
+    ];
+    let helper = "zaru-cli/src/failure/guard.rs";
+
+    let mut seen_in_the_helper = false;
+    let mut offences: Vec<String> = Vec::new();
+    for (relative, text) in product_sources() {
+        for (number, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//")
+                || !starts.iter().any(|start| line.contains(start))
+            {
+                continue;
+            }
+            if relative == helper {
+                seen_in_the_helper = true;
+            } else {
+                offences.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+    let mut complaints: Vec<String> = Vec::new();
+    if !seen_in_the_helper {
+        complaints.push(format!(
+            "no thread is started in {helper}, so either the helper is gone or this walk is \
+             looking for a constructor nothing uses and cannot fail"
+        ));
+    }
+    if !offences.is_empty() {
+        complaints.push(format!(
+            "{} thread(s) are started in the product without `failure::thread`, so a panic on \
+             one is caught by nothing and the harness carries on or exits as if nothing \
+             happened:\n  {}",
+            offences.len(),
+            offences.join("\n  "),
+        ));
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
 /// Every `.rs` file under each crate's `src/` in this workspace, as its path
 /// relative to `crates/` and its text, **leaving out the files that only a
 /// check compiles**: `tests.rs`, `fixtures.rs`, and anything under a `tests/`

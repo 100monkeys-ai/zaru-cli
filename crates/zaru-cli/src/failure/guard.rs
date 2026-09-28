@@ -54,6 +54,18 @@
 //! does not ask it to: that decision covers the paths into a **model
 //! prompt**, and this one ends at a person.
 //!
+//! # A panic on any thread the harness started, not only this one
+//!
+//! Until 2026-09-28 only the calling thread's unwind was caught. A panic on
+//! the terminal reader's thread ended that thread, closed its channel, and the
+//! pump read the source as ended and left as a person leaving does: the
+//! session ended at exit 0 and printed nothing, with the panic sitting in this
+//! hook's capture where nothing read it. Every thread the harness starts is
+//! started through [`thread`] and named for it, and a panic on one of those is
+//! reported here exactly as a panic on this one is — once the body has
+//! returned, which for a session is once the terminal has been given back.
+//! A panic on a thread the harness did not start is not the harness's.
+//!
 //! # A structural guard this arc did not have to write
 //!
 //! `catch_unwind` does nothing under `panic = "abort"`, and the root
@@ -71,6 +83,32 @@ use crate::failure::present::Presentation;
 use core::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError};
+
+/// What the name of every thread the harness starts begins with.
+///
+/// See [`thread`].
+pub const HARNESS_THREAD: &str = "zaru-";
+
+/// Start a thread of the harness's own, named `zaru-<name>`.
+///
+/// **Every thread the harness starts is started here**, so that [`guard`] can
+/// tell a panic on one of them from a panic on a thread that is not the
+/// harness's. `corpus_every_thread_the_harness_starts_is_its_own` in
+/// `tests/files_from_outside.rs` walks the product for a thread started any
+/// other way.
+///
+/// # Errors
+///
+/// When the operating system will not start a thread, as
+/// [`std::thread::Builder::spawn`] reports it.
+pub fn thread<T: Send + 'static>(
+    name: &str,
+    body: impl FnOnce() -> T + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<T>> {
+    std::thread::Builder::new()
+        .name(format!("{HARNESS_THREAD}{name}"))
+        .spawn(body)
+}
 
 /// What the panic itself said.
 ///
@@ -158,9 +196,22 @@ pub fn guard<T>(
 ) -> Guarded<T> {
     let captured: Arc<Mutex<Option<(Location, String)>>> = Arc::new(Mutex::new(None));
     let sink = Arc::clone(&captured);
+    let boundary = std::thread::current().id();
 
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        // The harness's own panics are this thread's and those of the threads
+        // it started through [`thread`]. The hook is the process's, so a
+        // panic on anybody else's thread reaches it too, and is not ours to
+        // report.
+        let on = std::thread::current();
+        let ours = on.id() == boundary
+            || on
+                .name()
+                .is_some_and(|name| name.starts_with(HARNESS_THREAD));
+        if !ours {
+            return;
+        }
         let location = info
             .location()
             .map_or_else(Location::unknown, |at| Location {
@@ -177,24 +228,39 @@ pub fn guard<T>(
             },
             |said| (*said).to_owned(),
         );
-        *sink.lock().unwrap_or_else(PoisonError::into_inner) = Some((location, said));
+        // The first is kept: a panic that follows another is usually its
+        // consequence, and the report names where the defect surfaced.
+        let mut held = sink.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.is_none() {
+            *held = Some((location, said));
+        }
     }));
 
     let outcome = panic::catch_unwind(AssertUnwindSafe(body));
     panic::set_hook(previous);
+    let panicked = captured
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
 
-    match outcome {
-        Ok(value) => Guarded::Ran(value),
-        Err(_) => {
-            let (location, said) = captured
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .unwrap_or_else(|| (Location::unknown(), String::new()));
+    match (outcome, panicked) {
+        // A body that returned, with no panic on any thread of the harness's.
+        (Ok(value), None) => Guarded::Ran(value),
+        // A body that returned **after a thread of the harness's panicked** is
+        // a defect all the same: the value it returned is what the rest of the
+        // harness made of that thread's disappearance, and until 2026-09-28 a
+        // terminal reader that panicked was read as a person leaving, at exit
+        // 0 with nothing printed. The value is dropped here, which is the
+        // boundary staying narrow: there is no arm that carries it on.
+        (Ok(_), Some((location, said))) | (Err(_), Some((location, said))) => {
             Guarded::Defected(Caught {
                 report: DefectReport::new(version, report_at, location, session),
                 own_words: OwnWords(said),
             })
         }
+        (Err(_), None) => Guarded::Defected(Caught {
+            report: DefectReport::new(version, report_at, Location::unknown(), session),
+            own_words: OwnWords(String::new()),
+        }),
     }
 }

@@ -430,7 +430,8 @@ impl Reader {
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || body(&sender, &flag));
+        let handle = crate::failure::thread("terminal-reader", move || body(&sender, &flag))
+            .expect("the operating system starts the terminal's reader thread");
         Self {
             stop,
             handle: Some(handle),
@@ -448,8 +449,11 @@ impl Drop for Reader {
         self.stop.store(true, Ordering::Release);
         if let Some(handle) = self.handle.take() {
             // A reader thread that panicked has already ended, which is what
-            // the join is waiting for; there is nothing to report and nothing
-            // to do about it here.
+            // the join is waiting for. Its panic is not dropped here: the
+            // thread is the harness's own (`failure::thread`), so `main`'s
+            // boundary reports it as a defect once the session has given the
+            // terminal back, rather than the session reading as a person
+            // leaving.
             drop(handle.join());
         }
     }

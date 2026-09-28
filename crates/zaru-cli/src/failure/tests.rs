@@ -731,6 +731,105 @@ fn a_panic_under_the_boundary_becomes_a_defect_that_exits_70() {
     );
 }
 
+/// **A panic on a thread the harness started is a defect, even when the body
+/// under the boundary returns.**
+///
+/// The register's Low row, measured on 2026-09-27 by `terminal-selection`: a
+/// panic on the terminal reader's thread ended the session at exit 0 and
+/// printed nothing. The reader thread ended, its channel closed, the pump read
+/// the source as ended and left like a person leaving, and `main`'s boundary
+/// saw a body that had returned. The hook had captured the panic and nothing
+/// read what it captured, because only the main thread's unwind was caught —
+/// [ADR-0016] D3's "never present a defect as a user error" in its quietest
+/// form, a defect presented as success.
+///
+/// This stages exactly that: the body starts a thread through
+/// [`crate::failure::thread`], the thread panics, and the body returns.
+///
+/// **The mutant:** the boundary reading only its own unwind, which prints what
+/// it handed back.
+///
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[test]
+fn a_panic_on_a_thread_the_harness_started_is_a_defect_when_the_body_returns() {
+    let said = nonce("what-the-thread-said");
+    let guarded = serialised(|| {
+        let said = said.clone();
+        guard(
+            &nonce("version"),
+            &nonce("report-at"),
+            SessionEvidence::NoSessionExists,
+            move || {
+                let ended = crate::failure::thread("check", move || panic!("{said}"))
+                    .expect("a thread starts")
+                    .join();
+                u8::from(ended.is_err())
+            },
+        )
+    });
+    match guarded {
+        Guarded::Defected(caught) => {
+            assert_eq!(
+                Exit::Failed(Classified::Defect(caught.report().clone())).code(),
+                70,
+                "ADR-0016 D5: an internal defect exits 70"
+            );
+            assert!(
+                caught.to_string().contains("tests.rs"),
+                "the report does not say where the thread panicked: {caught}"
+            );
+            assert_eq!(
+                caught.own_words().as_str(),
+                said,
+                "the boundary captured some other panic than the harness thread's"
+            );
+        }
+        Guarded::Ran(value) => panic!(
+            "a panic on the harness's own thread `zaru-check` was handed back as Ran({value}), \
+             so the session it ended exits 0 and prints nothing"
+        ),
+    }
+}
+
+/// **A panic on a thread that is not the harness's is not the harness's
+/// defect.**
+///
+/// The sibling that keeps the check above honest, and the reason the boundary
+/// asks which thread panicked at all: the hook is process-wide, and a test
+/// binary runs other checks' threads beside this one, some of which panic on
+/// purpose. A boundary that reported every panic in the process would report
+/// theirs.
+///
+/// **The mutant:** the boundary taking any thread's panic as its own, which
+/// prints what it handed back.
+#[test]
+fn a_panic_on_a_thread_that_is_not_the_harnesss_leaves_the_body_its_value() {
+    let guarded = serialised(|| {
+        guard(
+            &nonce("version"),
+            &nonce("report-at"),
+            SessionEvidence::NoSessionExists,
+            || {
+                let ended = std::thread::Builder::new()
+                    .name("not-the-harness".to_owned())
+                    .spawn(|| panic!("a panic on somebody else's thread"))
+                    .expect("a thread starts")
+                    .join();
+                u8::from(ended.is_err())
+            },
+        )
+    });
+    match guarded {
+        Guarded::Ran(value) => {
+            assert_eq!(value, 1, "the thread did not panic, so this says nothing")
+        }
+        Guarded::Defected(caught) => panic!(
+            "a panic on a thread named `not-the-harness` was reported as the harness's own \
+             defect: {caught}"
+        ),
+    }
+}
+
 /// The boundary is narrow: nothing under it runs after the panic.
 ///
 /// ADR-0016's Negative consequence is the reason — "catching panics at the
