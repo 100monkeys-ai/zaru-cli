@@ -515,9 +515,10 @@ where
             (Subject::Write { target, .. }, Requested::Builtin(Call::Write { contents, .. })) => {
                 Ok(files::write(target.resolved(), contents))
             }
-            (Subject::Edit { target, .. }, Requested::Builtin(Call::Edit { old, new, .. })) => {
-                Ok(files::edit(target.resolved(), old, new))
-            }
+            (
+                Subject::Edit { target, .. },
+                Requested::Builtin(Call::Edit { old, new, all, .. }),
+            ) => Ok(files::edit(target.resolved(), old, new, *all)),
             (Subject::Search { root, needle }, Requested::Builtin(Call::Search { .. })) => {
                 Ok(files::search(root.resolved(), needle, self.search_ceiling).await)
             }
@@ -720,9 +721,18 @@ where
                 classified = self.working_directory.classify(path);
                 Invocation::writing(&classified, contents)
             }
-            Requested::Builtin(Call::Edit { path, old, new }) => {
+            Requested::Builtin(Call::Edit {
+                path,
+                old,
+                new,
+                all,
+            }) => {
                 classified = self.working_directory.classify(path);
-                Invocation::editing(&classified, old, new)
+                if *all {
+                    Invocation::editing_every(&classified, old, new)
+                } else {
+                    Invocation::editing(&classified, old, new)
+                }
             }
             Requested::Builtin(inner @ (Call::OnPath { path, .. } | Call::Read { path, .. })) => {
                 classified = self.working_directory.classify(path);

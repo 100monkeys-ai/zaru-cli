@@ -231,6 +231,21 @@ fn a_call_is_built_from_the_fields_the_tool_declares() {
             path: String::from("a.txt"),
             old: String::from("BEFORE"),
             new: String::from("AFTER"),
+            all: false,
+        }
+    );
+    let every = Call::parse(
+        ToolName::FsEdit,
+        r#"{"path":"a.txt","old":"BEFORE","new":"AFTER","all":true}"#,
+    )
+    .expect("an edit of every occurrence parses");
+    assert_eq!(
+        every,
+        Call::Edit {
+            path: String::from("a.txt"),
+            old: String::from("BEFORE"),
+            new: String::from("AFTER"),
+            all: true,
         }
     );
 
@@ -313,7 +328,7 @@ fn arguments_that_are_not_the_declared_object_are_refused_naming_the_field() {
         }
     }
 
-    let cases: [(ToolName, &str, &str, &str); 11] = [
+    let cases: [(ToolName, &str, &str, &str); 12] = [
         // Not JSON at all -- which is what a bare path was, before the
         // contract existed.
         (ToolName::FsRead, "src/main.rs", "NotJson", "a bare path"),
@@ -374,6 +389,13 @@ fn arguments_that_are_not_the_declared_object_are_refused_naming_the_field() {
             r#"{"path":"a","line_count":-3}"#,
             "WrongKind",
             "a negative count",
+        ),
+        // Declared as true or false, and not one.
+        (
+            ToolName::FsEdit,
+            r#"{"path":"a","old":"b","new":"c","all":"yes"}"#,
+            "WrongKind",
+            "a word for a flag",
         ),
         (
             ToolName::FsEdit,

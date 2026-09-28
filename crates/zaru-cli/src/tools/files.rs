@@ -157,6 +157,12 @@ pub(crate) fn list(path: &Path) -> Captured {
 /// door — "small is the security posture, not an ergonomic compromise". So a
 /// missing parent is refused, naming it.
 ///
+/// # It says whether it replaced a file
+///
+/// Since 2026-09-28 the answer says whether the file was created or
+/// replaced, and how large the old one was, so a model that meant to create
+/// a file learns it has overwritten one.
+///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub(crate) fn write(path: &Path, contents: &str) -> Captured {
     if path.is_dir() {
@@ -177,13 +183,25 @@ pub(crate) fn write(path: &Path, contents: &str) -> Captured {
         _ => {}
     }
 
+    // Read before the write, so the answer can say what was replaced.
+    let replaced = std::fs::metadata(path).ok().map(|metadata| metadata.len());
     let bytes = contents.as_bytes();
     match crate::atomic::write(path, bytes, mode_for(path)) {
-        Ok(()) => succeeded(format!(
-            "wrote {} byte(s) to {}",
-            bytes.len(),
-            path.display()
-        )),
+        Ok(()) => succeeded(match replaced {
+            Some(old) => format!(
+                "replaced {}: the file that was there had {old} byte(s), and it now has {} \
+                 byte(s) in {} line(s)",
+                path.display(),
+                bytes.len(),
+                line_count(contents)
+            ),
+            None => format!(
+                "created {} with {} byte(s) in {} line(s)",
+                path.display(),
+                bytes.len(),
+                line_count(contents)
+            ),
+        }),
         // The failure's own wording and never the contents: this function was
         // handed a whole file, and a message that quoted it would publish it.
         Err(failure) => failed(format!(
@@ -195,31 +213,61 @@ pub(crate) fn write(path: &Path, contents: &str) -> Captured {
     }
 }
 
-/// Replace an exact string within a file, once. `fs.edit`.
+/// How many lines `text` has: one per newline, and one more for a last line
+/// with no newline after it.
+fn line_count(text: &str) -> usize {
+    text.matches('\n').count() + usize::from(!text.is_empty() && !text.ends_with('\n'))
+}
+
+/// How many lines of the nearest match an absent edit shows, at most.
+const NEAREST_LINES_SHOWN: usize = 40;
+
+/// How many changed places an edit's answer lists by line, at most.
+const CHANGES_LISTED: usize = 20;
+
+/// Replace exact text within a file. `fs.edit`.
 ///
 /// # The read is strict
 ///
 /// A lossy decode replaces every invalid sequence with U+FFFD, and writing
 /// the result back would **destroy those bytes** in a file the user owns. A
 /// file that is not UTF-8 is refused, naming the offset of the first invalid
-/// byte. `fs.read` refuses such a file too, since 2026-09-28, where it used
-/// to decode it lossily; see [`crate::tools::reading`].
+/// byte. A file with a zero byte is refused as binary.
 ///
-/// # Exactly one occurrence, and never a fuzzy match
+/// # One occurrence unless the call says every one, and never a fuzzy match
 ///
 /// [ADR-0011] D1's row is "Replace an exact string within a file". Zero
-/// occurrences is a refusal; more than one is a refusal naming **every** place
-/// as a line and a column, so the caller can make the string unique. Nothing
-/// is normalised — not whitespace, not line endings, not case — because a
-/// match the caller did not ask for is a rewrite of a file they did not
-/// intend.
+/// occurrences is a refusal. More than one is a refusal naming how many and
+/// **every** place as a line and a column, and never the text there — unless
+/// the call sets `all`, which replaces every one. Nothing is normalised: not
+/// whitespace, not case.
+///
+/// # Line endings and the final newline are the file's
+///
+/// Since 2026-09-28. A model writes `\n`. In a file whose lines all end in
+/// CRLF, the text to replace and its replacement are given CRLF endings, so a
+/// match written with `\n` is found and the file stays CRLF throughout. In a
+/// file with mixed endings the text is matched as written first, and with
+/// CRLF endings only if that finds nothing. A file that ended with a newline
+/// still does after the edit, and a file that did not still does not; the
+/// answer says when either had to be restored.
+///
+/// # When the text is not there, the answer shows where it nearly is
+///
+/// Since 2026-09-28, the refusal for absent text shows the lines of the
+/// nearest match, numbered as `fs.read` numbers them: the lines whose first
+/// line matches the text's first line once spaces and case are ignored. It
+/// quotes the file, where the refusal for text that occurs twice does not: a
+/// model that gets text wrong needs to see what is there to get it right, it
+/// could read those lines with `fs.read` anyway, and the answer passes the
+/// same redaction as any other result.
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-pub(crate) fn edit(path: &Path, old: &str, new: &str) -> Captured {
+pub(crate) fn edit(path: &Path, old: &str, new: &str, all: bool) -> Captured {
     if old.is_empty() {
         return failed(String::from(
             "the string to replace is empty, which occurs everywhere in every file. fs.edit \
-             replaces one exact occurrence, so it needs a string to find",
+             replaces exact text, so it needs text to find",
         ));
     }
     if old == new {
@@ -232,8 +280,22 @@ pub(crate) fn edit(path: &Path, old: &str, new: &str) -> Captured {
 
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return failed(format!(
+                "there is no file at {}, so nothing was changed. fs.write creates a file",
+                path.display()
+            ));
+        }
         Err(source) => return failed(format!("could not read {}: {source}", path.display())),
     };
+    if bytes.contains(&0) {
+        return failed(format!(
+            "{} is binary data, not text: it has {} bytes. fs.edit changes text only, so nothing \
+             was changed",
+            path.display(),
+            bytes.len()
+        ));
+    }
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
         Err(error) => {
@@ -247,38 +309,85 @@ pub(crate) fn edit(path: &Path, old: &str, new: &str) -> Captured {
         }
     };
 
-    let places: Vec<Position> = text
-        .match_indices(old)
-        .map(|(at, _)| Position::of(&text, at))
-        .collect();
+    let endings = Endings::of(&text);
+    let crlf = |s: &str| s.replace("\r\n", "\n").replace('\n', "\r\n");
+    let (old, new, given_crlf) = if endings == Endings::Crlf {
+        (
+            crlf(old),
+            crlf(new),
+            old.contains('\n') || new.contains('\n'),
+        )
+    } else if endings == Endings::Mixed
+        && !text.contains(old)
+        && old.contains('\n')
+        && text.contains(&crlf(old))
+    {
+        (crlf(old), crlf(new), true)
+    } else {
+        (old.to_owned(), new.to_owned(), false)
+    };
+
+    let places: Vec<usize> = text.match_indices(old.as_str()).map(|(at, _)| at).collect();
     if places.is_empty() {
-        return failed(format!(
-            "the string to replace does not occur in {}. fs.edit replaces an exact string and \
-             never a fuzzy match, so nothing was changed",
-            path.display()
-        ));
+        return failed(absent(path, &text, &old));
     }
-    if places.len() > 1 {
-        let named: Vec<String> = places.iter().map(Position::to_string).collect();
+    if places.len() > 1 && !all {
+        let named: Vec<String> = places
+            .iter()
+            .map(|at| Position::of(&text, *at).to_string())
+            .collect();
         return failed(format!(
-            "the string to replace occurs {} times in {}, at {}. fs.edit replaces exactly one \
-             occurrence, so nothing was changed; make the string unique by including more of what \
-             surrounds it. What is at each place is not shown, because a refusal that quoted it \
-             would publish whatever is on those lines",
+            "the string to replace occurs {} times in {}, at {}. Nothing was changed. fs.edit \
+             replaces one occurrence unless all is true: include more of the lines around it so it \
+             occurs once, or set all to true to replace every one. What is at each place is not \
+             shown, because a refusal that quoted it would publish whatever is on those lines",
             places.len(),
             path.display(),
             named.join("; ")
         ));
     }
 
-    let replaced = text.replacen(old, new, 1);
-    let bytes = replaced.as_bytes();
-    match crate::atomic::write(path, bytes, mode_for(path)) {
-        Ok(()) => succeeded(format!(
-            "replaced one occurrence in {}, which is now {} byte(s)",
-            path.display(),
-            bytes.len()
-        )),
+    let mut replaced = if all {
+        text.replace(old.as_str(), &new)
+    } else {
+        text.replacen(old.as_str(), &new, 1)
+    };
+    let newline = if endings == Endings::Crlf {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut restored = None;
+    if text.ends_with('\n') && !replaced.is_empty() && !replaced.ends_with('\n') {
+        replaced.push_str(newline);
+        restored = Some("The file ended with a newline, so one was kept at its end.");
+    } else if !text.ends_with('\n') && replaced.ends_with('\n') {
+        let cut = if replaced.ends_with("\r\n") { 2 } else { 1 };
+        replaced.truncate(replaced.len() - cut);
+        restored = Some("The file did not end with a newline, so the one at its end was removed.");
+    }
+
+    let changes = changed_lines(&text, &replaced, &places, old.len(), new.len());
+    let written = replaced.as_bytes();
+    match crate::atomic::write(path, written, mode_for(path)) {
+        Ok(()) => {
+            let mut said = format!(
+                "replaced {} occurrence(s) in {}: {}. The file now has {} line(s) and {} byte(s).",
+                places.len(),
+                path.display(),
+                changes,
+                line_count(&replaced),
+                written.len()
+            );
+            if given_crlf {
+                said.push_str(" Its lines end in CRLF, so the new text was given CRLF endings.");
+            }
+            if let Some(restored) = restored {
+                said.push(' ');
+                said.push_str(restored);
+            }
+            succeeded(said)
+        }
         Err(failure) => failed(format!(
             "could not {} for {}: {}",
             failure.action,
@@ -286,6 +395,165 @@ pub(crate) fn edit(path: &Path, old: &str, new: &str) -> Captured {
             failure.source
         )),
     }
+}
+
+/// How a file's lines end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endings {
+    /// Every newline is a bare LF, or there is none.
+    Lf,
+    /// Every newline is CRLF.
+    Crlf,
+    /// Some of each.
+    Mixed,
+}
+
+impl Endings {
+    fn of(text: &str) -> Self {
+        let newlines = text.matches('\n').count();
+        let crlf = text.matches("\r\n").count();
+        match (crlf, newlines) {
+            (0, _) => Self::Lf,
+            (crlf, newlines) if crlf == newlines => Self::Crlf,
+            _ => Self::Mixed,
+        }
+    }
+}
+
+/// The line, counting from 1, that byte `at` of `text` is on, from the
+/// offsets of its newlines.
+fn line_at(newlines: &[usize], at: usize) -> usize {
+    newlines.partition_point(|newline| *newline < at) + 1
+}
+
+/// Which lines each replacement took and which it became, in plain words.
+fn changed_lines(
+    before: &str,
+    after: &str,
+    places: &[usize],
+    old_len: usize,
+    new_len: usize,
+) -> String {
+    let newlines_before: Vec<usize> = before.match_indices('\n').map(|(at, _)| at).collect();
+    let newlines_after: Vec<usize> = after.match_indices('\n').map(|(at, _)| at).collect();
+    let span = |first: usize, last: usize| {
+        if first == last {
+            format!("line {first}")
+        } else {
+            format!("lines {first} to {last}")
+        }
+    };
+    let mut said: Vec<String> = Vec::new();
+    for (k, at) in places.iter().enumerate() {
+        if said.len() == CHANGES_LISTED {
+            said.push(format!("and {} more", places.len() - CHANGES_LISTED));
+            break;
+        }
+        let was = span(
+            line_at(&newlines_before, *at),
+            line_at(&newlines_before, at + old_len - 1),
+        );
+        // Where this replacement starts in the new text: every earlier one
+        // moved it by the difference in length.
+        let moved = at - k * old_len + k * new_len;
+        let became = if new_len == 0 {
+            format!(
+                "removed, so the text around it now meets on line {}",
+                line_at(&newlines_after, moved)
+            )
+        } else {
+            format!(
+                "became {}",
+                span(
+                    line_at(&newlines_after, moved),
+                    line_at(&newlines_after, moved + new_len - 1),
+                )
+            )
+        };
+        said.push(format!("{was} {became}"));
+    }
+    said.join("; ")
+}
+
+/// The refusal for text that does not occur, with the nearest lines.
+fn absent(path: &Path, text: &str, old: &str) -> String {
+    let mut said = format!(
+        "the string to replace does not occur in {}, so nothing was changed. fs.edit needs the \
+         exact text, with the same spaces, indentation and line breaks, and without the line \
+         numbers fs.read shows.",
+        path.display()
+    );
+    let squeeze = |line: &str| {
+        line.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let wanted: Vec<&str> = old.split('\n').collect();
+    let Some((skip, probe)) = wanted
+        .iter()
+        .enumerate()
+        .map(|(n, line)| (n, squeeze(line)))
+        .find(|(_, line)| !line.is_empty())
+    else {
+        said.push_str(" The text to replace is only spaces and line breaks.");
+        return said;
+    };
+    let lines: Vec<&str> = text.split('\n').collect();
+    let starts: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| squeeze(line) == probe)
+        .map(|(n, _)| n.saturating_sub(skip))
+        .collect();
+    let Some(first) = starts.first() else {
+        said.push_str(
+            " No line of the file matches the text's first line, even when spaces and case are \
+             ignored. Read the file with fs.read to see what is there.",
+        );
+        return said;
+    };
+    let shown = wanted.len().clamp(1, NEAREST_LINES_SHOWN);
+    let last = (first + shown).min(lines.len());
+    if starts.len() == 1 {
+        said.push_str(&format!(
+            " The nearest match starts at line {}, where the first line matches once spaces and \
+             case are ignored.",
+            first + 1
+        ));
+    } else {
+        let named: Vec<String> = starts
+            .iter()
+            .take(10)
+            .map(|n| (n + 1).to_string())
+            .collect();
+        said.push_str(&format!(
+            " {} places nearly match, starting at lines {}; the first is shown.",
+            starts.len(),
+            named.join(", ")
+        ));
+    }
+    said.push_str(&format!(
+        " Lines {} to {} of the file are:\n",
+        first + 1,
+        last
+    ));
+    let width = last.to_string().len();
+    for (n, line) in lines[*first..last].iter().enumerate() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let mut end = line.len().min(crate::tools::reading::LONGEST_LINE_BYTES);
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        said.push_str(&format!(
+            "{:>width$}{}{}\n",
+            first + n + 1,
+            crate::tools::reading::LINE_MARK,
+            &line[..end]
+        ));
+    }
+    said.push_str("Copy the text from there, without the line numbers.");
+    said
 }
 
 #[cfg(test)]

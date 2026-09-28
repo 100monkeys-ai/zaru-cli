@@ -117,6 +117,9 @@ pub enum Call {
         old: String,
         /// The `new` field.
         new: String,
+        /// The `all` field: replace every occurrence rather than exactly one.
+        /// `false` when the call leaves it out.
+        all: bool,
     },
     /// `fs.search`: where to look and what to look for.
     Search {
@@ -249,6 +252,7 @@ impl Call {
                     path: given.text("path"),
                     old: given.text("old"),
                     new: given.text("new"),
+                    all: given.flag("all").unwrap_or(false),
                 },
                 _ => Self::OnPath {
                     tool,
@@ -274,7 +278,6 @@ impl Call {
 struct Given {
     texts: Vec<(&'static str, String)>,
     numbers: Vec<(&'static str, usize)>,
-    #[allow(dead_code, reason = "no tool before fs.edit's `all` declares a flag")]
     flags: Vec<(&'static str, bool)>,
 }
 
@@ -293,6 +296,14 @@ impl Given {
             .position(|(field, _)| *field == name)
             .expect("a required text field was taken when it was declared");
         self.texts.swap_remove(at).1
+    }
+
+    /// An optional flag's value, if the call carried it.
+    fn flag(&self, name: &str) -> Option<bool> {
+        self.flags
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, flag)| *flag)
     }
 
     /// An optional number field's value, if the call carried it.

@@ -265,10 +265,11 @@ struct Accepting {
 impl zaru_cli::tools::Confirm for Accepting {
     fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         println!("  the user was asked: {}", question.statement);
-        self.asked
-            .lock()
-            .expect("asked poisoned")
-            .push(question.statement.clone());
+        self.asked.lock().expect("asked poisoned").push(format!(
+            "{}\n{}",
+            question.statement,
+            question.detail.join("\n")
+        ));
         Ok(Answer::Once)
     }
 }
@@ -857,6 +858,202 @@ async fn every_kind_of_file_a_model_reads_is_answered_plainly() {
         given[8].contains(&format!("1{MARK}OUTSIDE-CONTENT")),
         "the link, once allowed, was not read: {:?}",
         given[8]
+    );
+}
+
+// ------------------------------------------ changing and writing a file
+
+/// **An edit keeps the file's line endings and its final newline, and says
+/// by line number what it changed.**
+///
+/// Watched red on `f77b1d5`: an edit written with `\n` did not match a file
+/// whose lines end in CRLF.
+#[tokio::test]
+async fn an_edit_keeps_the_files_endings_and_says_which_lines_changed() {
+    let scratch = Scratch::new("endings");
+    let project = scratch.project();
+    std::fs::write(project.join("crlf.txt"), "one\r\ntwo\r\nthree\r\n").expect("staging");
+    std::fs::write(project.join("bare.txt"), "first\nsecond\nlast line").expect("staging");
+    let big: String = (1..=5_000).map(|n| format!("{}\n", entry(n))).collect();
+    std::fs::write(project.join("big.txt"), &big).expect("staging");
+
+    let run = drive_within(
+        &scratch,
+        vec![
+            call(
+                "e1",
+                "fs.edit",
+                serde_json::json!({ "path": "crlf.txt", "old": "one\ntwo\n", "new": "uno\ndos\ntres\n" }),
+            ),
+            call(
+                "e2",
+                "fs.edit",
+                serde_json::json!({ "path": "bare.txt", "old": "last line", "new": "final line\n" }),
+            ),
+            call(
+                "e3",
+                "fs.edit",
+                serde_json::json!({ "path": "big.txt", "old": format!("{}\n", entry(2_500)), "new": "one\ntwo\n" }),
+            ),
+        ],
+        &HeldSecrets::none(),
+        BUDGET,
+    )
+    .await;
+    let given = &run.given_to_the_model;
+
+    assert_eq!(
+        std::fs::read(project.join("crlf.txt")).expect("on disk"),
+        b"uno\r\ndos\r\ntres\r\nthree\r\n",
+        "an edit written with \\n did not keep a CRLF file's line endings: {:?}",
+        given[0]
+    );
+    assert!(
+        given[0].contains("lines 1 to 2 became lines 1 to 3"),
+        "the edit did not say which lines it changed: {:?}",
+        given[0]
+    );
+    assert_eq!(
+        std::fs::read(project.join("bare.txt")).expect("on disk"),
+        b"first\nsecond\nfinal line",
+        "an edit gave a file with no final newline one: {:?}",
+        given[1]
+    );
+    assert!(
+        given[1].contains("did not end with a newline"),
+        "the edit did not say it kept the file without a final newline: {:?}",
+        given[1]
+    );
+    assert!(
+        given[2].contains("line 2500 became lines 2500 to 2501")
+            && given[2].contains("5001 line(s)"),
+        "an edit in the middle of a large file did not say which lines changed: {:?}",
+        given[2]
+    );
+}
+
+/// **An edit whose text is absent shows the nearest lines; one whose text
+/// occurs twice says how many times and where; neither changes the file.
+/// With `all` every occurrence is replaced, and the person is told so.**
+///
+/// Watched red on `f77b1d5`: the refusal for absent text showed nothing of
+/// the file.
+#[tokio::test]
+async fn an_absent_or_repeated_edit_changes_nothing_and_says_where() {
+    let scratch = Scratch::new("absent");
+    let project = scratch.project();
+    let code = "def f():\n    return 1\n\ndef g():\n    return 2\n";
+    std::fs::write(project.join("code.py"), code).expect("staging");
+    let twice = "alpha\nbeta\nalpha\ngamma\n";
+    std::fs::write(project.join("twice.txt"), twice).expect("staging");
+
+    let run = drive_within(
+        &scratch,
+        vec![
+            call(
+                "a1",
+                "fs.edit",
+                serde_json::json!({ "path": "code.py", "old": "def g():\n  return 2\n", "new": "def g():\n    return 3\n" }),
+            ),
+            call(
+                "a2",
+                "fs.edit",
+                serde_json::json!({ "path": "twice.txt", "old": "alpha", "new": "ALPHA" }),
+            ),
+            call(
+                "a3",
+                "fs.edit",
+                serde_json::json!({ "path": "twice.txt", "old": "alpha", "new": "ALPHA", "all": true }),
+            ),
+        ],
+        &HeldSecrets::none(),
+        BUDGET,
+    )
+    .await;
+    let given = &run.given_to_the_model;
+
+    assert_eq!(
+        std::fs::read_to_string(project.join("code.py")).expect("on disk"),
+        code,
+        "an edit whose text is absent changed the file"
+    );
+    assert!(
+        given[0].contains("does not occur")
+            && given[0].contains(&format!("4{MARK}def g():"))
+            && given[0].contains(&format!("5{MARK}    return 2")),
+        "an edit whose text is absent did not show the nearest lines, numbered: {:?}",
+        given[0]
+    );
+    assert!(
+        given[1].contains("occurs 2 times")
+            && given[1].contains("line 1, column 1; line 3, column 1")
+            && given[1].contains("all"),
+        "an edit whose text occurs twice did not say how many times, where, and how to replace \
+         every one: {:?}",
+        given[1]
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("twice.txt")).expect("on disk"),
+        "ALPHA\nbeta\nALPHA\ngamma\n",
+        "an edit with all set did not replace every occurrence, or the refused one acted: {:?}",
+        given[2]
+    );
+    assert!(
+        given[2].contains("replaced 2 occurrence(s)")
+            && given[2].contains("line 1 became line 1; line 3 became line 3"),
+        "an edit with all set did not say which lines it changed: {:?}",
+        given[2]
+    );
+    let every = run
+        .asked
+        .iter()
+        .filter(|asked| asked.contains("replaces every occurrence of:"))
+        .count();
+    assert_eq!(
+        every, 1,
+        "the person was not told that one edit replaces every occurrence: {:?}",
+        run.asked
+    );
+}
+
+/// **A write over a file that exists says it replaced it and how large the
+/// old one was.**
+///
+/// Watched red on `f77b1d5`: it said only how many bytes it wrote.
+#[tokio::test]
+async fn a_write_over_an_existing_file_says_it_replaced_it_and_how_large_it_was() {
+    let scratch = Scratch::new("replace");
+    let project = scratch.project();
+    std::fs::write(project.join("existing.txt"), "old contents\n".repeat(10)).expect("staging");
+
+    let run = drive_within(
+        &scratch,
+        vec![
+            call(
+                "w1",
+                "fs.write",
+                serde_json::json!({ "path": "existing.txt", "contents": "new\n" }),
+            ),
+            call(
+                "w2",
+                "fs.write",
+                serde_json::json!({ "path": "fresh.txt", "contents": "a\nb\n" }),
+            ),
+        ],
+        &HeldSecrets::none(),
+        BUDGET,
+    )
+    .await;
+    let given = &run.given_to_the_model;
+    assert!(
+        given[0].contains("replaced") && given[0].contains("had 130 byte(s)"),
+        "a write over an existing file did not say it replaced it and how large it was: {:?}",
+        given[0]
+    );
+    assert!(
+        given[1].contains("created") && given[1].contains("2 line(s)"),
+        "a write of a new file did not say it created it: {:?}",
+        given[1]
     );
 }
 

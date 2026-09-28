@@ -73,13 +73,25 @@ pub const LINE_MARK: &str = "\u{2502}";
 /// The numbers are [`DEFAULT_LINE_COUNT`] and [`LONGEST_LINE_BYTES`], written
 /// out because a constant cannot be spliced into a `&'static str`. A check
 /// holds the text to the constants.
-pub const READ_DESCRIPTION: &str = "Read a UTF-8 text file. Optional \
-    start_line (from 1) and line_count choose the lines; by default you get up \
-    to 500 lines from line 1, fewer if they are long. The answer says how many \
-    lines the file has, which it shows, and the start_line to read on from. \
-    Each line starts with its number and \u{2502}, which are not in the file: \
-    do not copy them into fs.edit. Lines over 2,000 bytes are cut. Binary and \
-    non-UTF-8 files are refused.";
+pub const READ_DESCRIPTION: &str = "Read a UTF-8 text file. start_line \
+    (from 1) and line_count are optional; by default you get up to 500 lines \
+    from line 1, fewer if they are long. The answer gives the file's line \
+    count, the lines shown and the start_line to read on from. Each line \
+    starts with its number and \u{2502}, which are not in the file. Lines over \
+    2,000 bytes are cut. Binary and non-UTF-8 files are refused.";
+
+/// What the model is told `fs.write` does.
+pub const WRITE_DESCRIPTION: &str = "Create a file, or replace a whole file, \
+    with contents. Its folder must exist. The answer says whether it created \
+    or replaced the file, and the old size.";
+
+/// What the model is told `fs.edit` does.
+pub const EDIT_DESCRIPTION: &str = "Replace exact text in a file. old must \
+    match exactly, spaces and line breaks included, without fs.read's line \
+    numbers. If old occurs more than once nothing changes unless all is true, \
+    which replaces every one. If old is absent, the answer shows the nearest \
+    lines. Line endings and the final newline are kept. The answer names the \
+    lines changed.";
 
 /// The first bytes looked at to tell a binary file from text.
 const SNIFF_BYTES: usize = 8 * 1024;

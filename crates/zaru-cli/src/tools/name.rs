@@ -164,24 +164,25 @@ impl ToolName {
 
     /// What the model is told this tool does.
     ///
-    /// For six of the seven this is ADR-0011 D1's second column, transcribed,
+    /// For four of the seven this is ADR-0011 D1's second column, transcribed,
     /// because it is what a model learns the tool from and a description
     /// invented beside the code is a contract nobody decided.
     ///
-    /// **`fs.read` says more, since 2026-09-28.** The model could not learn
-    /// from "Read a file" that a large file comes back in parts, how to ask
-    /// for the rest, or that the line numbers are not in the file. So it says,
-    /// in a few plain sentences, what it takes, what it gives back and what it
-    /// refuses. Ruled by the coordinator at the `file-tools` arc's spawn under
-    /// Jeshua's directive 58 and recorded on ADR-0011 D1, open to his veto.
-    /// The numbers in it are the constants [`crate::tools::reading`] uses, so
-    /// the text and the tool cannot disagree.
+    /// **`fs.read`, `fs.write` and `fs.edit` say more, since 2026-09-28.** The
+    /// model could not learn from "Read a file" that a large file comes back
+    /// in parts, how to ask for the rest, or that the line numbers are not in
+    /// the file, nor from "Replace an exact string within a file" what
+    /// happens when the text occurs twice. So each says, in a few plain
+    /// sentences, what it takes, what it gives back and what it refuses. Ruled
+    /// by the coordinator at the `file-tools` arc's spawn under Jeshua's
+    /// directive 58 and recorded on ADR-0011 D1, open to his veto. They live
+    /// in [`crate::tools::reading`], beside the constants they quote.
     #[must_use]
     pub const fn purpose(self) -> &'static str {
         match self {
             Self::FsRead => crate::tools::reading::READ_DESCRIPTION,
-            Self::FsWrite => "Create or overwrite a file",
-            Self::FsEdit => "Replace an exact string within a file",
+            Self::FsWrite => crate::tools::reading::WRITE_DESCRIPTION,
+            Self::FsEdit => crate::tools::reading::EDIT_DESCRIPTION,
             Self::FsList => "List a directory",
             Self::FsSearch => "Content and filename search",
             // D1's row read "Execute a shell command" until 2026-09-05, and
@@ -225,8 +226,9 @@ impl ToolName {
     ///
     /// Until 2026-09-28 every field was a required string. `fs.read` now takes
     /// an optional `start_line` and `line_count`, whole numbers, so a model can
-    /// ask for part of a file. Ruled at the `file-tools` arc's spawn and
-    /// recorded on ADR-0011 D1.
+    /// ask for part of a file; `fs.edit` takes an optional `all`, true or
+    /// false, so it can replace every occurrence when it means to. Ruled at
+    /// the `file-tools` arc's spawn and recorded on ADR-0011 D1.
     #[must_use]
     pub const fn fields(self) -> &'static [Field] {
         // Each list is a named constant because a slice of `const fn` calls
@@ -238,7 +240,12 @@ impl ToolName {
             Field::number("line_count"),
         ];
         const WRITE: [Field; 2] = [Field::text("path"), Field::text("contents")];
-        const EDIT: [Field; 3] = [Field::text("path"), Field::text("old"), Field::text("new")];
+        const EDIT: [Field; 4] = [
+            Field::text("path"),
+            Field::text("old"),
+            Field::text("new"),
+            Field::flag("all"),
+        ];
         const SEARCH: [Field; 2] = [Field::text("root"), Field::text("needle")];
         const RUN: [Field; 1] = [Field::text("command")];
         const FETCH: [Field; 1] = [Field::text("url")];
