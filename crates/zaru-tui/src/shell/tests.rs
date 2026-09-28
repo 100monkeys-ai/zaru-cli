@@ -4582,3 +4582,98 @@ fn an_elided_row_never_exceeds_its_budget_or_splits_a_wide_character() {
         "a budget of one is the marker alone"
     );
 }
+
+// ---------------------------------------- fitting a question's subject to a width
+
+/// A path too long for the width keeps its start and its file's name, with
+/// the middle left out, and fits exactly.
+#[test]
+fn a_long_path_keeps_its_start_and_its_file_name() {
+    use crate::shell::fit::fitted;
+    use crate::shell::port::Shown;
+    use crate::shell::wrap::columns;
+
+    let path = "/home/person/projects/monorepo/services/billing/src/deep/deeper/deepest/report.txt";
+    for width in [20, 40, 60] {
+        let shown = fitted(&Shown::Path(path.to_owned()), width);
+        assert!(columns(&shown) <= width, "{shown:?} is wider than {width}");
+        assert!(
+            shown.ends_with("/report.txt"),
+            "the file's name was lost at {width}: {shown:?}"
+        );
+        assert!(
+            shown.starts_with("/home"),
+            "the path's start was lost at {width}: {shown:?}"
+        );
+        assert!(
+            shown.contains('…'),
+            "nothing says the middle is left out: {shown:?}"
+        );
+    }
+    assert_eq!(
+        fitted(&Shown::Path(path.to_owned()), 200),
+        path,
+        "a path that fits is shown in full"
+    );
+}
+
+/// A command too long for the width keeps its program and as many arguments
+/// as fit, and says how many it does not show.
+#[test]
+fn a_long_command_keeps_its_program_and_counts_what_it_leaves_out() {
+    use crate::shell::fit::fitted;
+    use crate::shell::port::Shown;
+    use crate::shell::wrap::columns;
+
+    let words: Vec<String> = ["cargo", "test", "--workspace"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain((0..20).map(|at| format!("--exclude=crate-{at}")))
+        .collect();
+    let shown = fitted(&Shown::Command(words.clone()), 60);
+    assert!(columns(&shown) <= 60, "{shown:?} is wider than 60");
+    assert!(shown.starts_with("cargo test --workspace"), "{shown:?}");
+    let kept = shown
+        .split(' ')
+        .filter(|word| word.starts_with("--exclude"))
+        .count();
+    assert!(
+        shown.ends_with(&format!("and {} more arguments", 20 - kept)),
+        "the count of arguments not shown is wrong: {shown:?}"
+    );
+    assert_eq!(
+        fitted(&Shown::Command(words[..3].to_vec()), 60),
+        "cargo test --workspace"
+    );
+}
+
+/// A URL too long for the width keeps its host and its path's end.
+#[test]
+fn a_long_url_keeps_its_host_and_its_paths_end() {
+    use crate::shell::fit::fitted;
+    use crate::shell::port::Shown;
+    use crate::shell::wrap::columns;
+
+    let shown = fitted(
+        &Shown::Url {
+            origin: "https://docs.example.com".to_owned(),
+            rest: "/a/b/c/d/e/f/g/h/i/j/k/l/m/the-page.html".to_owned(),
+        },
+        40,
+    );
+    assert!(columns(&shown) <= 40, "{shown:?} is wider than 40");
+    assert!(shown.starts_with("https://docs.example.com…"), "{shown:?}");
+    assert!(shown.ends_with("the-page.html"), "{shown:?}");
+}
+
+/// The words that say something was left out count it, in the singular for
+/// one.
+#[test]
+fn what_is_left_out_is_counted_in_words() {
+    use crate::shell::fit::{more_arguments, not_shown};
+
+    assert_eq!(not_shown(1), "… 1 more line not shown");
+    assert_eq!(not_shown(190), "… 190 more lines not shown");
+    assert_eq!(more_arguments(1), "… and 1 more argument");
+    assert_eq!(more_arguments(28), "… and 28 more arguments");
+}

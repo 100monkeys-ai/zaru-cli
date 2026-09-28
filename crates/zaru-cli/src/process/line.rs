@@ -304,12 +304,17 @@ impl CommandLine {
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     #[must_use]
     pub fn render(&self) -> String {
-        let mut out = quoted(&self.program);
-        for argument in &self.arguments {
-            out.push(' ');
-            out.push_str(&quoted(argument));
-        }
-        out
+        self.words().join(" ")
+    }
+
+    /// The program and each argument, each quoted as [`Self::render`] quotes
+    /// it, so that the words joined by spaces are the rendered line.
+    #[must_use]
+    pub fn words(&self) -> Vec<String> {
+        core::iter::once(&self.program)
+            .chain(&self.arguments)
+            .map(|word| quoted(word))
+            .collect()
     }
 }
 

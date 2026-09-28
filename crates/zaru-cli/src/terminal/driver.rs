@@ -147,7 +147,7 @@ impl<R: Restore> Drop for Guard<R> {
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[must_use]
 pub fn question_for_the_shell(question: &Question) -> Confirmation {
-    Confirmation::new(
+    let asked = Confirmation::new(
         question.statement.clone(),
         question.answers.line().trim(),
         answers_for_the_shell(question.answers),
@@ -161,7 +161,27 @@ pub fn question_for_the_shell(question: &Question) -> Confirmation {
     // reworded, re-ordered or truncated it would be the drift D3's port
     // exists to prevent, and truncation in particular is what the pane's own
     // wrapping is there to make unnecessary.
-    .showing(question.detail.clone())
+    .showing(question.detail.clone());
+    // What the question is about, in two parts, so the pane can fit it to a
+    // narrow terminal and keep it first. A mirror for the boundary reason the
+    // answers have one.
+    match &question.about {
+        Some(about) => asked.about(zaru_tui::shell::About {
+            lead: about.lead.clone(),
+            subject: match &about.subject {
+                crate::tools::port::Shown::Path(path) => zaru_tui::shell::Shown::Path(path.clone()),
+                crate::tools::port::Shown::Command(words) => {
+                    zaru_tui::shell::Shown::Command(words.clone())
+                }
+                crate::tools::port::Shown::Url { origin, rest } => zaru_tui::shell::Shown::Url {
+                    origin: origin.clone(),
+                    rest: rest.clone(),
+                },
+                crate::tools::port::Shown::Text(text) => zaru_tui::shell::Shown::Text(text.clone()),
+            },
+        }),
+        None => asked,
+    }
 }
 
 /// The same answer set, as the shell's own mirror of it.
@@ -1085,6 +1105,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::credentials::port::Confirm
             // what it means everywhere else on this port, so the answers are
             // the ordinary ones.
             answers: crate::tools::prompt::Answers::ToolCall,
+            about: None,
         };
         crate::tools::port::Confirm::confirm(self, &question)
             .map(crate::tools::port::Answer::permits)
@@ -2284,6 +2305,7 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                 .collect(),
             prominent: true,
             answers: crate::tools::prompt::Answers::Admission,
+            about: None,
         };
         let admitted = ask_at_the_door(shell, surface, source, &question).await?;
         // **Composed before the reload**, which empties what the question was

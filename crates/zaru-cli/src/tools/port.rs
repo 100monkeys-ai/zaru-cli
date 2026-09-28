@@ -168,6 +168,56 @@ pub struct Question {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     pub answers: crate::tools::prompt::Answers,
+    /// The statement in two parts, for a renderer that must fit it to a
+    /// narrow terminal: see [`About`].
+    ///
+    /// `None` for a question whose statement is a sentence rather than a
+    /// call, which is shown whole.
+    pub about: Option<About>,
+}
+
+/// What a question about a call is about, beside its statement.
+///
+/// The statement is `Allow {lead} {subject}?`, one string. A terminal too
+/// narrow for it must shorten it, and the part a plain cut loses first is the
+/// part a person needs: a path's file name, a command's program, a URL's host.
+/// Measured on `e5b9240` at 80 by 24, 60 by 20 and 120 by 40: a write of 200
+/// lines to a deep path showed the content's last lines, and the line naming
+/// the file was not on the screen. So a question about a call carries its
+/// lead and its subject apart, the subject in a shape that says how it may be
+/// shortened, and the pane fits them to its width and keeps them first.
+///
+/// Composed once, by [`Decision::question`](crate::tools::Decision::question),
+/// from the same entry the statement is composed from, so the two cannot
+/// describe different calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct About {
+    /// `Allow`, the tool, and any marking: everything before the subject.
+    pub lead: String,
+    /// What the question is about.
+    pub subject: Shown,
+}
+
+/// The subject of a question, in the shape a narrow terminal may shorten it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shown {
+    /// A resolved path: shortened in the middle, so its start and the file's
+    /// name both show.
+    Path(String),
+    /// A command's words, the program first, each as the command line renders
+    /// it: shortened after the last argument that fits, saying how many are
+    /// not shown.
+    Command(Vec<String>),
+    /// A URL: its scheme and host, then the rest, shortened in the middle of
+    /// the rest so the host and the path's end both show.
+    Url {
+        /// The scheme and the host, with a port if it has one.
+        origin: String,
+        /// The path, query and fragment.
+        rest: String,
+    },
+    /// Anything else: shortened at its end.
+    Text(String),
 }
 
 /// Why an ask did not reach the user.

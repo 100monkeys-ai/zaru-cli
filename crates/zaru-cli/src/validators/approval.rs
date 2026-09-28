@@ -422,6 +422,7 @@ pub fn question(declared: &[Declared], standing: &Standing) -> Question {
         detail,
         prominent: true,
         answers: crate::tools::prompt::Answers::Admission,
+        about: None,
     }
 }
 

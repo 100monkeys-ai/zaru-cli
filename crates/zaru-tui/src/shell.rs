@@ -60,6 +60,7 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 pub mod command;
+pub mod fit;
 pub mod markdown;
 pub mod port;
 pub mod render;
@@ -67,8 +68,8 @@ pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{
-    Answered, Answers, CommandVocabulary, Confirmation, Extension, Line, Namespace, Palette, Prose,
-    Register, Row, SecretAnswer, SecretRequest, TranscriptSource,
+    About, Answered, Answers, CommandVocabulary, Confirmation, Extension, Line, Namespace, Palette,
+    Prose, Register, Row, SecretAnswer, SecretRequest, Shown, TranscriptSource,
 };
 
 use crate::composer::{Composer, Entries, Paths};

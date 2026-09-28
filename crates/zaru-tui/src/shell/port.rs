@@ -712,6 +712,62 @@ pub struct Confirmation {
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     pub prominent: bool,
+    /// The statement in two parts, so a narrow terminal can shorten what the
+    /// question is about without losing the part that matters.
+    ///
+    /// `None` for a question whose statement is a sentence rather than a call
+    /// -- the validators, the commands a project offers -- which is shown
+    /// whole. See [`About`].
+    pub about: Option<About>,
+}
+
+/// What a question is about, carried beside its statement.
+///
+/// # Why the statement alone was not enough
+///
+/// A statement is one string, `Allow fs.write /a/long/path/file.txt?`, and a
+/// renderer handed one string can wrap it or cut it and nothing else. Measured
+/// on `e5b9240` at 80 by 24, 60 by 20 and 120 by 40: an `fs.write` of 200
+/// lines to a deep path showed the last lines of the content and the answers,
+/// and **the line naming the file was not on the screen at all**. A person was
+/// asked to approve a write without seeing where it went.
+///
+/// So the question also carries its lead, `Allow fs.write` and any marking,
+/// and its subject in a shape that says how it may be shortened: a path in the
+/// middle, so its start and the file's name both show; a command after as many
+/// arguments as fit, saying how many are not shown; a URL in the middle of its
+/// path, so the host and the path's end both show. The lead and the subject
+/// come first on the question and are never scrolled away by what follows.
+///
+/// Composed by `zaru-cli`, from the same call the statement is composed from,
+/// so the two cannot describe different calls. The words that say how much was
+/// shortened are this crate's, in [`crate::shell::fit`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct About {
+    /// Everything before the subject: `Allow`, the tool, and any marking.
+    pub lead: String,
+    /// What the question is about.
+    pub subject: Shown,
+}
+
+/// The subject of a question, in the shape a narrow terminal may shorten it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shown {
+    /// A path, shortened in the middle.
+    Path(String),
+    /// A command's words, the program first, each as the command line
+    /// renders it. Shortened after the last argument that fits.
+    Command(Vec<String>),
+    /// A URL: its scheme and host, then the rest. Shortened in the middle of
+    /// the rest, so the host and the path's end both show.
+    Url {
+        /// `https://example.com`, with a port if it has one.
+        origin: String,
+        /// The path, query and fragment.
+        rest: String,
+    },
+    /// Anything else, shortened at its end.
+    Text(String),
 }
 
 impl Confirmation {
@@ -732,6 +788,7 @@ impl Confirmation {
             answered_by,
             detail: Vec::new(),
             prominent,
+            about: None,
         }
     }
 
@@ -739,6 +796,13 @@ impl Confirmation {
     #[must_use]
     pub fn showing(mut self, detail: Vec<String>) -> Self {
         self.detail = detail;
+        self
+    }
+
+    /// The same question, with its statement in two parts. See [`About`].
+    #[must_use]
+    pub fn about(mut self, about: About) -> Self {
+        self.about = Some(about);
         self
     }
 }
