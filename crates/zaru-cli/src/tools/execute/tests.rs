@@ -1773,3 +1773,45 @@ async fn an_instances_refusal_reaches_the_model_as_a_tool_result_rather_than_end
         other => panic!("an honest refusal is a tool result: {other:?}"),
     }
 }
+
+/// **A later turn does not overwrite an earlier turn's kept output.**
+///
+/// Each turn builds its own [`SessionOverflow`] over the same session
+/// directory. Until 2026-09-28 each one started counting at one and opened its
+/// file with `truncate`, so the second turn's first overflow wrote over
+/// `output-0001.txt`, which the first turn had named to the model and which
+/// the next turn's conversation still names. The file then held a different
+/// command's output from the one it was named for.
+#[test]
+fn a_second_turns_overflow_keeps_the_first_turns_file() {
+    use crate::tools::output::Overflow as _;
+
+    let scratch = Scratch::new();
+    let first = Captured {
+        exit_code: 0,
+        stdout: "the first turn's whole output".to_owned(),
+        stderr: String::new(),
+    };
+    let second = Captured {
+        exit_code: 0,
+        stdout: "the second turn's whole output".to_owned(),
+        stderr: String::new(),
+    };
+
+    let kept_first = SessionOverflow::in_session(scratch.session.directory())
+        .preserve(&first)
+        .expect("the first turn's output is kept");
+    let kept_second = SessionOverflow::in_session(scratch.session.directory())
+        .preserve(&second)
+        .expect("the second turn's output is kept");
+
+    assert_ne!(
+        kept_first, kept_second,
+        "the second turn kept its output at the path the first turn had already named"
+    );
+    let read = std::fs::read_to_string(&kept_first).expect("the first file is still there");
+    assert!(
+        read.contains("the first turn's whole output"),
+        "the file the first turn named holds something else now: {read:?}"
+    );
+}

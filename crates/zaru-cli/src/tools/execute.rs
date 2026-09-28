@@ -988,24 +988,36 @@ impl Overflow for SessionOverflow {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
 
-        let path = self
-            .directory
-            .join(format!("{OVERFLOW_PREFIX}{:04}.txt", self.next));
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            // ADR-0010 D5: filesystem permissions are the only protection a
-            // transcript has, and this file holds exactly what the transcript
-            // would have held.
-            .mode(crate::session::store::FILE_MODE)
-            .open(&path)
-            .map_err(|source| {
-                crate::tools::output::OverflowFailure::new(format!(
-                    "could not open {} to preserve the full output: {source}",
-                    path.display()
-                ))
-            })?;
+        // **A file is never opened twice.** Each turn builds its own sink over
+        // the same session directory, so a number this sink has not used may
+        // already name a file an earlier turn kept and named to the model.
+        // Until 2026-09-28 it was opened with `truncate` and written over. Now
+        // a name that is taken is passed over for the next one.
+        let (path, mut file) = loop {
+            let path = self
+                .directory
+                .join(format!("{OVERFLOW_PREFIX}{:04}.txt", self.next));
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                // ADR-0010 D5: filesystem permissions are the only protection
+                // a transcript has, and this file holds exactly what the
+                // transcript would have held.
+                .mode(crate::session::store::FILE_MODE)
+                .open(&path)
+            {
+                Ok(file) => break (path, file),
+                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                    self.next += 1;
+                }
+                Err(source) => {
+                    return Err(crate::tools::output::OverflowFailure::new(format!(
+                        "could not open {} to preserve the full output: {source}",
+                        path.display()
+                    )));
+                }
+            }
+        };
         let whole = format!(
             "exit code: {}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
             captured.exit_code, captured.stdout, captured.stderr
