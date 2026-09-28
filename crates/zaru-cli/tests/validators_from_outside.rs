@@ -452,6 +452,8 @@ async fn corpus_an_unusable_pattern_is_refused_from_outside_without_being_quoted
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

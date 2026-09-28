@@ -546,6 +546,8 @@ fn the_real_keyring_backend_answers_where_one_exists_and_says_so_where_none_does
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

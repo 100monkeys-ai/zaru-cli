@@ -72,6 +72,14 @@ jobs:
         run: rustup show && rustc --version && cargo --version
       - name: cargo test
         run: cargo test --workspace --locked
+      # Nothing may still be running from target/ once the suite has ended.
+      # A process a check leaves behind fails no check, and on 2026-09-28 eight
+      # of them ran for five hours on a developer machine from a worktree that
+      # had been deleted. Run whether the suite passed or failed, because a
+      # failing or panicking check is the likelier one to leave something.
+      - name: No process left running from target/
+        if: ${{ !cancelled() }}
+        run: scripts/check-no-survivors.sh target
 
   license-header:
     name: license-header

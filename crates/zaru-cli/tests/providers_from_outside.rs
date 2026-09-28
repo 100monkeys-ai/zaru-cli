@@ -615,6 +615,8 @@ fn corpus_a_turns_model_history_does_not_reach_the_next_turns_first_request() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

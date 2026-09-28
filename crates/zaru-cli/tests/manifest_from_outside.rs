@@ -487,6 +487,8 @@ fn adr_0009_d1s_corrected_manifest_is_accepted_from_a_real_file_and_a_tier_is_st
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

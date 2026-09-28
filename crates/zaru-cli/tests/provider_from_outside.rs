@@ -282,6 +282,8 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

@@ -33,7 +33,7 @@
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -61,11 +61,16 @@ impl Drop for Scratch {
 }
 
 /// `zaru` in a pseudo-terminal, with everything the terminal was sent so far.
+///
+/// `script`, the shell under it and `zaru` are all owned by `child`: dropping
+/// this kills the three and reaps `script`, whichever way the check ended.
+/// `script` puts its command in a session of its own, so killing `script`
+/// alone never reached `zaru`; see `tests/support/owned.rs`.
 struct InATerminal {
-    child: Child,
+    child: owned::Owned,
     seen: Arc<Mutex<Vec<u8>>>,
     _home: Scratch,
-    _work: Scratch,
+    work: Scratch,
 }
 
 /// What the wrapping shell prints once `zaru` has ended, so the check can read
@@ -74,6 +79,9 @@ const STATUS: &str = "ZARU-STATUS=";
 /// What the wrapping shell prints before `zaru` starts: the process id `zaru`
 /// will have, because the shell that prints it then `exec`s it.
 const PID: &str = "ZARU-PID=";
+/// Where the wrapping shell writes the status too, in the session's working
+/// directory.
+const STATUS_FILE: &str = "zaru-status";
 
 impl InATerminal {
     /// Open a bare `zaru` — a session in a fresh `HOME` with nothing
@@ -84,6 +92,21 @@ impl InATerminal {
 
     /// As [`Self::open`], with `environment` added to what `zaru` is given.
     fn open_with(environment: &[(&str, &str)]) -> Self {
+        Self::started(environment, "")
+    }
+
+    /// As [`Self::open`], under a shell that ignores `SIGHUP`, as everything
+    /// started under `nohup` does.
+    ///
+    /// That shell leads the terminal's session, so when the terminal goes away
+    /// it takes the hang-up and does not end, and the kernel then has no
+    /// reason to send one to `zaru`. It is how the eight processes this file
+    /// was measured leaving behind on 2026-09-28 were left.
+    fn open_ignoring_hangups() -> Self {
+        Self::started(&[], "trap '' HUP; ")
+    }
+
+    fn started(environment: &[(&str, &str)], prelude: &str) -> Self {
         let home = Scratch::new("home");
         let work = Scratch::new("work");
         let zaru = env!("CARGO_BIN_EXE_zaru");
@@ -92,11 +115,13 @@ impl InATerminal {
         // a background job (which a non-interactive shell would hand
         // `/dev/null` for standard input). The outer shell reads the terminal's
         // line discipline once `zaru` is gone.
+        // The status is written to a file as well, because a terminal that
+        // has gone away is not somewhere anyone can read it from.
         let inner = format!(
-            "stty rows 30 cols 100; sh -c 'echo {PID}$$; exec \"$0\"' '{zaru}'; \
-             echo {STATUS}$?; stty -a"
+            "{prelude}stty rows 30 cols 100; sh -c 'echo {PID}$$; exec \"$0\"' '{zaru}'; \
+             ended=$?; echo $ended > {STATUS_FILE}; echo {STATUS}$ended; stty -a"
         );
-        let mut child = Command::new("script")
+        let mut child = owned::command("script")
             .args(["-q", "-f", "-e", "-c", &inner, "/dev/null"])
             .current_dir(&work.0)
             .env_clear()
@@ -111,7 +136,7 @@ impl InATerminal {
             .spawn()
             .expect("`script` from util-linux allocates the pseudo-terminal this check reads");
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let mut stdout = child.stdout.take().expect("standard output was piped");
+        let mut stdout = child.take_stdout();
         let sink = Arc::clone(&seen);
         std::thread::spawn(move || {
             let mut chunk = [0_u8; 4096];
@@ -128,7 +153,7 @@ impl InATerminal {
             child,
             seen,
             _home: home,
-            _work: work,
+            work,
         }
     }
 
@@ -162,13 +187,6 @@ impl InATerminal {
             .take_while(|byte| byte.is_ascii_digit())
             .map(|byte| char::from(*byte))
             .collect()
-    }
-}
-
-impl Drop for InATerminal {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -247,7 +265,7 @@ fn a_session_ended_by_a_signal_gives_the_terminal_back() {
             String::from_utf8_lossy(&before)
         );
 
-        let killed = Command::new("kill")
+        let killed = owned::command("kill")
             .args([format!("-{signal}"), pid.clone()])
             .status()
             .expect("`kill` runs");
@@ -341,11 +359,7 @@ fn pointer_reports_that_are_not_the_wheel_paint_nothing() {
         }
         reports.extend_from_slice(format!("\x1b[<0;{column};{row}m").as_bytes());
     }
-    let stdin = session
-        .child
-        .stdin
-        .as_mut()
-        .expect("standard input was piped");
+    let stdin = session.child.stdin();
     stdin
         .write_all(&reports)
         .expect("the reports reach the terminal");
@@ -428,7 +442,7 @@ fn glyphs(bytes: &[u8]) -> String {
 fn the_mouse_key_is_held_by_default_and_explained_by_layer() {
     let home = Scratch::new("explain-home");
     let explain = |environment: &[(&str, &str)]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        let output = owned::command(env!("CARGO_BIN_EXE_zaru"))
             .args(["config", "explain", "terminal.mouse"])
             .current_dir(&home.0)
             .env_clear()
@@ -499,10 +513,226 @@ fn a_session_with_the_mouse_key_off_asks_for_no_mouse_mode() {
     );
 }
 
+// --------------------------------- no process outlives the check
+
+/// How long a process this file started may take to be gone once nothing
+/// should be holding it. Generous: what is measured is whether it goes at all,
+/// and the failure it exists for is a process alive five hours later.
+const GONE_WITHIN: Duration = Duration::from_secs(10);
+
+/// Wait until none of `processes` is running, or say which still are.
+fn until_gone(processes: &[(&str, owned::Identity)]) -> Result<(), String> {
+    let deadline = Instant::now() + GONE_WITHIN;
+    loop {
+        let running: Vec<String> = processes
+            .iter()
+            .filter(|(_, identity)| identity.is_still_running())
+            .map(|(what, identity)| format!("{what} (pid {})", identity.pid))
+            .collect();
+        if running.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(running.join(", "));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// **A session a check is done with leaves nothing running, even when nothing
+/// sends `zaru` a hang-up.**
+///
+/// Measured on 2026-09-28: a passing run of this file under `nohup` left eight
+/// `zaru` processes alive, one for every session its checks opened and did not
+/// end themselves, each with its terminal gone and its reader thread spinning.
+/// The checks reaped `script` and nothing else; `zaru` is in the session
+/// `script` made, so killing `script` reached it only through a hang-up, and
+/// the shell leading that session ignored it.
+///
+/// **The mutant:** the helper killing only the child's process group and not
+/// the tree below it, which prints the process left running.
+#[test]
+fn a_session_the_check_is_done_with_leaves_no_process_behind() {
+    let session = InATerminal::open_ignoring_hangups();
+    let pid: u32 = session.pid().parse().expect("zaru's pid is a number");
+    session.until(b"\x1b[?25h", "the session's first frame");
+    let zaru = owned::Identity::of(pid).expect("zaru is running once it has painted a frame");
+    let script = owned::Identity::of(session.child.id()).expect("script is running");
+    drop(session);
+
+    if let Err(running) = until_gone(&[("script", script), ("zaru", zaru)]) {
+        panic!(
+            "{running} still running {GONE_WITHIN:?} after the check that started it was done \
+             with it, under a shell that ignores SIGHUP as everything under `nohup` does"
+        );
+    }
+}
+
+/// **A session whose terminal goes away ends, as a hang-up ends it, even when
+/// no hang-up arrives.**
+///
+/// The terminal went away and nothing told `zaru`: the shell leading its
+/// session ignored `SIGHUP`, as everything under `nohup` does, so it did not
+/// end and the kernel sent the foreground nothing. Measured on 2026-09-28
+/// before this check: eight such `zaru` processes lived for five hours, each
+/// with standard streams on `/dev/pts/N (deleted)`, and each with its terminal
+/// reader spinning a core — crossterm's `poll` reads a hung-up terminal's
+/// end of file as "nothing yet" and loops inside itself, so the reader never
+/// looks at its stop flag again.
+///
+/// So the session ends when its terminal is gone, whoever says so: the
+/// terminal is given back — to nobody, harmlessly — and the process exits
+/// `129`, the status a hang-up already gives it.
+///
+/// **The mutant:** the session not watching for its terminal going away,
+/// which prints that `zaru` is still running.
+#[test]
+fn a_session_whose_terminal_goes_away_ends_as_a_hang_up_ends_it() {
+    let mut session = InATerminal::open_ignoring_hangups();
+    let pid: u32 = session.pid().parse().expect("zaru's pid is a number");
+    session.until(b"\x1b[?25h", "the session's first frame");
+    let zaru = owned::Identity::of(pid).expect("zaru is running once it has painted a frame");
+
+    // `script` alone, so the terminal's other end closes and nothing else is
+    // touched: the shell and `zaru` are left to find out for themselves.
+    session.child.kill_the_child_alone();
+
+    if let Err(running) = until_gone(&[("zaru", zaru)]) {
+        panic!(
+            "{running} still running {GONE_WITHIN:?} after its terminal went away with no \
+             SIGHUP to tell it: a harness that outlives its terminal is a harness nobody can \
+             close, and it spins a core while it waits"
+        );
+    }
+    let status = session.work.0.join(STATUS_FILE);
+    let deadline = Instant::now() + GONE_WITHIN;
+    let ended = loop {
+        let written = std::fs::read_to_string(&status).unwrap_or_default();
+        if !written.trim().is_empty() {
+            break written.trim().to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "zaru ended and its shell never wrote the status it ended with to {}",
+            status.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        ended, "129",
+        "a session whose terminal went away should end with 129, the status a hang-up gives it"
+    );
+}
+
+/// What the child check below is told, so that it holds a session open only
+/// when this file's own check asked it to.
+const HOLDS_A_SESSION: &str = "TERMINAL_FROM_OUTSIDE_HOLDS_A_SESSION";
+
+/// **A check killed while its session is open leaves nothing running.**
+///
+/// SIGKILL to the test binary alone, which is what the machine's watchdog, a
+/// `timeout` or an out-of-memory killer sends: no `Drop` runs, so nothing the
+/// check owns can reap anything. Measured on 2026-09-28 before
+/// `tests/support/owned.rs`: `script` was handed to the machine's reaper and
+/// polled a pipe nobody would write to again, and `zaru` under it kept a
+/// terminal that never went away, both for as long as the machine stayed up.
+///
+/// The check runs this binary's own ignored child, which opens a session and
+/// holds it, and kills that child and nothing else.
+///
+/// **The mutant:** `owned::command` without `--pdeathsig`, which prints the
+/// processes left running.
+#[test]
+fn a_check_killed_while_its_session_is_open_leaves_no_process_behind() {
+    let mut child =
+        owned::command(std::env::current_exe().expect("the test binary knows where it is"))
+            .args([
+                "--exact",
+                "the_killed_checks_child_holds_a_session_open",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(HOLDS_A_SESSION, "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("this crate's own test binary starts");
+    let said = Arc::new(Mutex::new(String::new()));
+    let mut stdout = child.take_stdout();
+    let sink = Arc::clone(&said);
+    std::thread::spawn(move || {
+        let mut chunk = [0_u8; 1024];
+        while let Ok(read) = stdout.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            sink.lock()
+                .expect("the sink is not poisoned")
+                .push_str(&String::from_utf8_lossy(&chunk[..read]));
+        }
+    });
+    let held = |name: &str| -> Option<u32> {
+        let text = said.lock().expect("the sink is not poisoned").clone();
+        let at = text.find(name)? + name.len();
+        text[at..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .ok()
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (script, zaru) = loop {
+        if let (Some(script), Some(zaru)) = (held("HELD-SCRIPT="), held("HELD-ZARU=")) {
+            break (script, zaru);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child check never said it was holding a session: {:?}",
+            said.lock().expect("the sink is not poisoned")
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let script = owned::Identity::of(script).expect("the child's script is running");
+    let zaru = owned::Identity::of(zaru).expect("the child's zaru is running");
+
+    child.kill_the_child_alone();
+
+    if let Err(running) = until_gone(&[("script", script), ("zaru", zaru)]) {
+        panic!(
+            "{running} still running {GONE_WITHIN:?} after the check that started it was killed \
+             with SIGKILL, so a check that is killed rather than failed leaves its processes \
+             behind"
+        );
+    }
+}
+
+/// The child half of the check above. Never run on its own.
+#[test]
+#[ignore = "re-invoked by `a_check_killed_while_its_session_is_open_leaves_no_process_behind`"]
+fn the_killed_checks_child_holds_a_session_open() {
+    assert!(
+        std::env::var_os(HOLDS_A_SESSION).is_some(),
+        "this check holds a session open until it is killed, and is run only by \
+         `a_check_killed_while_its_session_is_open_leaves_no_process_behind`"
+    );
+    let session = InATerminal::open();
+    let zaru = session.pid();
+    session.until(b"\x1b[?25h", "the session's first frame");
+    println!("HELD-SCRIPT={}", session.child.id());
+    println!("HELD-ZARU={zaru}");
+    // Held until the check above kills this process. Its own deadline, so a
+    // child nobody kills still ends.
+    std::thread::sleep(Duration::from_secs(120));
+}
+
 // --------------------------------- a home and an environment nobody handed
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

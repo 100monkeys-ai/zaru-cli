@@ -28,7 +28,6 @@
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, ToolCall, Transcript};
 use zaru_cli::terminal::driver::{Restore, Surface, Turnable, run};
 use zaru_cli::terminal::source::{Pace, Source};
@@ -392,7 +391,7 @@ fn a_caller_outside_this_crate_opens_a_shell_over_a_session_and_leaves() {
 fn the_binary_prints_the_transcripts_bytes_when_nobody_is_watching() {
     let scratch = Scratch::new("pipe");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let output = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(["--resume", scratch.id.as_str()])
         .env_clear()
         .env("HOME", scratch.path())
@@ -471,7 +470,7 @@ fn resuming_a_session_that_does_not_exist_creates_nothing() {
     let scratch = Scratch::new("absent");
     let absent = "01JQZX8N3K4M5P6R7S8T9V0W1X";
 
-    let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let output = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(["--resume", absent])
         .env_clear()
         .env("HOME", scratch.path())
@@ -2707,6 +2706,8 @@ fn the_sessions_once_ever_notice_is_painted_above_the_turns_own_lines() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

@@ -29,7 +29,7 @@
 //! [Testing]: https://100monkeys-ai.cortex.page/zaru/p/operations/testing
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// A scratch `$HOME` that removes itself.
 struct Home {
@@ -95,7 +95,7 @@ fn zaru(home: &Home, arguments: &[&str]) -> Ran {
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 fn zaru_in(home: &Home, directory: &Path, arguments: &[&str]) -> Ran {
-    let output: Output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let output: Output = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(arguments)
         .env_clear()
         .env("HOME", home.path())
@@ -134,7 +134,7 @@ fn zaru_in(home: &Home, directory: &Path, arguments: &[&str]) -> Ran {
 /// that always opened a pipe would change what every other check exercises.
 fn zaru_with_input(home: &Home, arguments: &[&str], input: &str) -> Ran {
     use std::io::Write;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let mut child = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(arguments)
         .env_clear()
         .env("HOME", home.path())
@@ -145,9 +145,7 @@ fn zaru_with_input(home: &Home, arguments: &[&str], input: &str) -> Ran {
         .spawn()
         .expect("failed to execute the built zaru binary");
     child
-        .stdin
-        .as_mut()
-        .expect("the child's standard input was piped")
+        .stdin()
         .write_all(input.as_bytes())
         .expect("the child took its input");
     let output = child.wait_with_output().expect("the child exited");
@@ -1534,6 +1532,8 @@ fn corpus_the_non_tty_path_emits_no_colour_sequence() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

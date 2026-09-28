@@ -763,6 +763,8 @@ fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

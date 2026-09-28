@@ -770,6 +770,8 @@ fn corpus_a_skills_run_line_reaches_the_question_and_a_decline_loads_none_of_it(
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

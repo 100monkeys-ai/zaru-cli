@@ -380,6 +380,8 @@ fn a_path_entry_is_the_resolved_path_and_a_relative_spelling_does_not_approve() 
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

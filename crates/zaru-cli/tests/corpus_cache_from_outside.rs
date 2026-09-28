@@ -507,6 +507,8 @@ fn the_cache_file_holds_the_paths_and_titles_the_strip_completes_against() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

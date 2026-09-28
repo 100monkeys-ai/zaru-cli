@@ -1337,7 +1337,8 @@ pub fn open(
     Ok(exit)
 }
 
-/// The three signals that can end a session and still give the terminal back.
+/// The three signals that can end a session and still give the terminal back,
+/// and the terminal going away without one.
 ///
 /// # Why a session takes signals at all
 ///
@@ -1368,6 +1369,25 @@ pub fn open(
 /// record at a time precisely so that a killed process loses at most the event
 /// in flight, and this is a killed process that tidied the terminal first.
 ///
+/// # A terminal that goes away is a hang-up, whoever says so
+///
+/// `SIGHUP` reaches `zaru` only because the shell leading its terminal's
+/// session ends on its own hang-up and the kernel then hangs up the
+/// foreground. A shell that ignores the signal — everything under `nohup` —
+/// does not end, so nothing is sent, and until 2026-09-28 the session then
+/// never ended at all: measured by the `harness-orphans-and-reader-panic` arc,
+/// eight such processes lived five hours on `/dev/pts/N (deleted)`, each with
+/// its terminal reader spinning a core, because crossterm's `poll` reads a
+/// hung-up terminal's end of file as "nothing yet" and loops inside itself, so
+/// the reader never looks at its stop flag again and cannot be joined.
+///
+/// So the listener also watches the terminal itself, once a
+/// [`TICK`](crate::terminal::source::TICK): standard output stops being a
+/// terminal the moment it is hung up, because the terminal answers every
+/// question after that with `EIO`. That is taken as the hang-up it is, with
+/// the same restore and the same `129`; the spinning reader ends with the
+/// process, which is the only thing that can end it.
+///
 /// # When it runs
 ///
 /// The listener is a task on the session's current-thread runtime, so it
@@ -1395,7 +1415,8 @@ impl Signals {
         })
     }
 
-    /// Wait for the first of the three, give the terminal back, and exit.
+    /// Wait for the first of the three, or for the terminal to go away, give
+    /// the terminal back, and exit.
     async fn give_the_terminal_back(mut self) {
         // The numbers are POSIX's, and the same on every Unix: `SIGHUP` 1,
         // `SIGINT` 2, `SIGTERM` 15.
@@ -1403,9 +1424,21 @@ impl Signals {
             _ = self.terminate.recv() => 15,
             _ = self.interrupt.recv() => 2,
             _ = self.hang_up.recv() => 1,
+            () = the_terminal_goes_away() => 1,
         };
         crate::terminal::driver::give_back();
         std::process::exit(i32::from(crate::failure::signalled(number)));
+    }
+}
+
+/// Resolves once standard output has stopped being a terminal: the session's
+/// terminal has gone away. See [`Signals`].
+async fn the_terminal_goes_away() {
+    loop {
+        tokio::time::sleep(crate::terminal::source::TICK).await;
+        if !a_person_is_watching() {
+            return;
+        }
     }
 }
 

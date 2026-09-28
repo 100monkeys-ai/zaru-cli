@@ -48,7 +48,6 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use zaru_cli::failure::{
     Action, Class, Classified, DefectReport, Expected, Location, Presentation, Remedy,
     SessionEvidence, Statement, Wait,
@@ -367,7 +366,7 @@ fn the_built_binary_names_no_decision_record_at_a_user() {
         ["--help"].as_slice(),
         ["init"].as_slice(),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        let output = owned::command(env!("CARGO_BIN_EXE_zaru"))
             .args(arguments)
             .env_clear()
             .env("HOME", &home)
@@ -443,6 +442,8 @@ fn scratch(label: &str) -> PathBuf {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

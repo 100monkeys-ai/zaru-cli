@@ -430,7 +430,8 @@ impl Reader {
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || body(&sender, &flag));
+        let handle = crate::failure::thread("terminal-reader", move || body(&sender, &flag))
+            .expect("the operating system starts the terminal's reader thread");
         Self {
             stop,
             handle: Some(handle),
@@ -448,14 +449,24 @@ impl Drop for Reader {
         self.stop.store(true, Ordering::Release);
         if let Some(handle) = self.handle.take() {
             // A reader thread that panicked has already ended, which is what
-            // the join is waiting for; there is nothing to report and nothing
-            // to do about it here.
+            // the join is waiting for. Its panic is not dropped here: the
+            // thread is the harness's own (`failure::thread`), so `main`'s
+            // boundary reports it as a defect once the session has given the
+            // terminal back, rather than the session reading as a person
+            // leaving.
             drop(handle.join());
         }
     }
 }
 
 /// The thread body: poll, read, send, until the flag is set.
+///
+/// **On a terminal that has gone away this thread never ends.** crossterm
+/// 0.28's `poll` reads a hung-up terminal's end of file as "nothing yet" and
+/// loops inside itself, so the flag is never looked at again and
+/// [`Reader`]'s join would wait for ever. The session does not wait: the
+/// signal listener in `terminal::open` sees the terminal gone within a beat
+/// and exits the process, which ends this thread with it.
 ///
 /// **Nothing in this workspace's checks runs this function**, for the reason
 /// the module documentation gives — it is `poll` and `read` against a terminal

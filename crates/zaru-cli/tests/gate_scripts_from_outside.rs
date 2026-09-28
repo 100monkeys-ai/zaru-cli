@@ -39,7 +39,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// The repository root, from this crate's manifest rather than from the cwd.
 ///
@@ -126,8 +126,8 @@ const EXPORTED_BY_GIT: [&str; 6] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 ];
 
-fn git_free_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut command = Command::new(program);
+fn git_free_command(program: impl AsRef<std::ffi::OsStr>) -> owned::Owning {
+    let mut command = owned::command(program);
     for name in EXPORTED_BY_GIT {
         command.env_remove(name);
     }
@@ -383,7 +383,11 @@ fn a_grep_that_could_not_look_is_not_read_as_a_missing_signoff() {
 /// from an instruction would forbid explaining the defect it prevents.
 #[test]
 fn neither_gate_script_reads_a_verdict_out_of_a_pipeline_into_grep() {
-    let scripts = ["check-license-headers.sh", "check-dco.sh"];
+    let scripts = [
+        "check-license-headers.sh",
+        "check-dco.sh",
+        "check-no-survivors.sh",
+    ];
 
     for script in scripts {
         let path = repo_root().join("scripts").join(script);
@@ -415,7 +419,7 @@ fn neither_gate_script_reads_a_verdict_out_of_a_pipeline_into_grep() {
 }
 
 /// The mutant: dropping the strip from [`git_free_command`], or spawning a
-/// child with a bare `Command::new` anywhere in this file.
+/// child anywhere in this file without it.
 ///
 /// This is a check about the check, and it earns its place because the thing it
 /// prevents is damage to the repository rather than a wrong verdict. Under
@@ -426,15 +430,15 @@ fn neither_gate_script_reads_a_verdict_out_of_a_pipeline_into_grep() {
 #[test]
 fn every_child_process_is_spawned_outside_this_repository() {
     let command = git_free_command("git");
-    let removed: Vec<&str> = command
+    let removed: Vec<String> = command
         .get_envs()
         .filter(|(_, value)| value.is_none())
-        .filter_map(|(key, _)| key.to_str())
+        .filter_map(|(key, _)| key.into_string().ok())
         .collect();
 
     for name in EXPORTED_BY_GIT {
         assert!(
-            removed.contains(&name),
+            removed.iter().any(|removed| removed == name),
             "{name} is still inherited by a child process. git exports it during \
              `rebase --exec`, a hook and `bisect run`, and a child git then acts on \
              THIS repository while the check believes it is acting on a temporary \
@@ -447,20 +451,121 @@ fn every_child_process_is_spawned_outside_this_repository() {
         .expect("this check can read its own source");
     // Built at run time rather than written as one literal, so this check's own
     // source line does not carry the shape it is looking for and match itself.
-    let spawn = format!("Command{}new(", "::");
-    let permitted = format!("let mut command = {spawn}program)");
+    // Every process in `tests/` starts through `owned::command` (see
+    // `corpus_every_process_a_check_starts_is_owned`), so that is the
+    // constructor that could bypass the strip here, beside `std`'s own.
+    let spawns = [
+        format!("Command{}new(", "::"),
+        format!("owned{}command(", "::"),
+    ];
+    let permitted = format!("let mut command = {}program)", spawns[1]);
     let bare: Vec<usize> = body
         .lines()
         .enumerate()
-        .filter(|(_, line)| line.contains(&spawn))
+        .filter(|(_, line)| spawns.iter().any(|spawn| line.contains(spawn)))
         .filter(|(_, line)| !line.contains(&permitted))
         .map(|(index, _)| index + 1)
         .collect();
     assert!(
         bare.is_empty(),
-        "line(s) {bare:?} spawn a child with a bare `Command::new`, which inherits \
+        "line(s) {bare:?} spawn a child without git_free_command, so it inherits \
          GIT_DIR. Every spawn in this file goes through git_free_command."
     );
+}
+
+// ---------------------------------------------------------------------------
+// The survivor gate: nothing runs from `target/` once the suite has ended.
+// ---------------------------------------------------------------------------
+
+/// `scripts/check-no-survivors.sh` on `directory`.
+fn survivor_gate(directory: &Path) -> Output {
+    git_free_command(repo_root().join("scripts").join("check-no-survivors.sh"))
+        .arg(directory)
+        .output()
+        .unwrap_or_else(|error| panic!("could not execute scripts/check-no-survivors.sh: {error}"))
+}
+
+/// **The survivor gate names a process still running from the directory, and
+/// passes the same directory once it is gone.**
+///
+/// A copy of `sleep` stands in for a `zaru` a check left behind: an
+/// executable under a scratch `target/debug/`, started through the helper
+/// every check uses, so this check leaves nothing either. The control before
+/// and after is the same directory with nothing running from it, and the gate
+/// has to say how many processes it read, so a gate that read none cannot pass.
+///
+/// **The mutant:** the gate matching nothing, which prints what it answered
+/// while the survivor ran.
+#[test]
+fn the_survivor_gate_names_a_process_left_running_under_the_directory() {
+    let root = std::env::temp_dir().join(nonce("survivors"));
+    let debug = root.join("target").join("debug");
+    fs::create_dir_all(&debug).expect("a scratch target directory");
+    let sleep = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("sleep"))
+        .find(|candidate| candidate.is_file())
+        .expect("`sleep` is on this machine's PATH");
+    let left_behind = debug.join("left-behind");
+    fs::copy(&sleep, &left_behind).expect("a copy of sleep under the scratch target");
+    let target = root.join("target");
+
+    let before = survivor_gate(&target);
+    let mut complaints: Vec<String> = Vec::new();
+    if before.status.code() != Some(0) || !String::from_utf8_lossy(&before.stdout).contains("ok") {
+        complaints.push(format!(
+            "with nothing running from it the gate answered {:?}: {}",
+            before.status.code(),
+            stderr_of(&before)
+        ));
+    }
+
+    let survivor = git_free_command(&left_behind)
+        .arg("60")
+        .spawn()
+        .expect("the copy of sleep starts");
+    let pid = survivor.id();
+    // `setpriv` execs the copy in place; wait until the kernel says it is
+    // running the copy rather than `setpriv`.
+    let resolved = target.canonicalize().expect("the scratch target resolves");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|exe| exe.starts_with(&resolved)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the copy of sleep (pid {pid}) never became the process's executable"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let during = survivor_gate(&target);
+    let said = stderr_of(&during);
+    if during.status.code() != Some(1) || !said.contains(&pid.to_string()) {
+        complaints.push(format!(
+            "with pid {pid} running from {} the gate answered {:?} and did not name it: {said}{}",
+            target.display(),
+            during.status.code(),
+            String::from_utf8_lossy(&during.stdout)
+        ));
+    }
+
+    drop(survivor);
+    let after = survivor_gate(&target);
+    if after.status.code() != Some(0) {
+        complaints.push(format!(
+            "once pid {pid} was gone the gate still answered {:?}: {}",
+            after.status.code(),
+            stderr_of(&after)
+        ));
+    }
+
+    let _ = fs::remove_dir_all(&root);
+    let missing = survivor_gate(&root.join("not-there"));
+    if missing.status.code() != Some(2) {
+        complaints.push(format!(
+            "on a directory that is not there the gate answered {:?} where it could not look: {}",
+            missing.status.code(),
+            stderr_of(&missing)
+        ));
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +663,8 @@ fn the_licence_gate_passes_a_clean_repository_and_says_what_it_checked() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

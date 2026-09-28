@@ -448,6 +448,8 @@ fn corpus_what_a_session_has_said_is_read_from_its_transcript_and_not_its_checkp
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

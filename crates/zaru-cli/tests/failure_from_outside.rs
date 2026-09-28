@@ -27,7 +27,6 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use std::process::Command;
 use std::sync::{Mutex, PoisonError};
 use zaru_cli::failure::{
     Action, Class, Classified, Exit, Expected, Guarded, Partial, Presentation, Remedy,
@@ -200,7 +199,7 @@ fn the_built_binary_exits_with_adr_0016_d5s_code_for_what_it_did() {
         // than by construction. See `corpus_every_spawned_zaru_is_handed_a_home`.
         let home = std::env::temp_dir().join(format!("zaru-failure-home-{}", std::process::id()));
         std::fs::create_dir_all(&home).expect("a scratch home");
-        let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        let output = owned::command(env!("CARGO_BIN_EXE_zaru"))
             .env_clear()
             .env("HOME", &home)
             .output()
@@ -461,6 +460,8 @@ fn corpus_the_binary_has_no_ending_that_goes_past_the_writing() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

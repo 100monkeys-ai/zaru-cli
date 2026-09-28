@@ -65,7 +65,8 @@
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use super::owned;
 
 /// What the decoy's files and variables hold, and the word a failure quotes.
 const CANARY: &str = "canary_a_check_read_what_it_was_not_handed";
@@ -134,7 +135,7 @@ fn every_file_under(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 
 /// How many checks this binary holds, as its own harness lists them.
 fn listed(binary: &Path) -> usize {
-    let output = Command::new(binary)
+    let output = owned::command(binary)
         .args(["--list", "--format", "terse"])
         .output()
         .expect("the test binary lists its checks");
@@ -173,7 +174,7 @@ pub fn every_other_check_keeps_its_verdict(guard: &str) {
     let home = Home::planted(&binary);
     let planted = home.contents();
 
-    let mut rerun = Command::new(&binary);
+    let mut rerun = owned::command(&binary);
     rerun.args(["--skip", guard, "--exact"]);
     rerun.env("HOME", &home.path);
     // Names only. The value of an inherited `ZARU_` variable is never read
