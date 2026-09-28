@@ -180,7 +180,7 @@ async fn what_ollama_said(origin: &str) -> String {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &[],
-        results: &[],
+        turn: &[],
     };
     match Model::respond(&client, &request).await {
         Ok(response) => panic!("something answered at {origin}: {response:?}"),
@@ -202,7 +202,7 @@ async fn what_openai_compatible_said(origin: &str) -> String {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &[],
-        results: &[],
+        turn: &[],
     };
     match Model::respond(&client, &request).await {
         Ok(response) => panic!("something answered at {origin}: {response:?}"),
@@ -262,7 +262,7 @@ async fn what_gemini_said(origin: &str) -> String {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &[],
-        results: &[],
+        turn: &[],
     };
     match Model::respond(&client, &request).await {
         Ok(response) => panic!("something answered at {origin}: {response:?}"),

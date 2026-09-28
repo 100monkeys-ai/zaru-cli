@@ -20,9 +20,18 @@
 //! [ADR-0013] D7 confines context assembly and compaction to turn boundaries.
 //! A turn is one call to [`run`], so the policy is invoked once, before the
 //! first exchange, and never again inside the turn. What accumulates within
-//! the turn is [`ToolResult`]s, carried on the request rather than folded
-//! back into the context — which is both D7's rule and the wire shape every
-//! provider already has.
+//! the turn is the turn's own conversation — the model's messages and the
+//! result of every call — carried on the request rather than folded back into
+//! the context, which is both D7's rule and the wire shape every provider
+//! already has.
+//!
+//! # Every message is emitted as it is made
+//!
+//! The person's message, each of the model's messages and each result are
+//! emitted as [`Event::Message`] at the moment they join the conversation.
+//! That one emission is what the transcript records and what the next turn's
+//! history is rebuilt from, so what a later turn is sent is what this turn
+//! sent, rather than a second description of it.
 //!
 //! # Where the inner loop attaches
 //!
@@ -41,36 +50,26 @@
 //! [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 
-use crate::iteration::port::{Clock, ContextPolicy, ContextRefusal, Interruption, Turn};
+use crate::conversation::Message;
+use crate::iteration::port::{Clock, ContextPolicy, ContextRefusal, Turn};
 use crate::redaction::Redactor;
 use crate::tool_call::error::{PortKind, ToolCallError};
 use crate::tool_call::event::{Event, EventSink, TurnEnding};
 use crate::tool_call::limits::ToolCallCeiling;
 use crate::tool_call::port::{
     InnerLoop, Model, ModelRequest, ModelResponse, Ports, ToolCalling, ToolExecutor, ToolOutcome,
-    ToolResult,
 };
 use core::time::Duration;
 
 /// What a turn is about.
+///
+/// One variant today. It is an enum because what starts a turn is a fact the
+/// loop branches on, and a second kind of start is a new arm rather than a
+/// flag.
 #[derive(Debug)]
 pub enum Start<'a> {
     /// An ordinary turn on the caller's task.
     Task(&'a str),
-    /// The first turn of a resumed session.
-    ///
-    /// [ADR-0010] D4's "the model is told it did not complete". It carries no
-    /// task, because a resumed session is not a new instruction: the work and
-    /// the conversation are what the policy restored, and the one thing the
-    /// policy could not know is that a call never finished.
-    ///
-    /// **A resumed turn never enters the iteration loop**, whatever the
-    /// caller supplied, because there is no task to iterate on. The check
-    /// `a_resumed_turn_tells_the_model_and_iterates_nothing` asserts both
-    /// halves.
-    ///
-    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-    Resumed(&'a Interruption),
 }
 
 /// How a turn finished.
@@ -164,13 +163,20 @@ where
         },
     );
 
+    let Start::Task(task) = start;
+
+    // --- The person's message, first of this turn's conversation ---------
+    //
+    // Emitted before the branch, so a turn that iterates is recorded as
+    // having been asked exactly as one that calls tools is.
+    emit(sinks, &Event::Message(Message::user(ports.redactor, task)));
+
     // --- ADR-0009 D4's branch, at the turn boundary ----------------------
     //
     // Taken before anything else, so a project with declared validators
     // never asks a model in this loop and a project without never reaches
-    // the iteration loop. A resumed turn is not a task and takes the
-    // right-hand path whatever the caller supplied.
-    if let (Some(inner), Start::Task(task)) = (inner, &start) {
+    // the iteration loop.
+    if let Some(inner) = inner {
         let outcome = inner
             .iterate(task)
             .await
@@ -200,10 +206,7 @@ where
     }
 
     // --- Assemble, once, at the turn boundary (ADR-0013 D7) --------------
-    let turn = match &start {
-        Start::Task(task) => Turn::Initial { task },
-        Start::Resumed(interrupted) => Turn::Resumed { interrupted },
-    };
+    let turn = Turn::Initial { task };
     let prompt = ports
         .context
         .assemble(&turn)
@@ -231,7 +234,7 @@ where
         })?;
 
     let descriptors = ports.tools.descriptors().to_vec();
-    let mut results: Vec<ToolResult> = Vec::new();
+    let mut conversation: Vec<Message> = Vec::new();
     let mut tokens: u64 = 0;
     let mut calls_executed: u32 = 0;
     let mut round: u32 = 1;
@@ -244,7 +247,7 @@ where
             .respond(&ModelRequest {
                 prompt: &prompt,
                 tools: &descriptors,
-                results: &results,
+                turn: &conversation,
             })
             .await
             .map_err(|failure| ToolCallError::Port {
@@ -268,7 +271,11 @@ where
         );
 
         let requests = match response {
-            ModelResponse::Text { text, .. } => {
+            ModelResponse::Text { text, echo, .. } => {
+                emit(
+                    sinks,
+                    &Event::Message(Message::assistant(ports.redactor, &text, &[], echo)),
+                );
                 return Ok(finish(
                     sinks,
                     n,
@@ -296,7 +303,14 @@ where
                     },
                 ));
             }
-            ModelResponse::Calls { calls, .. } => calls,
+            ModelResponse::Calls {
+                calls, text, echo, ..
+            } => {
+                let said = Message::assistant(ports.redactor, &text, &calls, echo);
+                emit(sinks, &Event::Message(said.clone()));
+                conversation.push(said);
+                calls
+            }
         };
 
         // --- Execute what it asked for ----------------------------------
@@ -371,7 +385,9 @@ where
             // The single path out of `ToolOutcome`. A refusal becomes this
             // turn's next content exactly as a completion does, and there is
             // no arm anywhere that turns one into an error.
-            results.push(outcome.for_the_model(ports.redactor));
+            let result = Message::result(&request.name, &outcome.for_the_model(ports.redactor));
+            emit(sinks, &Event::Message(result.clone()));
+            conversation.push(result);
         }
 
         if ceiling.limit().is_some_and(|limit| round >= limit) {

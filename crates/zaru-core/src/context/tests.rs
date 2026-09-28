@@ -31,6 +31,13 @@ use crate::iteration::machine::run;
 use crate::iteration::{Ceiling, Limits, Ports, TruncationBudget};
 use crate::redaction::fixtures::{HoldingOne, NothingHeld, ascii_core};
 
+/// One turn that is one message from the person: `text`.
+fn said(text: impl Into<String>) -> Exchange {
+    Exchange::of_turn(vec![crate::conversation::Message::User {
+        text: text.into(),
+    }])
+}
+
 /// How many words each of the four prefix layers is staged with.
 const PREFIX_WORDS: usize = 6;
 
@@ -210,7 +217,7 @@ async fn layers_one_to_four_are_byte_identical_across_every_turn_of_a_long_sessi
             .expect("the staged window admits this context");
 
         assert!(
-            assembled.as_str().starts_with(&expected),
+            assembled.prompt().rendered().starts_with(&expected),
             "turn {turn}: the assembled context does not begin with the stable prefix, so a \
              prompt cache would have nothing to match"
         );
@@ -257,7 +264,11 @@ async fn crossing_the_threshold_compacts_the_oldest_span_of_layer_six_first() {
         .raw
         .as_ref()
         .expect("crossing the threshold compacts layer 6, so a raw span exists");
-    let taken: Vec<&str> = span.exchanges().iter().map(Exchange::as_str).collect();
+    let taken: Vec<&str> = span
+        .exchanges()
+        .iter()
+        .map(crate::context::SpanEntry::as_str)
+        .collect();
     assert!(
         taken.iter().enumerate().all(|(i, text)| {
             let n = u32::try_from(i).expect("small") + 1;
@@ -282,12 +293,17 @@ async fn crossing_the_threshold_compacts_the_oldest_span_of_layer_six_first() {
     for (offset, n) in survivors.iter().enumerate() {
         assert!(
             left[offset + 1]
-                .as_str()
+                .rendered()
                 .contains(&format!("{NONCE}-exchange-{n}")),
             "exchange {n} should have survived at position {}, and the surviving texts were {:?}",
             offset + 1,
             left.iter()
-                .map(|e| e.as_str().split_whitespace().next().unwrap_or(""))
+                .map(|e| e
+                    .rendered()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned())
                 .collect::<Vec<_>>()
         );
     }
@@ -461,7 +477,7 @@ async fn a_summary_is_compacted_again_like_any_other_exchange() {
          the next span. The second span held {:?}",
         span.exchanges()
             .iter()
-            .map(Exchange::kind)
+            .map(crate::context::SpanEntry::kind)
             .collect::<Vec<_>>()
     );
 }
@@ -746,26 +762,26 @@ fn a_held_secret_in_layer_six_is_absent_from_the_assembled_context() {
     let counter = WordCounter;
 
     let mut context = Context::opened(staged_prefix(), limits(100_000, 90_000), 0);
-    context.record_exchange(Exchange::verbatim(held.clone()));
+    context.record_exchange(said(held.clone()));
 
     let assembled = context
         .assemble(&counter, &holding, "the task")
         .expect("the staged context fits the window");
     assert!(
-        !assembled.as_str().contains(&held),
+        !assembled.prompt().rendered().contains(&held),
         "layer 6 carried a held value into the assembled context: {:?}",
-        assembled.as_str()
+        assembled.prompt().rendered()
     );
     assert!(
-        !assembled.as_str().contains(core),
+        !assembled.prompt().rendered().contains(core),
         "layer 6 carried a held value's ASCII core into the assembled \
          context: {:?}",
-        assembled.as_str()
+        assembled.prompt().rendered()
     );
     assert!(
-        assembled.as_str().contains("<redacted: work>"),
+        assembled.prompt().rendered().contains("<redacted: work>"),
         "nothing marks where the value was: {:?}",
-        assembled.as_str()
+        assembled.prompt().rendered()
     );
 
     // The discriminating arm: the same exchange with nothing held reaches the
@@ -775,9 +791,9 @@ fn a_held_secret_in_layer_six_is_absent_from_the_assembled_context() {
         .assemble(&counter, &NothingHeld, "the task")
         .expect("the staged context fits the window");
     assert!(
-        carried.as_str().contains(&held),
+        carried.prompt().rendered().contains(&held),
         "with nothing held, layer 6 must reach the model unaltered: {:?}",
-        carried.as_str()
+        carried.prompt().rendered()
     );
 }
 
@@ -1029,7 +1045,7 @@ async fn the_reserve_is_on_the_whole_context_and_on_no_single_exchange() {
         100,
     );
     for n in 1..=3 {
-        context.record_exchange(Exchange::verbatim(staged_text(&format!("said-{n}"), 10)));
+        context.record_exchange(said(staged_text(&format!("said-{n}"), 10)));
     }
     let summariser = StagedSummariser::costing(3);
     let compaction = context

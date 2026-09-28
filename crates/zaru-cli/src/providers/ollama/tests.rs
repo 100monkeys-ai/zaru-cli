@@ -32,9 +32,10 @@ use crate::providers::ProviderKind;
 use crate::providers::endpoint::ProviderEndpoint;
 use crate::providers::port::Provider;
 use crate::providers::resolution::{ModelId, ModelTable};
+use zaru_core::conversation::Message;
 use zaru_core::iteration::Prompt;
 use zaru_core::redaction::Redacted;
-use zaru_core::tool_call::{ModelRequest, ModelResponse, ToolDescriptor, ToolResult};
+use zaru_core::tool_call::{ModelRequest, ModelResponse, ToolDescriptor, ToolRequest};
 
 /// The recorded tool-call exchange: a call in one frame, its reason in another.
 const RECORDED_CALLS: &str = include_str!("recorded/calls.ndjson");
@@ -369,15 +370,13 @@ fn a_model_request_becomes_ollamas_documented_chat_body() {
         description: "Read a file".to_owned(),
         parameters: r#"{"type":"object","properties":{"path":{"type":"string"}}}"#.to_owned(),
     }];
-    let mut answered = map::Answered::default();
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &[],
+        turn: &[],
     };
     let body = map::request_from(
         &request,
-        &mut answered,
         "llama3.2:3b",
         crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
     )
@@ -408,44 +407,30 @@ fn a_model_request_becomes_ollamas_documented_chat_body() {
 fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
     let prompt = prompt("read notes.txt");
     let tools: [ToolDescriptor; 0] = [];
-    let results = [ToolResult {
-        id: "call_a1".to_owned(),
-        content: Redacted::by(&NothingHeld, "the file says hello"),
-        failed: false,
-    }];
-    let mut answered = map::Answered::default();
-    answered.remember(
-        wire::Message {
-            role: map::ROLE_ASSISTANT.to_owned(),
-            content: String::new(),
-            tool_calls: vec![wire::ToolCall {
-                id: Some("call_a1".to_owned()),
-                function: wire::CalledFunction {
-                    name: "fs.read".to_owned(),
-                    arguments: serde_json::json!({ "path": "notes.txt" }),
-                    index: Some(0),
-                },
-            }],
-            tool_name: None,
-        },
-        vec![wire::ToolCall {
-            id: Some("call_a1".to_owned()),
-            function: wire::CalledFunction {
+    let turn = [
+        Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: "call_a1".to_owned(),
                 name: "fs.read".to_owned(),
-                arguments: serde_json::json!({ "path": "notes.txt" }),
-                index: Some(0),
-            },
-        }],
-    );
-
+                arguments: r#"{"path":"notes.txt"}"#.to_owned(),
+            }],
+            echo: None,
+        },
+        Message::Tool {
+            id: "call_a1".to_owned(),
+            name: "fs.read".to_owned(),
+            content: "the file says hello".to_owned(),
+            failed: false,
+        },
+    ];
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &results,
+        turn: &turn,
     };
     let body = map::request_from(
         &request,
-        &mut answered,
         "llama3.2:3b",
         crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
     )
@@ -461,6 +446,10 @@ fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
         json["messages"][1]["tool_calls"][0]["function"]["name"],
         "fs.read"
     );
+    assert_eq!(
+        json["messages"][1]["tool_calls"][0]["function"]["arguments"]["path"], "notes.txt",
+        "the call's arguments were not sent back as the object Ollama takes: {json}"
+    );
     assert_eq!(json["messages"][2]["role"], "tool");
     assert_eq!(
         json["messages"][2]["tool_name"], "fs.read",
@@ -470,166 +459,77 @@ fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
     assert_eq!(json["messages"][2]["content"], "the file says hello");
 }
 
+/// Every earlier turn is sent in its own roles, and the system text in the
+/// system role and nowhere else.
+///
+/// Watched red on the tree before 2026-09-28, where a prompt was one `user`
+/// message holding the absence line, a rendering of every earlier turn and
+/// the task.
 #[test]
-fn a_new_turn_forgets_what_the_last_turn_asked_for() {
-    let prompt = prompt("a new task");
-    let tools: [ToolDescriptor; 0] = [];
-    let mut answered = map::Answered::default();
-    answered.remember(
-        wire::Message {
-            role: map::ROLE_ASSISTANT.to_owned(),
-            content: String::new(),
-            tool_calls: Vec::new(),
-            tool_name: None,
+fn earlier_turns_go_in_their_own_roles_and_the_system_text_in_the_system_role() {
+    let system = "SYSTEM-TEXT-3c1: working directory /w";
+    let history = [
+        Message::User {
+            text: "read notes.txt".to_owned(),
         },
-        vec![wire::ToolCall {
-            id: Some("call_old".to_owned()),
-            function: wire::CalledFunction {
+        Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: "call_a1".to_owned(),
                 name: "fs.read".to_owned(),
-                arguments: serde_json::json!({}),
-                index: None,
-            },
-        }],
-    );
-
-    // An empty `results` is the only turn-boundary signal the port gives, and
-    // reading it inside `request_from` is what makes the reset structural.
-    let request = ModelRequest {
-        prompt: &prompt,
-        tools: &tools,
-        results: &[],
-    };
-    let body = map::request_from(
-        &request,
-        &mut answered,
-        "llama3.2:3b",
-        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
-    )
-    .expect("no schema to read");
-    assert_eq!(
-        body.messages.len(),
-        1,
-        "a new turn carried the last turn's history, so the model is told it made calls in a \
-         conversation it is not in"
-    );
-}
-
-#[test]
-fn results_that_do_not_match_the_calls_are_refused_rather_than_paired_wrongly() {
-    let prompt = prompt("a task");
-    let tools: [ToolDescriptor; 0] = [];
-    let results = [ToolResult {
-        id: "call_a1".to_owned(),
-        content: Redacted::by(&NothingHeld, "one"),
-        failed: false,
-    }];
-    let mut answered = map::Answered::default();
-    answered.remember(
-        wire::Message {
-            role: map::ROLE_ASSISTANT.to_owned(),
-            content: String::new(),
-            tool_calls: Vec::new(),
-            tool_name: None,
+                arguments: r#"{"path":"notes.txt"}"#.to_owned(),
+            }],
+            echo: None,
         },
-        vec![
-            wire::ToolCall {
-                id: Some("a".to_owned()),
-                function: wire::CalledFunction {
-                    name: "fs.read".to_owned(),
-                    arguments: serde_json::json!({}),
-                    index: None,
-                },
-            },
-            wire::ToolCall {
-                id: Some("b".to_owned()),
-                function: wire::CalledFunction {
-                    name: "fs.list".to_owned(),
-                    arguments: serde_json::json!({}),
-                    index: None,
-                },
-            },
-        ],
-    );
-
-    let request = ModelRequest {
-        prompt: &prompt,
-        tools: &tools,
-        results: &results,
-    };
-    match map::request_from(
-        &request,
-        &mut answered,
-        "llama3.2:3b",
-        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
-    ) {
-        Err(OllamaFailure::ResultsDoNotMatchCalls { results, calls }) => {
-            assert_eq!((results, calls), (1, 2));
-        }
-        other => panic!(
-            "one result for two calls was not refused ({other:?}); pairing is by position, so \
-             building past a mismatch names a result for the wrong tool"
-        ),
-    }
-}
-
-#[test]
-fn more_results_than_calls_is_refused_too_and_only_the_count_guard_sees_it() {
-    // The mirror of the check above, and it exists because a mutation showed
-    // the other one could not tell this client's two guards apart. With FEWER
-    // results than calls the loop runs out of results and the inner guard
-    // refuses, so disabling the outer count guard changed nothing. With MORE
-    // results than calls the loop never runs out, so the count guard is the
-    // only thing between this and a request that silently drops a result.
-    let prompt = prompt("a task");
-    let tools: [ToolDescriptor; 0] = [];
-    let results = [
-        ToolResult {
-            id: "a".to_owned(),
-            content: Redacted::by(&NothingHeld, "one"),
+        Message::Tool {
+            id: "call_a1".to_owned(),
+            name: "fs.read".to_owned(),
+            content: "RESULT-BODY-3c1".to_owned(),
             failed: false,
         },
-        ToolResult {
-            id: "b".to_owned(),
-            content: Redacted::by(&NothingHeld, "two"),
-            failed: false,
+        Message::Assistant {
+            text: "It says hello.".to_owned(),
+            calls: Vec::new(),
+            echo: None,
         },
     ];
-    let mut answered = map::Answered::default();
-    answered.remember(
-        wire::Message {
-            role: map::ROLE_ASSISTANT.to_owned(),
-            content: String::new(),
-            tool_calls: Vec::new(),
-            tool_name: None,
-        },
-        vec![wire::ToolCall {
-            id: Some("a".to_owned()),
-            function: wire::CalledFunction {
-                name: "fs.read".to_owned(),
-                arguments: serde_json::json!({}),
-                index: None,
-            },
-        }],
-    );
-
+    let prompt = Prompt::assembled(&NothingHeld, system, &history, "what did it say?");
     let request = ModelRequest {
         prompt: &prompt,
-        tools: &tools,
-        results: &results,
+        tools: &[],
+        turn: &[],
     };
-    match map::request_from(
-        &request,
-        &mut answered,
-        "llama3.2:3b",
-        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
-    ) {
-        Err(OllamaFailure::ResultsDoNotMatchCalls { results, calls }) => {
-            assert_eq!((results, calls), (2, 1));
+    let body = map::request_from(&request, "llama3.2:3b", 4096).expect("no schema to read");
+    let json = serde_json::to_value(&body).expect("the body serialises");
+    let roles: Vec<&str> = json["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .map(|message| message["role"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        roles,
+        ["system", "user", "assistant", "tool", "assistant", "user"],
+        "the conversation was not sent message by message in its own roles: {json}"
+    );
+    assert_eq!(json["messages"][0]["content"], system);
+    assert_eq!(
+        json["messages"][2]["tool_calls"][0]["function"]["arguments"]["path"],
+        "notes.txt"
+    );
+    assert_eq!(json["messages"][3]["content"], "RESULT-BODY-3c1");
+    assert_eq!(json["messages"][3]["tool_name"], "fs.read");
+    assert_eq!(json["messages"][5]["content"], "what did it say?");
+    for message in json["messages"].as_array().expect("messages") {
+        if message["role"] == "user" {
+            assert!(
+                !message["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("SYSTEM-TEXT-3c1"),
+                "the system text reached a user message: {json}"
+            );
         }
-        other => panic!(
-            "two results for one call was not refused ({other:?}); the extra result would be \
-             dropped silently, and this is the direction the inner guard cannot see"
-        ),
     }
 }
 
@@ -641,15 +541,13 @@ fn a_tool_schema_that_is_not_json_is_a_defect_and_is_named() {
         description: "Read a file".to_owned(),
         parameters: "{not json".to_owned(),
     }];
-    let mut answered = map::Answered::default();
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &[],
+        turn: &[],
     };
     match map::request_from(
         &request,
-        &mut answered,
         "llama3.2:3b",
         crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
     ) {
@@ -885,15 +783,13 @@ fn the_request_body_carries_no_field_a_credential_could_travel_in() {
     // nowhere on this path for a credential to be put.
     let prompt = prompt("a task");
     let tools: [ToolDescriptor; 0] = [];
-    let mut answered = map::Answered::default();
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &[],
+        turn: &[],
     };
     let body = map::request_from(
         &request,
-        &mut answered,
         "llama3.2:3b",
         crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
     )
@@ -950,13 +846,12 @@ fn the_request_asks_for_exactly_the_window_the_descriptor_declares() {
         );
 
         let prompt = prompt("say ok");
-        let mut answered = map::Answered::default();
         let request = ModelRequest {
             prompt: &prompt,
             tools: &[],
-            results: &[],
+            turn: &[],
         };
-        let body = map::request_from(&request, &mut answered, "llama3.2:3b", declared)
+        let body = map::request_from(&request, "llama3.2:3b", declared)
             .expect("there is no schema to refuse");
         let json = serde_json::to_value(&body).expect("the body serialises");
         assert_eq!(
@@ -1062,7 +957,7 @@ async fn adr_0036_d1_an_oversized_ollama_request_is_refused_before_it_reaches_th
         .exchange(&ModelRequest {
             prompt: &prompt,
             tools: &[],
-            results: &[],
+            turn: &[],
         })
         .await
         .expect_err("the locally measured request exceeds sixty-four bytes");
@@ -1104,16 +999,10 @@ async fn a_first_turn_offering_every_built_in_fits_the_default_ollama_window() {
     let request = ModelRequest {
         prompt: &prompt,
         tools: crate::tools::descriptor_set(),
-        results: &[],
+        turn: &[],
     };
     let window = crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS;
-    let body = map::request_from(
-        &request,
-        &mut map::Answered::default(),
-        "llama3.2:3b",
-        window,
-    )
-    .expect("the built-ins map");
+    let body = map::request_from(&request, "llama3.2:3b", window).expect("the built-ins map");
     let needed = crate::providers::capacity::request_bytes(&body);
     println!("a first request needs {needed} bytes of a {window}-token window");
 

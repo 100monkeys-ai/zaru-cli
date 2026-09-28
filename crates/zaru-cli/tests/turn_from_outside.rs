@@ -846,7 +846,7 @@ fn adr_0010_d1s_session_holds_three_files_and_meta_toml_records_six_things() {
 /// from. That makes the checkpoint a path from captured bytes into a model
 /// prompt that outlives the process, which is [ADR-0008] clause 6's subject.
 ///
-/// **The seam is `compose::boundary::exchange_of_turn`** and this is the case
+/// **The seam is the redactor every message passes** and this is the case
 /// that discriminates it: a task naming the stored key would put the key into
 /// layer 6 verbatim, and from there into the prompt of every later turn of the
 /// session, and onto disk in a file [ADR-0010] D5 says the user can read with
@@ -1730,6 +1730,8 @@ fn adr_0034_clause_2_a_projects_exchange_limit_reaches_the_loop_and_exhausts_at_
         fn asking_for_tools(times: u32) -> Self {
             let mut script: std::collections::VecDeque<ModelResponse> = (0..times)
                 .map(|n| ModelResponse::Calls {
+                    text: String::new(),
+                    echo: None,
                     calls: vec![ToolRequest {
                         id: format!("call-{n}"),
                         name: String::from("fs.read"),
@@ -1739,6 +1741,7 @@ fn adr_0034_clause_2_a_projects_exchange_limit_reaches_the_loop_and_exhausts_at_
                 })
                 .collect();
             script.push_back(ModelResponse::Text {
+                echo: None,
                 text: String::from("done"),
                 tokens: TokenUsage::default(),
             });
@@ -1796,7 +1799,6 @@ fn adr_0034_clause_2_a_projects_exchange_limit_reaches_the_loop_and_exhausts_at_
             let text = match turn {
                 Turn::Initial { task } => (*task).to_owned(),
                 Turn::Refinement { refinement } => refinement.as_str().to_owned(),
-                Turn::Resumed { interrupted } => interrupted.call().to_owned(),
             };
             Ok(Prompt::new(Redacted::by(&HeldSecrets::none(), &text)))
         }

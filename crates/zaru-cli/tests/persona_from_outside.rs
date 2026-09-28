@@ -23,13 +23,13 @@
 //! [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 
 use zaru_cli::compose::persona::{Fetched, PersonaCache, fetched_from};
-use zaru_cli::compose::{ContextShape, SessionContext, prefix_for, prose};
+use zaru_cli::compose::{ContextShape, SessionContext, prefix_for};
 use zaru_cli::credentials::{
     Alias, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
     SealingKey, Secret, ToolScope,
 };
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
-use zaru_core::context::{ContextLimits, ContextWindow, Exchange, PressureThreshold};
+use zaru_core::context::{ContextLimits, ContextWindow, PressureThreshold};
 use zaru_core::iteration::{ContextPolicy, Turn};
 
 /// A window nothing in this file crosses.
@@ -38,7 +38,7 @@ use zaru_core::iteration::{ContextPolicy, Turn};
 /// what these checks are about is whether a *page* in layer 1 stays put, and
 /// the compaction half of [ADR-0013] trigger clause 1 is already asserted by
 /// the two long-session checks that arc left — which now run with
-/// `prefix_for(None)` and are unchanged.
+/// `prefix_for(None, &facts())` and are unchanged.
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 const ROOMY: (u64, u64) = (1_000_000, 750_000);
@@ -130,7 +130,7 @@ fn limits(window: u64, threshold: u64) -> ContextLimits {
 /// the product's own `ContextPolicy`, not through `Context::assemble`.
 async fn assembled(prefix_persona: Option<&str>, redactor: &HeldSecrets, tail: &str) -> String {
     let session = SessionContext::opened(
-        prefix_for(prefix_persona),
+        prefix_for(prefix_persona, &facts()),
         ContextShape::of(limits(ROOMY.0, ROOMY.1), 0),
     );
     session
@@ -138,8 +138,7 @@ async fn assembled(prefix_persona: Option<&str>, redactor: &HeldSecrets, tail: &
         .assemble(&Turn::Initial { task: tail })
         .await
         .expect("a small context fits")
-        .as_str()
-        .to_owned()
+        .rendered()
 }
 
 /// A served persona reaches [ADR-0013] D1's layer 1, and the absence is what
@@ -164,17 +163,18 @@ async fn a_served_page_is_layer_one_and_no_page_is_byte_for_byte_what_it_was() {
         "a served page did not become layer 1: {with}"
     );
     assert!(
-        !with.contains(prose::NO_PERSONA),
-        "a session with a persona still carried the absence line, so a model is told both that \
-         it has a persona and that it has none"
+        !with.contains("Working directory"),
+        "a session with a persona still carried the harness's own system prompt, so a model is \
+         told two things about who is speaking"
     );
 
-    // The three spellings of absence, each byte-identical to the others.
+    // The three spellings of absence, each byte-identical to the others: the
+    // harness's own system prompt, then the task.
     let absent = assembled(None, &nothing, "a task").await;
     assert_eq!(
         absent,
-        format!("{}\n\na task", prose::NO_PERSONA),
-        "the absent prefix is not what it was before this arc"
+        format!("{}\n\na task", zaru_cli::compose::system_prompt(&facts())),
+        "the absent prefix is not the harness's system prompt"
     );
     assert_eq!(
         assembled(Some(""), &nothing, "a task").await,
@@ -305,7 +305,7 @@ async fn a_persona_in_layer_one_is_the_same_bytes_on_every_turn_of_a_long_sessio
     let served = format!("\u{3a9} \u{2726} {}", nonce("persona"));
     let nothing = HeldSecrets::none();
     let mut session = SessionContext::opened(
-        prefix_for(Some(&served)),
+        prefix_for(Some(&served), &facts()),
         ContextShape::of(limits(ROOMY.0, ROOMY.1), 0),
     );
     let opened = session
@@ -313,27 +313,44 @@ async fn a_persona_in_layer_one_is_the_same_bytes_on_every_turn_of_a_long_sessio
         .assemble(&Turn::Initial { task: "opening" })
         .await
         .expect("the context fits")
-        .as_str()
-        .to_owned();
+        .rendered();
     assert!(
         opened.starts_with(&served),
         "the session did not open on the persona it was given"
     );
     let prefix = served.clone();
 
+    let mut records = Vec::new();
     for turn in 1..=12_u32 {
-        session.record(Exchange::of_turn(
-            &format!("turn {turn}: a question"),
-            &[format!("fs.read notes-{turn}.md")],
-            &format!("turn {turn}: {}", "an answer with detail ".repeat(20)),
+        records.push(zaru_cli::session::Record::Conversation(
+            zaru_cli::session::Utterance {
+                n: turn,
+                voice: zaru_cli::session::Voice::User,
+                text: format!("turn {turn}: a question"),
+            },
         ));
+        for message in [
+            zaru_core::conversation::Message::User {
+                text: format!("turn {turn}: a question"),
+            },
+            zaru_core::conversation::Message::Assistant {
+                text: format!("turn {turn}: {}", "an answer with detail ".repeat(20)),
+                calls: Vec::new(),
+                echo: None,
+            },
+        ] {
+            records.push(zaru_cli::session::Record::TurnLoop(
+                zaru_core::tool_call::Event::Message(message),
+            ));
+        }
+        session.rebuild_from(&records);
         let now = session
             .policy(&nothing, false)
             .assemble(&Turn::Initial { task: "a task" })
             .await
             .expect("the context fits");
         assert!(
-            now.as_str().starts_with(&prefix),
+            now.rendered().starts_with(&prefix),
             "turn {turn}: the assembled context does not begin with the persona the session \
              opened with, so a prompt cache would have nothing to match"
         );
@@ -348,6 +365,18 @@ async fn a_persona_in_layer_one_is_the_same_bytes_on_every_turn_of_a_long_sessio
 }
 
 // --------------------------------- a home and an environment nobody handed
+
+/// The facts a check's layer 1 is built from: fixed, so a prompt a check
+/// compares is the same on every machine and every day.
+fn facts() -> zaru_cli::compose::Facts {
+    zaru_cli::compose::Facts {
+        directory: Some("/work".to_owned()),
+        system: "linux".to_owned(),
+        date: "2026-09-28".to_owned(),
+        tools: vec!["fs.read".to_owned()],
+        mode: None,
+    }
+}
 
 #[path = "support/decoy.rs"]
 mod decoy;

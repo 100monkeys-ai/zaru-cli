@@ -66,6 +66,7 @@ pub(super) const fn tag(event: &Event) -> &'static str {
         Event::ToolPermissionDecided { .. } => "ToolPermissionDecided",
         Event::ToolCompleted { .. } => "ToolCompleted",
         Event::ToolRefused { .. } => "ToolRefused",
+        Event::Message(_) => "Message",
         Event::TurnEnded { .. } => "TurnEnded",
     }
 }
@@ -116,7 +117,7 @@ pub(super) struct StagedModel {
     answers: Mutex<std::collections::VecDeque<Answer>>,
     /// What `results` carried on each request, in order. The turn's
     /// accumulation, read from the model's side rather than the loop's.
-    pub(super) seen: Arc<Mutex<Vec<Vec<ToolResult>>>>,
+    pub(super) seen: Arc<Mutex<Vec<Vec<crate::conversation::Message>>>>,
     /// What `prompt` carried on each request.
     pub(super) prompts: Arc<Mutex<Vec<String>>>,
     /// What `tools` carried on the first request.
@@ -163,11 +164,11 @@ impl Model for StagedModel {
         self.seen
             .lock()
             .expect("seen poisoned")
-            .push(request.results.to_vec());
+            .push(request.turn.to_vec());
         self.prompts
             .lock()
             .expect("prompts poisoned")
-            .push(request.prompt.as_str().to_owned());
+            .push(request.prompt.rendered());
         {
             let mut offered = self.offered.lock().expect("offered poisoned");
             if offered.is_empty() {
@@ -184,10 +185,13 @@ impl Model for StagedModel {
         Ok(match answer {
             Answer::Calls(calls) => ModelResponse::Calls {
                 calls,
+                text: String::new(),
+                echo: None,
                 tokens: self.tokens,
             },
             Answer::Text(text) => ModelResponse::Text {
                 text,
+                echo: None,
                 tokens: self.tokens,
             },
             Answer::Stopped(reason) => ModelResponse::Stopped {
@@ -305,7 +309,6 @@ impl ContextPolicy for RecordingContext {
         let rendered = match turn {
             Turn::Initial { task } => format!("initial::{task}"),
             Turn::Refinement { refinement } => format!("refinement::{}", refinement.as_str()),
-            Turn::Resumed { interrupted } => format!("resumed::{}", interrupted.call()),
         };
         self.turns
             .lock()

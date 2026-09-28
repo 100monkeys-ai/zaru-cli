@@ -35,7 +35,6 @@ use zaru_cli::credentials::{
 use zaru_cli::process::{Environment, ProcessCeiling, Spawn};
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
-use zaru_cli::terminal::driver::Pending;
 use zaru_cli::tools::{
     ELISION_PREFIX, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget, SessionOverflow,
     Verdict, Verdicts, WorkingDirectory,
@@ -354,10 +353,15 @@ impl Model for Provider {
     }
 
     async fn respond(&self, request: &ModelRequest<'_>) -> Result<ModelResponse, PortFailure> {
-        for result in request.results {
-            let content = result.content.as_str().to_owned();
+        for message in request.turn {
+            let zaru_core::conversation::Message::Tool { content, .. } = message else {
+                continue;
+            };
+            if self.seen.lock().expect("poisoned").contains(content) {
+                continue;
+            }
             println!("  the model is given: {content:?}");
-            self.seen.lock().expect("poisoned").push(content);
+            self.seen.lock().expect("poisoned").push(content.clone());
         }
         self.script
             .lock()
@@ -375,7 +379,6 @@ impl ContextPolicy for Policy {
         let rendered = match turn {
             Turn::Initial { task } => format!("[initial] {task}"),
             Turn::Refinement { refinement } => format!("[refinement] {}", refinement.as_str()),
-            Turn::Resumed { interrupted } => format!("[resumed] {}", interrupted.call()),
         };
         Ok(Prompt::new(Redacted::by(&HeldSecrets::none(), &rendered)))
     }
@@ -477,6 +480,8 @@ async fn one_command_turn(
 
     let model = Provider::scripted([
         ModelResponse::Calls {
+            text: String::new(),
+            echo: None,
             calls: vec![ToolRequest {
                 id: String::from("c1"),
                 name: String::from("cmd.run"),
@@ -488,6 +493,7 @@ async fn one_command_turn(
             },
         },
         ModelResponse::Text {
+            echo: None,
             text: String::from("done"),
             tokens: TokenUsage {
                 prompt: 9,
@@ -1002,7 +1008,13 @@ fn a_command_in_flight_when_the_harness_dies_resumes_as_interrupted() {
     let started = std::time::Instant::now();
     loop {
         let held = std::fs::read_to_string(&transcript).unwrap_or_default();
-        if held.lines().any(|line| line.contains("cmd.run")) {
+        // The executor's own record of the call, which is written after the
+        // model's message that asked for it: the kill must land with the
+        // command running, not while the call is only asked for.
+        if held
+            .lines()
+            .any(|line| line.contains("\"tool_call\"") && line.contains("cmd.run"))
+        {
             break;
         }
         assert!(
@@ -1049,50 +1061,60 @@ fn a_command_in_flight_when_the_harness_dies_resumes_as_interrupted() {
         "the killed harness left more than the one record it had written"
     );
 
-    // What the model is told, which is ADR-0010 D4's second half and passes
-    // ADR-0008 clause 6's port because a rendered `cmd.run` line is a command
-    // line. **Through the product's own carrier since 2026-09-05**: `Pending`
-    // is what `terminal::open` builds and what the shell's first turn is
-    // started from, so this is the same value a person at a terminal gets
-    // rather than a conversion an outside caller performed for itself.
-    let mut pending = Pending::of(&restored, &HeldSecrets::none());
-    let told = pending
-        .tell_once()
-        .expect("a resumed session owes the model the command that was in flight");
-    println!("  the model would be told: {}", told.call());
-    assert!(
-        told.call().contains(IN_FLIGHT),
-        "the model is not told which call did not complete: {}",
-        told.call()
-    );
-    assert!(
-        pending.tell_once().is_none(),
-        "the interruption is still owed after being told, so a second turn of the resumed session \
-         would be told about the same killed command again"
+    // What the model is told, which is ADR-0010 D4's second half: the
+    // conversation a resumed session is rebuilt into closes the call that
+    // was in flight with a result saying it did not complete. **Through the
+    // product's own rebuild**, which is what `terminal::open` calls, so this
+    // is the conversation a person resuming this session would have sent.
+    let rebuilt = zaru_cli::compose::conversation_of(&restored.records);
+    let messages: Vec<&zaru_core::conversation::Message> = rebuilt
+        .exchanges()
+        .iter()
+        .flat_map(|exchange| exchange.messages().iter())
+        .collect();
+    println!("  the model would be sent: {messages:?}");
+    let asked = messages
+        .iter()
+        .position(|message| {
+            matches!(message, zaru_core::conversation::Message::Assistant { calls, .. }
+                if calls.iter().any(|call| call.arguments.contains(IN_FLIGHT)))
+        })
+        .expect("the call the killed harness made is in the rebuilt conversation");
+    assert_eq!(
+        messages.get(asked + 1),
+        Some(&&zaru_core::conversation::Message::Tool {
+            id: "c1".to_owned(),
+            name: "cmd.run".to_owned(),
+            content: zaru_cli::compose::prose::CALL_DID_NOT_COMPLETE.to_owned(),
+            failed: true,
+        }),
+        "the model is not told the command that was in flight did not complete"
     );
 }
 
-/// **The security corpus: a held bearer in the line of a call that never
-/// completed.**
+/// **The security corpus: a held bearer in a call that never completed.**
 ///
-/// ADR-0010 D4's carrier passes ADR-0008 clause 6's port, which was a
-/// coordinator ruling of 2026-09-05 rather than one of the three paths that
-/// decision names: "a rendered `cmd.run` line **is** a command line, and that
-/// is where a `--token=` argument lives". `Pending` is a new hop on that path
-/// and adds no seam of its own — it calls `Interrupted::for_the_model` and
-/// nothing else, which is why `no_captured_bytes_reach_a_prompt_except_through_the_port`
-/// still enumerates eight paths and not nine. This is what makes that true
-/// rather than believed.
+/// A resumed session's conversation is rebuilt from its transcript, and a
+/// call that was in flight is sent to the model again, with its arguments,
+/// closed by a result saying it did not complete. The arguments pass ADR-0008
+/// clause 6's port on the way into a prompt — `Prompt::assembled` redacts
+/// every message it is given — because a command line is where a `--token=`
+/// argument lives. This case was about the rendered line a resumed turn used
+/// to carry; since 2026-09-28 the call itself is what is sent, and this is
+/// what makes its redaction true rather than believed.
 ///
 /// **And the record keeps the raw line**, which is ADR-0010's rule and the
 /// other half of the assertion: the transcript "contains whatever the session
 /// contained".
 ///
 /// The discriminating arm is the same staging with nothing held, where the
-/// value reaches the carrier byte for byte — without it, a carrier that erased
+/// value reaches the prompt byte for byte — without it, a rebuild that erased
 /// everything would satisfy every absence above.
-#[test]
-fn a_held_bearer_in_an_interrupted_command_line_is_absent_from_the_carrier_and_its_debug() {
+#[tokio::test]
+async fn a_held_bearer_in_an_interrupted_call_is_absent_from_the_prompt_and_its_debug() {
+    use zaru_core::conversation::Message;
+    use zaru_core::iteration::ContextPolicy;
+
     println!("== a planted bearer in a call that never completed ==");
     let scratch = Scratch::new("interrupted-secret");
     let value = format!("nn_mcp_{}", nonce("in-flight"));
@@ -1105,14 +1127,29 @@ fn a_held_bearer_in_an_interrupted_command_line_is_absent_from_the_carrier_and_i
     let session = scratch.session();
     let mut transcript =
         Transcript::append_to(session.transcript_path()).expect("the transcript opens");
-    transcript
-        .record(&Record::ToolCall(zaru_cli::session::ToolCall {
+    for record in [
+        Record::TurnLoop(zaru_core::tool_call::Event::Message(Message::User {
+            text: "deploy it".to_owned(),
+        })),
+        Record::TurnLoop(zaru_core::tool_call::Event::Message(Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: "c1".to_owned(),
+                name: "cmd.run".to_owned(),
+                arguments: serde_json::json!({ "command": format!("deploy --token={value}") })
+                    .to_string(),
+            }],
+            echo: None,
+        })),
+        Record::ToolCall(zaru_cli::session::ToolCall {
             line: line.clone(),
             out_of_tree: false,
             destructive: false,
             phase: Phase::Started,
-        }))
-        .expect("the started line is written");
+        }),
+    ] {
+        transcript.record(&record).expect("a record is written");
+    }
 
     let restored = zaru_cli::session::resume(session.directory(), 8).expect("the session resumes");
     assert!(
@@ -1120,25 +1157,37 @@ fn a_held_bearer_in_an_interrupted_command_line_is_absent_from_the_carrier_and_i
         "staging: nothing was left in flight, so nothing below was measured"
     );
 
-    let mut pending = Pending::of(&restored, &held);
-    let shape = format!("{pending:?}");
-    let told = pending.tell_once().expect("the interruption is carried");
+    let facts = zaru_cli::compose::Facts {
+        directory: None,
+        system: "linux".to_owned(),
+        date: "2026-09-28".to_owned(),
+        tools: Vec::new(),
+        mode: None,
+    };
+    let shape = zaru_cli::terminal::open::context_shape_of(None);
+    let (context, _) = zaru_cli::terminal::open::restored_context(&restored, shape, None, &facts);
+    let prompt = context
+        .policy(&held, false)
+        .assemble(&zaru_core::iteration::Turn::Initial { task: "and now?" })
+        .await
+        .expect("a small context fits");
+    let sent = prompt.rendered();
+    let debug = format!("{context:?}");
 
     assert!(
-        !told.call().contains(&value) && !told.call().contains(ascii_core(&value)),
-        "the harness would hand a model its own bearer value from a call that never completed: {}",
-        told.call()
+        !sent.contains(&value) && !sent.contains(ascii_core(&value)),
+        "the harness would hand a model its own bearer value from a call that never completed: \
+         {sent}"
     );
     assert!(
-        told.call().contains(&marker(&alias)),
+        sent.contains(&marker(&alias)),
         "the model is given no marker where the value was removed, so it cannot tell that \
-         anything was: {}",
-        told.call()
+         anything was: {sent}"
     );
     assert!(
-        !shape.contains(&value) && !shape.contains(ascii_core(&value)),
-        "the carrier's `Debug` renders a session's own command line, which is what ends up in a \
-         panic message: {shape:?}"
+        !debug.contains(&value) && !debug.contains(ascii_core(&value)),
+        "a resumed session's `Debug` renders its own conversation, which is what ends up in a \
+         panic message: {debug:?}"
     );
 
     // ADR-0010's record is deliberately outside the port. Read with `std::fs`
@@ -1152,13 +1201,16 @@ fn a_held_bearer_in_an_interrupted_command_line_is_absent_from_the_carrier_and_i
     );
 
     // The discriminating arm.
-    let mut carried = Pending::of(&restored, &HeldSecrets::none());
-    let raw = carried.tell_once().expect("the interruption is carried");
+    let raw = context
+        .policy(&HeldSecrets::none(), false)
+        .assemble(&zaru_core::iteration::Turn::Initial { task: "and now?" })
+        .await
+        .expect("a small context fits")
+        .rendered();
     assert!(
-        raw.call().contains(&value),
-        "with nothing held the value did not reach the carrier either, so the absence above is \
-         about this check rather than about the redactor: {}",
-        raw.call()
+        raw.contains(&value),
+        "with nothing held the value did not reach the prompt either, so the absence above is \
+         about this check rather than about the redactor: {raw}"
     );
 }
 
@@ -1195,6 +1247,8 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
     let policy = Policy;
     let mut sink = Printing;
     let model = Provider::scripted([ModelResponse::Calls {
+        text: String::new(),
+        echo: None,
         calls: vec![ToolRequest {
             id: String::from("c1"),
             name: String::from("cmd.run"),
@@ -1206,6 +1260,12 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
         },
     }]);
 
+    // The loop's own record of the conversation, written as the product's
+    // turn writes it, so what a resume rebuilds is what a kill leaves.
+    let mut records = zaru_cli::compose::Records::appending_to(
+        directory.join(zaru_cli::session::TRANSCRIPT_FILE),
+    )
+    .expect("the transcript opens");
     let no_grants = zaru_cli::tools::grants::SessionGrants::none();
     let mut executor = Executor {
         working_directory: &working,
@@ -1239,7 +1299,7 @@ async fn the_interruption_checks_child_leaves_a_command_in_flight() {
             redactor: &HeldSecrets::none(),
         },
         None,
-        &mut [&mut sink],
+        &mut [&mut sink, &mut records],
     )
     .await;
     unreachable!("the parent kills this child while the command is still running");
@@ -1334,6 +1394,8 @@ async fn corpus_an_interrupt_with_a_child_in_flight_ends_it_and_leaves_the_call_
         let verdicts = NoMembrane;
         let model = Provider::scripted([
             ModelResponse::Calls {
+                text: String::new(),
+                echo: None,
                 calls: vec![
                     ToolRequest {
                         id: String::from("c1"),
@@ -1352,6 +1414,7 @@ async fn corpus_an_interrupt_with_a_child_in_flight_ends_it_and_leaves_the_call_
                 },
             },
             ModelResponse::Text {
+                echo: None,
                 text: String::from("done"),
                 tokens: TokenUsage {
                     prompt: 9,
@@ -1478,13 +1541,6 @@ async fn corpus_an_interrupt_with_a_child_in_flight_ends_it_and_leaves_the_call_
          the one in flight: {}",
         interrupted.call.line
     );
-    let told = interrupted.for_the_model(&HeldSecrets::none());
-    println!("  the model would be told: {}", told.call());
-    assert!(
-        told.call().contains("waits.sh"),
-        "the model is not told which call did not complete: {}",
-        told.call()
-    );
 }
 
 /// The accepting sibling: an uninterrupted round leaves a matched pair for
@@ -1526,6 +1582,8 @@ async fn an_uninterrupted_round_leaves_a_matched_pair_for_both_calls() {
         let verdicts = NoMembrane;
         let model = Provider::scripted([
             ModelResponse::Calls {
+                text: String::new(),
+                echo: None,
                 calls: vec![
                     ToolRequest {
                         id: String::from("c1"),
@@ -1544,6 +1602,7 @@ async fn an_uninterrupted_round_leaves_a_matched_pair_for_both_calls() {
                 },
             },
             ModelResponse::Text {
+                echo: None,
                 text: String::from("done"),
                 tokens: TokenUsage {
                     prompt: 9,

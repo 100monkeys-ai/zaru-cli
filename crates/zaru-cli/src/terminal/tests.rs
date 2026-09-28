@@ -257,6 +257,7 @@ impl zaru_core::tool_call::Model for OneAnswer {
         _request: &zaru_core::tool_call::ModelRequest<'_>,
     ) -> Result<zaru_core::tool_call::ModelResponse, zaru_core::iteration::PortFailure> {
         Ok(zaru_core::tool_call::ModelResponse::Text {
+            echo: None,
             text: self.0.to_owned(),
             tokens: zaru_core::tool_call::TokenUsage {
                 prompt: 7,
@@ -416,6 +417,22 @@ fn one_emission_reaches_the_transcript_and_the_pane() {
         !recorded.is_empty(),
         "the turn wrote no event at all, so this check compared two empty lists"
     );
+    // The conversation's own messages are on the file and paint nothing: what
+    // the model was sent is the next turn's, and a person sees a call through
+    // the lines the other events give. Asserted rather than filtered in
+    // silence, so a turn that recorded no message would redden here.
+    let messages = recorded
+        .iter()
+        .filter(|event| matches!(event, zaru_core::tool_call::Event::Message(_)))
+        .count();
+    assert_eq!(
+        messages, 2,
+        "the turn's two messages, the task and the answer, are not both on the file"
+    );
+    let recorded: Vec<zaru_core::tool_call::Event> = recorded
+        .into_iter()
+        .filter(|event| !matches!(event, zaru_core::tool_call::Event::Message(_)))
+        .collect();
 
     // The pane, read off the shell.
     let painted: Vec<String> = shell
@@ -434,7 +451,9 @@ fn one_emission_reaches_the_transcript_and_the_pane() {
     for (event, line) in recorded.iter().zip(painted.iter()) {
         assert_eq!(
             line,
-            &crate::terminal::vocabulary::turn_line(event).text,
+            &crate::terminal::vocabulary::turn_line(event)
+                .expect("every event here paints a line")
+                .text,
             "the pane's line is not this event's line: {event:?}"
         );
     }
@@ -1714,7 +1733,9 @@ fn success_exhaustion_and_failure_reach_the_frame_as_three_different_glyphs() {
     let wanted = [
         crate::terminal::vocabulary::loop_line(&succeeded).text,
         crate::terminal::vocabulary::loop_line(&exhausted).text,
-        crate::terminal::vocabulary::turn_line(&stopped).text,
+        crate::terminal::vocabulary::turn_line(&stopped)
+            .expect("an ending paints a line")
+            .text,
     ];
     let frame = surface.frames.last().expect("a frame was painted");
     let opening: Vec<char> = wanted
@@ -2187,6 +2208,7 @@ fn a_compaction_announces_itself_in_the_panes_announcement_register() {
                     after: 2_100,
                 }],
                 raw: None,
+                summary: None,
             },
         )]);
     let lines = zaru_tui::shell::port::TranscriptSource::lines(&transcript);
@@ -2236,6 +2258,7 @@ fn a_dropped_attachment_names_its_workspace_its_path_and_how_to_get_it_back() {
                     how_to_reattach: "re-attach with [[".to_owned(),
                 }],
                 raw: None,
+                summary: None,
             },
         )]);
     let lines = zaru_tui::shell::port::TranscriptSource::lines(&transcript);
@@ -2277,6 +2300,7 @@ fn every_announcement_of_one_compaction_reaches_the_pane() {
                     dropped("0118-something-else"),
                 ],
                 raw: None,
+                summary: None,
             },
         )]);
     let lines = zaru_tui::shell::port::TranscriptSource::lines(&transcript);
@@ -2293,71 +2317,6 @@ fn every_announcement_of_one_compaction_reaches_the_pane() {
         "the last announcement is the one a one-line-per-record renderer would lose; the pane \
          showed {:?}",
         lines[2].text
-    );
-}
-
-/// ADR-0013 D1's layer 6 is "conversation **and tool results**", and the tool
-/// results are on the event stream rather than in `Ran`, which carries what
-/// the turn *printed*.
-///
-/// `ToolLines` is the third consumer of ADR-0008 clause 3's one emission, and
-/// it keeps exactly the lines the shell's own vocabulary puts in the call
-/// register — so what reaches layer 6 and what the pane painted are the same
-/// bytes rather than two renderings.
-///
-/// The mutant: collecting every register rather than `Call`, which sweeps the
-/// model's own narration into layer 6 twice; and collecting none, which
-/// reddens the count.
-#[test]
-fn a_turns_tool_lines_are_collected_for_layer_six_and_nothing_else_is() {
-    use zaru_core::tool_call::{Event, EventSink, TurnEnding};
-
-    let mut collector = crate::compose::ToolLines::default();
-    let elapsed = core::time::Duration::from_millis(5);
-    for event in [
-        Event::TurnStarted { n: 1, of: Some(8) },
-        Event::ModelResponded {
-            round: 1,
-            tokens: 400,
-            calls: 1,
-            elapsed,
-        },
-        Event::ToolRequested {
-            round: 1,
-            call: 1,
-            name: "fs.read".to_owned(),
-        },
-        Event::ToolCompleted {
-            round: 1,
-            call: 1,
-            name: "fs.read".to_owned(),
-            failed: false,
-            content_bytes: 82,
-            elapsed,
-        },
-        Event::TurnEnded {
-            n: 1,
-            ending: TurnEnding::Answered,
-            rounds: 1,
-            elapsed,
-        },
-    ] {
-        collector.emit(&event);
-    }
-
-    let lines = collector.taken();
-    assert!(
-        lines.iter().any(|line| line.contains("fs.read")),
-        "a tool call's rendered line is what layer 6 owes the next turn; got {lines:?}"
-    );
-    assert!(
-        !lines.iter().any(|line| line.contains("turn 1")),
-        "the turn's own narration is not a tool result, and sweeping it in would put the pane's \
-         commentary into the next turn's prompt: {lines:?}"
-    );
-    assert!(
-        collector.taken().is_empty(),
-        "taking twice must not repeat a turn's tool lines into the turn after it"
     );
 }
 
@@ -3292,7 +3251,7 @@ fn the_context_figure_is_the_same_bytes_on_every_frame_of_one_turn() {
 fn the_model_and_the_mode_are_on_the_row_from_the_sessions_first_frame() {
     let mut shell = shell();
     let context = crate::compose::SessionContext::opened(
-        crate::compose::prefix_for(None),
+        crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(crossable(), 0),
     );
     let redactor = Nothing;
@@ -3808,11 +3767,12 @@ impl zaru_core::context::Summariser for Staged {
 /// The mutant: caching the first usage, so the row never moves.
 #[test]
 fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction() {
-    use zaru_core::context::Exchange;
+    use crate::session::{Record, Utterance, Voice};
+    use zaru_core::conversation::Message;
 
     let redactor = Nothing;
     let mut context = crate::compose::SessionContext::opened(
-        crate::compose::prefix_for(None),
+        crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(crossable(), 0),
     );
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
@@ -3820,12 +3780,21 @@ fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction(
     crate::terminal::driver::refresh_status(&mut shell, &context, None, None, &redactor);
     let opened = context.usage(&redactor).used();
 
+    // Eight turns, staged as a transcript holds them, and layer 6 rebuilt
+    // from them as a session rebuilds it at a turn's end.
+    let mut records = Vec::new();
     for nth in 0..8 {
-        context.record(Exchange::verbatim(format!(
-            "exchange {nth}: {}",
-            "detail ".repeat(30)
+        let text = format!("exchange {nth}: {}", "detail ".repeat(30));
+        records.push(Record::Conversation(Utterance {
+            n: nth,
+            voice: Voice::User,
+            text: text.clone(),
+        }));
+        records.push(Record::TurnLoop(zaru_core::tool_call::Event::Message(
+            Message::User { text },
         )));
     }
+    context.rebuild_from(&records);
     crate::terminal::driver::refresh_status(&mut shell, &context, None, None, &redactor);
     let loaded = context.usage(&redactor).used();
     let before = painted_row(&shell);
@@ -3889,7 +3858,7 @@ fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction(
 fn the_token_segment_is_the_line_the_session_prints_on_exit_and_not_a_second_spelling() {
     let redactor = Nothing;
     let context = crate::compose::SessionContext::opened(
-        crate::compose::prefix_for(None),
+        crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(crossable(), 0),
     );
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
@@ -3927,7 +3896,7 @@ fn the_token_segment_is_the_line_the_session_prints_on_exit_and_not_a_second_spe
 fn a_session_that_has_not_asked_anything_shows_a_context_and_no_tokens() {
     let redactor = Nothing;
     let context = crate::compose::SessionContext::opened(
-        crate::compose::prefix_for(None),
+        crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(crossable(), 0),
     );
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
@@ -4140,182 +4109,24 @@ fn the_two_once_ever_lines_read_back_in_the_registers_their_records_give_them() 
 
 // ------------------------------- ADR-0010 D4's interruption, held and told once
 
-/// Stage a session directory whose transcript ends the way `phases` says.
+/// **Layer 6 is rebuilt from the transcript at the end of every turn, by
+/// product source and not only by a check.**
 ///
-/// The staging deliberately puts a **finished** call before whatever comes
-/// last, so a carrier that reported the first started call, or any started
-/// call, would name the wrong one.
-fn a_session_whose_last_call(
-    scratch: &crate::credentials::fixtures::ScratchRoot,
-    seed: u8,
-    close_it_with: Option<crate::session::Phase>,
-) -> crate::session::Resumed {
-    use crate::session::{Record as SessionRecord, SessionStore, ToolCall};
-
-    let store = SessionStore::open(scratch.store_root()).expect("the store opens");
-    let session = store
-        .start(crate::session::fixtures::id_at(1_700_000_000_000, seed))
-        .expect("the session starts");
-    let tree = crate::tools::fixtures::ScratchTree::new();
-    let working = crate::tools::WorkingDirectory::at(tree.project()).expect("the project resolves");
-    let finished = crate::session::fixtures::entry_for(&working, "src/finished.rs", false);
-    let last = crate::session::fixtures::entry_for(&working, "src/in-flight.rs", true);
-
-    let mut transcript = crate::session::Transcript::append_to(session.transcript_path())
-        .expect("the transcript opens");
-    for record in [
-        SessionRecord::ToolCall(ToolCall::started(&finished)),
-        SessionRecord::ToolCall(ToolCall::completed(&finished)),
-        SessionRecord::ToolCall(ToolCall::started(&last)),
-    ] {
-        transcript.record(&record).expect("a record is appended");
-    }
-    if let Some(phase) = close_it_with {
-        let closing = match phase {
-            crate::session::Phase::Completed => ToolCall::completed(&last),
-            crate::session::Phase::Refused => ToolCall::refused(&last),
-            crate::session::Phase::Started => panic!("a `Started` does not close a pair"),
-        };
-        transcript
-            .record(&SessionRecord::ToolCall(closing))
-            .expect("the closing record is appended");
-    }
-    crate::session::resume(session.directory(), usize::MAX).expect("the session resumes")
-}
-
-/// **ADR-0010 D4's second half, on the carrier a resumed session hands a turn.**
+/// The transcript is the source of what a model is sent, so every place a
+/// turn ends has to rebuild layer 6 from it: the out-of-session task, a turn
+/// typed into a session, and a turn the person interrupted. The last two need
+/// a provider client to reach through `run_a_turn`, which no check here can
+/// build, so this is a search rather than a run: it says the call sites exist
+/// and says nothing about what they do. What they do is held by
+/// `tests/turn_memory_from_outside.rs`, and `driver::after`'s rebuild by
+/// `shell_from_outside`'s interrupted-turn check.
 ///
-/// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
-/// is told it did not complete**." The derivation is `session::resume`'s and
-/// is not repeated here; what this holds is the rule the shell needs and had
-/// nowhere to put — that a resumed session owes the model **one** telling,
-/// before anything else, and owes it only when a call was genuinely in flight.
-///
-/// The mutants, named before the check was written ([Verification lessons]
-/// §12):
-///
-/// - **The `Resumed` start is dropped** — `Pending::of` answers `None` for an
-///   interrupted transcript, so a resumed session starts its first turn as
-///   `Task` and D4's second half reaches no model. Caught by the first arm.
-/// - **The interruption is told twice** — `tell_once` peeks instead of taking.
-///   Caught by the second arm.
-///
-/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
+/// The mutant: deleting any one of the three calls.
 #[test]
-fn a_resumed_session_owes_the_model_one_telling_and_then_owes_nothing() {
-    use crate::terminal::driver::Pending;
-
-    let scratch = crate::credentials::fixtures::ScratchRoot::new();
-    let resumed = a_session_whose_last_call(&scratch, 41, None);
-    let line = resumed
-        .interrupted
-        .as_ref()
-        .expect("the staging left a call in flight")
-        .call
-        .line
-        .clone();
-
-    let mut pending = Pending::of(&resumed, &Nothing);
-    assert!(
-        pending.is_owed(),
-        "a resumed session whose transcript ends in a call that never completed owes the model \
-         nothing, so ADR-0010 D4's second half would reach no model",
-    );
-
-    let told = pending
-        .tell_once()
-        .expect("the first turn of a resumed session is told the interruption");
-    assert_eq!(
-        told.call(),
-        line,
-        "the telling named a different call from the one the transcript left in flight",
-    );
-
-    assert!(
-        !pending.is_owed(),
-        "the interruption is still owed after being told, so a second turn would be told it again",
-    );
-    assert!(
-        pending.tell_once().is_none(),
-        "the interruption was told on the second turn as well as the first; an interruption is \
-         told once",
-    );
-}
-
-/// The accepting siblings: a session that owes nothing must be told nothing.
-///
-/// Three shapes, because three different rules would pass the check above and
-/// fail here. A transcript whose last call **completed**; one whose last call
-/// the user **refused**, which closes the pair exactly as a completion does
-/// (ADR-0016's ruling of 2026-09-04: a refusal is not a failure, and it is not
-/// an interruption either — telling the model that a call the user declined
-/// did not complete says the opposite of what happened); and a session being
-/// minted, which is `Pending::none`.
-///
-/// The mutant this catches: **a clean resume is told anyway** — `Pending::of`
-/// carrying an interruption whatever `Resumed::interrupted` holds.
-#[test]
-fn a_session_with_nothing_in_flight_owes_the_model_nothing() {
-    use crate::terminal::driver::Pending;
-
-    let scratch = crate::credentials::fixtures::ScratchRoot::new();
-
-    for (seed, closing, what) in [
-        (42, crate::session::Phase::Completed, "completed"),
-        (43, crate::session::Phase::Refused, "the user refused"),
-    ] {
-        let resumed = a_session_whose_last_call(&scratch, seed, Some(closing));
-        assert_eq!(
-            resumed.interrupted, None,
-            "the staging is wrong: a call the record says closed the pair was derived as an \
-             interruption",
-        );
-        let mut pending = Pending::of(&resumed, &Nothing);
-        assert!(
-            !pending.is_owed() && pending.tell_once().is_none(),
-            "a session whose last call {what} owes the model an interruption, so a resume would \
-             tell the model an action that finished did not complete",
-        );
-    }
-
-    let mut minted = Pending::none();
-    assert!(
-        !minted.is_owed() && minted.tell_once().is_none(),
-        "a session being minted owes an interruption, and nothing has happened in it yet",
-    );
-}
-
-/// **The mechanism has a product caller, which for a day it did not.**
-///
-/// [ADR-0010]'s own Status tracking carried this, written by `session-restore`
-/// on 2026-09-05: "Nothing in `zaru-cli`'s product tree constructs
-/// `Turn::Resumed` … So 'the model is told it did not complete' is reachable
-/// from an outside caller and from no door a person can open." That is library
-/// [Verification lessons] §25's cheap companion in as many words — "a
-/// mechanism whose only callers are in the test suite is a mechanism nobody
-/// has been shown to reach, and one search over the production sources answers
-/// it without a run" — and it is a search rather than a run because no check
-/// in this repository can construct a [`Turns`]: it holds a `&Prepared`, whose
-/// fields are private and include a provider client, so there is no way to
-/// call `run_a_turn` without a key. What that costs is stated rather than
-/// glossed: **this says the call site exists and says nothing about what it
-/// does**, and the behaviour is held by the artefact on ADR-0010's Status
-/// tracking and by the checks above.
-///
-/// Two mutants: deleting the `Start::Resumed` call site in
-/// `turns_of_one_line`, and deleting `Pending::of`'s call site in
-/// `terminal::open`, which between them are the whole of the wiring.
-///
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-#[test]
-fn adr_0010_d4s_resumed_turn_is_started_by_product_source_and_not_only_by_a_check() {
+fn layer_six_is_rebuilt_from_the_transcript_by_product_source_wherever_a_turn_ends() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = 0usize;
-    let mut starts: Vec<String> = Vec::new();
-    let mut tellings: Vec<String> = Vec::new();
-    let mut carriers: Vec<String> = Vec::new();
-    let mut controls = 0usize;
+    let mut rebuilds: Vec<String> = Vec::new();
     let mut frontier = vec![src];
 
     while let Some(directory) = frontier.pop() {
@@ -4328,9 +4139,6 @@ fn adr_0010_d4s_resumed_turn_is_started_by_product_source_and_not_only_by_a_chec
             if path.extension().is_none_or(|kind| kind != "rs") {
                 continue;
             }
-            // The checks and their fixtures are not the product, and the whole
-            // point of this check is that a call site in one of them is not a
-            // door a person can open.
             if path
                 .file_name()
                 .is_some_and(|name| name == "tests.rs" || name == "fixtures.rs")
@@ -4340,33 +4148,17 @@ fn adr_0010_d4s_resumed_turn_is_started_by_product_source_and_not_only_by_a_chec
             files += 1;
             let source = std::fs::read_to_string(&path).expect("a source file is readable");
             for (number, line) in source.lines().enumerate() {
-                let at = format!("{}:{}", path.display(), number + 1);
-                // Code rather than prose: every mention in this tree that is
-                // not a call is inside a doc comment or a link definition.
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                // `Start::Resumed(&` rather than `Start::Resumed(`, because
-                // the latter also matches the *pattern* `run_a_turn` uses to
-                // read the start it was handed — measured, not predicted: the
-                // looser spelling stayed green under a mutation that deleted
-                // the construction and left the pattern (library verification
-                // lessons §9). A construction takes a reference; the pattern
-                // binds a name.
-                if line.contains("Start::Resumed(&") {
-                    starts.push(at.clone());
-                }
-                if line.contains(".tell_once()") {
-                    tellings.push(at.clone());
-                }
-                if line.contains("Pending::of(") {
-                    carriers.push(at.clone());
-                }
-                // The liveness control: a spelling that must not be found, so
-                // "nothing found" is evidence the instrument could have found
-                // something (library verification lessons §8).
-                if line.contains("Start::NeverBuilt(") {
-                    controls += 1;
+                if line.contains("rebuilt_from_the_transcript(") && !line.contains("pub fn") {
+                    rebuilds.push(format!(
+                        "{}:{}",
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        number + 1
+                    ));
                 }
             }
         }
@@ -4374,31 +4166,16 @@ fn adr_0010_d4s_resumed_turn_is_started_by_product_source_and_not_only_by_a_chec
 
     assert!(
         files > 40,
-        "this scan read {files} product file(s), which is too few to have asserted anything about \
-         where a resumed turn is started"
+        "this scan read {files} product file(s), which is too few to have asserted anything"
     );
+    let in_file = |name: &str| rebuilds.iter().filter(|at| at.starts_with(name)).count();
     assert_eq!(
-        controls, 0,
-        "the scan matched a variant that does not exist, so its matcher says nothing"
+        (in_file("turn.rs:"), in_file("driver.rs:")),
+        (1, 2),
+        "layer 6 is not rebuilt from the transcript at every place a turn ends -- once for \
+         `zaru \"<task>\"` and twice in a session, for a turn that ran and one that was \
+         interrupted. Found: {rebuilds:?}"
     );
-    assert!(
-        !starts.is_empty(),
-        "no product source starts a turn with `Start::Resumed`, so ADR-0010 D4's second half is \
-         reachable from an outside caller and from no door a person can open"
-    );
-    assert!(
-        !tellings.is_empty(),
-        "no product source ever asks a session what it owes the model, so the interruption is \
-         carried and never told"
-    );
-    assert!(
-        !carriers.is_empty(),
-        "no product source builds the carrier a resumed session hands a turn, so `Pending` is a \
-         mechanism nobody has been shown to reach"
-    );
-    println!("  the resumed turn is started at: {starts:?}");
-    println!("  the interruption is told at: {tellings:?}");
-    println!("  the carrier is built at: {carriers:?}");
 }
 
 /// The answer's text is painted while the turn is still running.

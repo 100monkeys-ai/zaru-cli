@@ -1888,6 +1888,7 @@ fn no_network_call_can_originate_from_session_storage() {
 /// them.
 fn staged_compaction() -> zaru_core::context::Compaction {
     use zaru_core::context::{Announcement, Exchange, ItemId, Span};
+    use zaru_core::conversation::Message;
     zaru_core::context::Compaction {
         announcements: vec![
             Announcement::Compacted {
@@ -1901,10 +1902,15 @@ fn staged_compaction() -> zaru_core::context::Compaction {
                 how_to_reattach: "re-attach with [[".to_owned(),
             },
         ],
-        raw: Some(Span::new(vec![
-            Exchange::verbatim("the first thing that was said"),
-            Exchange::verbatim("the second thing that was said"),
+        raw: Some(Span::of(&[
+            Exchange::of_turn(vec![Message::User {
+                text: "the first thing that was said".to_owned(),
+            }]),
+            Exchange::of_turn(vec![Message::User {
+                text: "the second thing that was said".to_owned(),
+            }]),
         ])),
+        summary: Some("what the two came to".to_owned()),
     }
 }
 
@@ -1971,9 +1977,12 @@ fn the_raw_span_reaches_the_transcript_unredacted() {
     transcript
         .record(&Record::Compacted(zaru_core::context::Compaction {
             announcements: Vec::new(),
-            raw: Some(Span::new(vec![Exchange::verbatim(format!(
-                "the model was told {planted} and then asked a question"
-            ))])),
+            raw: Some(Span::of(&[Exchange::of_turn(vec![
+                zaru_core::conversation::Message::User {
+                    text: format!("the model was told {planted} and then asked a question"),
+                },
+            ])])),
+            summary: None,
         }))
         .expect("the line is written");
     drop(transcript);
@@ -2306,6 +2315,7 @@ fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
             0,
         ),
         None,
+        &crate::compose::context::fixtures::facts(),
         &Surface::new("0.0.0", "https://example.invalid"),
     )
     .expect("a session starts");
@@ -2337,6 +2347,7 @@ fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
             0,
         ),
         None,
+        &crate::compose::context::fixtures::facts(),
         &Surface::new("0.0.0", "https://example.invalid"),
     )
     .expect("a second session starts");
@@ -2580,6 +2591,7 @@ fn a_live_session(scratch: &ScratchRoot, here: &ScratchRoot) -> crate::session::
             0,
         ),
         None,
+        &crate::compose::context::fixtures::facts(),
         &crate::cli::Surface::new("0.0.0", "https://example.invalid"),
     )
     .expect("a session starts");

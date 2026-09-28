@@ -149,13 +149,6 @@ pub enum OpenAiCompatibleFailure {
         /// What the parser said.
         parser: String,
     },
-    /// This turn's own bookkeeping disagrees with itself.
-    ResultsDoNotMatchCalls {
-        /// Results accumulated.
-        results: usize,
-        /// Calls remembered.
-        calls: usize,
-    },
 }
 
 impl fmt::Display for OpenAiCompatibleFailure {
@@ -212,12 +205,6 @@ impl fmt::Display for OpenAiCompatibleFailure {
             Self::ToolSchemaUnreadable { tool, parser } => write!(
                 f,
                 "the tool {tool:?} has parameters this harness could not render as JSON: {parser}",
-            ),
-            Self::ResultsDoNotMatchCalls { results, calls } => write!(
-                f,
-                "this turn accumulated {results} tool results for {calls} calls; they are paired \
-                 by position, so an unequal count is this harness having lost track rather than \
-                 something to send",
             ),
         }
     }

@@ -598,64 +598,47 @@ pub fn context_shape_of(
 
 /// [ADR-0013] D1's layer 6 as this session left it, and which turn is next.
 ///
-/// # A resumed session does not remember its own conversation, until now
+/// # The transcript is the source, and the same function rebuilds it live
 ///
-/// [ADR-0010] D4 says a resume "restores `context.json`", D3 says that file
-/// "holds what the model needs to continue", and until 2026-09-05 this
-/// function's caller opened a **fresh** context and threw the checkpoint
-/// away — so the first thing a person typed after resuming was answered by a
-/// model that had been told nothing about the session they were sitting in.
+/// Layer 6 is rebuilt from the transcript's records by
+/// [`crate::compose::conversation_of`], which is what every turn boundary of a
+/// live session calls too. So a resumed session is sent the conversation the
+/// live session had: every earlier message, every tool call with its
+/// arguments, and every result exactly as the model was given it. A call that
+/// was running when the session stopped is closed with a result saying it did
+/// not complete.
 ///
-/// **The checkpoint is canonical and the transcript is history.** D3 and D4
-/// name `context.json` and nothing else as what a resume restores; rebuilding
-/// layer 6 out of the transcript's records instead would be a second source
-/// of truth for one thing, and it would restore the **raw** span of a
-/// compaction where [ADR-0013] D2 says "only the model's view is compacted".
-/// So a session whose checkpoint holds a summary comes back holding the
-/// summary, and the span it replaced stays where D2 put it.
+/// Until 2026-09-28 this read `context.json` instead, which held a rendering
+/// of what the pane had shown, so a resumed model knew that a command had
+/// failed and nothing of what it printed. `context.json` is still written
+/// after every turn, for a person to read, and nothing reads it back.
 ///
 /// **The prefix and the limits are this invocation's**, built fresh, which is
 /// D1's "never rewritten mid-session" read across a resume: a session resumed
 /// after a configuration change gets the configuration it was resumed under
 /// rather than the one it was started under.
 ///
-/// # A checkpoint this harness did not write is a defect, not a fresh session
+/// # A transcript from before 2026-09-28
 ///
-/// `SessionContext::restored` refuses a document it did not write, and the
-/// refusal is [ADR-0016] D1's **Defect** at D5's `70` — the same class, by the
-/// same argument, that `Classify::resume` already gives a checkpoint that will
-/// not parse: "the transcript and the checkpoint have exactly one writer in
-/// this workspace and it is this harness". Reading it as an empty conversation
-/// instead would drop a session's whole history and look exactly like a
-/// session that had none.
+/// It is rebuilt with what it holds, and [`Rebuilt::unrecorded_calls`] says
+/// how many tool calls it names and never kept; the caller says so once.
 ///
-/// **An absent checkpoint is not that.** `Checkpoint::read` already calls
-/// `None` "not an error: D3 overwrites it each turn and a session with no
-/// turns has had none", so a session that never checkpointed opens empty.
-///
-/// # Errors
-///
-/// The classified defect, when the stored document is not what
-/// [`crate::compose::SessionContext`] writes.
+/// [`Rebuilt::unrecorded_calls`]: crate::compose::Rebuilt::unrecorded_calls
 ///
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+#[must_use]
 pub fn restored_context(
     resumed: &Resumed,
-    classify: &Classify,
-    evidence: SessionEvidence,
     shape: crate::compose::ContextShape,
     persona: Option<&str>,
-) -> Result<crate::compose::SessionContext, Box<Exit>> {
-    let prefix = crate::compose::prefix_for(persona);
-    match &resumed.checkpoint {
-        Some(checkpoint) => crate::compose::SessionContext::restored(prefix, shape, checkpoint)
-            .map_err(|error| {
-                Box::new(Exit::Failed(classify.checkpoint_contents(&error, evidence)))
-            }),
-        None => Ok(crate::compose::SessionContext::opened(prefix, shape)),
-    }
+    facts: &crate::compose::Facts,
+) -> (crate::compose::SessionContext, crate::compose::Rebuilt) {
+    crate::compose::SessionContext::rebuilt(
+        crate::compose::prefix_for(persona, facts),
+        shape,
+        &resumed.records,
+    )
 }
 
 /// Which session an [`Opening`] names, minting one where it says to.
@@ -767,6 +750,15 @@ pub fn mint(
     let mut serving =
         crate::compose::persona::for_session(home, variables, &resolution, workspace.as_deref());
     drop(serving.take_refreshing());
+    let facts = crate::compose::Facts::of_this_session(
+        Some(here.root()),
+        &resolution,
+        prepared
+            .as_ref()
+            .map_or(crate::tools::descriptor_set(), |prepared| {
+                prepared.declared_tools()
+            }),
+    );
     let (session, _) = crate::compose::turn::start(
         root,
         tier,
@@ -775,6 +767,7 @@ pub fn mint(
         here.root(),
         shape,
         serving.body(),
+        &facts,
         &classify,
     )
     .map_err(|classified| Box::new(Exit::Failed(*classified)))?;
@@ -983,22 +976,37 @@ fn one_session(
     // writers was the report URL: exit 70, the alternate screen entered and
     // left, and not one byte saying a bug had been found. It reaches them now.
     // ADR-0027 D1's persona, resolved **before** the prefix this session
-    // restores -- `SessionContext::restored` rebuilds layers 1 to 4 from
-    // `prefix_for` rather than reading them out of `context.json`, which holds
-    // only `exchanges`, so a resumed session re-assembles layer 1 and reads
-    // the cache again. The workspace is this session's own `meta.toml`, not a
+    // restores -- `restored_context` builds layers 1 to 4 from `prefix_for`
+    // and rebuilds layer 6 from the transcript, so a resumed session
+    // re-assembles layer 1 and reads the cache again. The workspace is this session's own `meta.toml`, not a
     // second reading of the process, for the reason `attached_workspace`
     // exists at all.
     let pinned = attached_workspace(&store.sessions_directory().join(id.as_str()));
     let mut serving =
         crate::compose::persona::for_session(home, variables, &resolution, Some(pinned.as_str()));
-    let context = restored_context(
+    let facts = crate::compose::Facts::of_this_session(
+        here.as_ref().map(crate::tools::WorkingDirectory::root),
+        &resolution,
+        prepared
+            .as_ref()
+            .map_or(crate::tools::descriptor_set(), |prepared| {
+                prepared.declared_tools()
+            }),
+    );
+    let (context, rebuilt) = restored_context(
         &resumed,
-        &classify,
-        session.evidence(),
         context_shape_of(prepared.as_ref().ok()),
         serving.body(),
-    )?;
+        &facts,
+    );
+    // Said once, as the session opens, where the transcript names tool calls
+    // it never kept: the model cannot be given what they returned.
+    if rebuilt.unrecorded_calls() > 0 {
+        shell.notice(zaru_tui::shell::Line::new(
+            zaru_tui::shell::Register::Announced,
+            crate::compose::prose::EARLIER_RESULTS_NOT_RECORDED,
+        ));
+    }
 
     // The refresh, on the runtime this shell already holds, **for the next
     // session only**. It cannot reach the prefix built two statements above:
@@ -1070,10 +1078,11 @@ fn one_session(
                 &resumed.said,
                 crate::compose::tips::enabled(&resolution),
             ),
-            // ADR-0013 D1's layers, restored from ADR-0010 D3's checkpoint
-            // rather than opened empty. Layer 6 is what this session said
-            // before the process it said it in ended, and it is what every
-            // turn from here assembles over. See `restored_context`.
+            // ADR-0013 D1's layers, with layer 6 rebuilt from this session's
+            // transcript rather than opened empty. Layer 6 is what this
+            // session said before the process it said it in ended, and it is
+            // what every turn from here assembles over. See
+            // `restored_context`.
             context,
             // ADR-0008 D1's turn number, continued rather than restarted.
             // The transcript numbers every turn it holds, so the next one is
@@ -1081,14 +1090,6 @@ fn one_session(
             // Update of 2026-09-05, and `session::resume`'s `turns_so_far`
             // carries why it is the greatest rather than the count.
             next: resumed.turns + 1,
-            // ADR-0010 D4's second half, from the same read of the same
-            // transcript as `next` above and `said` beside it. It is built
-            // *here*, inside the arm that resolved a provider, and told at
-            // the first thing the user asks rather than at the door -- see
-            // `driver::turns_of_one_line`, which carries the ruling and its
-            // reason. A session with no provider builds no `Turns` at all,
-            // so it tells nothing and spends nothing.
-            interrupted: crate::terminal::driver::Pending::of(&resumed, prepared.redactor()),
         })),
         // The real refusal, shown when the user types a task rather than at
         // the door: a person who resumed a session to read it back is not

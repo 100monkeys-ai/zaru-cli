@@ -21,6 +21,7 @@
 //! the `Send` bound is stated rather than inferred, and so that this crate
 //! needs no asynchronous runtime of its own.
 
+use crate::conversation::Message;
 use crate::iteration::event::ValidatorOutcome;
 use crate::iteration::refinement::RefinementPrompt;
 use crate::redaction::Redacted;
@@ -56,32 +57,114 @@ impl fmt::Display for PortFailure {
     }
 }
 
-/// What the loop hands a generator.
+/// What the loop hands a model: the system text, the earlier conversation,
+/// and this turn's own message.
 ///
 /// Assembled by the [`ContextPolicy`], never by the loop: what a model
 /// actually sees is ADR-0013's layering applied to what this crate produced.
+///
+/// # Three parts, because a provider has three places to put them
+///
+/// - **The system text** is ADR-0013 D1's layers 1 to 4, the stable prefix.
+///   Every provider this harness speaks to has a role for it that is not the
+///   person's: a `system` message, or Gemini's `systemInstruction`. Sending it
+///   as a person's message would make the model read the harness's own
+///   instructions as something the person typed.
+/// - **The history** is layer 6: every earlier turn, as the
+///   [`Message`]s it was.
+/// - **The task** is this turn's own message: what the person asked, or the
+///   refinement the iteration loop built, with anything ADR-0013 renders
+///   beside it (layers 5 and 7).
 ///
 /// # It can only be built from redacted text, and that is the mechanism
 ///
 /// ADR-0008's trigger clause 6 was decided on 2026-09-05: every path from
 /// captured bytes into a model prompt passes one
-/// [`Redactor`](crate::redaction::Redactor). A constructor taking a `&str`
-/// would make that a rule somebody keeps; taking a [`Redacted`] makes a path
-/// that forgot the port fail to compile. See [`crate::redaction`].
+/// [`Redactor`](crate::redaction::Redactor). [`Self::new`] takes a
+/// [`Redacted`]; [`Self::assembled`] takes the redactor itself and passes
+/// every part through it. A path that forgot the port does not compile. See
+/// [`crate::redaction`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Prompt(Redacted);
+pub struct Prompt {
+    system: Option<Redacted>,
+    history: Vec<Message>,
+    task: Redacted,
+}
 
 impl Prompt {
-    /// Take a prompt's text, which has already passed the redaction port.
+    /// A prompt that is a task and nothing else: no system text and no
+    /// earlier conversation.
     #[must_use]
-    pub const fn new(text: Redacted) -> Self {
-        Self(text)
+    pub const fn new(task: Redacted) -> Self {
+        Self {
+            system: None,
+            history: Vec::new(),
+            task,
+        }
     }
 
-    /// The prompt's text.
+    /// A whole prompt, every part of it passed through `redactor`.
+    ///
+    /// An empty `system` is no system text at all, rather than an empty one.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
+    pub fn assembled<R: crate::redaction::Redactor + ?Sized>(
+        redactor: &R,
+        system: &str,
+        history: &[Message],
+        task: &str,
+    ) -> Self {
+        Self {
+            system: (!system.is_empty()).then(|| Redacted::by(redactor, system)),
+            history: history
+                .iter()
+                .map(|message| message.redacted(redactor))
+                .collect(),
+            task: Redacted::by(redactor, task),
+        }
+    }
+
+    /// The system text, if there is any.
+    #[must_use]
+    pub fn system(&self) -> Option<&str> {
+        self.system.as_ref().map(Redacted::as_str)
+    }
+
+    /// Every earlier turn, oldest first.
+    #[must_use]
+    pub fn history(&self) -> &[Message] {
+        &self.history
+    }
+
+    /// This turn's own message.
+    #[must_use]
+    pub fn task(&self) -> &str {
+        self.task.as_str()
+    }
+
+    /// Everything as one text: the system text, each earlier message and the
+    /// task, separated by a blank line.
+    ///
+    /// **Not what a provider is sent**; each provider maps the parts to its
+    /// own roles. This is the text a length is counted over, so that every
+    /// byte of every part is counted once.
+    #[must_use]
+    pub fn rendered(&self) -> String {
+        let mut out = String::new();
+        let mut push = |part: &str| {
+            if part.is_empty() {
+                return;
+            }
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(part);
+        };
+        push(self.system().unwrap_or_default());
+        for message in &self.history {
+            push(&message.rendered());
+        }
+        push(self.task.as_str());
+        out
     }
 }
 
@@ -117,54 +200,6 @@ pub struct ValidatorReport {
     pub detail: String,
 }
 
-/// A tool call that was in flight when a previous process died.
-///
-/// # This exists so that ADR-0010 D4's second half has something to travel in
-///
-/// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
-/// is told it did not complete**." The first half is `zaru-cli`'s and is
-/// built — a `Started` line with no matching `Completed` or `Refused`, derived
-/// on resume, because a killed process writes nothing. The second half is
-/// this crate's, because the model is reached through
-/// [`ContextPolicy::assemble`] and that takes a [`Turn`].
-///
-/// The datum is the **rendered line**, not a structure. ADR-0011 D4 calls
-/// `TranscriptEntry::render()`'s output "the line a transcript shows", and
-/// ADR-0010 D2's replayability claim is that "re-rendering it reproduces what
-/// the user saw" — so the line *is* what the user saw, and handing the model
-/// anything else would be a second description of one call. It also keeps
-/// this crate ignorant of tools: a string it does not parse, exactly as
-/// [`crate::tool_call::ToolRequest`]'s arguments are.
-///
-/// # It carries redacted text, and that was a ruling rather than an omission
-///
-/// The line is a transcript line rather than captured bytes, so ADR-0008
-/// clause 6's decision of 2026-09-05 does not name this path among its three.
-/// The `redaction-seam` arc found it by reading the code and the coordinator
-/// ruled it in on the same day: a rendered `cmd.run` line **is** a command
-/// line, which is where a `--token=` argument lives, and by the time a model
-/// reads it the distinction between a transcript line and captured bytes has
-/// stopped meaning anything. The transcript itself keeps the raw line, which
-/// is ADR-0010's rule and is asserted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Interruption {
-    call: Redacted,
-}
-
-impl Interruption {
-    /// Take the rendered line of a call that never completed.
-    #[must_use]
-    pub const fn of(call: Redacted) -> Self {
-        Self { call }
-    }
-
-    /// The line, as whatever recorded it rendered it, after redaction.
-    #[must_use]
-    pub fn call(&self) -> &str {
-        self.call.as_str()
-    }
-}
-
 /// What the loop asks the context policy to assemble a prompt from.
 #[derive(Debug)]
 pub enum Turn<'a> {
@@ -177,24 +212,6 @@ pub enum Turn<'a> {
     Refinement {
         /// The refinement prompt, built from the previous iteration.
         refinement: &'a RefinementPrompt,
-    },
-    /// The first turn of a resumed session, carrying the call that was in
-    /// flight when the previous process died.
-    ///
-    /// [ADR-0010] D4's "the model is told it did not complete", as data. It
-    /// carries the interruption and nothing else: a resumed session's task
-    /// and its conversation are what the policy restored from the checkpoint,
-    /// and re-supplying them here would be the loop telling the policy
-    /// something the policy already holds.
-    ///
-    /// **This variant is the answer to the open question ADR-0008's Status
-    /// tracking raised on 2026-09-04** — "`Turn` has no variant that carries
-    /// an interruption" — and to the matching bullet on `operations/adr-status`.
-    ///
-    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-    Resumed {
-        /// The call that never completed.
-        interrupted: &'a Interruption,
     },
 }
 

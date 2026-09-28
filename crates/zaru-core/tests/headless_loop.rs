@@ -42,10 +42,6 @@ impl ContextPolicy for Echo {
         let text = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
-            Turn::Resumed { interrupted } => format!(
-                "the previous session was interrupted and this call never completed: {}",
-                interrupted.call()
-            ),
         };
         async move { Ok(Prompt::new(Redacted::by(&NothingHeld, &text))) }
     }

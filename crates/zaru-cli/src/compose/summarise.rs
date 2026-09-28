@@ -193,10 +193,10 @@ impl<M: Model + ?Sized + Sync> Summariser for ModelSummariser<'_, M> {
         let request = ModelRequest {
             prompt: &prompt,
             tools: &[],
-            results: &[],
+            turn: &[],
         };
         match self.model.respond(&request).await? {
-            ModelResponse::Text { text, tokens } => {
+            ModelResponse::Text { text, tokens, .. } => {
                 self.spent_was(tokens);
                 Ok(text)
             }
@@ -205,7 +205,7 @@ impl<M: Model + ?Sized + Sync> Summariser for ModelSummariser<'_, M> {
             // span of real conversation with nothing and announce that it had
             // summarised it, which is worse than the compaction not happening
             // — `Context::compact` leaves the context untouched on an error.
-            ModelResponse::Calls { calls, tokens } => {
+            ModelResponse::Calls { calls, tokens, .. } => {
                 self.spent_was(tokens);
                 Err(PortFailure::new(format!(
                     "the model asked for {} tool call(s) in answer to a summarisation, which \

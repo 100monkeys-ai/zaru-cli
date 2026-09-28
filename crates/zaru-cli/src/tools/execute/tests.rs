@@ -1467,6 +1467,8 @@ impl zaru_core::tool_call::Model for StagedCalls {
         _request: &zaru_core::tool_call::ModelRequest<'_>,
     ) -> Result<zaru_core::tool_call::ModelResponse, PortFailure> {
         Ok(zaru_core::tool_call::ModelResponse::Calls {
+            text: String::new(),
+            echo: None,
             calls: self
                 .0
                 .lock()

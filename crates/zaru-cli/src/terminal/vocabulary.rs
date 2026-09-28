@@ -229,7 +229,9 @@ pub(crate) fn refusal_lines(classified: &crate::failure::Classified) -> Vec<Line
 fn lines_for(record: &Record) -> Vec<Line> {
     match record {
         Record::Loop(event) => vec![loop_line(event)],
-        Record::TurnLoop(event) => vec![turn_line(event)],
+        // A message is what the model was sent and is never painted: what a
+        // person sees of a call is the lines the other events give.
+        Record::TurnLoop(event) => turn_line(event).into_iter().collect(),
         // **A pair paints once.** `Phase::Started` and `Phase::Completed`
         // carry the *same* `line` -- ADR-0011 D4's rendered call, written
         // before the call and again after it so that a `Started` with no
@@ -453,10 +455,13 @@ pub(crate) fn spoken(voice: Voice, text: &str) -> Line {
 /// is `Announced`, for the same reason.
 ///
 /// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
+pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Option<Line> {
     use zaru_core::tool_call::{Event, TurnEnding};
 
-    match event {
+    Some(match event {
+        // What the model was sent, recorded for the next turn and painted
+        // nowhere. A person sees a call through the lines around it.
+        Event::Message(_) => return None,
         Event::TurnStarted { n, of } => Line::new(
             Register::Plain,
             match of {
@@ -572,7 +577,7 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Line {
                 ),
             }
         }
-    }
+    })
 }
 
 /// Which register a validator's verdict is written in.

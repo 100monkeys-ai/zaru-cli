@@ -108,7 +108,6 @@ impl ContextPolicy for Policy {
         let rendered = match turn {
             Turn::Initial { task } => format!("[initial] {task}"),
             Turn::Refinement { refinement } => format!("[refinement] {}", refinement.as_str()),
-            Turn::Resumed { interrupted } => format!("[resumed] {}", interrupted.call()),
         };
         Ok(Prompt::new(Redacted::by(&HeldSecrets::none(), &rendered)))
     }
@@ -197,12 +196,15 @@ impl Model for Provider {
         }
         drop(offered);
         let mut seen = self.seen.lock().expect("seen poisoned");
-        for result in request.results {
-            if seen.iter().any(|(id, _)| id == &result.id) {
+        for message in request.turn {
+            let zaru_core::conversation::Message::Tool { id, content, .. } = message else {
+                continue;
+            };
+            if seen.iter().any(|(seen_id, _)| seen_id == id) {
                 continue;
             }
-            println!("  model was given: {:?}", result.content.as_str());
-            seen.push((result.id.clone(), result.content.as_str().to_owned()));
+            println!("  model was given: {content:?}");
+            seen.push((id.clone(), content.clone()));
         }
         drop(seen);
         self.script
@@ -215,6 +217,8 @@ impl Model for Provider {
 
 fn fetch_call(id: &str, url: &str) -> ModelResponse {
     ModelResponse::Calls {
+        text: String::new(),
+        echo: None,
         calls: vec![ToolRequest {
             id: id.to_owned(),
             name: String::from("web.fetch"),
@@ -261,6 +265,7 @@ async fn drive(scratch: &Scratch, mode: Mode, script: Vec<ModelResponse>) -> Run
 
     let mut script = script;
     script.push(ModelResponse::Text {
+        echo: None,
         text: String::from("done"),
         tokens: TokenUsage::default(),
     });
@@ -488,6 +493,8 @@ async fn a_retrieval_is_asked_about_at_the_default_mode_showing_the_whole_url() 
         &scratch,
         Mode::Ask,
         vec![ModelResponse::Calls {
+            text: String::new(),
+            echo: None,
             calls: vec![ToolRequest {
                 id: String::from("p2"),
                 name: String::from("fs.write"),
@@ -545,6 +552,8 @@ async fn a_retrieval_carrying_another_tool_s_arguments_is_not_that_tool() {
         &scratch,
         Mode::Ask,
         vec![ModelResponse::Calls {
+            text: String::new(),
+            echo: None,
             calls: vec![ToolRequest {
                 id: String::from("x1"),
                 name: String::from("web.fetch"),

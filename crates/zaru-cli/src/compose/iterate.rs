@@ -179,7 +179,7 @@ where
 
     /// Ask once, with the tools a turn would offer, and take what came back.
     ///
-    /// `results` is empty because an iteration's exchange is a first exchange
+    /// `turn` is empty because an iteration's exchange is a first exchange
     /// every time: the loop's memory is the refinement prompt, which
     /// [`ContextPolicy::assemble`] has already folded into `prompt`.
     async fn generate(&self, prompt: &Prompt) -> Result<Generated<Candidate>, PortFailure> {
@@ -188,7 +188,7 @@ where
             .respond(&ModelRequest {
                 prompt,
                 tools: crate::tools::descriptor_set(),
-                results: &[],
+                turn: &[],
             })
             .await?;
         let tokens = response.tokens().total();

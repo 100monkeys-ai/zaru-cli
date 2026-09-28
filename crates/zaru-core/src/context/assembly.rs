@@ -63,36 +63,35 @@ use crate::context::limits::ContextLimits;
 use crate::context::port::{Span, Summariser, TokenCounter};
 use crate::context::prefix::{SEPARATOR, StablePrefix};
 use crate::context::usage::Usage;
-use crate::iteration::port::{ContextRefusal, PortFailure};
-use crate::redaction::{Redacted, Redactor};
+use crate::conversation::Message;
+use crate::iteration::port::{ContextRefusal, PortFailure, Prompt};
+use crate::redaction::Redactor;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 
 /// What the model will see, and what it costs.
 ///
-/// The text is [`Redacted`], so a [`Prompt`](crate::iteration::Prompt) built
-/// from one has passed ADR-0008 clause 6's port by construction.
+/// The parts are a [`Prompt`], built by [`Prompt::assembled`] with the
+/// context's redactor, so everything in one has passed ADR-0008 clause 6's
+/// port by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assembled {
-    text: Redacted,
+    prompt: Prompt,
     usage: Usage,
 }
 
 impl Assembled {
-    /// The whole assembled context.
+    /// What the model is sent: the system text, the earlier conversation and
+    /// this turn's task.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.text.as_str()
+    pub const fn prompt(&self) -> &Prompt {
+        &self.prompt
     }
 
-    /// The whole assembled context, as the value a prompt is built from.
-    ///
-    /// This is the door between ADR-0013's assembly and ADR-0008's
-    /// `Prompt`: a context policy hands this straight to `Prompt::new`, and
-    /// there is no other way to make one.
+    /// The prompt, as the value a context policy hands the loop.
     #[must_use]
-    pub fn into_redacted(self) -> Redacted {
-        self.text
+    pub fn into_prompt(self) -> Prompt {
+        self.prompt
     }
 
     /// What it costs against the window. ADR-0013 D6's number.
@@ -156,6 +155,15 @@ pub struct Compaction {
     /// The span of layer 6 that was replaced, for ADR-0010's transcript to
     /// keep. `None` when layer 6 was not compacted.
     pub raw: Option<Span>,
+    /// The summary that replaced the span, exactly as the model is now sent
+    /// it. `None` when layer 6 was not compacted.
+    ///
+    /// Kept so that a session rebuilt from its transcript is sent the same
+    /// summary the live session was, rather than asking a model for a second
+    /// one. Absent from a compaction written before 2026-09-28, which is read
+    /// as `None`: such a session is rebuilt without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// Everything the model is shown, across one session.
@@ -260,6 +268,17 @@ impl Context {
         self.exchanges.push(exchange);
     }
 
+    /// Replace layer 6 with `exchanges`. A turn-boundary act.
+    ///
+    /// What a session does after every turn and when it is resumed: its
+    /// layer 6 is rebuilt from the transcript, which is the one record of
+    /// what the model was sent. Rebuilding produces the same exchanges the
+    /// live session holds, so replacing them changes nothing a prompt cache
+    /// sees.
+    pub fn replace_exchanges(&mut self, exchanges: Vec<Exchange>) {
+        self.exchanges = exchanges;
+    }
+
     /// Record an iteration the loop ran. A turn-boundary act.
     pub fn record_iteration(&mut self, record: IterationRecord) {
         self.iterations.push(record);
@@ -271,11 +290,7 @@ impl Context {
     /// never changes what it measures.
     #[must_use]
     pub fn usage<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> Usage {
-        let text = Redacted::by(redactor, &self.render(""));
-        Usage::new(
-            counter.count(text.as_str()).saturating_add(self.reserved),
-            self.limits.window().get(),
-        )
+        Usage::new(self.measured(counter, redactor), self.limits.window().get())
     }
 
     /// Assemble what the model sees for the iteration about to begin.
@@ -295,14 +310,16 @@ impl Context {
         redactor: &R,
         tail: &str,
     ) -> Result<Assembled, Exceeded> {
-        let text = Redacted::by(redactor, &self.render(tail));
-        let needed = counter.count(text.as_str()).saturating_add(self.reserved);
+        let prompt = self.prompt(redactor, tail);
+        let needed = counter
+            .count(&prompt.rendered())
+            .saturating_add(self.reserved);
         let window = self.limits.window().get();
         if needed > window {
             return Err(Exceeded { needed, window });
         }
         Ok(Assembled {
-            text,
+            prompt,
             usage: Usage::new(needed, window),
         })
     }
@@ -343,7 +360,7 @@ impl Context {
         let overage = used.saturating_sub(threshold);
         let taken = self.oldest_span_covering(counter, overage);
         if taken > 0 {
-            let span = Span::new(self.exchanges[..taken].to_vec());
+            let span = Span::of(&self.exchanges[..taken]);
             let before: u64 = span
                 .exchanges()
                 .iter()
@@ -354,7 +371,8 @@ impl Context {
             let summary = summariser.summarise(&span).await?;
             let after = counter.count(&summary);
             self.exchanges.drain(..taken);
-            self.exchanges.insert(0, Exchange::summary(summary));
+            self.exchanges.insert(0, Exchange::summary(summary.clone()));
+            compaction.summary = Some(summary);
             compaction.announcements.push(Announcement::Compacted {
                 turns: u32::try_from(taken).unwrap_or(u32::MAX),
                 before,
@@ -386,7 +404,7 @@ impl Context {
     /// the raw render would be counting text nobody will ever be shown.
     fn measured<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> u64 {
         counter
-            .count(Redacted::by(redactor, &self.render("")).as_str())
+            .count(&self.prompt(redactor, "").rendered())
             .saturating_add(self.reserved)
     }
 
@@ -397,7 +415,7 @@ impl Context {
     fn oldest_span_covering<C: TokenCounter>(&self, counter: &C, overage: u64) -> usize {
         let mut covered: u64 = 0;
         for (index, exchange) in self.exchanges.iter().enumerate() {
-            covered = covered.saturating_add(counter.count(exchange.as_str()));
+            covered = covered.saturating_add(counter.count(&exchange.rendered()));
             if covered >= overage {
                 return index + 1;
             }
@@ -405,26 +423,34 @@ impl Context {
         self.exchanges.len()
     }
 
-    /// The whole context as the model would read it, `tail` last.
+    /// The whole context as the model is sent it, `tail` last.
     ///
-    /// The prefix comes first and every other layer follows in
-    /// [`Layer::ALL`] order, so the ordering has one home. The prefix leading
-    /// is what prompt caching needs — a cache matches a prefix, so a stable
-    /// region anywhere but the front buys nothing.
-    fn render(&self, tail: &str) -> String {
-        let mut out = String::from(self.prefix.as_str());
+    /// Three parts, one per place a provider puts them. The stable prefix is
+    /// the system text: it leads every request, which is what prompt caching
+    /// needs, and it is sent in the role a provider keeps for instructions
+    /// rather than as something the person said. Layer 6 is the earlier
+    /// conversation, message by message. Layers 5 and 7 are rendered beside
+    /// this turn's own `tail`, in [`Layer::ALL`] order, as the one message
+    /// that opens the turn.
+    fn prompt<R: Redactor + ?Sized>(&self, redactor: &R, tail: &str) -> Prompt {
+        let history: Vec<Message> = self
+            .exchanges
+            .iter()
+            .flat_map(|exchange| exchange.messages().iter().cloned())
+            .collect();
+        let mut task = String::new();
         for layer in Layer::ALL {
             let Some(section) = self.section(layer) else {
                 continue;
             };
-            push_section(&mut out, &section);
+            push_section(&mut task, &section);
         }
-        push_section(&mut out, tail);
-        out
+        push_section(&mut task, tail);
+        Prompt::assembled(redactor, self.prefix.as_str(), &history, &task)
     }
 
-    /// One discardable layer's rendered text, or `None` when the layer is in
-    /// the prefix or has nothing in it.
+    /// One layer's rendered text for the turn's own message, or `None` when
+    /// the layer is in the prefix, is layer 6, or has nothing in it.
     ///
     /// Exhaustive over [`Layer`] rather than falling through on a wildcard,
     /// so an eighth layer fails to compile here and has to be placed.
@@ -433,17 +459,12 @@ impl Context {
             Layer::SystemPromptAndPersona
             | Layer::Grounding
             | Layer::RelationshipMemory
-            | Layer::ProjectManifestSummary => return None,
+            | Layer::ProjectManifestSummary
+            | Layer::ConversationAndToolResults => return None,
             Layer::UserAttachments => self
                 .attachments
                 .iter()
                 .map(AttachedItem::body)
-                .collect::<Vec<_>>()
-                .join(SEPARATOR),
-            Layer::ConversationAndToolResults => self
-                .exchanges
-                .iter()
-                .map(Exchange::as_str)
                 .collect::<Vec<_>>()
                 .join(SEPARATOR),
             Layer::IterationHistory => history::render(&self.iterations),

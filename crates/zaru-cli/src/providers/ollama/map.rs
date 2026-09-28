@@ -40,22 +40,9 @@
 //! # A client of a stateless API owes it the model's own turns
 //!
 //! ADR-0012's amendments page records this as the `gemini-read-loop` arc's
-//! finding, ending "**whoever writes the second client should expect to keep
-//! the same state**". This client keeps it: [`Answered`] holds the assistant
-//! turns of the turn now in flight, scoped to one turn and reset by the act of
-//! building a request whose `results` are empty.
-//!
-//! **Measured here rather than inherited, and the measurement came out
-//! differently.** Replaying a recorded second round against the live endpoint
-//! five times at temperature zero, with the assistant turn **omitted**,
-//! answered correctly five times out of five and never re-called the tool — so
-//! `llama3.2:3b` does not reproduce the defect that made the Gemini client
-//! re-read a file to its ceiling. **The state is kept anyway**, for two
-//! reasons that do not depend on that result: the conversation this client
-//! sends is otherwise a false record of what happened, with a result appearing
-//! for a call the transcript never shows being made; and a measurement over
-//! one model at one temperature is not a property of the kind. Keeping it
-//! costs one vector and is what the record told the second client to expect.
+//! finding. Since 2026-09-28 the loop hands every request the whole
+//! conversation, the model's own messages included, for this turn and every
+//! earlier one, so this client keeps nothing between two requests.
 //!
 //! The other half of that defect **does** apply and is built in from the first
 //! line: each result is named for the **tool** rather than for the call's id.
@@ -66,6 +53,7 @@ use super::endpoint::NUM_THREAD;
 use super::failure::OllamaFailure;
 use super::wire;
 use serde_json::Value;
+use zaru_core::conversation::Message;
 use zaru_core::tool_call::{ModelRequest, ModelResponse, TokenUsage, ToolRequest};
 
 /// The role an assistant turn carries.
@@ -79,134 +67,85 @@ pub const DONE_STOP: &str = "stop";
 /// The `type` every declared tool carries.
 pub const TOOL_FUNCTION: &str = "function";
 
-/// The assistant turns of the turn now in flight.
-///
-/// See the module documentation for why a provider client that remembers
-/// anything is worth announcing, and why this one does.
-#[derive(Debug, Default)]
-pub struct Answered {
-    rounds: Vec<Round>,
-}
-
-/// One round of a turn: the assistant message, and the calls inside it.
-#[derive(Debug, Clone)]
-struct Round {
-    /// The assistant turn, as this client parsed it.
-    message: wire::Message,
-    /// The calls inside it, in the order the model asked.
-    calls: Vec<wire::ToolCall>,
-}
-
-impl Answered {
-    /// Drop everything remembered if this request begins a new turn.
-    ///
-    /// # The boundary lives here, not at the call site
-    ///
-    /// [`ModelRequest::results`] is "What the tools returned so far in this
-    /// turn" and is "Empty on the first exchange", so an empty one *is* a turn
-    /// beginning — it is the only signal the port gives. Reading it inside
-    /// [`request_from`] rather than in the client's exchange is what makes the
-    /// rule structural: there is no call site that can forget to reset,
-    /// because building a request is the reset.
-    ///
-    /// It covers the iteration loop too, and that is not incidental:
-    /// `compose::iterate` sends `results: &[]` on every iteration because "an
-    /// iteration's exchange is a first exchange", so an iteration cannot
-    /// inherit a turn's model history.
-    fn at_turn_boundary(&mut self, request: &ModelRequest<'_>) {
-        if request.results.is_empty() {
-            self.rounds.clear();
-        }
-    }
-
-    /// Remember one assistant turn, exactly as it arrived.
-    ///
-    /// Called only when the response was [`ModelResponse::Calls`]: a turn that
-    /// answers or stops sends nothing further, so there is nothing for a later
-    /// round to resend.
-    pub fn remember(&mut self, message: wire::Message, calls: Vec<wire::ToolCall>) {
-        self.rounds.push(Round { message, calls });
-    }
-
-    /// How many calls this turn has asked for across every round.
-    #[must_use]
-    pub fn calls_asked(&self) -> usize {
-        self.rounds.iter().map(|round| round.calls.len()).sum()
-    }
-}
+/// The role the system text carries.
+pub const ROLE_SYSTEM: &str = "system";
 
 /// Build the request body for one exchange.
+///
+/// # The whole conversation, every time
+///
+/// `/api/chat` is stateless, so every request carries the conversation: the
+/// system text as a `system` message, then every earlier turn, then this
+/// turn's task, then this turn's own messages — a person's message as a `user`
+/// message, the model's as an `assistant` message carrying its `tool_calls`,
+/// and each result as a `tool` message naming its tool by `tool_name`.
+/// Nothing is kept between two requests.
 ///
 /// # Errors
 ///
 /// [`OllamaFailure::ToolSchemaUnreadable`] when a descriptor's parameters are
-/// not JSON, and [`OllamaFailure::ResultsDoNotMatchCalls`] when the loop's
-/// accumulated results and this client's remembered calls differ in number —
-/// because they are paired **by position**, so a mismatch would name a result
-/// for the wrong tool.
+/// not JSON.
 pub fn request_from(
     request: &ModelRequest<'_>,
-    answered: &mut Answered,
     model: &str,
     context_tokens: u64,
 ) -> Result<wire::Request, OllamaFailure> {
-    answered.at_turn_boundary(request);
-
-    let mut messages = Vec::with_capacity(1 + 2 * answered.rounds.len());
-
-    // The prompt. `Prompt` can only be built from `Redacted`, which can only
-    // be built by a `Redactor` -- so ADR-0008 clause 6's guarantee reaches
-    // this line through the type system rather than through a call somebody
-    // remembered to make. Nothing here redacts, and nothing here needs to.
-    messages.push(wire::Message {
-        role: ROLE_USER.to_owned(),
-        content: request.prompt.as_str().to_owned(),
-        tool_calls: Vec::new(),
-        tool_name: None,
-    });
-
-    // Every round this turn has already had, as the API's own conversation:
-    // the assistant's turn exactly as it arrived, then the results of the
-    // calls it made, in the order it made them.
-    //
-    // **Correlation is by position, not by id.** That is
-    // `ModelRequest::results`' own documented contract -- "What the tools
-    // returned so far in this turn, oldest first" -- and `tool_call::machine`
-    // appends each round's outcomes in call order, so position is exact even
-    // for a provider that sends no id at all.
-    if request.results.len() != answered.calls_asked() {
-        return Err(OllamaFailure::ResultsDoNotMatchCalls {
-            results: request.results.len(),
-            calls: answered.calls_asked(),
+    let task = Message::User {
+        text: request.prompt.task().to_owned(),
+    };
+    let mut messages = Vec::with_capacity(2 + request.prompt.history().len() + request.turn.len());
+    if let Some(system) = request.prompt.system() {
+        messages.push(wire::Message {
+            role: ROLE_SYSTEM.to_owned(),
+            content: system.to_owned(),
+            tool_calls: Vec::new(),
+            tool_name: None,
         });
     }
-    let mut results = request.results.iter();
-    for round in &answered.rounds {
-        messages.push(round.message.clone());
-        for call in &round.calls {
-            let Some(result) = results.next() else {
-                // Unreachable while the count above holds; written as a
-                // refusal rather than an `expect` because a request built on
-                // a broken pairing is exactly what must not be sent.
-                return Err(OllamaFailure::ResultsDoNotMatchCalls {
-                    results: request.results.len(),
-                    calls: answered.calls_asked(),
-                });
-            };
-            messages.push(wire::Message {
+    for message in request
+        .prompt
+        .history()
+        .iter()
+        .chain(core::iter::once(&task))
+        .chain(request.turn.iter())
+    {
+        messages.push(match message {
+            Message::User { text } => wire::Message {
+                role: ROLE_USER.to_owned(),
+                content: text.clone(),
+                tool_calls: Vec::new(),
+                tool_name: None,
+            },
+            Message::Assistant { text, calls, .. } => wire::Message {
+                role: ROLE_ASSISTANT.to_owned(),
+                content: text.clone(),
+                tool_calls: calls
+                    .iter()
+                    .map(|call| wire::ToolCall {
+                        id: (!call.id.is_empty()).then(|| call.id.clone()),
+                        function: wire::CalledFunction {
+                            name: call.name.clone(),
+                            // Ollama takes the arguments as an **object**.
+                            // Text that is not JSON is sent as a string
+                            // rather than dropped.
+                            arguments: serde_json::from_str(&call.arguments)
+                                .unwrap_or_else(|_| Value::String(call.arguments.clone())),
+                            index: None,
+                        },
+                    })
+                    .collect(),
+                tool_name: None,
+            },
+            Message::Tool { name, content, .. } => wire::Message {
                 role: ROLE_TOOL.to_owned(),
-                // `ToolResult::content` is `Redacted`, which is the second
-                // half of ADR-0008 clause 6's type gate -- a tool's output
-                // reaches a model through here and not through a prompt.
-                content: result.content.as_str().to_owned(),
+                content: content.clone(),
                 tool_calls: Vec::new(),
                 // **The tool's name, not the call's id.** See the module
                 // documentation: this is the half of the `gemini-read-loop`
-                // defect that does apply to this API, built in rather than
-                // discovered.
-                tool_name: Some(call.function.name.clone()),
-            });
-        }
+                // defect that does apply to this API.
+                tool_name: Some(name.clone()),
+            },
+        });
     }
 
     let tools = tools_of(request.tools)?;
@@ -368,12 +307,18 @@ pub fn response_from(
         .collect();
 
     if !calls.is_empty() {
-        return Ok(ModelResponse::Calls { calls, tokens });
+        return Ok(ModelResponse::Calls {
+            calls,
+            text: message.content.clone(),
+            echo: None,
+            tokens,
+        });
     }
 
     let reason = answer.done_reason.as_deref().unwrap_or_default();
     if reason == DONE_STOP && !message.content.is_empty() {
         return Ok(ModelResponse::Text {
+            echo: None,
             text: message.content.clone(),
             tokens,
         });

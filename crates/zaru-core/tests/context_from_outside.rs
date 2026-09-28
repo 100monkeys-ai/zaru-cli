@@ -28,7 +28,14 @@ use zaru_core::iteration::{
     ExhaustionReason, Generated, Generator, Limits, Outcome, PortFailure, Ports, Prompt, State,
     TruncationBudget, Turn, ValidatorOutcome, ValidatorReport, Validators, run,
 };
-use zaru_core::redaction::{Redacted, Redactor};
+use zaru_core::redaction::Redactor;
+
+/// One turn that is one message from the person: `text`.
+fn said(text: impl Into<String>) -> Exchange {
+    Exchange::of_turn(vec![zaru_core::conversation::Message::User {
+        text: text.into(),
+    }])
+}
 
 /// A nonce no implementation could produce without carrying it.
 const NONCE: &str = "outside-caller-6b1f";
@@ -95,17 +102,11 @@ impl ContextPolicy for Policy<'_> {
         let tail = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
-            Turn::Resumed { interrupted } => format!(
-                "the previous session was interrupted and this call never completed: {}",
-                interrupted.call()
-            ),
         };
-        Ok(Prompt::new(Redacted::by(
-            &NothingHeld,
-            self.context
-                .assemble(self.counter, &NothingHeld, &tail)?
-                .as_str(),
-        )))
+        Ok(self
+            .context
+            .assemble(self.counter, &NothingHeld, &tail)?
+            .into_prompt())
     }
 }
 
@@ -133,7 +134,7 @@ impl Generator for Recorder {
         self.0
             .lock()
             .expect("prompts poisoned")
-            .push(prompt.as_str().to_owned());
+            .push(prompt.rendered());
         Ok(Generated {
             candidate: format!("{NONCE}-candidate"),
             tokens: 1,
@@ -237,10 +238,7 @@ async fn a_caller_outside_this_crate_drives_a_long_session_to_a_compaction_and_a
             )
             .expect("a staged attachment says how to re-attach itself"),
         );
-        context.record_exchange(Exchange::verbatim(text_of(
-            &format!("exchange-{turn}"),
-            EXCHANGE_WORDS,
-        )));
+        context.record_exchange(said(text_of(&format!("exchange-{turn}"), EXCHANGE_WORDS)));
         context.record_iteration(iteration_record(turn));
 
         // What layer 6 held before this turn's compaction, so the raw span
@@ -249,7 +247,7 @@ async fn a_caller_outside_this_crate_drives_a_long_session_to_a_compaction_and_a
         let before_texts: Vec<String> = context
             .exchanges()
             .iter()
-            .map(|exchange| exchange.as_str().to_owned())
+            .map(zaru_core::context::Exchange::rendered)
             .collect();
 
         let compaction = context
@@ -262,7 +260,7 @@ async fn a_caller_outside_this_crate_drives_a_long_session_to_a_compaction_and_a
             let taken: Vec<String> = span
                 .exchanges()
                 .iter()
-                .map(|exchange| exchange.as_str().to_owned())
+                .map(|entry| entry.as_str().to_owned())
                 .collect();
             assert_eq!(
                 taken,
@@ -301,7 +299,7 @@ async fn a_caller_outside_this_crate_drives_a_long_session_to_a_compaction_and_a
             .expect("the staged window is roomy");
 
         assert!(
-            assembled.as_str().starts_with(&opened_with),
+            assembled.prompt().rendered().starts_with(&opened_with),
             "turn {turn}: trigger clause 1 — layers 1 to 4 must lead every assembled context, or \
              prompt caching has nothing to match"
         );
@@ -417,7 +415,7 @@ async fn an_iteration_that_would_exceed_the_window_is_exhausted_and_not_an_error
         0,
     );
     for n in 1..=4 {
-        context.record_exchange(Exchange::verbatim(text_of(&format!("exchange-{n}"), 20)));
+        context.record_exchange(said(text_of(&format!("exchange-{n}"), 20)));
     }
     let before = context.exchanges().len();
 

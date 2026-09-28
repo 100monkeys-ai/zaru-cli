@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::cli::invocation::Request;
-use crate::failure::{Classified, Exit, Line, Presentation, SessionEvidence};
+use crate::failure::{Classified, Exit, Line, Presentation};
 use crate::tools::WorkingDirectory;
 use std::ffi::OsString;
 
@@ -2793,22 +2793,11 @@ fn refusals_that_stop_a_session_opening() -> Vec<(&'static str, Classified)> {
             .expect_err("a value naming no tier is refused"),
     );
 
-    // A checkpoint that parses as JSON and is not what this harness writes,
-    // refused by the one place the document is interpreted.
-    let error = crate::compose::SessionContext::restored(
-        crate::compose::prefix_for(None),
-        crate::terminal::open::context_shape_of(None),
-        &serde_json::json!({ "exchanges": "not what this harness writes" }),
-    )
-    .expect_err("a document this harness did not write is refused");
-    let checkpoint = surface.checkpoint_contents(&error, SessionEvidence::NoSessionExists);
-
     vec![
         ("there is no session to continue", continuing),
         ("a session that does not exist", missing),
         ("a `zaru.toml` refused by name", refused_file),
         ("a runtime tier that names none", refused_tier),
-        ("a checkpoint this harness did not write", checkpoint),
     ]
 }
 

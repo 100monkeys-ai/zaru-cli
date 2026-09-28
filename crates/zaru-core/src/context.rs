@@ -125,7 +125,7 @@ pub use history::IterationRecord;
 pub use item::{AttachedItem, ItemId, ItemRefused};
 pub use layer::{Layer, Retention};
 pub use limits::{ContextLimits, ContextWindow, LimitsRefused, PressureThreshold};
-pub use port::{Span, Summariser, TokenCounter};
+pub use port::{Span, SpanEntry, Summariser, TokenCounter};
 pub use prefix::{PrefixParts, StablePrefix};
 pub use usage::Usage;
 

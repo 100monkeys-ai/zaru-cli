@@ -18,9 +18,10 @@ use crate::credentials::{Alias, Secret};
 use crate::providers::ProviderKind;
 use crate::providers::endpoint::ProviderEndpoint;
 use crate::providers::resolution::{ModelId, ModelTable};
+use zaru_core::conversation::Message;
 use zaru_core::iteration::Prompt;
 use zaru_core::redaction::Redacted;
-use zaru_core::tool_call::{ModelRequest, ModelResponse, ToolDescriptor, ToolResult};
+use zaru_core::tool_call::{ModelRequest, ModelResponse, ToolDescriptor, ToolRequest};
 
 /// A redactor that holds nothing, for building a `Prompt` in a check.
 ///
@@ -138,7 +139,22 @@ fn the_url_carries_no_key_and_there_is_no_parameter_one_could_arrive_through() {
     );
 }
 
-/// One model turn as the API returns it, for building an [`map::Answered`].
+/// One model message as the loop keeps it, with the parts the API returned
+/// in its echo.
+fn model_message(id: &str, name: &str, signature: Option<&str>) -> Message {
+    let parts = model_turn(id, name, signature);
+    Message::Assistant {
+        text: String::new(),
+        calls: vec![ToolRequest {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            arguments: r#"{"path":"notes.txt"}"#.to_owned(),
+        }],
+        echo: Some(serde_json::to_string(&parts).expect("parts serialise")),
+    }
+}
+
+/// One model turn as the API returns it.
 fn model_turn(id: &str, name: &str, signature: Option<&str>) -> Vec<wire::Part> {
     vec![wire::Part::FunctionCall {
         function_call: wire::FunctionCall {
@@ -168,24 +184,26 @@ fn a_model_request_becomes_the_documented_request_body() {
         description: "read a file".to_owned(),
         parameters: r#"{"type":"object","properties":{"path":{"type":"string"}}}"#.to_owned(),
     }];
-    let results = [ToolResult {
-        id: "call_a1".to_owned(),
-        content: Redacted::by(&NothingHeld, "the file's bytes"),
-        failed: false,
-    }];
     // A result exists only because the model asked for something, so the
-    // client's record of what it asked is part of the request's input. This
-    // check used to build a result turn out of nothing, which is how it
-    // asserted a shape the API accepts and the model cannot read.
-    let mut answered = map::Answered::default();
-    answered.record(&model_turn("call_a1", "fs.read", Some("sig-a1")));
+    // model's own message is part of the request's input. This check used to
+    // build a result turn out of nothing, which is how it asserted a shape
+    // the API accepts and the model cannot read.
+    let turn = [
+        model_message("call_a1", "fs.read", Some("sig-a1")),
+        Message::Tool {
+            id: "call_a1".to_owned(),
+            name: "fs.read".to_owned(),
+            content: "the file's bytes".to_owned(),
+            failed: false,
+        },
+    ];
 
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &results,
+        turn: &turn,
     };
-    let body = map::request_from(&request, &mut answered).expect("the schema is JSON");
+    let body = map::request_from(&request).expect("the schema is JSON");
     let json = serde_json::to_value(&body).expect("the body serialises");
 
     assert_eq!(json["contents"][0]["role"], "user");
@@ -238,12 +256,10 @@ fn a_model_request_becomes_the_documented_request_body() {
     let bare = ModelRequest {
         prompt: &prompt,
         tools: &[],
-        results: &[],
+        turn: &[],
     };
-    let json = serde_json::to_value(
-        map::request_from(&bare, &mut map::Answered::default()).expect("no schema to read"),
-    )
-    .expect("the body serialises");
+    let json = serde_json::to_value(map::request_from(&bare).expect("no schema to read"))
+        .expect("the body serialises");
     assert!(
         json.get("tools").is_none(),
         "an empty tool list was sent as an empty array: {json}"
@@ -262,14 +278,11 @@ fn a_tool_schema_that_is_not_json_is_a_defect_and_is_named() {
         description: "run a command".to_owned(),
         parameters: "not json at all".to_owned(),
     }];
-    let failure = map::request_from(
-        &ModelRequest {
-            prompt: &prompt,
-            tools: &tools,
-            results: &[],
-        },
-        &mut map::Answered::default(),
-    )
+    let failure = map::request_from(&ModelRequest {
+        prompt: &prompt,
+        tools: &tools,
+        turn: &[],
+    })
     .expect_err("the schema is not JSON");
 
     assert!(failure.is_defect());
@@ -307,7 +320,7 @@ fn a_response_becomes_one_of_the_ports_three_arms() {
         model_version: Some("gemini-3.6-flash".to_owned()),
     };
     match map::response_from(&answer, 64).expect("it maps") {
-        ModelResponse::Text { text, tokens } => {
+        ModelResponse::Text { text, tokens, .. } => {
             assert_eq!(text, "forty-two");
             assert_eq!(tokens.prompt, 11);
             assert_eq!(tokens.completion, 7);
@@ -337,7 +350,7 @@ fn a_response_becomes_one_of_the_ports_three_arms() {
         model_version: None,
     };
     match map::response_from(&answer, 64).expect("it maps") {
-        ModelResponse::Calls { calls, tokens } => {
+        ModelResponse::Calls { calls, tokens, .. } => {
             assert_eq!(calls.len(), 1);
             assert_eq!(
                 calls[0].id, "call_9f3",
@@ -701,7 +714,7 @@ async fn an_oversized_request_is_refused_before_it_reaches_the_network() {
         .exchange(&ModelRequest {
             prompt: &prompt,
             tools: &[],
-            results: &[],
+            turn: &[],
         })
         .await
         .expect_err("the locally measured request exceeds one byte");
@@ -840,7 +853,7 @@ fn the_recorded_tool_call_maps_to_calls_with_the_providers_own_id() {
     );
 
     match map::response_from(&answer, RECORDED_CALLS.len()).expect("it maps") {
-        ModelResponse::Calls { calls, tokens } => {
+        ModelResponse::Calls { calls, tokens, .. } => {
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].name, "get_weather");
             assert_eq!(
@@ -908,28 +921,34 @@ fn the_recorded_tool_call_maps_to_calls_with_the_providers_own_id() {
 fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
     let answer: wire::Response =
         serde_json::from_str(RECORDED_CALLS).expect("the recorded body parses");
-    let parts = &answer.candidates[0]
-        .content
-        .as_ref()
-        .expect("the recorded candidate carries content")
-        .parts;
-    let mut answered = map::Answered::default();
-    answered.record(parts);
+    let ModelResponse::Calls {
+        calls, text, echo, ..
+    } = map::response_from(&answer, RECORDED_CALLS.len()).expect("the recorded round maps")
+    else {
+        panic!("the recorded round is a tool call");
+    };
+    assert!(
+        echo.is_some(),
+        "the recorded round carries a thought signature, so its parts must be kept to be given \
+         back exactly"
+    );
 
     let prompt = prompt("what is the weather in Zurich");
-    let results = [ToolResult {
-        id: "call_810804".to_owned(),
-        content: Redacted::by(&NothingHeld, "exit code: 0\nstdout:\n7C\nstderr:\n"),
-        failed: false,
-    }];
-    let body = map::request_from(
-        &ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            results: &results,
+    let result = "exit code: 0\nstdout:\n7C\nstderr:\n";
+    let turn = [
+        Message::assistant(&NothingHeld, &text, &calls, echo),
+        Message::Tool {
+            id: "call_810804".to_owned(),
+            name: "get_weather".to_owned(),
+            content: result.to_owned(),
+            failed: false,
         },
-        &mut answered,
-    )
+    ];
+    let body = map::request_from(&ModelRequest {
+        prompt: &prompt,
+        tools: &[],
+        turn: &turn,
+    })
     .expect("a recorded round maps");
     let json = serde_json::to_value(&body).expect("the body serialises");
     let contents = json["contents"].as_array().expect("contents is an array");
@@ -968,11 +987,7 @@ fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
          a model read its own tool output as a stranger's and ask again: {json}"
     );
     assert_eq!(response["id"], "call_810804");
-    assert_eq!(response["response"]["content"], results[0].content.as_str());
-
-    // The discriminating half: a `record` that kept nothing would satisfy a
-    // count assertion by leaving both the model turn and the results out, so
-    // the number of calls the round asked for is asserted too.
+    assert_eq!(response["response"]["content"], result);
     assert_eq!(
         contents[2]["parts"]
             .as_array()
@@ -983,107 +998,115 @@ fn a_second_round_carries_the_model_turn_and_names_the_tool_that_answered() {
     );
 }
 
-/// A turn's remembered model turns do not survive into the next turn.
+/// An earlier turn is sent in its own roles, its model message with the
+/// signature it arrived with, and the system text as `systemInstruction`
+/// rather than as something the person said.
 ///
-/// The signal is [`ModelRequest::results`] being empty, which is the only one
-/// the port gives. Asserted here on the value rather than through the client,
-/// because the client needs a socket and this needs none.
+/// Watched red on the tree before 2026-09-28, where the prompt was one `user`
+/// turn holding the absence line, a rendering of every earlier turn and the
+/// task, and no `systemInstruction` was sent at all.
 #[test]
-fn a_new_turn_forgets_what_the_last_turn_asked_for() {
-    let mut answered = map::Answered::default();
-    answered.record(&model_turn("call_1", "fs.read", Some("sig-1")));
-    answered.record(&model_turn("call_2", "fs.read", Some("sig-2")));
-
-    // No explicit reset: a request with no results IS the turn boundary, and
-    // `request_from` is the only way to build one. See
-    // `Answered::at_turn_boundary`.
-    let prompt = prompt("a second task entirely");
-    let body = map::request_from(
-        &ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            results: &[],
+fn an_earlier_turn_is_resent_in_its_own_roles_and_the_system_text_as_the_system_instruction() {
+    let system = "SYSTEM-TEXT-5e8: working directory /w";
+    let history = [
+        Message::User {
+            text: "read notes.txt".to_owned(),
         },
-        &mut answered,
-    )
+        model_message("call_1", "fs.read", Some("sig-1")),
+        Message::Tool {
+            id: "call_1".to_owned(),
+            name: "fs.read".to_owned(),
+            content: "RESULT-BODY-5e8".to_owned(),
+            failed: false,
+        },
+        Message::Assistant {
+            text: "It says hello.".to_owned(),
+            calls: Vec::new(),
+            echo: None,
+        },
+    ];
+    let prompt = Prompt::assembled(&NothingHeld, system, &history, "what did it say?");
+    let body = map::request_from(&ModelRequest {
+        prompt: &prompt,
+        tools: &[],
+        turn: &[],
+    })
     .expect("a first exchange maps");
-    let wire = serde_json::to_string(&body).expect("the body serialises");
+    let json = serde_json::to_value(&body).expect("the body serialises");
 
     assert_eq!(
-        body.contents.len(),
-        1,
-        "a turn's first request carried something from the turn before it: {wire}"
+        json["systemInstruction"]["parts"][0]["text"], system,
+        "the system text was not sent as the system instruction: {json}"
     );
-    assert!(
-        !wire.contains("sig-1") && !wire.contains("sig-2") && !wire.contains("call_1"),
-        "a previous turn's model output reached the next turn's prompt, which is text ADR-0013's \
-         context policy did not assemble: {wire}"
+    let contents = json["contents"].as_array().expect("contents");
+    let roles: Vec<&str> = contents
+        .iter()
+        .map(|content| content["role"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        roles,
+        ["user", "model", "user", "model", "user"],
+        "the earlier turn was not sent in its own roles: {json}"
     );
-
-    // The accepting sibling: within one turn the history is carried, so this
-    // is forgetting rather than never remembering.
-    let mut answered = map::Answered::default();
-    answered.record(&model_turn("call_1", "fs.read", Some("sig-1")));
-    let results = [ToolResult {
-        id: "call_1".to_owned(),
-        content: Redacted::by(&NothingHeld, "bytes"),
-        failed: false,
-    }];
-    let body = map::request_from(
-        &ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            results: &results,
-        },
-        &mut answered,
-    )
-    .expect("a second round maps");
-    let wire = serde_json::to_string(&body).expect("the body serialises");
+    assert_eq!(contents[1]["parts"][0]["functionCall"]["name"], "fs.read");
+    assert_eq!(
+        contents[1]["parts"][0]["thoughtSignature"], "sig-1",
+        "an earlier turn's model message lost the signature it arrived with: {json}"
+    );
+    assert_eq!(
+        contents[2]["parts"][0]["functionResponse"]["response"]["content"],
+        "RESULT-BODY-5e8"
+    );
+    assert_eq!(contents[4]["parts"][0]["text"], "what did it say?");
+    let wire = serde_json::to_string(&json["contents"]).expect("contents serialise");
     assert!(
-        wire.contains("sig-1"),
-        "the history is not carried within a turn either, so the check above passes by the \
-         client never remembering anything: {wire}"
+        !wire.contains("SYSTEM-TEXT-5e8"),
+        "the system text reached a user turn: {wire}"
     );
 }
 
-/// A result count that does not match the calls asked for is refused, and the
-/// refusal names two numbers and no content.
+/// A model message with nothing to give back exactly is rebuilt from its
+/// text and its calls, and one from another provider is too.
 #[test]
-fn results_that_do_not_match_the_calls_are_refused_rather_than_paired_wrongly() {
-    let mut answered = map::Answered::default();
-    answered.record(&model_turn("call_1", "fs.read", Some("sig-1")));
-
-    let prompt = prompt("anything");
-    let results = [
-        ToolResult {
-            id: "call_1".to_owned(),
-            content: Redacted::by(&NothingHeld, "the first file's bytes"),
-            failed: false,
+fn a_model_message_with_no_echo_is_rebuilt_from_its_text_and_calls() {
+    let prompt = prompt("go on");
+    let turn = [
+        Message::Assistant {
+            text: "Reading it.".to_owned(),
+            calls: vec![ToolRequest {
+                id: String::new(),
+                name: "fs.read".to_owned(),
+                arguments: r#"{"path":"a.txt"}"#.to_owned(),
+            }],
+            echo: None,
         },
-        ToolResult {
-            id: "call_2".to_owned(),
-            content: Redacted::by(&NothingHeld, "the second file's bytes"),
+        Message::Tool {
+            id: String::new(),
+            name: "fs.read".to_owned(),
+            content: "bytes".to_owned(),
             failed: false,
         },
     ];
-    let failure = map::request_from(
-        &ModelRequest {
+    let json = serde_json::to_value(
+        map::request_from(&ModelRequest {
             prompt: &prompt,
             tools: &[],
-            results: &results,
-        },
-        &mut answered,
+            turn: &turn,
+        })
+        .expect("maps"),
     )
-    .expect_err("two results against one call is not a request this client can build");
-
-    assert!(failure.is_defect());
-    assert!(!failure.is_user_correctable());
-    assert!(!failure.is_environmental());
-    let said = failure.to_string();
-    assert!(said.contains('2') && said.contains('1'), "{said}");
+    .expect("serialises");
+    let model = &json["contents"][1];
+    assert_eq!(model["parts"][0]["text"], "Reading it.");
+    assert_eq!(model["parts"][1]["functionCall"]["name"], "fs.read");
+    assert_eq!(model["parts"][1]["functionCall"]["args"]["path"], "a.txt");
     assert!(
-        !said.contains("bytes") && !said.contains("fs.read"),
-        "the refusal quoted a tool's output or a tool's name: {said}"
+        model["parts"][1]["functionCall"].get("id").is_none(),
+        "an id nobody issued was sent: {json}"
+    );
+    assert_eq!(
+        json["contents"][2]["parts"][0]["functionResponse"]["name"],
+        "fs.read"
     );
 }
 
@@ -1093,7 +1116,7 @@ fn the_recorded_text_exchange_maps_to_text() {
     let answer: wire::Response =
         serde_json::from_str(RECORDED_TEXT).expect("the recorded body parses");
     match map::response_from(&answer, RECORDED_TEXT.len()).expect("it maps") {
-        ModelResponse::Text { text, tokens } => {
+        ModelResponse::Text { text, tokens, .. } => {
             assert!(!text.trim().is_empty());
             assert!(tokens.prompt > 0 && tokens.completion > 0);
         }
@@ -1205,14 +1228,11 @@ fn no_tool_declaration_carries_a_keyword_geminis_schema_subset_refuses() {
     );
 
     let prompt = Prompt::new(Redacted::by(&Nothing, "read a file"));
-    let request = super::map::request_from(
-        &ModelRequest {
-            prompt: &prompt,
-            tools: &descriptors,
-            results: &[],
-        },
-        &mut super::map::Answered::default(),
-    )
+    let request = super::map::request_from(&ModelRequest {
+        prompt: &prompt,
+        tools: &descriptors,
+        turn: &[],
+    })
     .expect("the seven descriptors map");
 
     let wire = serde_json::to_string(&request).expect("the request serialises");

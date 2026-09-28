@@ -59,9 +59,10 @@ use crate::providers::endpoint::ProviderEndpoint;
 use crate::providers::port::Provider;
 use crate::providers::resolution::{ModelId, ModelTable};
 use crate::providers::sse;
+use zaru_core::conversation::Message;
 use zaru_core::iteration::Prompt;
 use zaru_core::redaction::Redacted;
-use zaru_core::tool_call::{ModelRequest, ModelResponse, ToolDescriptor, ToolResult};
+use zaru_core::tool_call::{ModelRequest, ModelResponse, ToolDescriptor, ToolRequest};
 
 /// Ollama's `/v1`: one tool call **whole in one frame**.
 const WHOLE_ARGUMENTS: &str = include_str!("recorded/whole-arguments.sse");
@@ -544,10 +545,9 @@ fn the_first_round_of_a_turn_sends_the_prompt_the_tools_and_the_usage_opt_in() {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &[],
+        turn: &[],
     };
-    let mut answered = map::Answered::default();
-    let body = map::request_from(&request, &mut answered, "a-model").expect("built");
+    let body = map::request_from(&request, "a-model").expect("built");
 
     assert!(body.stream, "this client has no non-streamed path");
     assert!(
@@ -566,24 +566,31 @@ fn the_first_round_of_a_turn_sends_the_prompt_the_tools_and_the_usage_opt_in() {
 fn a_second_round_gives_the_model_its_own_turn_back_and_answers_each_call_by_its_id() {
     let tools = [a_descriptor()];
     let prompt = prompt("read notes.txt");
-    let mut answered = map::Answered::default();
 
-    // Round one, remembered exactly as the client remembers it.
+    // Round one, as the loop keeps it: the model's message, built from the
+    // response this client mapped.
     let folded = map::fold(&frames_of(DELTA_ARGUMENTS));
-    let (message, calls) = map::assistant_turn(&folded);
-    answered.remember(message, calls);
-
-    let results = [ToolResult {
-        id: "hRJpUTdgFQJkI18Be8rSRbjHaa9qQFdP".to_owned(),
-        content: Redacted::by(&NothingHeld, "18 degrees and sunny"),
-        failed: false,
-    }];
+    let ModelResponse::Calls {
+        calls, text, echo, ..
+    } = map::response_from(&folded, DELTA_ARGUMENTS.len(), true).expect("the fold maps")
+    else {
+        panic!("the recorded round is a tool call");
+    };
+    let turn = [
+        Message::assistant(&NothingHeld, &text, &calls, echo),
+        Message::Tool {
+            id: "hRJpUTdgFQJkI18Be8rSRbjHaa9qQFdP".to_owned(),
+            name: "get_weather".to_owned(),
+            content: "18 degrees and sunny".to_owned(),
+            failed: false,
+        },
+    ];
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &results,
+        turn: &turn,
     };
-    let body = map::request_from(&request, &mut answered, "a-model").expect("built");
+    let body = map::request_from(&request, "a-model").expect("built");
 
     assert_eq!(body.messages.len(), 3, "prompt, assistant turn, result");
     assert_eq!(body.messages[1].role, map::ROLE_ASSISTANT);
@@ -597,6 +604,11 @@ fn a_second_round_gives_the_model_its_own_turn_back_and_answers_each_call_by_its
         body.messages[1].tool_calls[0].function.arguments, "{\"city\": \"Paris\", \"unit\": \"c\"}",
         "the accumulated string goes back whole",
     );
+    assert_eq!(
+        body.messages[1].tool_calls[0].id.as_deref(),
+        Some("hRJpUTdgFQJkI18Be8rSRbjHaa9qQFdP"),
+        "the call's id, as the server issued it",
+    );
     assert_eq!(body.messages[2].role, map::ROLE_TOOL);
     assert_eq!(
         body.messages[2].tool_call_id.as_deref(),
@@ -609,43 +621,75 @@ fn a_second_round_gives_the_model_its_own_turn_back_and_answers_each_call_by_its
     );
 }
 
+/// Every earlier turn is sent in its own roles, and the system text in the
+/// system role and nowhere else.
+///
+/// Watched red on the tree before 2026-09-28, where a prompt was one `user`
+/// message holding the absence line, a rendering of every earlier turn and
+/// the task.
 #[test]
-fn a_turn_whose_results_and_remembered_calls_disagree_is_refused_rather_than_sent() {
-    let tools = [a_descriptor()];
-    let prompt = prompt("read notes.txt");
-    let mut answered = map::Answered::default();
-    let folded = map::fold(&frames_of(DELTA_ARGUMENTS));
-    let (message, calls) = map::assistant_turn(&folded);
-    answered.remember(message, calls);
-
-    // Two results for one call. Asserted in THIS direction rather than the
-    // other, because a guard written `!=` passes a mutant that only checked
-    // one side.
-    let results = [
-        ToolResult {
-            id: "a".to_owned(),
-            content: Redacted::by(&NothingHeld, "one"),
+fn earlier_turns_go_in_their_own_roles_and_the_system_text_in_the_system_role() {
+    let system = "SYSTEM-TEXT-9d2: working directory /w";
+    let history = [
+        Message::User {
+            text: "read notes.txt".to_owned(),
+        },
+        Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: "call_7".to_owned(),
+                name: "fs.read".to_owned(),
+                arguments: r#"{"path":"notes.txt"}"#.to_owned(),
+            }],
+            echo: None,
+        },
+        Message::Tool {
+            id: "call_7".to_owned(),
+            name: "fs.read".to_owned(),
+            content: "RESULT-BODY-9d2".to_owned(),
             failed: false,
         },
-        ToolResult {
-            id: "b".to_owned(),
-            content: Redacted::by(&NothingHeld, "two"),
-            failed: false,
+        Message::Assistant {
+            text: "It says hello.".to_owned(),
+            calls: Vec::new(),
+            echo: None,
         },
     ];
+    let prompt = Prompt::assembled(&NothingHeld, system, &history, "what did it say?");
     let request = ModelRequest {
         prompt: &prompt,
-        tools: &tools,
-        results: &results,
+        tools: &[],
+        turn: &[],
     };
-    let refusal =
-        map::request_from(&request, &mut answered, "a-model").expect_err("2 results, 1 call");
+    let body = map::request_from(&request, "a-model").expect("built");
+    let roles: Vec<&str> = body.messages.iter().map(|m| m.role.as_str()).collect();
     assert_eq!(
-        refusal,
-        OpenAiCompatibleFailure::ResultsDoNotMatchCalls {
-            results: 2,
-            calls: 1,
-        },
+        roles,
+        ["system", "user", "assistant", "tool", "assistant", "user"],
+        "the conversation was not sent message by message in its own roles: {body:?}"
+    );
+    assert_eq!(body.messages[0].content.as_deref(), Some(system));
+    assert_eq!(
+        body.messages[2].tool_calls[0].function.arguments,
+        r#"{"path":"notes.txt"}"#
+    );
+    assert_eq!(body.messages[2].tool_calls[0].id.as_deref(), Some("call_7"));
+    assert_eq!(body.messages[3].tool_call_id.as_deref(), Some("call_7"));
+    assert_eq!(body.messages[3].content.as_deref(), Some("RESULT-BODY-9d2"));
+    assert_eq!(
+        body.messages[5].content.as_deref(),
+        Some("what did it say?")
+    );
+    assert!(
+        body.messages
+            .iter()
+            .filter(|m| m.role == map::ROLE_USER)
+            .all(|m| !m
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SYSTEM-TEXT-9d2")),
+        "the system text reached a user message: {body:?}"
     );
 }
 
@@ -660,11 +704,9 @@ fn a_tool_whose_schema_is_not_json_is_refused_and_the_refusal_names_the_tool() {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &[],
+        turn: &[],
     };
-    let mut answered = map::Answered::default();
-    let refusal =
-        map::request_from(&request, &mut answered, "a-model").expect_err("the schema is not JSON");
+    let refusal = map::request_from(&request, "a-model").expect_err("the schema is not JSON");
     assert!(
         matches!(
             &refusal,
@@ -1097,10 +1139,9 @@ fn corpus_the_request_body_this_client_serialises_carries_no_key() {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &[],
+        turn: &[],
     };
-    let mut answered = map::Answered::default();
-    let body = map::request_from(&request, &mut answered, "a-model").expect("built");
+    let body = map::request_from(&request, "a-model").expect("built");
     let serialised = serde_json::to_string(&body).expect("the body serialises");
 
     assert!(!serialised.contains(A_KEY), "by value: {serialised}");
@@ -1608,7 +1649,7 @@ async fn adr_0036_d1_an_oversized_openai_compatible_request_is_refused_before_it
         .exchange(&ModelRequest {
             prompt: &prompt,
             tools: &[],
-            results: &[],
+            turn: &[],
         })
         .await
         .expect_err("the locally measured request exceeds sixty-four bytes");

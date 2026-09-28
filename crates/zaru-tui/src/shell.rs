@@ -1091,7 +1091,7 @@ impl Shell {
     ///
     /// Taking it is what empties it, so a host that drains the queue cannot
     /// run the same task twice however it is written — the shape
-    /// `Pending::tell_once` already uses one crate over.
+    /// `SessionNotice::state_once` already uses one crate over.
     pub fn take_queued(&mut self) -> Option<Queued> {
         self.queued.take()
     }

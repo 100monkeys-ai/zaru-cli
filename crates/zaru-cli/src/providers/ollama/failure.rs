@@ -142,19 +142,6 @@ pub enum OllamaFailure {
         /// What the parser said.
         parser: String,
     },
-    /// The turn's accumulated results and its remembered calls are not the
-    /// same number.
-    ///
-    /// A defect for the same reason [`Self::ToolSchemaUnreadable`] is: both
-    /// numbers come from this process. **Two numbers and no content** — a
-    /// result's bytes are a tool's output and a call's name is a tool's name,
-    /// and neither belongs in a sentence a reader will paste somewhere.
-    ResultsDoNotMatchCalls {
-        /// How many results the loop accumulated.
-        results: usize,
-        /// How many calls this client remembers asking for.
-        calls: usize,
-    },
 }
 
 impl fmt::Display for OllamaFailure {
@@ -187,12 +174,6 @@ impl fmt::Display for OllamaFailure {
             Self::ToolSchemaUnreadable { tool, parser } => write!(
                 f,
                 "the tool {tool:?} has parameters this harness could not render as JSON: {parser}",
-            ),
-            Self::ResultsDoNotMatchCalls { results, calls } => write!(
-                f,
-                "this turn accumulated {results} tool results for {calls} calls; they are paired \
-                 by position, so an unequal count is this harness having lost track rather than \
-                 something to send",
             ),
         }
     }

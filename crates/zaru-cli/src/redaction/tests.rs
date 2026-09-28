@@ -466,15 +466,19 @@ const PATHS: [(&str, &str); 9] = [
         "the refinement prompt's four variable-length parts (ADR-0008 D4)",
     ),
     (
-        "zaru-core/src/context/assembly.rs",
-        "the assembled context (ADR-0013 D1 and D5). **Its own description \
-         said \"covering layers 6 and 7\" until 2026-09-15, and that was \
-         narrower than what the call does**: `Context::render` begins with the \
-         stable prefix and `Redacted::by` takes the whole render, so layers 1 \
-         to 4 pass the port too -- which is what lets ADR-0027's served page \
-         carry a held bearer without one reaching a model. Measured from the \
-         release binary at `15d31f1`, where a persona planted with a stored \
-         bearer in it assembled with the marker in its place",
+        "zaru-core/src/iteration/port.rs",
+        "the assembled prompt (ADR-0013 D1 to D7): `Prompt::assembled` takes the \
+         system text, every earlier message and the task, and passes each through \
+         the port. Until 2026-09-28 this row was `context/assembly.rs`, which \
+         redacted one rendered text; the prompt is three parts now, and the \
+         earlier messages come back off disk, so they are redacted again on \
+         every turn rather than trusted from the turn that wrote them",
+    ),
+    (
+        "zaru-core/src/conversation.rs",
+        "a turn's own messages as the loop builds them (since 2026-09-28): the \
+         person's task, and the model's text and every call's arguments, which \
+         the next request carries back and the transcript records",
     ),
     (
         "zaru-core/src/tool_call/port.rs",
@@ -489,16 +493,12 @@ const PATHS: [(&str, &str); 9] = [
         "the assembled tool result, which is what a `ToolResult` is built from",
     ),
     (
-        "zaru-cli/src/session/resume.rs",
-        "a resumed session's interrupted call (ADR-0010 D4)",
-    ),
-    (
         "zaru-cli/src/compose/boundary.rs",
-        "a finished turn becoming the next turn's layer 6, in a session that \
-         holds a conversation (ADR-0013 D1); and, since 2026-09-06, the same \
-         two strings becoming ADR-0010 D2's conversation records, from the \
-         same call site so that this list does not gain a ninth row for a \
-         path that is not a model prompt",
+        "ADR-0010 D2's conversation records, the person's task and the answer as \
+         a turn keeps them. Until 2026-09-28 this row was also a finished turn \
+         becoming the next turn's layer 6; layer 6 is rebuilt from the \
+         transcript now, and its messages pass the port in \
+         `zaru-core/src/iteration/port.rs`",
     ),
     (
         "zaru-cli/src/compose/summarise.rs",
@@ -506,7 +506,11 @@ const PATHS: [(&str, &str); 9] = [
     ),
     (
         "zaru-cli/src/compose/persona.rs",
-        "ADR-0027 D1's served page, becoming ADR-0013 D1's layer 1 **and** the          line `~/.zaru/persona.jsonl` holds. **The ninth row is the first that          is not a prompt**, and it is deliberate: the prompt seam alone would          have covered the model and not a person reading the cache with `cat`,          which ADR-0010 D5 invites them to do, so the body is redacted once on          the way into the file and the same redaction is what layer 1 takes.          Ruled 2026-09-15 under directive 20, open to Jeshua's veto",
+        "ADR-0027 D1's served page, becoming ADR-0013 D1's layer 1 **and** the \
+         line `~/.zaru/persona.jsonl` holds. The first row that is not a prompt, \
+         deliberately: the prompt seam alone would have covered the model and not \
+         a person reading the cache with `cat`, which ADR-0010 D5 invites them \
+         to do. Ruled 2026-09-15 under directive 20, open to Jeshua's veto",
     ),
 ];
 

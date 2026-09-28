@@ -394,6 +394,13 @@ impl Prepared {
         self.mode
     }
 
+    /// Every tool this session offers a model: the built-ins and any a
+    /// Nuclear Notes token projects.
+    #[must_use]
+    pub fn declared_tools(&self) -> &[zaru_core::tool_call::ToolDescriptor] {
+        &self.declared_tools
+    }
+
     /// How this session's context is sized, for the kind that answered: its
     /// window and threshold, and what a request spends beside it.
     ///
@@ -1290,13 +1297,11 @@ fn projected_surface(
 /// up.
 ///
 /// `start` is what the turn is about, and it is the **caller's** for the same
-/// reason `n` is. [`task`] passes [`Start::Task`]; a shell passes that for a
-/// line the user typed and [`Start::Resumed`] for the one turn a session
-/// resumed over an interrupted transcript owes the model first — [ADR-0010]
-/// D4's "the model is told it did not complete". It is a required parameter
-/// rather than a defaulted one so that the compiler names every call site that
-/// should have been asked which of the two this is (library
-/// [Verification lessons] §14).
+/// reason `n` is: [`Start::Task`], the line the person typed. A call a
+/// previous turn left without a result needs no turn of its own: the
+/// conversation rebuilt from the transcript closes it with a result that says
+/// it did not complete, which is [ADR-0010] D4's "the model is told it did not
+/// complete" in the shape a provider defines for it.
 ///
 /// `confirmer` is [ADR-0011] D3's `ask`. `None` refuses a call that needed one
 /// rather than performing it, which is `Decision::permit`'s own rule.
@@ -1320,7 +1325,6 @@ fn projected_surface(
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-/// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -1512,18 +1516,12 @@ async fn ran(
     // point. So a turn that failed -- the turn a person is most likely to
     // read back -- would have recorded neither half. Measured 2026-09-06
     // against a closed provider endpoint.
-    //
-    // **A resumed turn writes nothing.** `Start::Resumed` carries no task --
-    // "the work and the conversation are what the policy restored" -- and
-    // minting a user line for it would be the harness putting words in the
-    // person's mouth.
-    if let Start::Task(task) = start
-        && let Err(failure) = transcript.record(&crate::compose::boundary::spoken_by_the_user(
-            &prepared.held,
-            n,
-            task,
-        ))
-    {
+    let Start::Task(task) = start;
+    if let Err(failure) = transcript.record(&crate::compose::boundary::spoken_by_the_user(
+        &prepared.held,
+        n,
+        task,
+    )) {
         return Ran::refused_having_said(lines, Surface::transcript(&failure, evidence));
     }
 
@@ -1811,11 +1809,13 @@ async fn ran(
     rather than something this function resolves for itself because that is \
     ADR-0013 trigger clause 1: the persona has to be in hand *before* the \
     prefix exists, so resolving it here would put a network call inside the \
-    one function that must not have one. Each of the eight is a value some \
-    record owns -- the tier, the provider, the workspace pin, the working \
-    directory, the window, the persona -- and bundling them would be a second \
-    name for the same list, which is the argument `one_session` and \
-    `driver::run` both already make for their own"
+    one function that must not have one. The eighth is the facts layer 1 \
+    states where no persona is served, resolved by the caller for the same \
+    reason. Each of the nine is a value some record owns -- the tier, the \
+    provider, the workspace pin, the working directory, the window, the \
+    persona, the facts -- and bundling them would be a second name for the \
+    same list, which is the argument `one_session` and `driver::run` both \
+    already make for their own"
 )]
 pub fn start(
     root: std::path::PathBuf,
@@ -1825,6 +1825,7 @@ pub fn start(
     here: &std::path::Path,
     shape: crate::compose::ContextShape,
     persona: Option<&str>,
+    facts: &crate::compose::Facts,
     surface: &Surface<'_>,
 ) -> Result<(crate::session::Session, SessionContext), Box<crate::failure::Classified>> {
     let session_store = SessionStore::open(root).map_err(|failure| surface.session(&failure))?;
@@ -1861,7 +1862,7 @@ pub fn start(
     MetaFile::at(session.meta_path())
         .write(&meta)
         .map_err(|failure| Box::new(Surface::meta(&failure, evidence.clone())))?;
-    let context = SessionContext::opened(context::prefix_for(persona), shape);
+    let context = SessionContext::opened(context::prefix_for(persona, facts), shape);
     Checkpoint::at(session.checkpoint_path())
         .write(&context.checkpoint())
         .map_err(|failure| Box::new(Surface::checkpoint(&failure, evidence.clone())))?;
@@ -1941,6 +1942,11 @@ pub fn task(
         prepared.here.root(),
         prepared.context_shape(),
         serving.body(),
+        &crate::compose::Facts::of_this_session(
+            Some(prepared.here.root()),
+            resolution,
+            &prepared.declared_tools,
+        ),
         &surface,
     ) {
         Ok(started) => started,
@@ -1954,13 +1960,6 @@ pub fn task(
     // reason this is an `Option` rather than a stub that answers yes.
     let confirmer = crate::tools::prompt::Prompt::from_process();
 
-    // ADR-0013 D1's layer 6, read off ADR-0008 clause 3's own emission. This
-    // turn had no such sink until 2026-09-05, which is why the checkpoint it
-    // left was the empty one written above: a session created here recorded
-    // no exchange at all, so resuming it restored nothing however much had
-    // been said. See `crate::compose::ToolLines`.
-    let mut tools = crate::compose::ToolLines::default();
-
     let ran = block_on(run_one(
         version,
         report_at,
@@ -1972,7 +1971,7 @@ pub fn task(
         confirmer
             .as_ref()
             .map(|prompt| prompt as &(dyn crate::tools::Confirm + Sync)),
-        &mut [&mut tools],
+        &mut [],
         // ADR-0028 D3's subscriber, and there is no pane here: `zaru "<task>"`
         // writes the transcript and prints an outcome. The narrative is on
         // disk and `--resume` renders it; nothing paints it as it happens.
@@ -1988,15 +1987,19 @@ pub fn task(
     // --- ADR-0013 D1's layer 6 and ADR-0010 D3's checkpoint over it --------
     //
     // The same two acts `crate::terminal::driver::run_a_turn` performs, in
-    // the same order, through the same two functions. D3's "overwritten each
-    // turn" is about every turn, and this is one — a session whose only turn
-    // ran here is exactly the session a later `--resume` opens.
-    context.record(crate::compose::boundary::exchange_of_turn(
-        prepared.redactor(),
-        task,
-        &tools.taken(),
-        &ran.lines.join("\n"),
-    ));
+    // the same order, through the same two functions. Layer 6 is rebuilt from
+    // the transcript, which now holds this turn as the model was sent it, and
+    // D3's "overwritten each turn" is about every turn, and this is one — a
+    // session whose only turn ran here is exactly the session a later
+    // `--resume` opens.
+    if let Err(failure) =
+        crate::compose::boundary::rebuilt_from_the_transcript(&mut context, &session)
+    {
+        let classified = Surface::transcript(&failure, evidence);
+        record_the_failure(&session, &classified);
+        crate::compose::persona::refresh_now(&mut serving);
+        return Ran::refused_having_said(ran.lines, classified);
+    }
     if let Err(failure) = crate::compose::boundary::checkpointed(&context, &session) {
         // The turn happened and `ran` already carries what the user is told,
         // so this is appended rather than replacing it: reporting only the

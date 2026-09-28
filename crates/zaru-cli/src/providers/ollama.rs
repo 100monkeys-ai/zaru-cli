@@ -124,12 +124,6 @@ pub struct OllamaClient {
     /// `impl Future + Send`, so the future borrowing `&self` requires
     /// `Self: Sync` and a `Cell` is not.
     last: Mutex<Option<(u64, u64)>>,
-    /// What the model has already said in the turn now in flight.
-    ///
-    /// [`map::Answered`] says why a client of a stateless API keeps this, and
-    /// records the measurement showing this model does not need it the way the
-    /// other one did.
-    answered: Mutex<map::Answered>,
 }
 
 impl OllamaClient {
@@ -173,7 +167,6 @@ impl OllamaClient {
             http,
             deltas: Mutex::new(None),
             last: Mutex::new(None),
-            answered: Mutex::new(map::Answered::default()),
         })
     }
 
@@ -245,18 +238,7 @@ impl OllamaClient {
         // Scoped so the guard is dropped before the first `.await`: a
         // `std::sync::MutexGuard` is `!Send` and `Model::respond` returns a
         // `Send` future, so holding one across an await would not compile.
-        let body = {
-            let mut answered = match self.answered.lock() {
-                Ok(answered) => answered,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            map::request_from(
-                request,
-                &mut answered,
-                self.model.as_str(),
-                self.context_tokens,
-            )?
-        };
+        let body = map::request_from(request, self.model.as_str(), self.context_tokens)?;
         // ADR-0036 D1, before any network I/O: the whole native request, the
         // model's own prior turns and every tool result included, against the
         // window this client also sends as `num_ctx`.
@@ -359,19 +341,6 @@ impl OllamaClient {
             Err(poisoned) => *poisoned.into_inner() = Some(usage),
         }
 
-        // Remember this assistant turn **only when it asked for tools**,
-        // because that is the only case a later round exists to give it back
-        // in: a `Text` or a `Stopped` ends the turn and the next exchange
-        // arrives with no results and forgets everything anyway.
-        if matches!(mapped, ModelResponse::Calls { .. })
-            && let Some(message) = answer.message.clone()
-        {
-            let calls = message.tool_calls.clone();
-            match self.answered.lock() {
-                Ok(mut answered) => answered.remember(message, calls),
-                Err(poisoned) => poisoned.into_inner().remember(message, calls),
-            }
-        }
         Ok(mapped)
     }
 

@@ -17,9 +17,7 @@
 
 use core::time::Duration;
 use std::sync::Mutex;
-use zaru_core::iteration::{
-    Clock, ContextPolicy, ContextRefusal, Interruption, PortFailure, Prompt, Turn,
-};
+use zaru_core::iteration::{Clock, ContextPolicy, ContextRefusal, PortFailure, Prompt, Turn};
 use zaru_core::redaction::{Redacted, Redactor};
 use zaru_core::tool_call::{
     Capabilities, Event, EventSink, InnerLoop, Model, ModelRequest, ModelResponse, Outcome, Ports,
@@ -61,13 +59,13 @@ impl Model for Provider<'_> {
         // Print what the model was actually shown, so the capture is a record
         // of the exchange rather than of the harness's opinion of it.
         println!(
-            "  model <- prompt {:?}, {} tool(s) offered, {} result(s) so far",
-            request.prompt.as_str(),
+            "  model <- prompt {:?}, {} tool(s) offered, {} message(s) so far this turn",
+            request.prompt.rendered(),
             request.tools.len(),
-            request.results.len()
+            request.turn.len()
         );
-        for result in request.results {
-            println!("      result {} -> {:?}", result.id, result.content);
+        for message in request.turn {
+            println!("      {message:?}");
         }
         self.clock.advance(Duration::from_millis(10));
         self.script
@@ -115,9 +113,6 @@ impl ContextPolicy for Policy {
         let rendered = match turn {
             Turn::Initial { task } => format!("[initial] {task}"),
             Turn::Refinement { refinement } => format!("[refinement] {}", refinement.as_str()),
-            Turn::Resumed { interrupted } => {
-                format!("[resumed] this did not complete: {}", interrupted.call())
-            }
         };
         self.0
             .lock()
@@ -176,6 +171,8 @@ async fn an_outside_caller_drives_a_turn_through_a_tool_call_to_an_answer() {
         script: Mutex::new(
             [
                 ModelResponse::Calls {
+                    text: String::new(),
+                    echo: None,
                     calls: vec![ToolRequest {
                         id: String::from("c1"),
                         name: String::from("fs.read"),
@@ -184,6 +181,7 @@ async fn an_outside_caller_drives_a_turn_through_a_tool_call_to_an_answer() {
                     tokens: tokens(),
                 },
                 ModelResponse::Text {
+                    echo: None,
                     text: String::from("it reads the composition and exits 0"),
                     tokens: tokens(),
                 },
@@ -260,6 +258,8 @@ async fn a_refusal_reaches_the_model_and_the_turn_carries_on() {
         script: Mutex::new(
             [
                 ModelResponse::Calls {
+                    text: String::new(),
+                    echo: None,
                     calls: vec![ToolRequest {
                         id: String::from("c1"),
                         name: String::from("cmd.run"),
@@ -268,6 +268,7 @@ async fn a_refusal_reaches_the_model_and_the_turn_carries_on() {
                     tokens: tokens(),
                 },
                 ModelResponse::Text {
+                    echo: None,
                     text: String::from("understood, I will not run that"),
                     tokens: tokens(),
                 },
@@ -325,68 +326,6 @@ async fn a_refusal_reaches_the_model_and_the_turn_carries_on() {
             .iter()
             .any(|event| matches!(event, Event::ToolRefused { .. })),
         "the stream should say the call was refused"
-    );
-}
-
-/// ADR-0010 D4's second half, driven from outside: the interruption reaches
-/// the prompt the model is shown.
-#[tokio::test]
-async fn a_resumed_turn_carries_the_interruption_into_what_the_model_sees() {
-    println!("== a resumed turn ==");
-    let clock = Ticking::default();
-    let interrupted = Interruption::of(Redacted::by(
-        &NothingHeld,
-        "fs.write /etc/hosts  [OUTSIDE the working directory]",
-    ));
-    let model = Provider {
-        script: Mutex::new(
-            [ModelResponse::Text {
-                text: String::from("I see that write did not finish; I will not retry it"),
-                tokens: tokens(),
-            }]
-            .into(),
-        ),
-        clock: &clock,
-        can_call_tools: true,
-    };
-    let mut surface = Surface {
-        descriptors: vec![descriptor("fs.write", "Create or overwrite a file")],
-        answers: Mutex::new(std::collections::VecDeque::new()),
-        clock: &clock,
-    };
-    let policy = Policy::default();
-    let inner = Iterating(Mutex::new(Vec::new()));
-    let mut sink = Printing::default();
-
-    run(
-        7,
-        Start::Resumed(&interrupted),
-        ToolCallCeiling::new(2).expect("a usable ceiling"),
-        ToolCalling::required(&model, "staged-provider").expect("it can call tools"),
-        Ports {
-            model: &model,
-            tools: &mut surface,
-            context: &policy,
-            clock: &clock,
-            redactor: &NothingHeld,
-        },
-        Some(&inner),
-        &mut [&mut sink],
-    )
-    .await
-    .expect("no port failed");
-
-    let turns = policy.0.lock().expect("turns poisoned").clone();
-    println!("  the policy was handed: {turns:?}");
-    assert_eq!(turns.len(), 1);
-    assert!(
-        turns[0].contains("fs.write /etc/hosts"),
-        "the interrupted call's own line must reach what the model is shown: {:?}",
-        turns[0]
-    );
-    assert!(
-        inner.0.lock().expect("tasks poisoned").is_empty(),
-        "a resumed turn carries no task, so the iteration loop must not be entered"
     );
 }
 

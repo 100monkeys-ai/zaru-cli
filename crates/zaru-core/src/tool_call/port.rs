@@ -37,10 +37,12 @@
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 //! [Bounded Contexts]: https://100monkeys-ai.cortex.page/zaru/p/architecture/bounded-contexts
 
+use crate::conversation::Message;
 use crate::iteration::port::{PortFailure, Prompt};
 use crate::redaction::{Redacted, Redactor};
 use core::fmt;
 use core::future::Future;
+use serde::{Deserialize, Serialize};
 
 /// One tool the model may ask for, as the model is told about it.
 ///
@@ -58,7 +60,12 @@ pub struct ToolDescriptor {
 }
 
 /// One tool call the model asked for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialisable because it is part of a [`Message`] the transcript keeps: a
+/// resumed session sends the model its earlier calls with the arguments it
+/// asked them with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolRequest {
     /// The provider's own identifier for this call.
     ///
@@ -199,15 +206,23 @@ impl TokenUsage {
 
 /// What the loop hands the model.
 ///
-/// # The prompt is assembled once per turn, and the results accumulate inside it
+/// # The whole conversation, in the roles a provider defines
+///
+/// A provider's API is stateless, so every request carries everything: the
+/// [`Prompt`] (the system text, every earlier turn and this turn's task) and
+/// then [`Self::turn`], which is what has happened inside this turn so far —
+/// the model's own messages with the calls it asked for, and the result of
+/// every call. A provider maps each part to its own shape and keeps nothing
+/// between two requests.
+///
+/// # The prompt is assembled once per turn, and the turn grows after it
 ///
 /// [ADR-0013] D7 confines context assembly and compaction to turn boundaries,
-/// and everything in this struct after `prompt` is what happened *inside* the
-/// turn. So the loop calls
+/// and everything in [`Self::turn`] is what happened *inside* the turn. So the
+/// loop calls
 /// [`ContextPolicy::assemble`](crate::iteration::ContextPolicy::assemble)
-/// exactly once, at the start of the turn, and appends each round's results
-/// to `results` rather than reassembling — which is both what D7 requires and
-/// what every provider's own wire shape does.
+/// exactly once, at the start of the turn, and appends each round's messages
+/// to `turn` rather than reassembling.
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 #[derive(Debug)]
@@ -216,12 +231,13 @@ pub struct ModelRequest<'a> {
     pub prompt: &'a Prompt,
     /// The tools the model may ask for.
     pub tools: &'a [ToolDescriptor],
-    /// What the tools returned so far in this turn, oldest first.
+    /// This turn so far, oldest first: each of the model's messages, each
+    /// followed by the results of the calls it asked for.
     ///
-    /// Empty on the first exchange. A refused call is here too, carrying the
-    /// refusal's own sentence, which is the whole of "a refusal becomes the
-    /// next model turn's content".
-    pub results: &'a [ToolResult],
+    /// Empty on the first exchange. A refused call has a result too, carrying
+    /// the refusal's own sentence, which is the whole of "a refusal becomes
+    /// the next model turn's content".
+    pub turn: &'a [Message],
 }
 
 /// What the model answered.
@@ -234,6 +250,9 @@ pub enum ModelResponse {
     Text {
         /// What the model said.
         text: String,
+        /// The provider's own record of this message. See
+        /// [`Message::Assistant`]'s `echo`.
+        echo: Option<String>,
         /// What it cost.
         tokens: TokenUsage,
     },
@@ -241,6 +260,11 @@ pub enum ModelResponse {
     Calls {
         /// What it asked for, in the order it asked.
         calls: Vec<ToolRequest>,
+        /// Any text the model wrote beside the calls. Usually empty.
+        text: String,
+        /// The provider's own record of this message. See
+        /// [`Message::Assistant`]'s `echo`.
+        echo: Option<String>,
         /// What it cost.
         tokens: TokenUsage,
     },

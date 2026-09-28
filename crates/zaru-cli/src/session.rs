@@ -84,11 +84,11 @@
 //! actually wrote: the value is absent from what the model was given and
 //! present in the session's files.
 //!
-//! One thing on this path does pass the port, and it is not the record.
-//! [`resume::Interrupted::for_the_model`] redacts the line it hands a model
-//! under ADR-0010 D4, and leaves [`ToolCall::line`] untouched.
+//! What a model is sent of a session passes the port on its way into a
+//! prompt, and the record does not: [`ToolCall::line`] stays as the call was
+//! made. The loop's own messages on the transcript were built from redacted
+//! text, and are redacted again when a later turn is sent them.
 //!
-//! [`resume::Interrupted::for_the_model`]: crate::session::Interrupted::for_the_model
 //! [`ToolCall::line`]: crate::session::ToolCall::line
 //!
 //! [ADR-0003]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0003-build-strategy-and-licensing

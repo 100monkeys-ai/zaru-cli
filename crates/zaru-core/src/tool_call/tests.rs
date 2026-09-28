@@ -10,9 +10,9 @@
 //!
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
+use crate::conversation::Message;
 use crate::iteration::fixtures::ManualClock;
-use crate::iteration::port::{ContextRefusal, Interruption};
-use crate::redaction::Redacted;
+use crate::iteration::port::ContextRefusal;
 use crate::redaction::fixtures::{
     HoldingOne, NothingHeld, ascii_core as redaction_ascii_core, staged_secret,
 };
@@ -148,17 +148,18 @@ async fn a_tool_result_returns_to_the_model_byte_for_byte_and_the_model_continue
         seen[0]
     );
     assert_eq!(
-        seen[1].len(),
+        results(&seen[1]).len(),
         1,
         "the second exchange should carry exactly the one result the tool produced"
     );
     assert_eq!(
-        seen[1][0].content.as_str(),
+        results(&seen[1])[0].1.as_str(),
         produced,
         "the tool's output did not reach the model byte for byte"
     );
     assert_eq!(
-        seen[1][0].id, "call-1",
+        results(&seen[1])[0].0,
+        "call-1",
         "the result must carry the id the model asked under, or a provider cannot match them"
     );
 
@@ -227,14 +228,18 @@ async fn a_refusal_becomes_the_next_model_turns_content_and_is_never_an_error() 
     );
 
     let seen = seen.lock().expect("seen poisoned").clone();
-    assert_eq!(seen[1].len(), 1, "the refusal should have become a result");
     assert_eq!(
-        seen[1][0].content.as_str(),
+        results(&seen[1]).len(),
+        1,
+        "the refusal should have become a result"
+    );
+    assert_eq!(
+        results(&seen[1])[0].1.as_str(),
         because,
         "the refusal's own sentence did not reach the model byte for byte"
     );
     assert!(
-        !seen[1][0].failed,
+        !results(&seen[1])[0].2,
         "a refusal is not a tool failure -- the tool did not run, and marking it failed would \
          tell the model something untrue about what happened"
     );
@@ -502,37 +507,38 @@ async fn declared_validators_decide_whether_the_turn_is_an_iteration_or_a_tool_c
     );
 }
 
-/// ADR-0010 D4: "An interrupted tool call is recorded as `Interrupted` and
-/// **the model is told it did not complete**."
+/// The conversation a turn builds is emitted as it is built: the person's
+/// task, the model's message with the calls it asked for, each result, and
+/// the answer, in that order.
 ///
-/// This is the second half, which had no carrier before `Turn::Resumed`
-/// existed. The mutant: assembling `Turn::Initial` on a resumed turn, which
-/// loses the interruption entirely and is exactly what happened before this
-/// variant was added.
+/// The transcript records these events and the next turn's history is
+/// rebuilt from them, so an event missing here is a message the next turn
+/// never sees. The mutant: not emitting the result, which leaves the call
+/// with no answer in every later turn.
 #[tokio::test]
-async fn a_resumed_turn_tells_the_model_what_did_not_complete_and_iterates_nothing() {
+async fn every_message_of_a_turn_is_emitted_in_the_order_it_joined_the_conversation() {
     let clock = manual_clock();
-    let line = nonce("fs.write /tmp/x  [OUTSIDE the working directory]");
-    let interrupted = Interruption::of(Redacted::by(&NothingHeld, &line));
+    let (task, file, done) = (nonce("read it"), nonce("the file"), nonce("done"));
     let model = StagedModel::new(
-        vec![Answer::Text(nonce("carrying on"))],
+        vec![
+            Answer::Calls(vec![request("a", "fs.read")]),
+            Answer::Text(done.clone()),
+        ],
         Arc::clone(&clock),
         Duration::ZERO,
     );
-    let mut executor = StagedTools::new(Vec::new(), tools(), Arc::clone(&clock), Duration::ZERO);
+    let mut executor = StagedTools::new(
+        vec![Act::Return(file.clone())],
+        tools(),
+        Arc::clone(&clock),
+        Duration::ZERO,
+    );
     let context = RecordingContext::default();
-    let inner = StagedInner::new(crate::iteration::Outcome::Succeeded {
-        iterations: 1,
-        total_elapsed: Duration::ZERO,
-    });
-    let tasks = Arc::clone(&inner.tasks);
-    let turns = Arc::clone(&context.turns);
-    let prompts = Arc::clone(&model.prompts);
     let mut recorder = Recorder::default();
 
-    run(
-        4,
-        Start::Resumed(&interrupted),
+    run::<_, _, _, _, _, StagedInner>(
+        1,
+        Start::Task(&task),
         roomy(),
         ToolCalling::required(&model, "staged").expect("can call tools"),
         Ports {
@@ -542,34 +548,40 @@ async fn a_resumed_turn_tells_the_model_what_did_not_complete_and_iterates_nothi
             clock: &*clock,
             redactor: &NothingHeld,
         },
-        // Supplied, and deliberately: a resumed turn must not enter it even
-        // when a project declares validators, because there is no new task.
-        Some(&inner),
+        None,
         &mut [&mut recorder],
     )
     .await
     .expect("no port failed");
 
-    let turns = turns.lock().expect("turns poisoned").clone();
-    assert_eq!(turns.len(), 1, "one turn, one assembly");
+    let said: Vec<String> = recorder
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Message(Message::User { text }) => Some(format!("user {text}")),
+            Event::Message(Message::Assistant { text, calls, .. }) => Some(format!(
+                "assistant {text}{}",
+                calls
+                    .iter()
+                    .map(|call| format!("[{} {}]", call.name, call.id))
+                    .collect::<String>()
+            )),
+            Event::Message(Message::Tool { id, content, .. }) => {
+                Some(format!("tool {id} {content}"))
+            }
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        turns[0],
-        format!("resumed::{line}"),
-        "the policy was handed the wrong turn variant, so the model was never told"
-    );
-
-    let shown = prompts.lock().expect("prompts poisoned").clone();
-    assert_eq!(shown.len(), 1);
-    assert!(
-        shown[0].contains(&line),
-        "the interrupted call's own line did not reach the prompt the model was shown: {:?}",
-        shown[0]
-    );
-
-    assert!(
-        tasks.lock().expect("tasks poisoned").is_empty(),
-        "a resumed turn carries no task, so the iteration loop must not be entered -- entering \
-         it would iterate on nothing"
+        said,
+        [
+            format!("user {task}"),
+            "assistant [fs.read a]".to_owned(),
+            format!("tool a {file}"),
+            format!("assistant {done}"),
+        ],
+        "the turn's conversation was not emitted message by message in order, so a turn \
+         rebuilt from the transcript would not be the turn the model was sent"
     );
 }
 
@@ -628,7 +640,9 @@ async fn the_context_is_assembled_once_at_the_turn_boundary_and_never_inside_the
     let seen = seen.lock().expect("seen poisoned").clone();
     assert_eq!(seen.len(), 3, "three exchanges were staged");
     assert_eq!(
-        seen.iter().map(Vec::len).collect::<Vec<_>>(),
+        seen.iter()
+            .map(|turn| results(turn).len())
+            .collect::<Vec<_>>(),
         vec![0, 1, 2],
         "results should accumulate across the turn rather than being replaced each round"
     );
@@ -680,8 +694,10 @@ async fn two_dissimilar_subscribers_receive_the_same_events_from_one_emission() 
 
     // Staged: 1 TurnStarted + 2 ModelResponded + 2 ToolRequested
     //       + 2 ToolPermissionDecided + 1 ToolCompleted + 1 ToolRefused
-    //       + 1 TurnEnded = 10. Counted from the staging, not from either sink.
-    let staged = 10;
+    //       + 1 TurnEnded = 10, and 5 messages: the task, the model's calls,
+    //       two results and the answer. 15. Counted from the staging, not
+    //       from either sink.
+    let staged = 15;
     assert_eq!(
         recorder.events.len(),
         staged,
@@ -956,8 +972,15 @@ async fn an_answer_ends_the_turn_and_no_event_follows_it() {
     let tags: Vec<&'static str> = recorder.events.iter().map(tag).collect();
     assert_eq!(
         tags,
-        vec!["TurnStarted", "ModelResponded", "TurnEnded"],
-        "an answered turn's stream should be exactly these three, in this order"
+        vec![
+            "TurnStarted",
+            "Message",
+            "ModelResponded",
+            "Message",
+            "TurnEnded"
+        ],
+        "an answered turn's stream should be exactly these five, in this order: the task and \
+         the answer are each a message"
     );
 }
 
@@ -1096,14 +1119,16 @@ async fn the_decision_is_reported_for_every_call_whichever_way_it_went() {
     }
 }
 
-/// ADR-0008's open trigger clause 6 arrives here for a third time, and this
-/// stream deliberately does not become a fourth place a secret can land.
+/// A tool's output is on the stream once: inside the result message, which
+/// is exactly what the model was sent. No other event carries it.
 ///
-/// The mutant: carrying the content on the event rather than its length,
-/// which is what would write a tool's output into `transcript.jsonl` a second
-/// time and put it on a path no redaction decision covers.
+/// The transcript records this stream, and the next turn's history is
+/// rebuilt from it, so the result message has to carry the content. Every
+/// other event carries a byte count, a name or a sentence the harness
+/// composed. The mutant: carrying the content on `ToolCompleted` as well,
+/// which would write a tool's output into `transcript.jsonl` a second time.
 #[tokio::test]
-async fn the_stream_carries_a_byte_count_and_never_the_tools_output() {
+async fn a_tools_output_is_on_the_stream_once_as_the_result_the_model_was_sent() {
     let clock = manual_clock();
     let produced = nonce("SECRET-SENTINEL");
     let model = StagedModel::new(
@@ -1114,6 +1139,7 @@ async fn the_stream_carries_a_byte_count_and_never_the_tools_output() {
         Arc::clone(&clock),
         Duration::ZERO,
     );
+    let seen = Arc::clone(&model.seen);
     let mut executor = StagedTools::new(
         vec![Act::Return(produced.clone())],
         tools(),
@@ -1160,14 +1186,35 @@ async fn the_stream_carries_a_byte_count_and_never_the_tools_output() {
     // against the raw value alone is blind to that -- library verification
     // lessons §50, reproduced here rather than inherited.
     let core = "SECRET-SENTINEL";
-    let rendered = format!("{:?}", recorder.events);
+    let others: Vec<&Event> = recorder
+        .events
+        .iter()
+        .filter(|event| !matches!(event, Event::Message(_)))
+        .collect();
+    let rendered = format!("{others:?}");
     assert!(
-        !rendered.contains(&produced),
-        "the tool's output reached the event stream, which is a path no redaction decision covers"
+        !rendered.contains(&produced) && !rendered.contains(core),
+        "the tool's output reached an event other than its result message: {rendered}"
     );
-    assert!(
-        !rendered.contains(core),
-        "the tool's output reached the event stream in an escaped form: {rendered}"
+
+    let on_the_stream: Vec<String> = recorder
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Message(Message::Tool { content, .. }) => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    let sent = results(&seen.lock().expect("seen poisoned")[1]);
+    assert_eq!(
+        on_the_stream,
+        vec![produced.clone()],
+        "the result message on the stream is not the tool's output, so a turn rebuilt from the \
+         transcript would not be sent what this turn's model read"
+    );
+    assert_eq!(
+        sent[0].1, produced,
+        "the model was sent something other than the result the stream records"
     );
 }
 
@@ -1287,7 +1334,8 @@ async fn a_refusals_sentence_is_redacted_before_it_becomes_the_next_turns_conten
     .expect("a refusal is not a port failure");
 
     let seen = seen.lock().expect("seen poisoned").clone();
-    let content = seen[1][0].content.as_str();
+    let turn_results = results(&seen[1]);
+    let content = turn_results[0].1.as_str();
     assert!(
         !content.contains(&secret),
         "a held value reached the model in a refusal's sentence: {content:?}"
@@ -1322,4 +1370,19 @@ async fn a_refusals_sentence_is_redacted_before_it_becomes_the_next_turns_conten
          is what the transcript is written from and ADR-0010 keeps whatever \
          the session contained"
     );
+}
+
+/// The results in one request's turn, as (id, content, failed), in order.
+fn results(turn: &[Message]) -> Vec<(String, String, bool)> {
+    turn.iter()
+        .filter_map(|message| match message {
+            Message::Tool {
+                id,
+                content,
+                failed,
+                ..
+            } => Some((id.clone(), content.clone(), *failed)),
+            Message::User { .. } | Message::Assistant { .. } => None,
+        })
+        .collect()
 }

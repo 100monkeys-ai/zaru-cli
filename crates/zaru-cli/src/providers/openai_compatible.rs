@@ -133,8 +133,6 @@ pub struct OpenAiCompatibleClient {
     deltas: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
     /// What the last exchange cost, for [`Provider::usage`].
     last: Mutex<Option<(u64, u64)>>,
-    /// What this turn has already asked for, so it can be given back.
-    answered: Mutex<map::Answered>,
 }
 
 impl OpenAiCompatibleClient {
@@ -178,7 +176,6 @@ impl OpenAiCompatibleClient {
             http,
             deltas: Mutex::new(None),
             last: Mutex::new(None),
-            answered: Mutex::new(map::Answered::default()),
         })
     }
 
@@ -267,13 +264,7 @@ impl OpenAiCompatibleClient {
         // Scoped so the guard is dropped before the first `.await`: a
         // `std::sync::MutexGuard` is `!Send` and `Model::respond` returns a
         // `Send` future, so holding one across an await would not compile.
-        let body = {
-            let mut answered = match self.answered.lock() {
-                Ok(answered) => answered,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            map::request_from(request, &mut answered, self.model.as_str())?
-        };
+        let body = map::request_from(request, self.model.as_str())?;
         // ADR-0036 D1, before any network I/O: the whole native request, the
         // model's own prior turns and every tool result included. A window
         // nobody stated never reaches here from the composition --
@@ -391,17 +382,6 @@ impl OpenAiCompatibleClient {
             Err(poisoned) => *poisoned.into_inner() = Some(usage),
         }
 
-        // Remember this assistant turn **only when it asked for tools**,
-        // because that is the only case a later round exists to give it back
-        // in: a `Text` or a `Stopped` ends the turn and the next exchange
-        // arrives with no results and forgets everything anyway.
-        if matches!(mapped, ModelResponse::Calls { .. }) {
-            let (message, calls) = map::assistant_turn(&answer);
-            match self.answered.lock() {
-                Ok(mut answered) => answered.remember(message, calls),
-                Err(poisoned) => poisoned.into_inner().remember(message, calls),
-            }
-        }
         Ok(mapped)
     }
 

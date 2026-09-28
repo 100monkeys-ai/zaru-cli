@@ -30,43 +30,37 @@
 //! mutation can redden against one fixture and not the other — which is why
 //! both fixtures are recorded.
 //!
-//! # Correlation is by `index` for a call and by position for a result
-//!
-//! Two different questions with two different answers, and conflating them is
-//! the defect this paragraph exists to prevent.
+//! # Correlation is by `index` for a call's fragments and by id for a result
 //!
 //! **Which fragments belong to which call** is [`wire::CallDelta::index`], the
 //! one field present on every fragment. A fold that pushed in arrival order
 //! would report thirteen calls where a real stream sent one.
 //!
-//! **Which result answers which call** is *position*, exactly as
-//! [`crate::providers::ollama::map`] argues: [`ModelRequest::results`]' own
-//! contract is "what the tools returned so far in this turn, oldest first",
-//! and `tool_call::machine` appends each round's outcomes in call order. The
-//! `tool_call_id` this API wants is then **carried from the remembered call**
-//! rather than generated — the half of the `gemini-read-loop` defect that does
-//! apply here, built in rather than discovered.
+//! **Which result answers which call** is the call's id, carried: each result
+//! the loop hands this client is a message naming the call it answers, so the
+//! `tool_call_id` this API wants is the id the server issued, never one this
+//! client made up.
 //!
 //! # A client of a stateless API owes it the model's own turns
 //!
 //! The `gemini-read-loop` arc measured this six ways against a live API after
 //! a client that gave no assistant turns back made the model re-read one file
-//! until the turn's ceiling. Its closing sentence — "the second client should
-//! expect to keep the same state" — is why [`Answered`] is here, and it is the
-//! third client to keep it.
+//! until the turn's ceiling. Since 2026-09-28 the loop hands every request the
+//! whole conversation, the model's own messages included, for this turn and
+//! every earlier one, so this client keeps nothing between two requests.
 //!
 //! [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-//! [`ModelRequest::results`]: zaru_core::tool_call::ModelRequest::results
 
 use super::failure::OpenAiCompatibleFailure;
 use super::wire;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use zaru_core::conversation::Message;
 use zaru_core::tool_call::{ModelRequest, ModelResponse, TokenUsage, ToolRequest};
 
 /// The role an assistant turn carries.
 pub const ROLE_ASSISTANT: &str = "assistant";
-/// The role the prompt carries.
+/// The role a person's message carries.
 pub const ROLE_USER: &str = "user";
 /// The role a tool result carries.
 pub const ROLE_TOOL: &str = "tool";
@@ -79,104 +73,85 @@ pub const FINISH_STOP: &str = "stop";
 /// discarded here, before anything tries to parse it as JSON.
 pub const DONE: &str = "[DONE]";
 
-/// What this turn has already asked for, so it can be given back.
-#[derive(Debug, Default)]
-pub struct Answered {
-    rounds: Vec<Round>,
-}
-
-/// One round: what the model said, and what it asked for.
-#[derive(Debug, Clone)]
-struct Round {
-    message: wire::Message,
-    calls: Vec<wire::ToolCall>,
-}
-
-impl Answered {
-    /// Forget everything when a new turn starts.
-    ///
-    /// A request arriving with no results is the first round of a turn, which
-    /// is the only boundary this client can see: the port hands it one
-    /// [`ModelRequest`] at a time and nothing says "a turn began".
-    fn at_turn_boundary(&mut self, request: &ModelRequest<'_>) {
-        if request.results.is_empty() {
-            self.rounds.clear();
-        }
-    }
-
-    /// Remember an assistant turn that asked for tools.
-    pub fn remember(&mut self, message: wire::Message, calls: Vec<wire::ToolCall>) {
-        self.rounds.push(Round { message, calls });
-    }
-
-    /// How many calls this turn has asked for so far.
-    #[must_use]
-    pub fn calls_asked(&self) -> usize {
-        self.rounds.iter().map(|round| round.calls.len()).sum()
-    }
-}
+/// The role the system text carries.
+pub const ROLE_SYSTEM: &str = "system";
 
 /// Build the request body for one exchange.
+///
+/// # The whole conversation, every time
+///
+/// The API is stateless, so every request carries the conversation: the
+/// system text as a `system` message, then every earlier turn, then this
+/// turn's task, then this turn's own messages — a person's message as a
+/// `user` message, the model's as an `assistant` message carrying its
+/// `tool_calls`, and each result as a `tool` message naming the call it
+/// answers by `tool_call_id`. Nothing is kept between two requests.
 ///
 /// # Errors
 ///
 /// [`OpenAiCompatibleFailure::ToolSchemaUnreadable`] when a descriptor's
-/// parameters are not JSON, and
-/// [`OpenAiCompatibleFailure::ResultsDoNotMatchCalls`] when this turn's own
-/// bookkeeping disagrees with itself.
+/// parameters are not JSON.
 pub fn request_from(
     request: &ModelRequest<'_>,
-    answered: &mut Answered,
     model: &str,
 ) -> Result<wire::Request, OpenAiCompatibleFailure> {
-    answered.at_turn_boundary(request);
-
-    let mut messages = Vec::with_capacity(1 + 2 * answered.rounds.len());
-
-    // The prompt. `Prompt` can only be built from `Redacted`, which can only
-    // be built by a `Redactor` -- so ADR-0008 clause 6's guarantee reaches this
-    // line through the type system rather than through a call somebody
-    // remembered to make. Nothing here redacts, and nothing here needs to.
-    messages.push(wire::Message {
-        role: ROLE_USER.to_owned(),
-        content: Some(request.prompt.as_str().to_owned()),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-    });
-
-    if request.results.len() != answered.calls_asked() {
-        return Err(OpenAiCompatibleFailure::ResultsDoNotMatchCalls {
-            results: request.results.len(),
-            calls: answered.calls_asked(),
+    let task = Message::User {
+        text: request.prompt.task().to_owned(),
+    };
+    let mut messages = Vec::with_capacity(2 + request.prompt.history().len() + request.turn.len());
+    if let Some(system) = request.prompt.system() {
+        messages.push(wire::Message {
+            role: ROLE_SYSTEM.to_owned(),
+            content: Some(system.to_owned()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         });
     }
-    let mut results = request.results.iter();
-    for round in &answered.rounds {
-        messages.push(round.message.clone());
-        for call in &round.calls {
-            let Some(result) = results.next() else {
-                // Unreachable while the count above holds; written as a refusal
-                // rather than an `expect` because a request built on a broken
-                // pairing is exactly what must not be sent.
-                return Err(OpenAiCompatibleFailure::ResultsDoNotMatchCalls {
-                    results: request.results.len(),
-                    calls: answered.calls_asked(),
-                });
-            };
-            messages.push(wire::Message {
-                role: ROLE_TOOL.to_owned(),
-                // `ToolResult::content` is `Redacted`, which is the second half
-                // of ADR-0008 clause 6's type gate -- a tool's output reaches a
-                // model through here and not through a prompt.
-                content: Some(result.content.as_str().to_owned()),
+    for message in request
+        .prompt
+        .history()
+        .iter()
+        .chain(core::iter::once(&task))
+        .chain(request.turn.iter())
+    {
+        messages.push(match message {
+            Message::User { text } => wire::Message {
+                role: ROLE_USER.to_owned(),
+                content: Some(text.clone()),
                 tool_calls: Vec::new(),
-                // **The call's id, carried.** An id this client invented would
-                // be an id the server never issued, which is the failure
-                // `ToolRequest::id` is documented against; an id omitted would
-                // leave the server to guess which call a result answers.
-                tool_call_id: call.id.clone(),
-            });
-        }
+                tool_call_id: None,
+            },
+            Message::Assistant { text, calls, .. } => wire::Message {
+                role: ROLE_ASSISTANT.to_owned(),
+                // **`None` rather than an empty string** for a message that is
+                // all tool calls, because that is what the servers themselves
+                // send -- `llama-server`'s opening frame is `"content":null`.
+                content: (!text.is_empty()).then(|| text.clone()),
+                tool_calls: calls
+                    .iter()
+                    .map(|call| wire::ToolCall {
+                        // Carried, never generated. An id a server never
+                        // issued is the failure `ToolRequest::id` is
+                        // documented against.
+                        id: (!call.id.is_empty()).then(|| call.id.clone()),
+                        kind: TOOL_FUNCTION.to_owned(),
+                        function: wire::CalledFunction {
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        },
+                    })
+                    .collect(),
+                tool_call_id: None,
+            },
+            Message::Tool { id, content, .. } => wire::Message {
+                role: ROLE_TOOL.to_owned(),
+                content: Some(content.clone()),
+                tool_calls: Vec::new(),
+                // **The call's id, carried**, so the server knows which call
+                // this answers.
+                tool_call_id: (!id.is_empty()).then(|| id.clone()),
+            },
+        });
     }
 
     let tools = tools_of(request.tools)?;
@@ -344,12 +319,18 @@ pub fn response_from(
         .collect();
 
     if !calls.is_empty() {
-        return Ok(ModelResponse::Calls { calls, tokens });
+        return Ok(ModelResponse::Calls {
+            calls,
+            text: answer.text.clone(),
+            echo: None,
+            tokens,
+        });
     }
 
     let reason = answer.finish_reason.as_deref().unwrap_or_default();
     if reason == FINISH_STOP && !answer.text.is_empty() {
         return Ok(ModelResponse::Text {
+            echo: None,
             text: answer.text.clone(),
             tokens,
         });
@@ -383,43 +364,6 @@ fn usage_from(answer: &Answer) -> TokenUsage {
             completion: 0,
         },
     }
-}
-
-/// The assistant turn to remember, built from what was folded.
-///
-/// Kept beside [`fold`] rather than inside it because folding is about frames
-/// and this is about the conversation: the same fold serves a text answer,
-/// which is remembered nowhere.
-#[must_use]
-pub fn assistant_turn(answer: &Answer) -> (wire::Message, Vec<wire::ToolCall>) {
-    let calls: Vec<wire::ToolCall> = answer
-        .calls
-        .iter()
-        .map(|call| wire::ToolCall {
-            id: call.id.clone(),
-            kind: TOOL_FUNCTION.to_owned(),
-            function: wire::CalledFunction {
-                name: call.name.clone().unwrap_or_default(),
-                arguments: call.arguments.clone(),
-            },
-        })
-        .collect();
-    let message = wire::Message {
-        role: ROLE_ASSISTANT.to_owned(),
-        // **`None` rather than an empty string**, because that is what the
-        // servers themselves send for an assistant turn that is all tool calls
-        // -- `llama-server`'s opening frame is `"content":null` -- and a turn
-        // sent back in a shape the server does not produce is a shape nobody
-        // has tested the far side against.
-        content: if answer.text.is_empty() {
-            None
-        } else {
-            Some(answer.text.clone())
-        },
-        tool_calls: calls.clone(),
-        tool_call_id: None,
-    };
-    (message, calls)
 }
 
 /// This kind's wire shape for a set of tool descriptors.
