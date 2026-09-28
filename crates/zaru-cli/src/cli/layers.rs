@@ -137,6 +137,16 @@ impl BuiltIn {
                 crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
             )),
         );
+        // [ADR-0034]'s exchange limit, fifty unless a reader sets it. Here
+        // rather than where it is read, for the window's reason above: a
+        // project may lower what the layers below granted and may not raise
+        // it, and a default nobody granted is one no project value is
+        // measured against. See `runtime::DEFAULT_TOOL_EXCHANGES` for the
+        // number.
+        document.insert_path(
+            &crate::runtime::max_tool_exchanges_key(),
+            Value::Integer(i64::from(crate::runtime::DEFAULT_TOOL_EXCHANGES)),
+        );
         // Whether the shell holds the mouse. On by default, so the wheel
         // scrolls the pane; see `terminal::mouse` for the trade and its cost.
         document.insert_path(

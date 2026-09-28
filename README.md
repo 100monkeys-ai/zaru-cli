@@ -149,7 +149,7 @@ Zaru reads settings from these places. A later one overrides an earlier one:
 | `provider.<kind>.context_tokens` | The model's context window, in tokens. See [Context window](#context-window). |
 | `tools.mode`, `tools.allowlist` | See [Permission prompts and modes](#permission-prompts-and-modes). |
 | `runtime.max_iterations` | How many attempts the validator loop makes. |
-| `runtime.max_tool_exchanges` | A limit on model replies per task. Unlimited if unset. |
+| `runtime.max_tool_exchanges` | The most model replies one task may have: 50 unless you set it. At the limit the task stops, the session stays open, and typing `continue` goes on. A project may lower it and not raise it. |
 | `terminal.mouse` | `false` gives mouse selection back to the terminal. |
 
 ### Context window

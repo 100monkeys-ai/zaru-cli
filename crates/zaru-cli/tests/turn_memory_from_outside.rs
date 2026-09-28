@@ -261,6 +261,31 @@ async fn a_turn(
     n: u32,
     task: &str,
 ) -> Outcome {
+    a_turn_within(
+        scratch,
+        context,
+        model,
+        held,
+        budget,
+        n,
+        task,
+        ToolCallCeiling::unlimited(),
+    )
+    .await
+}
+
+/// [`a_turn`], under the exchange limit `ceiling`.
+#[allow(clippy::too_many_arguments)]
+async fn a_turn_within(
+    scratch: &Scratch,
+    context: &mut SessionContext,
+    model: &Scripted,
+    held: &HeldSecrets,
+    budget: usize,
+    n: u32,
+    task: &str,
+    ceiling: ToolCallCeiling,
+) -> Outcome {
     let working = WorkingDirectory::at(scratch.project()).expect("resolves");
     let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
     transcript
@@ -294,7 +319,7 @@ async fn a_turn(
         run::<_, _, _, _, _, NeverIterates>(
             n,
             Start::Task(task),
-            ToolCallCeiling::unlimited(),
+            ceiling,
             ToolCalling::required(model, "scripted").expect("it can"),
             Ports {
                 model,
@@ -337,6 +362,100 @@ fn narration_in(sent: &Sent) -> Vec<String> {
 }
 
 // ------------------------------------------------------------ the checks
+
+/// A model that asks for the same tool for ever is stopped at the default
+/// exchange limit, and "continue" goes on with everything the stopped turn
+/// did.
+///
+/// The harness survey of 2026-09-28 measured a scripted model repeating one
+/// `fs.list` 123 times in about two seconds, stopped only by the context
+/// guard. The limit is the product's own: layer 1 resolved through
+/// `runtime::tool_call_ceiling_for`, as `compose::turn::prepare` resolves it.
+///
+/// Red on `254e2b6`, where that resolved to no limit: "a model that asked for
+/// a tool on every exchange was not stopped at the default limit of 50; the
+/// turn ended Answered".
+#[tokio::test]
+async fn a_looping_model_stops_at_the_default_limit_and_continue_goes_on() {
+    use zaru_cli::config::{Contribution, Layer, LayerSource as _, Resolution};
+
+    let resolution = Resolution::resolve(
+        &zaru_cli::cli::layers::schema(),
+        vec![Contribution::new(
+            Layer::BuiltIn,
+            Layer::BuiltIn.default_source(),
+            zaru_cli::cli::layers::BuiltIn::new()
+                .read()
+                .expect("layer 1 reads"),
+        )],
+    )
+    .expect("layer 1 resolves");
+    let ceiling = zaru_cli::runtime::tool_call_ceiling_for(&resolution).expect("a limit");
+    let limit = zaru_cli::runtime::DEFAULT_TOOL_EXCHANGES;
+
+    let scratch = Scratch::new("loop-limit");
+    let held = HeldSecrets::none();
+    let mut context =
+        SessionContext::opened(zaru_cli::compose::prefix_for(None, &facts()), shape());
+    // One call more than the limit, then an answer: without a limit the loop
+    // would use every call and answer in the same turn.
+    let mut script: Vec<ModelResponse> = (1..=limit + 1)
+        .map(|n| calls(&format!("c{n}"), "fs.list", r#"{"path":"."}"#))
+        .collect();
+    script.push(answer(
+        "I listed the directory and stopped repeating myself.",
+    ));
+    let model = Scripted::answering(script);
+
+    let first = a_turn_within(
+        &scratch,
+        &mut context,
+        &model,
+        &held,
+        4_096,
+        1,
+        "list the files",
+        ceiling,
+    )
+    .await;
+    let Outcome::Exhausted { rounds, calls, .. } = first else {
+        panic!(
+            "a model that asked for a tool on every exchange was not stopped at the default \
+             limit of {limit}; the turn ended {first:?}"
+        );
+    };
+    assert_eq!((rounds, calls), (limit, limit));
+
+    let second = a_turn_within(
+        &scratch,
+        &mut context,
+        &model,
+        &held,
+        4_096,
+        2,
+        "continue",
+        ceiling,
+    )
+    .await;
+    let sent = model.sent();
+    let continuing = sent
+        .get(usize::try_from(limit).expect("fits"))
+        .expect("turn 2 asked");
+    assert_eq!(continuing.task, "continue");
+    let last_result = continuing
+        .history
+        .iter()
+        .any(|message| matches!(message, Message::Tool { id, .. } if *id == format!("c{limit}")));
+    assert!(
+        last_result,
+        "continue was not sent the last result of the turn that stopped at its limit, so the \
+         model cannot go on from where it stopped"
+    );
+    assert!(
+        matches!(second, Outcome::Answered { rounds: 2, .. }),
+        "continue did not go on to an answer: {second:?}"
+    );
+}
 
 /// Turn 2 is sent turn 1's tool call with its arguments and its result with
 /// its content, in each provider's own shape, and no line of what the pane

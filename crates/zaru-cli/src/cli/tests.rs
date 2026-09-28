@@ -1750,16 +1750,55 @@ fn provider_keys_over_an_empty_store_names_the_command_and_the_kinds() {
 // the constructor validates, and an ordering between two numbers that answer
 // different questions.
 
-/// An absent outer-loop configuration means unlimited exchanges.
+/// A turn has fifty exchanges when nobody set a limit, from layer 1.
+///
+/// The harness survey of 2026-09-28 measured a scripted model that repeated
+/// one call 123 times in about two seconds with no limit to stop it, which on
+/// a paid model is 123 paid requests. A real fix took 8 exchanges. So a turn
+/// now has [`crate::runtime::DEFAULT_TOOL_EXCHANGES`] unless a reader sets
+/// more, and `zaru config explain` names layer 1 as where it came from.
+///
+/// Red on `254e2b6`, where an absent key was no limit at all: "with nothing
+/// set a turn must have the default limit of 50 exchanges; it had None".
 #[test]
-fn an_absent_tool_call_exchange_limit_is_unlimited() {
-    let resolution = crate::config::Resolution::resolve(&crate::cli::layers::schema(), [])
+fn a_turn_has_the_default_exchange_limit_when_nobody_set_one() {
+    use crate::config::{Contribution, Layer, LayerSource as _, Resolution};
+    let resolution = Resolution::resolve(
+        &crate::cli::layers::schema(),
+        vec![Contribution::new(
+            Layer::BuiltIn,
+            Layer::BuiltIn.default_source(),
+            crate::cli::layers::BuiltIn::new()
+                .read()
+                .expect("layer 1 reads"),
+        )],
+    )
+    .expect("layer 1 alone resolves");
+    let limit = crate::runtime::tool_call_ceiling_for(&resolution)
+        .expect("layer 1's limit is a limit")
+        .limit();
+    assert_eq!(
+        limit,
+        Some(crate::runtime::DEFAULT_TOOL_EXCHANGES),
+        "with nothing set a turn must have the default limit of 50 exchanges; it had {limit:?}"
+    );
+    assert_eq!(crate::runtime::DEFAULT_TOOL_EXCHANGES, 50);
+    assert_eq!(
+        resolution
+            .explain(&crate::runtime::max_tool_exchanges_key())
+            .effective_layer(),
+        Some(Layer::BuiltIn),
+        "`zaru config explain runtime.max_tool_exchanges` names layer 1"
+    );
+    // A resolution built without layer 1 is given the same default rather
+    // than no limit.
+    let empty = Resolution::resolve(&crate::cli::layers::schema(), [])
         .expect("an empty configuration resolves");
     assert_eq!(
-        crate::runtime::tool_call_ceiling_for(&resolution)
-            .expect("absence is unlimited")
+        crate::runtime::tool_call_ceiling_for(&empty)
+            .expect("the default is a limit")
             .limit(),
-        None
+        Some(crate::runtime::DEFAULT_TOOL_EXCHANGES)
     );
 }
 

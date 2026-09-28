@@ -1225,7 +1225,7 @@ fn the_turns_events_reach_the_transcript_as_they_occur() {
         "a turn that started emitted nothing, so the sink is not on the loop's slice"
     );
     // The turn began, and the record says which turn of the session and what
-    // its optional ceiling was -- an absent value means this turn is unlimited.
+    // its limit was -- fifty, layer 1's, since nothing here sets one.
     //
     // **The turn loop's first record rather than the file's**, since
     // 2026-09-05: ADR-0011 D2's notice is stated at session *start*, before
@@ -1238,8 +1238,9 @@ fn the_turns_events_reach_the_transcript_as_they_occur() {
         .find(|line| line.starts_with("{\"turn_loop\":"))
         .expect("the turn started, so its stream is on disk");
     assert!(
-        first_of_the_loop.contains("\"turn_started\"") && first_of_the_loop.contains("\"of\":null"),
-        "the turn loop's first record is not the turn starting unlimited: {first_of_the_loop}",
+        first_of_the_loop.contains("\"turn_started\"") && first_of_the_loop.contains("\"of\":50"),
+        "the turn loop's first record is not the turn starting with the default limit of 50: \
+         {first_of_the_loop}",
     );
     // Every line is one JSON object naming its producer, which is what makes
     // the file readable by anything rather than only by this harness.
@@ -2146,8 +2147,12 @@ fn adr_0034_clause_2_a_projects_exchange_limit_reaches_the_loop_and_exhausts_at_
     let said = presentation.to_string();
     println!("   a person reads: {said}");
     assert!(
-        said.contains(&format!("ceiling of {LIMIT} exchange(s)")),
+        said.contains(&format!("limit of {LIMIT} exchange(s)")),
         "the exhaustion must name the count the project set: {said}"
+    );
+    assert!(
+        said.contains("type continue"),
+        "the exhaustion must say how to go on: {said}"
     );
     assert_eq!(
         (shown.class(), shown.exit_code()),
@@ -2258,10 +2263,9 @@ fn adr_0034_clause_3_a_zero_negative_or_non_integer_exchange_limit_is_refused_na
              one and the reader did not set: {said}"
         );
         assert!(
-            said.contains("unlimited"),
-            "the refusal of `{value}` must say how to ask for no limit, because ADR-0034 D2 makes \
-             absence the unlimited state and a reader who wrote {value} for it cannot otherwise \
-             act: {said}"
+            said.contains("50 exchanges when you set nothing") && said.contains("continue"),
+            "the refusal of `{value}` must say what a turn has when nothing is set and how to go \
+             on past it: {said}"
         );
         assert!(
             said.contains("config explain runtime.max_tool_exchanges"),

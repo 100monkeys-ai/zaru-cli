@@ -2100,9 +2100,12 @@ impl Surface<'_> {
     pub fn turn_exhausted(rounds: u32, calls: u32) -> Classified {
         Classified::Expected(crate::failure::Expected::new(Statement::sanitised(
             format!(
-                "the turn reached its ceiling of {rounds} exchange(s) with the model still asking \
-                 for tools, having run {calls} tool call(s). Nothing failed and nothing \
-                 completed: this is where it stopped"
+                "the turn stopped at its limit of {rounds} exchange(s) with the model still \
+                 asking for tools, having run {calls} tool call(s). Nothing failed and nothing \
+                 completed: this is where it stopped. To go on, type continue; if the session \
+                 has closed, `zaru --continue` reopens it. To allow more, set `{}` in \
+                 `~/.zaru/config.toml`",
+                crate::runtime::MAX_TOOL_EXCHANGES_KEY
             ),
         )))
     }
