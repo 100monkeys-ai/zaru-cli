@@ -597,6 +597,11 @@ async fn a_session_resumed_in_a_new_process_is_sent_the_same_conversation() {
 /// A result the output budget cut is recorded and sent again exactly as the
 /// model first read it, cut marks included.
 ///
+/// A search that matches every line of a long file is what the budget cuts
+/// here. Until 2026-09-28 this was an `fs.read`, and an `fs.read` is no longer
+/// cut by the budget: it sizes its own answer. The ranged read is the next
+/// check.
+///
 /// The mutant: a result altered by a single character on its way back into a
 /// later prompt (its trailing newline trimmed), which the byte-for-byte
 /// comparison sees.
@@ -611,7 +616,11 @@ async fn a_result_cut_by_the_budget_is_sent_again_exactly_as_the_model_first_rea
     let mut context =
         SessionContext::opened(zaru_cli::compose::prefix_for(None, &facts()), shape());
     let model = Scripted::answering([
-        calls("call_1", "fs.read", r#"{"path":"pkg/big.txt"}"#),
+        calls(
+            "call_1",
+            "fs.search",
+            r#"{"root":"pkg/big.txt","needle":"of a long file"}"#,
+        ),
         answer("It is long."),
         answer("It had two thousand lines."),
     ]);
@@ -656,6 +665,83 @@ async fn a_result_cut_by_the_budget_is_sent_again_exactly_as_the_model_first_rea
         later, first_read,
         "a cut result was not sent again exactly as the model first read it"
     );
+}
+
+/// **A ranged `fs.read` is sent again on the next turn exactly as the model
+/// first read it**: the same lines, the same numbers, the same note of what
+/// was not shown.
+///
+/// Watched red on `6e94f43`, where `fs.read` took no range: the call was
+/// refused for carrying a field it did not take, so there was no ranged
+/// result to send again.
+#[tokio::test]
+async fn a_ranged_read_is_sent_again_exactly_as_the_model_first_read_it() {
+    let scratch = Scratch::new("turn-memory-ranged");
+    let big: String = (1..=5_000).map(|n| format!("record {n}\n")).collect();
+    std::fs::write(scratch.project().join("pkg/big.txt"), &big).expect("staging");
+    let held = HeldSecrets::none();
+    let mut context =
+        SessionContext::opened(zaru_cli::compose::prefix_for(None, &facts()), shape());
+    let model = Scripted::answering([
+        calls(
+            "call_1",
+            "fs.read",
+            r#"{"path":"pkg/big.txt","start_line":2500,"line_count":3}"#,
+        ),
+        answer("I read three lines."),
+        answer("Lines 2500 to 2502."),
+    ]);
+    a_turn(
+        &scratch,
+        &mut context,
+        &model,
+        &held,
+        32_768,
+        1,
+        "read the middle of pkg/big.txt",
+    )
+    .await;
+    a_turn(
+        &scratch,
+        &mut context,
+        &model,
+        &held,
+        32_768,
+        2,
+        "which lines?",
+    )
+    .await;
+
+    let sent = model.sent();
+    let first_read = match &sent[1].turn[1] {
+        Message::Tool { content, .. } => content.clone(),
+        other => panic!("turn 1's second request does not end with the result: {other:?}"),
+    };
+    assert!(
+        first_read.contains("2500\u{2502}record 2500\n")
+            && first_read.contains("2502\u{2502}record 2502\n")
+            && !first_read.contains("record 2503")
+            && first_read.contains("start_line 2503"),
+        "the ranged read did not return lines 2500 to 2502 and where to read on: {first_read:?}"
+    );
+    let later = match &sent[2].history[2] {
+        Message::Tool { content, .. } => content.clone(),
+        other => panic!("turn 2's history does not hold the result where it was: {other:?}"),
+    };
+    assert_eq!(
+        later, first_read,
+        "a ranged read was not sent again exactly as the model first read it"
+    );
+    for (provider, body) in [
+        ("ollama", &sent[2].ollama),
+        ("openai-compatible", &sent[2].openai),
+        ("gemini", &sent[2].gemini),
+    ] {
+        assert!(
+            body.contains("start_line 2503"),
+            "{provider}: turn 2's request does not carry the ranged result"
+        );
+    }
 }
 
 /// A transcript from before calls and results were recorded resumes with what
@@ -838,10 +924,14 @@ async fn a_compaction_takes_whole_turns_and_a_rebuild_keeps_its_summary() {
 
     let scratch = Scratch::new("turn-memory-compaction");
     let held = HeldSecrets::none();
+    // The threshold is set so that four turns of one small `fs.read` each
+    // are over it and two are not. It was 700 until 2026-09-28, when an
+    // `fs.read` answer gained its header and line numbers and each turn grew
+    // by about 180 bytes.
     let tight = ContextShape::of(
         ContextLimits::new(
             ContextWindow::new(12_000).expect("a window"),
-            PressureThreshold::new(700).expect("a threshold"),
+            PressureThreshold::new(1_200).expect("a threshold"),
         )
         .expect("limits"),
         0,

@@ -305,6 +305,19 @@ fn the_built_in_tools_named_are_this_builds() {
     );
 }
 
+/// The number of lines the README says `fs.read` returns at a time is the
+/// one it returns.
+#[test]
+fn the_lines_fs_read_returns_at_a_time_are_this_builds() {
+    let sentence = sentence_with(&readme(), "numbered lines at a time");
+    let count = zaru_cli::tools::reading::DEFAULT_LINE_COUNT;
+    assert!(
+        sentence.contains(&format!("at most {count} numbered lines")),
+        "the README says fs.read returns a different number of lines at a time from the {count} \
+         it returns: {sentence:?}"
+    );
+}
+
 /// The mode table lists exactly the permission modes, and marks the default.
 #[test]
 fn the_mode_table_is_this_builds_modes() {

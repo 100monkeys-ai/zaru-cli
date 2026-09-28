@@ -98,6 +98,13 @@ pub const REPLACES: &str = "replaces:";
 /// Drafted with [`CREATES`] and on the same ruling.
 pub const WITH: &str = "with:";
 
+/// The heading over the text an `fs.edit` with `all` replaces everywhere.
+///
+/// Drafted by the `file-tools` arc on 2026-09-28 beside [`REPLACES`], so a
+/// person asked about an edit that changes every occurrence is told so
+/// before they answer.
+pub const REPLACES_EVERY: &str = "replaces every occurrence of:";
+
 /// The heading over a `cmd.run`'s split program and argument vector.
 ///
 /// Drafted with [`CREATES`] and on the same ruling. The rendered command line
@@ -137,8 +144,11 @@ pub fn detail_for(
             lines.extend(indented(contents, budget, redactor));
             lines
         }
-        Subject::Edit { old, new, .. } => {
-            let mut lines = vec![REPLACES.to_owned()];
+        Subject::Edit {
+            old, new, every, ..
+        } => {
+            let heading = if *every { REPLACES_EVERY } else { REPLACES };
+            let mut lines = vec![heading.to_owned()];
             lines.extend(indented(old, budget, redactor));
             lines.push(WITH.to_owned());
             lines.extend(indented(new, budget, redactor));

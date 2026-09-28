@@ -1627,14 +1627,22 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
 ///
 /// Those stage `ContextLimits` directly, which is the seam. This one goes
 /// through the whole path a person walks — `provider.ollama.context_tokens`
-/// set at the project layer, resolved through [ADR-0014]'s five layers,
+/// set at the user layer, resolved through [ADR-0014]'s five layers,
 /// turned into limits by `cli::layers::context_limits`, and crossed by
 /// ordinary turns — so it is the reachability half that no mutant of the
 /// arithmetic can see, and it is what makes [ADR-0013] clause 2's crossing a
 /// thing the binary does rather than a thing a check stages.
 ///
-/// The window is 3,000 and the threshold therefore 2,250. The reserve is the
-/// real tool surface, because it is on every request and a reader's session
+/// The window is set from the tool surface's own measured size: its
+/// threshold is about 700 bytes of conversation above what the surface
+/// reserves. Until 2026-09-28 it was a fixed 3,000, with a threshold of
+/// 2,250, set at the project layer. When the descriptions of `fs.read`,
+/// `fs.write` and `fs.edit` grew, the surface grew with them: the fixed
+/// window was crossed by the whole conversation rather than part of it, and a
+/// window with room for part of one is larger than the built-in 4,096, which
+/// a project may only lower. So it is set at the user layer, which may raise
+/// it; the path through the layers is the same.
+/// The reserve is the real tool surface, because it is on every request and a reader's session
 /// crosses with it: **the crossing is reached sooner than the conversation
 /// alone would reach it**, which is the whole point of counting it. The
 /// numbers are chosen so that the span taken is a *proper prefix* of layer 6
@@ -1666,9 +1674,25 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
 fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_counts() {
     use crate::config::{Contribution, Layer, Resolution, Source, Table, Value};
 
+    // What the tool surface reserves does not depend on the window, so it is
+    // measured first and the window set from it.
+    let surface = crate::providers::ollama::OllamaClient::new(
+        crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
+            .expect("a well-formed origin"),
+        model_named("llama3.2:3b"),
+        3_000,
+    )
+    .expect("an HTTP client builds without touching the network")
+    .tool_surface_bytes(crate::tools::descriptor_set())
+    .expect("the built-in descriptors' schemas are JSON this client can map");
+    let configured = (surface + 700) / 3 * 4;
+
     let key = crate::providers::ProviderKind::Ollama.context_tokens_key();
-    let mut project = Table::new();
-    project.insert_path(&key, Value::Integer(3_000));
+    let mut user = Table::new();
+    user.insert_path(
+        &key,
+        Value::Integer(i64::try_from(configured).expect("a window fits")),
+    );
     let resolution = Resolution::resolve(
         &crate::cli::layers::schema(),
         vec![
@@ -1678,22 +1702,26 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
                     .read()
                     .expect("layer 1 reads")
             }),
-            Contribution::new(Layer::Project, Source::named("./zaru.toml"), project),
+            Contribution::new(Layer::User, Source::named("~/.zaru/config.toml"), user),
         ],
     )
-    .expect("a project lowering a window is what ADR-0014 D6 permits");
+    .expect("a user setting a window is what ADR-0014 D6 permits");
 
     let Some(Value::Integer(resolved)) = resolution.get(&key) else {
         panic!("the project's window is the effective one");
     };
     let window = u64::try_from(*resolved).expect("a window fits");
     assert_eq!(
-        window, 3_000,
+        window, configured,
         "the configured window, not the built-in 4,096"
     );
 
     let limits = crate::cli::layers::context_limits(window);
-    assert_eq!(limits.threshold().get(), 2_250, "three quarters of 3,000");
+    assert_eq!(
+        limits.threshold().get(),
+        window / 4 * 3,
+        "three quarters of the configured window"
+    );
 
     let client = crate::providers::ollama::OllamaClient::new(
         crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
@@ -1726,6 +1754,7 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
         );
     }
     let used = session.usage(&held).used();
+    println!("the tool surface reserves {reserved}; {used} used in all");
     assert!(
         used > limits.threshold().get(),
         "the configured window is crossed by this conversation: {used} used against a threshold \

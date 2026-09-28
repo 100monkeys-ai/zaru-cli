@@ -148,6 +148,8 @@ pub enum Subject<'a> {
         old: &'a str,
         /// What replaces it.
         new: &'a str,
+        /// Whether every occurrence is replaced rather than exactly one.
+        every: bool,
     },
     /// A projected MCP call's arguments, as the model wrote them.
     ///
@@ -239,7 +241,30 @@ impl<'a> Invocation<'a> {
     pub const fn editing(target: &'a Target, old: &'a str, new: &'a str) -> Self {
         Self {
             called: Called::Builtin(ToolName::FsEdit),
-            subject: Subject::Edit { target, old, new },
+            subject: Subject::Edit {
+                target,
+                old,
+                new,
+                every: false,
+            },
+        }
+    }
+
+    /// An `fs.edit` that replaces every occurrence of `old`.
+    ///
+    /// Its own constructor rather than a flag on [`Invocation::editing`], so
+    /// that every call written before `all` existed still means one
+    /// occurrence. The question it is asked under says "every occurrence".
+    #[must_use]
+    pub const fn editing_every(target: &'a Target, old: &'a str, new: &'a str) -> Self {
+        Self {
+            called: Called::Builtin(ToolName::FsEdit),
+            subject: Subject::Edit {
+                target,
+                old,
+                new,
+                every: true,
+            },
         }
     }
 

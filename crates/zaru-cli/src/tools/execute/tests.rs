@@ -197,15 +197,19 @@ fn request(name: &str, values: &[&str]) -> ToolRequest {
         .into_iter()
         .find(|tool| tool.as_str() == name)
         .unwrap_or_else(|| panic!("staging: {name} is not one of ADR-0011 D1's seven"));
+    let required: Vec<&str> = tool
+        .fields()
+        .iter()
+        .filter(|field| field.required)
+        .map(|field| field.name)
+        .collect();
     assert_eq!(
         values.len(),
-        tool.fields().len(),
-        "staging: {tool} takes {:?} and {} value(s) were supplied",
-        tool.fields(),
+        required.len(),
+        "staging: {tool} requires {required:?} and {} value(s) were supplied",
         values.len()
     );
-    let object: serde_json::Map<String, serde_json::Value> = tool
-        .fields()
+    let object: serde_json::Map<String, serde_json::Value> = required
         .iter()
         .zip(values)
         .map(|(field, value)| {
@@ -704,13 +708,16 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         declared: crate::tools::descriptor_set(),
     };
 
+    // A search, because an `fs.read` sizes its own answer to the budget
+    // since 2026-09-28 and so is not what the budget cuts. The line the
+    // search finds is the whole file.
     let outcome = executor
-        .execute(&request("fs.read", &["inside/file"]))
+        .execute(&request("fs.search", &["inside/file", "HEAD"]))
         .await
         .expect("no port failed");
 
     let ToolOutcome::Completed { result, .. } = outcome else {
-        panic!("the read should have acted");
+        panic!("the search should have acted");
     };
     assert!(
         result.content.as_str().contains("bytes elided"),

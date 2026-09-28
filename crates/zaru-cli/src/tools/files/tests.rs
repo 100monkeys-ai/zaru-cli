@@ -73,7 +73,7 @@ fn a_write_puts_the_bytes_there_and_an_edit_replaces_one_occurrence() {
     // file, produces a different result from one that edits the right place.
     let before = "keep this line\nreplace HERE please\nkeep this too\n";
     std::fs::write(&path, before).expect("staging");
-    let edited = edit(&path, "HERE", "THERE");
+    let edited = edit(&path, "HERE", "THERE", false);
     assert_eq!(edited.exit_code, 0, "the edit failed: {}", edited.stderr);
     assert_eq!(
         std::fs::read_to_string(&path).expect("the file is on disk"),
@@ -111,7 +111,7 @@ fn a_replacement_keeps_the_files_own_mode_and_a_new_file_takes_the_umasks() {
          the executable bit its owner gave it"
     );
 
-    let edited = edit(&script, "new", "newer");
+    let edited = edit(&script, "new", "newer", false);
     assert_eq!(edited.exit_code, 0, "the edit failed: {}", edited.stderr);
     assert_eq!(mode_of(&script), 0o755, "an edit is a replacement too");
 
@@ -171,7 +171,7 @@ fn an_edit_whose_string_occurs_twice_is_refused_naming_every_place() {
     let second = "ONLYONLINETWO";
     std::fs::write(&path, &before).expect("staging");
 
-    let refused = edit(&path, "TARGET", "REPLACED");
+    let refused = edit(&path, "TARGET", "REPLACED", false);
     assert_eq!(
         refused.exit_code, 1,
         "an ambiguous edit must not act: {}",
@@ -204,7 +204,7 @@ fn an_edit_whose_string_occurs_twice_is_refused_naming_every_place() {
 
     // The accepting arm. Without it every assertion above is satisfied by an
     // `edit` that refuses everything.
-    let unique = edit(&path, "gamma", "delta");
+    let unique = edit(&path, "gamma", "delta", false);
     assert_eq!(
         unique.exit_code, 0,
         "a unique string edits: {}",
@@ -231,7 +231,7 @@ fn an_edit_refuses_a_file_that_is_not_utf8_rather_than_rewriting_it() {
     let before: Vec<u8> = b"keep TARGET \xff\xfe and this".to_vec();
     std::fs::write(&path, &before).expect("staging");
 
-    let refused = edit(&path, "TARGET", "REPLACED");
+    let refused = edit(&path, "TARGET", "REPLACED", false);
     assert_eq!(
         refused.exit_code, 1,
         "a file that is not UTF-8 must not be rewritten: {}",
@@ -253,7 +253,7 @@ fn an_edit_refuses_a_file_that_is_not_utf8_rather_than_rewriting_it() {
     // The accepting arm: the same edit on the same bytes made valid.
     let valid = scratch.at("text.txt");
     std::fs::write(&valid, "keep TARGET and this").expect("staging");
-    let edited = edit(&valid, "TARGET", "REPLACED");
+    let edited = edit(&valid, "TARGET", "REPLACED", false);
     assert_eq!(edited.exit_code, 0, "a UTF-8 file edits: {}", edited.stderr);
 }
 
@@ -315,7 +315,7 @@ fn an_edit_that_would_change_nothing_is_refused() {
     let path = scratch.at("same.txt");
     std::fs::write(&path, "alpha beta gamma\n").expect("staging");
 
-    let same = edit(&path, "beta", "beta");
+    let same = edit(&path, "beta", "beta", false);
     assert_eq!(
         same.exit_code, 1,
         "a no-op edit is refused: {}",
@@ -327,7 +327,7 @@ fn an_edit_that_would_change_nothing_is_refused() {
         same.stderr
     );
 
-    let empty = edit(&path, "", "anything");
+    let empty = edit(&path, "", "anything", false);
     assert_eq!(
         empty.exit_code, 1,
         "an empty string occurs everywhere, so it names no occurrence: {}",
@@ -336,7 +336,7 @@ fn an_edit_that_would_change_nothing_is_refused() {
     println!("{}\n{}", same.stderr, empty.stderr);
 
     // The accepting arm, and it is the same file: a real replacement lands.
-    let real = edit(&path, "beta", "delta");
+    let real = edit(&path, "beta", "delta", false);
     assert_eq!(
         real.exit_code, 0,
         "a real edit still works: {}",
@@ -345,6 +345,83 @@ fn an_edit_that_would_change_nothing_is_refused() {
     assert_eq!(
         std::fs::read_to_string(&path).expect("on disk"),
         "alpha delta gamma\n"
+    );
+}
+
+/// An edit keeps what the file had: CRLF endings in a mixed file where the
+/// text was written with LF, and a final newline the replacement dropped. A
+/// binary file, a missing file and text with no near match are each refused
+/// saying which, and nothing is written.
+#[test]
+fn an_edit_keeps_endings_and_the_final_newline_and_refuses_plainly() {
+    let scratch = Scratch::new();
+
+    let mixed = scratch.at("mixed.txt");
+    std::fs::write(&mixed, "a\r\nb\nc\r\n").expect("staging");
+    let edited = edit(&mixed, "a\nb", "x\ny", false);
+    assert_eq!(edited.exit_code, 0, "{}", edited.stderr);
+    assert_eq!(
+        std::fs::read(&mixed).expect("on disk"),
+        b"x\r\ny\nc\r\n",
+        "in a mixed file, text written with LF is matched with CRLF and replaced with CRLF"
+    );
+
+    let ended = scratch.at("ended.txt");
+    std::fs::write(&ended, "one\ntwo\n").expect("staging");
+    let edited = edit(&ended, "two\n", "three", false);
+    assert_eq!(edited.exit_code, 0, "{}", edited.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&ended).expect("on disk"),
+        "one\nthree\n",
+        "a file that ended with a newline lost it"
+    );
+    assert!(
+        edited.stdout.contains("so one was kept"),
+        "{}",
+        edited.stdout
+    );
+
+    let only = edit(&ended, "one", "ONE", true);
+    assert_eq!(only.exit_code, 0, "all with one occurrence replaces it");
+    assert!(
+        only.stdout.contains("replaced 1 occurrence(s)"),
+        "{}",
+        only.stdout
+    );
+
+    let binary = scratch.at("binary.bin");
+    std::fs::write(&binary, b"text\0more").expect("staging");
+    let refused = edit(&binary, "text", "TEXT", false);
+    assert_eq!(refused.exit_code, 1);
+    assert!(refused.stderr.contains("binary data"), "{}", refused.stderr);
+    assert_eq!(std::fs::read(&binary).expect("on disk"), b"text\0more");
+
+    let missing = edit(&scratch.at("nope.txt"), "a", "b", false);
+    assert_eq!(missing.exit_code, 1);
+    assert!(
+        missing.stderr.contains("there is no file at"),
+        "{}",
+        missing.stderr
+    );
+
+    // The nearest lines stop at the file's last line.
+    let near = scratch.at("near.py");
+    std::fs::write(&near, "def f():\n    return 1\n").expect("staging");
+    let absent = edit(&near, "def f():\n  return 1\n", "x", false);
+    assert_eq!(absent.exit_code, 1);
+    assert!(
+        absent.stderr.contains("Lines 1 to 2 of the file are:")
+            && !absent.stderr.contains("3\u{2502}"),
+        "the nearest lines went past the end of the file: {}",
+        absent.stderr
+    );
+
+    let far = edit(&ended, "nothing like this", "x", false);
+    assert_eq!(far.exit_code, 1);
+    assert!(
+        far.stderr.contains("No line of the file matches"),
+        "{}",
+        far.stderr
     );
 }
 
