@@ -117,8 +117,27 @@ pub fn field() -> Field {
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub const MAX_ITERATIONS_KEY: &str = "runtime.max_iterations";
 
-/// The optional outer-loop exchange limit. Its absence means unlimited.
+/// The outer loop's exchange limit: the most model replies one turn may have.
 pub const MAX_TOOL_EXCHANGES_KEY: &str = "runtime.max_tool_exchanges";
+
+/// The exchange limit a turn has when nobody set one: fifty.
+///
+/// # Why fifty
+///
+/// Measured by the harness survey of 2026-09-28: a real model fixed a failing
+/// test in **8** exchanges, and its five questions on a real library took 2 to
+/// 6 each. A scripted model that repeated one call ran **123** identical calls
+/// in about two seconds, and only the context guard stopped it; on a paid
+/// model each of those is a request that costs money. Fifty is over six times
+/// the longest real task measured and under half the loop. A turn that stops
+/// here stops with the session open, and the person says continue to go on,
+/// so a long task costs one word and a loop costs fifty requests rather than
+/// a hundred and more.
+///
+/// It is layer 1's row for [`MAX_TOOL_EXCHANGES_KEY`], so `zaru config
+/// explain` shows it, a reader raises it in `~/.zaru/config.toml`, and a
+/// project may only lower it.
+pub const DEFAULT_TOOL_EXCHANGES: u32 = 50;
 
 /// [`MAX_TOOL_EXCHANGES_KEY`] as a configuration key.
 #[must_use]
@@ -132,7 +151,11 @@ pub fn max_tool_exchanges_field() -> Field {
     Field::ceiling()
 }
 
-/// Resolve the outer tool-call exchange limit. No supplied value is unlimited.
+/// Resolve the outer tool-call exchange limit.
+///
+/// Every resolution the product builds carries layer 1's
+/// [`DEFAULT_TOOL_EXCHANGES`], so the key is always set; a resolution built
+/// without layer 1 is given the same default rather than no limit.
 ///
 /// # Errors
 ///
@@ -143,7 +166,12 @@ pub fn tool_call_ceiling_for(
 ) -> Result<zaru_core::tool_call::ToolCallCeiling, ExchangeLimitRefused> {
     let key = max_tool_exchanges_key();
     let Some(value) = resolution.get(&key) else {
-        return Ok(zaru_core::tool_call::ToolCallCeiling::unlimited());
+        return zaru_core::tool_call::ToolCallCeiling::new(DEFAULT_TOOL_EXCHANGES).map_err(|_| {
+            ExchangeLimitRefused::NotALimit {
+                key,
+                found: i64::from(DEFAULT_TOOL_EXCHANGES),
+            }
+        });
     };
     let Some(count) = value.as_integer() else {
         return Err(ExchangeLimitRefused::WrongShape {
@@ -161,13 +189,14 @@ pub fn tool_call_ceiling_for(
 ///
 /// **Its own type rather than [`CeilingRefused`]'s**, because the reason a
 /// reader is given is the part they act on and the two keys have different
-/// reasons. [ADR-0034] D2: "Its absence is the explicit unlimited state; zero
-/// and negative values are refused rather than given a second meaning" -- so a
-/// reader who wrote `0` meaning "no limit" is told that removing the key is
-/// how to ask for one. Until 2026-09-27 this key's refusal was
+/// reasons. [ADR-0034] D2: "zero and negative values are refused rather than
+/// given a second meaning". Until 2026-09-27 this key's refusal was
 /// [`CeilingRefused::NotACount`]'s, which called it "an iteration ceiling" --
 /// `runtime.max_iterations`, the setting that record's Alternative 3 keeps
-/// apart from this one -- and never said how to leave a turn unlimited.
+/// apart from this one. Since 2026-09-28 a turn has
+/// [`DEFAULT_TOOL_EXCHANGES`] when nothing is set, where it had no limit, so
+/// the refusal says that and that a stopped turn goes on when the person
+/// types continue.
 ///
 /// [ADR-0034]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0034-tool-call-exchange-limits
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,14 +238,14 @@ impl fmt::Display for ExchangeLimitRefused {
                 f,
                 "`{key}` is {found}, and an exchange limit is a whole number from 1 to {}: the \
                  most model exchanges one turn may make. Zero and negative values are refused \
-                 rather than given a meaning; a turn's exchanges are unlimited when no layer \
-                 sets this key",
+                 rather than given a meaning; a turn may make {DEFAULT_TOOL_EXCHANGES} exchanges \
+                 when you set nothing, and after that you can say continue",
                 u32::MAX
             ),
             Self::WrongShape { key, found } => write!(
                 f,
                 "`{key}` holds {found}, and an exchange limit is a whole number of at least 1; a \
-                 turn's exchanges are unlimited when no layer sets this key"
+                 turn may make {DEFAULT_TOOL_EXCHANGES} exchanges when you set nothing"
             ),
         }
     }

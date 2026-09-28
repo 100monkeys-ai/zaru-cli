@@ -131,7 +131,11 @@ fn limits(window: u64, threshold: u64) -> ContextLimits {
 async fn assembled(prefix_persona: Option<&str>, redactor: &HeldSecrets, tail: &str) -> String {
     let session = SessionContext::opened(
         prefix_for(prefix_persona, &facts()),
-        ContextShape::of(limits(ROOMY.0, ROOMY.1), 0),
+        ContextShape::of(
+            limits(ROOMY.0, ROOMY.1),
+            0,
+            zaru_cli::providers::capacity::Calibration::starting(),
+        ),
     );
     session
         .policy(redactor, false)
@@ -306,7 +310,11 @@ async fn a_persona_in_layer_one_is_the_same_bytes_on_every_turn_of_a_long_sessio
     let nothing = HeldSecrets::none();
     let mut session = SessionContext::opened(
         prefix_for(Some(&served), &facts()),
-        ContextShape::of(limits(ROOMY.0, ROOMY.1), 0),
+        ContextShape::of(
+            limits(ROOMY.0, ROOMY.1),
+            0,
+            zaru_cli::providers::capacity::Calibration::starting(),
+        ),
     );
     let opened = session
         .policy(&nothing, false)

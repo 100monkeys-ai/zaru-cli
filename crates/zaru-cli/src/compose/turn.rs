@@ -345,6 +345,9 @@ pub struct Prepared {
     ///
     /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
     window: u64,
+    /// Where [`Self::window`] came from: the provider, the reader's setting
+    /// or this build's default, and what the provider said about the model.
+    window_from: crate::providers::window::Window,
     /// What every exchange of this session spends on tool declarations, in
     /// bytes as this kind sends them.
     ///
@@ -429,7 +432,15 @@ impl Prepared {
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(self.window),
             self.reserved,
+            self.client.calibration(),
         )
+    }
+
+    /// This session's window and where it came from. See
+    /// [`crate::providers::window`].
+    #[must_use]
+    pub const fn window(&self) -> crate::providers::window::Window {
+        self.window_from
     }
 
     /// Which of [ADR-0012] D3's kinds is answering.
@@ -960,10 +971,59 @@ pub fn prepare(
     // be this harness reporting its own disagreement as a crash.
     // `openai-compatible` has no row, so `None` reaches its descriptor and
     // `require_context_size` refuses it by name.
-    let configured_window = match resolution.get(&kind.context_tokens_key()) {
+    let resolved_window = match resolution.get(&kind.context_tokens_key()) {
         Some(crate::config::Value::Integer(tokens)) => u64::try_from(*tokens).ok(),
         _ => None,
     };
+    // Which of the two that was: a reader's setting at any layer above the
+    // built-in one, or the built-in row itself.
+    let set_by_the_reader = resolution
+        .explain(&kind.context_tokens_key())
+        .effective_layer()
+        .is_some_and(|layer| layer != crate::config::Layer::BuiltIn);
+    let (configured, built_in) = if set_by_the_reader {
+        (resolved_window, None)
+    } else {
+        (None, resolved_window)
+    };
+
+    // --- ADR-0012 D3's window, asked of the provider once for the session --
+    //
+    // The provider is asked about this model before the client is built, so
+    // the client is built with the window it will use and `ollama`'s
+    // `num_ctx` is that window. See `providers::window` for what each kind is
+    // asked, why `ollama`'s answer only lowers the window, and why a reader's
+    // own setting lowers a provider's answer and never raises it.
+    let question = match kind {
+        ProviderKind::Gemini => secret.as_ref().map(|key| {
+            crate::providers::window::Question::gemini_model(
+                Endpoint::new(&endpoint).origin(),
+                crate::providers::gemini::endpoint::API_VERSION,
+                model.as_str(),
+                key.expose_for_dispatch(),
+            )
+        }),
+        ProviderKind::Ollama => Some(crate::providers::window::Question::ollama_show(
+            crate::providers::ollama::Endpoint::new(&endpoint).origin(),
+            model.as_str(),
+        )),
+        ProviderKind::OpenAiCompatible => Some(crate::providers::window::Question::openai_models(
+            crate::providers::openai_compatible::Endpoint::new(&endpoint).origin(),
+            model.as_str(),
+            secret
+                .as_ref()
+                .map(crate::credentials::Secret::expose_for_dispatch),
+        )),
+        ProviderKind::Anthropic | ProviderKind::Aegis => None,
+    };
+    let provider_said = question.and_then(crate::providers::window::ask);
+    let decided = crate::providers::window::decide(
+        provider_said,
+        configured,
+        built_in,
+        kind == ProviderKind::Ollama,
+    );
+    let configured_window = decided.map(|window| window.tokens);
 
     // A wildcard-free match, so a third client cannot be added to
     // `KINDS_WITH_A_CLIENT` without being built here.
@@ -1043,6 +1103,11 @@ pub fn prepare(
             return Err(Box::new(Ran::refused(refusal.into())));
         }
     };
+    let window_from = decided.unwrap_or(crate::providers::window::Window {
+        tokens: window,
+        source: crate::providers::window::Source::BuiltIn,
+        provider_said,
+    });
 
     // --- ADR-0013's reserve: what this request spends beside the prompt ----
     //
@@ -1144,6 +1209,7 @@ pub fn prepare(
         variables: variables.clone(),
         declared_tools,
         window,
+        window_from,
         reserved,
         session_grants: crate::tools::grants::SessionGrants::none(),
         stored_keys_unread,
@@ -1467,7 +1533,8 @@ async fn ran(
     // which tokio refuses at run time. It reached ADR-0016 D3's boundary as a
     // defect on six checks the moment the two changes met, and the fix is not
     // a nested runtime but no nesting at all: this is one sequence of awaits.
-    let summariser = ModelSummariser::over(&provider, &prepared.held);
+    let summariser =
+        ModelSummariser::over(&provider, &prepared.held).within(context.summary_bytes());
     let compaction = match context.at_turn_boundary(&summariser, &prepared.held).await {
         Ok(compaction) => compaction,
         Err(failure) => {

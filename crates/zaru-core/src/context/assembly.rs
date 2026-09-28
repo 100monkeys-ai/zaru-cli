@@ -119,7 +119,7 @@ impl fmt::Display for Exceeded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the assembled context needs {} tokens and the window allows {}",
+            "the assembled context needs an estimated {} tokens and the window allows {}",
             self.needed, self.window
         )
     }
@@ -216,6 +216,11 @@ impl Context {
     /// [`TokenCounter`]'s only implementation in this workspace claims for
     /// itself.
     ///
+    /// **It is held in bytes as the caller measured them** and turned into
+    /// tokens through [`TokenCounter::count_bytes`] at every measurement, by
+    /// the same counter as the text, so a counter that learns as a session
+    /// goes on converts the reserve at what it has learned too.
+    ///
     /// This number closes that gap. It is added to what
     /// [`Self::usage`] reports, to what [`Self::assemble`] refuses on, and to
     /// what [`Self::compact`] compares against the threshold — and it is
@@ -232,6 +237,12 @@ impl Context {
     #[must_use]
     pub const fn reserved(&self) -> u64 {
         self.reserved
+    }
+
+    /// The window and the threshold this context is held under.
+    #[must_use]
+    pub const fn limits(&self) -> ContextLimits {
+        self.limits
     }
 
     /// The stable prefix. Borrowed, never handed over.
@@ -311,9 +322,7 @@ impl Context {
         tail: &str,
     ) -> Result<Assembled, Exceeded> {
         let prompt = self.prompt(redactor, tail);
-        let needed = counter
-            .count(&prompt.rendered())
-            .saturating_add(self.reserved);
+        let needed = measure(counter, &prompt).saturating_add(counter.count_bytes(self.reserved));
         let window = self.limits.window().get();
         if needed > window {
             return Err(Exceeded { needed, window });
@@ -361,10 +370,9 @@ impl Context {
         let taken = self.oldest_span_covering(counter, overage);
         if taken > 0 {
             let span = Span::of(&self.exchanges[..taken]);
-            let before: u64 = span
-                .exchanges()
+            let before: u64 = self.exchanges[..taken]
                 .iter()
-                .map(|exchange| counter.count(exchange.as_str()))
+                .map(|exchange| measure_exchange(counter, exchange))
                 .sum();
             // The summary is obtained before anything is removed, so a
             // failing summariser leaves the context exactly as it was.
@@ -403,9 +411,8 @@ impl Context {
     /// a marker is not the same length as the value it replaced, so counting
     /// the raw render would be counting text nobody will ever be shown.
     fn measured<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> u64 {
-        counter
-            .count(&self.prompt(redactor, "").rendered())
-            .saturating_add(self.reserved)
+        measure(counter, &self.prompt(redactor, ""))
+            .saturating_add(counter.count_bytes(self.reserved))
     }
 
     /// How many of the oldest exchanges it takes to cover `overage`.
@@ -415,7 +422,7 @@ impl Context {
     fn oldest_span_covering<C: TokenCounter>(&self, counter: &C, overage: u64) -> usize {
         let mut covered: u64 = 0;
         for (index, exchange) in self.exchanges.iter().enumerate() {
-            covered = covered.saturating_add(counter.count(&exchange.rendered()));
+            covered = covered.saturating_add(measure_exchange(counter, exchange));
             if covered >= overage {
                 return index + 1;
             }
@@ -482,4 +489,27 @@ fn push_section(out: &mut String, section: &str) {
         out.push_str(SEPARATOR);
     }
     out.push_str(section);
+}
+
+/// What a prompt costs: its system text, each message of its history as the
+/// counter measures a message, and its task.
+fn measure<C: TokenCounter>(counter: &C, prompt: &Prompt) -> u64 {
+    let history: u64 = prompt
+        .history()
+        .iter()
+        .map(|message| counter.count_message(message))
+        .sum();
+    counter
+        .count(prompt.system().unwrap_or_default())
+        .saturating_add(history)
+        .saturating_add(counter.count(prompt.task()))
+}
+
+/// What one exchange of layer 6 costs, message by message.
+fn measure_exchange<C: TokenCounter>(counter: &C, exchange: &Exchange) -> u64 {
+    exchange
+        .messages()
+        .iter()
+        .map(|message| counter.count_message(message))
+        .sum()
 }

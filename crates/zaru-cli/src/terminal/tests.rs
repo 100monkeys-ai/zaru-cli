@@ -2240,8 +2240,9 @@ fn a_compaction_announces_itself_in_the_panes_announcement_register() {
     );
     assert_eq!(
         lines[0].text,
-        "compacted 34 earlier turns · 18.2k → 2.1k tokens · full history in transcript",
-        "ADR-0013 D3 spells this line and every word of it is the record's"
+        "compacted 34 earlier turns · ~18.2k → ~2.1k tokens, estimated · full history in \
+         transcript",
+        "ADR-0013 D3 spells this line, with the two figures marked as the estimates they are"
     );
     assert!(
         !lines[0].text.contains('◈'),
@@ -3175,11 +3176,11 @@ fn the_token_count_changes_when_an_exchange_reports_one_and_not_before() {
         rows.first()
     );
     assert!(
-        joined.contains("tokens: 390 prompt + 79 completion = 469"),
+        joined.contains("469 tokens counted"),
         "the first exchange's count must reach the row; the frames were {joined}"
     );
     assert!(
-        joined.contains("tokens: 902 prompt + 145 completion = 1047"),
+        joined.contains("1047 tokens counted"),
         "the second exchange's count must replace it; the frames were {joined}"
     );
     assert!(
@@ -3267,7 +3268,11 @@ fn the_model_and_the_mode_are_on_the_row_from_the_sessions_first_frame() {
     let mut shell = shell();
     let context = crate::compose::SessionContext::opened(
         crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(crossable(), 0),
+        crate::compose::ContextShape::of(
+            crossable(),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let redactor = Nothing;
     let model = crate::providers::ModelId::for_a_check("gemini-3.6-flash");
@@ -3788,7 +3793,11 @@ fn the_context_number_on_the_row_rises_with_a_session_and_falls_on_a_compaction(
     let redactor = Nothing;
     let mut context = crate::compose::SessionContext::opened(
         crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(crossable(), 0),
+        crate::compose::ContextShape::of(
+            crossable(),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
 
@@ -3874,7 +3883,11 @@ fn the_token_segment_is_the_line_the_session_prints_on_exit_and_not_a_second_spe
     let redactor = Nothing;
     let context = crate::compose::SessionContext::opened(
         crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(crossable(), 0),
+        crate::compose::ContextShape::of(
+            crossable(),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
     let usage = crate::providers::TokenUsage::counted(390, 79);
@@ -3912,7 +3925,11 @@ fn a_session_that_has_not_asked_anything_shows_a_context_and_no_tokens() {
     let redactor = Nothing;
     let context = crate::compose::SessionContext::opened(
         crate::compose::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(crossable(), 0),
+        crate::compose::ContextShape::of(
+            crossable(),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut shell = Shell::open(Status::new("bare", "01JQZX8N3K4M5P6R7S8T9V0W1X"));
 

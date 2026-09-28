@@ -159,6 +159,8 @@ pub fn request_from(
             num_thread: NUM_THREAD,
             num_ctx: context_tokens,
         },
+        truncate: false,
+        shift: false,
     })
 }
 

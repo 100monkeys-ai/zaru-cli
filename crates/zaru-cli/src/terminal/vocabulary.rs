@@ -466,7 +466,7 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Option<Line> {
             Register::Plain,
             match of {
                 Some(of) => format!("turn {n}, up to {of} exchange(s)"),
-                None => format!("turn {n}, unlimited exchanges"),
+                None => format!("turn {n}, no exchange limit"),
             },
         ),
         Event::ModelResponded {
@@ -477,7 +477,7 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Option<Line> {
         } => Line::new(
             Register::Plain,
             format!(
-                "exchange {round}: {tokens} tokens, {calls} tool call(s) · {}",
+                "exchange {round}: {tokens} tokens counted by the provider, {calls} tool call(s) · {}",
                 seconds(*elapsed)
             ),
         ),
@@ -553,9 +553,19 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Option<Line> {
                 ),
                 // ADR-0008 D5: exhaustion "is not an error and is not a
                 // success", so it gets neither of the two above.
+                //
+                // The session stays open, and the next turn is sent every
+                // call and result this one made, so "continue" goes on from
+                // where it stopped. The line says so, because a turn that
+                // stops at a limit and does not say how to go on reads as a
+                // turn that failed.
                 TurnEnding::CeilingReached => Line::new(
                     Register::Exhausted,
-                    format!("turn {n} reached its ceiling · {took}"),
+                    format!(
+                        "turn {n} stopped at its limit of {rounds} exchange(s), with the model \
+                         still asking for tools · type continue to go on · {}",
+                        seconds(*elapsed)
+                    ),
                 ),
                 TurnEnding::Iterated {
                     iterations,
@@ -741,6 +751,29 @@ pub(crate) fn seconds(elapsed: core::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::Vocabulary;
+
+    /// A turn stopped at its exchange limit says so and says how to go on.
+    ///
+    /// Red on `254e2b6`, whose line was "turn 1 reached its ceiling · 50
+    /// exchange(s) · 1.20s": "the line for a turn stopped at its limit does
+    /// not say to type continue".
+    #[test]
+    fn a_turn_stopped_at_its_limit_says_how_to_go_on() {
+        use zaru_core::tool_call::{Event, TurnEnding};
+        let line = super::turn_line(&Event::TurnEnded {
+            n: 1,
+            ending: TurnEnding::CeilingReached,
+            rounds: 50,
+            elapsed: Duration::from_millis(1_200),
+        })
+        .expect("a turn's end is painted");
+        assert!(
+            line.text.contains("stopped at its limit of 50 exchange(s)")
+                && line.text.contains("type continue to go on"),
+            "the line for a turn stopped at its limit does not say to type continue: {:?}",
+            line.text
+        );
+    }
     use crate::cli::namespace::Namespace;
     use core::time::Duration;
     use zaru_tui::composer::{Composer, Entries, Entry};

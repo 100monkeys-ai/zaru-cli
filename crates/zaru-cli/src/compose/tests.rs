@@ -11,11 +11,11 @@
 //!
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
-use crate::compose::{ByteCounter, Records, TurnContext, context, prose};
+use crate::compose::{Records, TurnContext, context, prose};
 use crate::credentials::fixtures::ScratchRoot;
 use crate::redaction::HeldSecrets;
 use crate::session::Record;
-use zaru_core::context::{Context, ContextLimits, ContextWindow, PressureThreshold, TokenCounter};
+use zaru_core::context::{Context, ContextLimits, ContextWindow, PressureThreshold};
 use zaru_core::iteration::{ContextPolicy, ContextRefusal, Turn};
 use zaru_core::tool_call::{Event, EventSink, TurnEnding};
 
@@ -27,24 +27,25 @@ use zaru_core::tool_call::{Event, EventSink, TurnEnding};
 /// (library verification lessons §51).
 const MULTIBYTE: &str = "réduire l'itération — 日本語";
 
-/// The counter counts bytes, and a character count is a different answer.
+/// The estimate is made from bytes, and a character count is a different
+/// answer.
 ///
-/// `ByteCounter`'s whole documented property is that it over-counts against a
-/// tokeniser and never under-counts, which is what makes
-/// `Context::assemble`'s refusal sound. A character count would break that for
-/// exactly the text this fixture carries.
+/// The ratio [`Calibration`](crate::providers::capacity::Calibration) learns
+/// is request **bytes** over the provider's tokens, so the text it is applied
+/// to must be measured in bytes too. A character count would under-estimate
+/// exactly the text this fixture carries, which is the direction that
+/// overflows a window.
 ///
-/// Watched red by counting characters, which printed *"the counter must count
-/// bytes: a character count under-reports a multi-byte text and the refusal
-/// stops being sound — left: 30, right: 37"*.
+/// Watched red by counting characters, which printed *"the estimate must be
+/// made from bytes: a character count under-reports a multi-byte text"*.
 #[test]
-fn the_counter_counts_bytes_and_never_characters() {
-    let counted = ByteCounter.count(MULTIBYTE);
+fn the_estimate_is_made_from_bytes_and_never_characters() {
+    use zaru_core::context::TokenCounter as _;
+    let counted = crate::providers::capacity::fixtures::one_token_a_byte().count(MULTIBYTE);
     assert_eq!(
         counted,
         MULTIBYTE.len() as u64,
-        "the counter must count bytes: a character count under-reports a multi-byte text and the \
-         refusal stops being sound"
+        "the estimate must be made from bytes: a character count under-reports a multi-byte text"
     );
     // The discriminating arm: on this text the two candidate rules disagree,
     // so a check that only asserted `count(text) == text.len()` against an
@@ -187,7 +188,8 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
         0,
     );
     let held = HeldSecrets::none();
-    let policy = TurnContext::over(&context, &held, false);
+    let counter = crate::providers::capacity::fixtures::one_token_a_byte();
+    let policy = TurnContext::over(&context, &counter, &held, false);
 
     let task = "x".repeat(4096);
     let refusal = futures_lite_block_on(policy.assemble(&Turn::Initial { task: &task }))
@@ -239,7 +241,8 @@ fn a_turn_that_fits_carries_the_prefix_and_then_the_task() {
         0,
     );
     let held = HeldSecrets::none();
-    let policy = TurnContext::over(&context, &held, false);
+    let counter = crate::providers::capacity::fixtures::one_token_a_byte();
+    let policy = TurnContext::over(&context, &counter, &held, false);
 
     let prompt = futures_lite_block_on(policy.assemble(&Turn::Initial {
         task: "read src/lib.rs and say what it is",
@@ -608,6 +611,16 @@ impl zaru_core::tool_call::Model for StagedModel {
     }
 }
 
+/// What one staged exchange of a person's words costs at one token a byte:
+/// the message as JSON, which is how the estimate measures a message.
+fn staged_cost(text: &str) -> u64 {
+    serde_json::to_string(&zaru_core::conversation::Message::User {
+        text: text.to_owned(),
+    })
+    .expect("a message serialises")
+    .len() as u64
+}
+
 /// A span of layer 6, oldest first.
 fn span_of(exchanges: &[&str]) -> zaru_core::context::Span {
     zaru_core::context::Span::of(
@@ -888,7 +901,11 @@ fn a_turn_boundary_under_the_threshold_spends_nothing() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(tight_limits(100_000, 75_000), 0),
+        crate::compose::ContextShape::of(
+            tight_limits(100_000, 75_000),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut transcribed = Transcribed::default();
     transcribed.said(&mut session, "a short exchange");
@@ -918,7 +935,11 @@ fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() 
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
+        crate::compose::ContextShape::of(
+            tight_limits(8_000, 1_200),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut transcribed = Transcribed::default();
     for nth in 0..8 {
@@ -985,7 +1006,7 @@ fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() 
                 taken.len(),
                 "D3's count is how many exchanges were replaced"
             );
-            let measured: u64 = taken.iter().map(|text| text.len() as u64).sum();
+            let measured: u64 = taken.iter().map(|text| staged_cost(text)).sum();
             assert_eq!(
                 *cost, measured,
                 "D3 asks for real before-and-after counts, so `before` is what the replaced \
@@ -1007,7 +1028,11 @@ fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
+        crate::compose::ContextShape::of(
+            tight_limits(8_000, 1_200),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut transcribed = Transcribed::default();
     for nth in 0..8 {
@@ -1053,7 +1078,11 @@ fn a_summary_is_compacted_again_like_any_other_exchange() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(tight_limits(8_000, 900), 0),
+        crate::compose::ContextShape::of(
+            tight_limits(8_000, 900),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut transcribed = Transcribed::default();
     for nth in 0..8 {
@@ -1108,7 +1137,11 @@ fn the_checkpoint_carries_layer_six_as_messages_and_no_prefix() {
     let limits = tight_limits(100_000, 75_000);
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(limits, 0),
+        crate::compose::ContextShape::of(
+            limits,
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut transcribed = Transcribed::default();
     transcribed.said(
@@ -1154,7 +1187,11 @@ fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
+        crate::compose::ContextShape::of(
+            tight_limits(8_000, 1_200),
+            0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     {
         let policy = session.policy(&held, false);
@@ -1322,6 +1359,7 @@ fn adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers() {
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
             0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
         ),
     );
     let refusal = crate::compose::boundary::checkpointed(&context, &session)
@@ -1551,7 +1589,7 @@ impl crate::providers::Provider for Reporting {
 /// exchange 1  whole request 1,967 bytes  message content 231  prompt_eval_count 465
 /// ```
 ///
-/// `compose::count`'s whole soundness argument was `bytes >= tokens`, and
+/// The byte counter's whole soundness argument was `bytes >= tokens`, and
 /// **231 is not at least 465**. The gap is the tool surface, which every
 /// request carries and the context does not contain. So this stages that
 /// exact shape — a conversation of the measured size, the reserve taken from
@@ -1596,6 +1634,7 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
                 crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
             ),
             reserved,
+            crate::providers::capacity::Calibration::starting(),
         ),
     );
     let mut transcribed = Transcribed::default();
@@ -1619,6 +1658,231 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
          is BELOW the provider's own and overflows the window in silence",
         reported.prompt_tokens()
     );
+}
+
+/// A 4,096-token window holds at least four times the conversation before
+/// compaction that it held when bytes were counted as tokens.
+///
+/// # What was measured, and what this holds
+///
+/// On `254e2b6`, against the scripted server at the built-in `ollama` window
+/// of 4,096, one typed line of about 620 bytes filled the context to
+/// `4.0k/4.0k`, and every later turn was refused before it was sent:
+/// "the next provider request needs 4161 byte(s), exceeding this provider's
+/// configured context window of 4096 token(s)". The window was being read as
+/// 4,096 **bytes**, of which the tool surface alone took 2,531.
+///
+/// This builds the context the way `Prepared::context_shape` does for that
+/// kind — the built-in window, the real tool surface through the `ollama`
+/// client's own mapping, and the client's estimate before any answer — and
+/// adds conversation until the pressure threshold is passed. It holds at
+/// least four times what a byte count left room for.
+///
+/// Watched red with `STARTING_BYTES_PER_TOKEN` set to one, the byte count
+/// this replaced: "a 4,096-token window held 0 bytes of conversation before
+/// compaction, where counting bytes as tokens held 72". With the estimate it
+/// holds 5,031 bytes where a byte count held 72, each message counted with
+/// its wrapping.
+#[test]
+fn a_4096_token_window_holds_four_times_the_conversation_counting_bytes_held() {
+    let client = crate::providers::ollama::OllamaClient::new(
+        crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
+            .expect("a well-formed origin"),
+        model_named("llama3.2:3b"),
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let reserved = client
+        .tool_surface_bytes(crate::tools::descriptor_set())
+        .expect("the built-in descriptors map");
+    let limits = crate::cli::layers::context_limits(
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    );
+    let threshold = limits.threshold().get();
+    let prefix = context::prefix_for(None, &crate::compose::context::fixtures::facts());
+    let held = HeldSecrets::none();
+
+    // What counting bytes as tokens left for conversation: the threshold, less
+    // the prefix and the tool surface, each in bytes.
+    let empty = crate::compose::SessionContext::opened(
+        prefix.clone(),
+        crate::compose::ContextShape::of(
+            limits,
+            reserved,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
+    );
+    let byte_room = threshold.saturating_sub(empty.usage(&held).used());
+
+    let mut session = crate::compose::SessionContext::opened(
+        prefix,
+        crate::compose::ContextShape::of(limits, reserved, client.calibration()),
+    );
+    let mut transcribed = Transcribed::default();
+    let line = format!("remember the code word, then {}", "word ".repeat(20));
+    let mut held_bytes = 0_u64;
+    loop {
+        transcribed.said(&mut session, line.clone());
+        if session.usage(&held).used() > threshold {
+            break;
+        }
+        held_bytes += line.len() as u64;
+    }
+    println!(
+        "counting bytes as tokens held {byte_room} bytes of conversation; the estimate held \
+         {held_bytes} ({reserved} bytes of tool surface)"
+    );
+    assert!(
+        held_bytes >= 4 * byte_room.max(1),
+        "a 4,096-token window held {held_bytes} bytes of conversation before compaction, where \
+         counting bytes as tokens held {byte_room}"
+    );
+}
+
+/// After one answer, the estimate of a history of many short tool calls is
+/// within a fifth of what the provider counts for it.
+///
+/// A provider is sent each message wrapped: a role, a call's id, the
+/// structure around it. For a short call that wrapping is most of the bytes.
+/// Measured with the scripted server on 2026-09-28, after a turn of fifty
+/// `fs.list` calls: the row read `~1.5k` where the server counted 3,279 prompt
+/// tokens, because the estimate was made over the messages' text alone. Here
+/// the provider's count is the `ollama` wire body of the same conversation at
+/// four bytes a token, which is what the scripted server reports, and the
+/// estimate is taught that ratio from one answer, as the client teaches it.
+///
+/// Watched red with `Calibration::count_message` removed, so a message was
+/// counted by its text: "the estimate of fifty short tool calls is 1105
+/// tokens where the provider counts 3023".
+#[test]
+fn the_estimate_of_many_short_tool_calls_is_near_the_providers_count() {
+    use zaru_core::conversation::Message;
+    use zaru_core::tool_call::ToolRequest;
+
+    let client = crate::providers::ollama::OllamaClient::new(
+        crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
+            .expect("a well-formed origin"),
+        model_named("llama3.2:3b"),
+        131_072,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let reserved = client
+        .tool_surface_bytes(crate::tools::descriptor_set())
+        .expect("the built-in descriptors map");
+    let held = HeldSecrets::none();
+    let mut session = crate::compose::SessionContext::opened(
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
+        crate::compose::ContextShape::of(
+            crate::cli::layers::context_limits(131_072),
+            reserved,
+            client.calibration(),
+        ),
+    );
+
+    let mut records = vec![
+        Record::Conversation(crate::session::Utterance {
+            n: 1,
+            voice: crate::session::Voice::User,
+            text: "list the files".to_owned(),
+        }),
+        Record::TurnLoop(Event::Message(Message::User {
+            text: "list the files".to_owned(),
+        })),
+    ];
+    for n in 1..=50 {
+        records.push(Record::TurnLoop(Event::Message(Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: format!("call-{n}"),
+                name: "fs.list".to_owned(),
+                arguments: r#"{"path":"."}"#.to_owned(),
+            }],
+            echo: None,
+        })));
+        records.push(Record::TurnLoop(Event::Message(Message::Tool {
+            id: format!("call-{n}"),
+            name: "fs.list".to_owned(),
+            content: "a.txt".to_owned(),
+            failed: false,
+        })));
+    }
+    session.rebuild_from(&records);
+
+    // What the provider is sent for this context, and what it counts.
+    let prompt = {
+        let policy = session.policy(&held, false);
+        futures_lite_block_on(policy.assemble(&Turn::Initial { task: "continue" }))
+            .expect("the context fits")
+    };
+    let body = crate::providers::ollama::map::request_from(
+        &zaru_core::tool_call::ModelRequest {
+            prompt: &prompt,
+            tools: crate::tools::descriptor_set(),
+            turn: &[],
+        },
+        "llama3.2:3b",
+        131_072,
+    )
+    .expect("the request maps");
+    let wire = crate::providers::capacity::request_bytes(&body);
+    let counted = wire / 4;
+    assert!(
+        client.calibration().learn(wire, counted),
+        "one answer's count is learned"
+    );
+
+    let estimated = session.usage(&held).used();
+    let off = estimated.abs_diff(counted);
+    assert!(
+        off * 5 <= counted,
+        "the estimate of fifty short tool calls is {estimated} tokens where the provider counts \
+         {counted}"
+    );
+}
+
+/// A span larger than the window is summarised within it, so a session can
+/// compact past one large result instead of being refused for ever.
+///
+/// A turn that read one large result carries it in layer 6. Sent whole, the
+/// summarisation that would relieve it is itself too large for the window and
+/// is refused before it leaves, so the session could never get past it. Each
+/// exchange keeps its opening and its end within its share, and the middle is
+/// named as left out.
+///
+/// Watched red with `within` ignored: "a summarisation sent 60271 bytes where
+/// its budget was 6000".
+#[tokio::test]
+async fn a_span_larger_than_the_window_is_summarised_within_it() {
+    use zaru_core::context::Summariser as _;
+
+    let model = StagedModel::text("they read a long file and found the answer at the end");
+    let held = HeldSecrets::none();
+    let budget = 6_000;
+    let summariser = crate::compose::ModelSummariser::over(&model, &held).within(budget);
+    let huge = format!(
+        "OPENING {} CLOSING",
+        "é line of a very long result\n".repeat(2_000)
+    );
+    summariser
+        .summarise(&span_of(&["a short first turn", &huge]))
+        .await
+        .expect("the staged model answers");
+
+    let asked = model.asked();
+    let sent = &asked[0];
+    let instruction = prose::SUMMARISE_SPAN.len() as u64;
+    assert!(
+        (sent.len() as u64) <= budget + instruction + 64,
+        "a summarisation sent {} bytes where its budget was {budget}",
+        sent.len()
+    );
+    for kept in ["a short first turn", "OPENING", "CLOSING", "left out here"] {
+        assert!(
+            sent.contains(kept),
+            "the cut summarisation lost {kept:?}; it keeps each exchange's opening and end and \
+             says what it left out"
+        );
+    }
 }
 
 /// The crossing reached the way a reader reaches it: a configured window.
@@ -1737,7 +2001,11 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
         context::prefix_for(None, &crate::compose::context::fixtures::facts()),
-        crate::compose::ContextShape::of(limits, reserved),
+        crate::compose::ContextShape::of(
+            limits,
+            reserved,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
+        ),
     );
     let mut transcribed = Transcribed::default();
 
@@ -1799,7 +2067,7 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
     else {
         panic!("a crossing announces itself once, with counts: {compaction:?}");
     };
-    let staged: u64 = taken.iter().map(|text| text.len() as u64).sum();
+    let staged: u64 = taken.iter().map(|text| staged_cost(text)).sum();
     assert_eq!(
         (*turns as usize, *cost_before),
         (taken.len(), staged),

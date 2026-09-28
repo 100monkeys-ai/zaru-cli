@@ -30,7 +30,7 @@
 //!
 //! | Here | Why it is not somewhere else |
 //! | --- | --- |
-//! | [`ByteCounter`] | ADR-0003 D2's table names no tokeniser, and `zaru-core` may not invent one |
+//! | [`Calibration`](crate::providers::capacity::Calibration) | ADR-0003 D2's table names no tokeniser, so a count is an estimate learned from the provider's own counts, and `zaru-core` may not make one |
 //! | [`Classifying`] | ADR-0016 D1's class of a provider failure is read from the typed failure, which only the surface sees |
 //! | [`Records`] | ADR-0010 D2's transcript is [ADR-0008] D3's stream, and the loop's sink is a `zaru-core` trait |
 //! | [`TurnContext`] | ADR-0013's `Context` is a value; `ContextPolicy` is the port the loop calls it through |
@@ -95,7 +95,6 @@
 
 pub mod boundary;
 pub mod context;
-pub mod count;
 pub mod emission;
 pub mod iterate;
 pub mod model;
@@ -109,7 +108,6 @@ pub mod turn;
 
 pub use boundary::{ContextShape, Rebuilt, SessionContext, conversation_of};
 pub use context::{Facts, TurnContext, prefix_for, system_prompt};
-pub use count::ByteCounter;
 pub use emission::{Cause, Door, Subject, Unprompted, Wording};
 pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrated, Narrator};
 pub use model::Classifying;

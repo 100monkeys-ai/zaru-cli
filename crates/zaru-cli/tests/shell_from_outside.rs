@@ -2374,7 +2374,7 @@ fn the_context_figure_is_on_the_row_of_a_session_that_resolved_no_provider() {
         zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER);
     let context = SessionContext::opened(
         zaru_cli::compose::prefix_for(None, &facts()),
-        zaru_cli::compose::ContextShape::of(limits, 0),
+        zaru_cli::compose::ContextShape::of(limits, 0, one_token_a_byte()),
     );
     let held = zaru_cli::redaction::HeldSecrets::none();
 
@@ -2532,4 +2532,15 @@ fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
     decoy::every_other_check_keeps_its_verdict(
         "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
+}
+
+/// A calibration that has learned one token a byte, so this file's numbers,
+/// written in bytes, are the counts the context is measured at.
+fn one_token_a_byte() -> zaru_cli::providers::capacity::Calibration {
+    let calibration = zaru_cli::providers::capacity::Calibration::starting();
+    assert!(
+        calibration.learn(1_000, 1_000),
+        "one token a byte is a count"
+    );
+    calibration
 }

@@ -216,6 +216,10 @@ pub struct GeminiClient {
     /// task and a datum it mutates has to be safe to read from all of them.
     /// Watched as "error: future cannot be sent between threads safely".
     last: Mutex<Option<(u64, u64)>>,
+    /// The bytes-per-token ratio this session has learned from the
+    /// provider's counts, shared with the session's context. See
+    /// [`crate::providers::capacity::Calibration`].
+    calibration: crate::providers::capacity::Calibration,
 }
 
 impl GeminiClient {
@@ -264,7 +268,14 @@ impl GeminiClient {
             http,
             last: Mutex::new(None),
             deltas: Mutex::new(None),
+            calibration: crate::providers::capacity::Calibration::starting(),
         })
+    }
+
+    /// The ratio this client estimates requests at and learns into, shared.
+    #[must_use]
+    pub fn calibration(&self) -> crate::providers::capacity::Calibration {
+        self.calibration.clone()
     }
 
     /// What this client's tool surface costs, in bytes as it is sent.
@@ -511,8 +522,13 @@ impl GeminiClient {
         let body = map::request_from(request)?;
         // ADR-0036 D1, before any network I/O: the whole native request,
         // including the model's own prior turns this client gives back.
-        crate::providers::capacity::preflight(&body, self.context_tokens)
-            .map_err(GeminiFailure::ContextWindowExceeded)?;
+        let sent_bytes = crate::providers::capacity::preflight(
+            &body,
+            self.context_tokens,
+            &self.calibration,
+            request.turn,
+        )
+        .map_err(GeminiFailure::ContextWindowExceeded)?;
         let url = self.endpoint.url_for(&self.model);
 
         let mut response = self
@@ -628,6 +644,9 @@ impl GeminiClient {
             Ok(mut slot) => *slot = Some(usage),
             Err(poisoned) => *poisoned.into_inner() = Some(usage),
         }
+        // The provider's count for the request just sent is the truth about
+        // it, and the next estimate is made from it.
+        self.calibration.learn(sent_bytes, usage.0);
 
         Ok(mapped)
     }

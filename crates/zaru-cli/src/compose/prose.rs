@@ -261,6 +261,24 @@ pub const SUMMARISE_SPAN: &str = "Summarise the conversation below into a replac
      the constraints established. It replaces these exchanges in your own context; the full text \
      stays on disk. Write the summary and nothing else.";
 
+/// The line put where a summarisation leaves out the middle of an exchange
+/// too large to send whole.
+///
+/// **Read by a model and never by a person**, like [`SUMMARISE_SPAN`] beside
+/// it: it says how much was left out and where the whole of it is, so a
+/// summary can say that part was not seen rather than inventing it. See
+/// `compose::summarise::ModelSummariser::within`.
+#[must_use]
+pub fn span_left_out(bytes: usize) -> String {
+    format!(
+        "[{bytes} bytes of this exchange are left out here to fit the model's window; the whole \
+         text is in the transcript]"
+    )
+}
+
+/// The bytes [`span_left_out`]'s line takes, kept out of an exchange's share.
+pub const SPAN_LEFT_OUT_ROOM: usize = 128;
+
 /// What [ADR-0008] D1's iteration is, told to the model that is inside one.
 ///
 /// # Why this exists: a measurement, twice

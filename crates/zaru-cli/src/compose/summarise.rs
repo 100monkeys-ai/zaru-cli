@@ -110,6 +110,9 @@ pub struct ModelSummariser<'a, M: Model + ?Sized> {
     /// [ADR-0012] D7's number for the last summarisation. See the module
     /// documentation.
     last: Mutex<Option<TokenUsage>>,
+    /// The most bytes of span one summarisation sends, where a window bounds
+    /// it. See [`Self::within`].
+    within: Option<u64>,
 }
 
 impl<M: Model + ?Sized> fmt::Debug for ModelSummariser<'_, M> {
@@ -134,7 +137,28 @@ impl<'a, M: Model + ?Sized> ModelSummariser<'a, M> {
             model,
             redactor,
             last: Mutex::new(None),
+            within: None,
         }
+    }
+
+    /// Send at most `bytes` bytes of span in one summarisation.
+    ///
+    /// # A span can be larger than the window it is summarised to relieve
+    ///
+    /// A turn that read one large result carries it in layer 6, and the span
+    /// that covers it is at least that large. Sent whole, the summarisation
+    /// would be refused before it left, exactly as the turn's own request was,
+    /// and the session could never compact past it. So each exchange keeps
+    /// its share of `bytes` — its opening and its end, which is where a task
+    /// and an answer are — and the middle is left out with a line saying how
+    /// much. The whole span is still in the transcript, which is what
+    /// [ADR-0013] D2 keeps it for.
+    ///
+    /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+    #[must_use]
+    pub const fn within(mut self, bytes: u64) -> Self {
+        self.within = Some(bytes);
+        self
     }
 
     /// What the last summarisation cost, if one has happened.
@@ -159,11 +183,18 @@ impl<'a, M: Model + ?Sized> ModelSummariser<'a, M> {
     /// Separate from [`Summariser::summarise`] so that a check can read what
     /// would be sent without a provider, and so that the composition of the
     /// instruction and the span has one home.
-    fn text_for(span: &Span) -> String {
+    fn text_for(span: &Span, within: Option<u64>) -> String {
         let mut text = String::from(prose::SUMMARISE_SPAN);
+        let share = within.map(|bytes| {
+            let count = u64::try_from(span.len().max(1)).unwrap_or(u64::MAX);
+            usize::try_from(bytes / count).unwrap_or(usize::MAX)
+        });
         for exchange in span.exchanges() {
             text.push_str("\n\n");
-            text.push_str(exchange.as_str());
+            match share {
+                Some(share) => text.push_str(&cut_to(exchange.as_str(), share)),
+                None => text.push_str(exchange.as_str()),
+            }
         }
         text
     }
@@ -189,7 +220,10 @@ impl<M: Model + ?Sized + Sync> Summariser for ModelSummariser<'_, M> {
     ///
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
     async fn summarise(&self, span: &Span) -> Result<String, PortFailure> {
-        let prompt = Prompt::new(Redacted::by(self.redactor, &Self::text_for(span)));
+        let prompt = Prompt::new(Redacted::by(
+            self.redactor,
+            &Self::text_for(span, self.within),
+        ));
         let request = ModelRequest {
             prompt: &prompt,
             tools: &[],
@@ -222,4 +256,30 @@ impl<M: Model + ?Sized + Sync> Summariser for ModelSummariser<'_, M> {
             }
         }
     }
+}
+
+/// `text` in at most `share` bytes: its opening and its end, with a line
+/// between them saying how many bytes were left out.
+///
+/// Cut on character boundaries, so the result is always valid text.
+fn cut_to(text: &str, share: usize) -> String {
+    if text.len() <= share {
+        return text.to_owned();
+    }
+    let keep = share.saturating_sub(prose::SPAN_LEFT_OUT_ROOM) / 2;
+    let mut head = keep.min(text.len());
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = text.len().saturating_sub(keep);
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    let left_out = tail.saturating_sub(head);
+    format!(
+        "{}\n{}\n{}",
+        &text[..head],
+        prose::span_left_out(left_out),
+        &text[tail..]
+    )
 }

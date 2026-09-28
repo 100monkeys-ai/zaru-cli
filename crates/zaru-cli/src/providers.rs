@@ -73,6 +73,7 @@ pub mod selection;
 pub mod sse;
 pub mod transport;
 pub mod usage;
+pub mod window;
 
 pub use alias::ModelAlias;
 pub use capability::{CapabilityRefused, ProviderCapabilities};

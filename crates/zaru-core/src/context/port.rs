@@ -38,9 +38,35 @@ use core::future::Future;
 use serde::{Deserialize, Serialize};
 
 /// Measures how much of the window a piece of text occupies.
+///
+/// # A count or an estimate is the caller's to say
+///
+/// This crate takes every number through here and states none of them. The
+/// product's implementation is an **estimate**: `zaru-cli` divides bytes by a
+/// bytes-per-token ratio it learns from what the provider counted, so every
+/// sentence this crate writes with such a number says "estimated".
 pub trait TokenCounter {
     /// How many tokens `text` costs.
     fn count(&self, text: &str) -> u64;
+
+    /// How many tokens `bytes` bytes of request cost that are not text this
+    /// context holds.
+    ///
+    /// [`Context::reserved`](crate::context::Context::reserved) is such a
+    /// figure: the tool declarations every request carries, measured by the
+    /// caller in bytes as they are sent. It is converted here, through the
+    /// same counter as the text, so the whole request is one kind of number.
+    fn count_bytes(&self, bytes: u64) -> u64;
+
+    /// How many tokens one message of the conversation costs.
+    ///
+    /// A provider is sent a message wrapped: a role, a call's id and name,
+    /// the result's tool, the structure around them. For a short tool call
+    /// that wrapping is most of what it costs, so a counter that can see it
+    /// should. The default counts the message's text alone.
+    fn count_message(&self, message: &crate::conversation::Message) -> u64 {
+        self.count(&message.rendered())
+    }
 }
 
 /// The span of layer 6 that a compaction replaced.

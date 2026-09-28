@@ -94,7 +94,8 @@
 //! [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 
-use crate::compose::{ByteCounter, TurnContext, prose};
+use crate::compose::{TurnContext, prose};
+use crate::providers::capacity::Calibration;
 use crate::session::{
     Checkpoint, CheckpointError, Record, Session, Transcript, TranscriptError, Utterance, Voice,
 };
@@ -128,24 +129,33 @@ const EXCHANGES: &str = "exchanges";
 /// value with no name yet.
 ///
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ContextShape {
     limits: ContextLimits,
     reserved: u64,
+    calibration: Calibration,
 }
 
 impl ContextShape {
-    /// The limits a context is held under and what a request spends beside it.
+    /// The limits a context is held under, what a request spends beside it,
+    /// and the estimate it is measured by.
+    ///
+    /// `calibration` is the answering client's own, so what the client learns
+    /// from the provider's counts is what this context is measured at next.
     #[must_use]
-    pub const fn of(limits: ContextLimits, reserved: u64) -> Self {
-        Self { limits, reserved }
+    pub const fn of(limits: ContextLimits, reserved: u64, calibration: Calibration) -> Self {
+        Self {
+            limits,
+            reserved,
+            calibration,
+        }
     }
 
     /// [ADR-0013]'s window and pressure threshold.
     ///
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
     #[must_use]
-    pub const fn limits(self) -> ContextLimits {
+    pub const fn limits(&self) -> ContextLimits {
         self.limits
     }
 
@@ -153,8 +163,14 @@ impl ContextShape {
     ///
     /// See [`zaru_core::context::Context::reserved`].
     #[must_use]
-    pub const fn reserved(self) -> u64 {
+    pub const fn reserved(&self) -> u64 {
         self.reserved
+    }
+
+    /// The estimate this context is measured by.
+    #[must_use]
+    pub const fn calibration(&self) -> &Calibration {
+        &self.calibration
     }
 }
 
@@ -164,6 +180,9 @@ impl ContextShape {
 /// the policy it hands out is the only thing the loop can see.
 pub struct SessionContext {
     context: Context,
+    /// The estimate every measurement of this context is made by, shared
+    /// with the client that learns it.
+    counter: Calibration,
 }
 
 impl fmt::Debug for SessionContext {
@@ -183,9 +202,10 @@ impl fmt::Debug for SessionContext {
 impl SessionContext {
     /// Open a session's context around a prefix that is now fixed.
     #[must_use]
-    pub const fn opened(prefix: StablePrefix, shape: ContextShape) -> Self {
+    pub fn opened(prefix: StablePrefix, shape: ContextShape) -> Self {
         Self {
             context: Context::opened(prefix, shape.limits(), shape.reserved()),
+            counter: shape.calibration,
         }
     }
 
@@ -206,7 +226,7 @@ impl SessionContext {
         redactor: &'a (dyn Redactor + Sync),
         iterating: bool,
     ) -> TurnContext<'a> {
-        TurnContext::over(&self.context, redactor, iterating)
+        TurnContext::over(&self.context, &self.counter, redactor, iterating)
     }
 
     /// What the context costs right now. [ADR-0013] D6's continuous number.
@@ -214,13 +234,26 @@ impl SessionContext {
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
     #[must_use]
     pub fn usage(&self, redactor: &(dyn Redactor + Sync)) -> Usage {
-        self.context.usage(&ByteCounter, redactor)
+        self.context.usage(&self.counter, redactor)
     }
 
     /// Layer 6, oldest first.
     #[must_use]
     pub fn exchanges(&self) -> &[Exchange] {
         self.context.exchanges()
+    }
+
+    /// The most bytes of span one summarisation may send: half the window,
+    /// at the ratio this context is estimated by.
+    ///
+    /// Half, because a summarisation's request is the instruction and the
+    /// span and nothing else, and the other half is room for the request's
+    /// own wrapping and for the summary it asks for. See
+    /// [`crate::compose::ModelSummariser::within`].
+    #[must_use]
+    pub fn summary_bytes(&self) -> u64 {
+        self.counter
+            .bytes_in(self.context.limits().window().get() / 2)
     }
 
     /// Replace layer 6 with what `records` hold. A turn-boundary act.
@@ -254,7 +287,7 @@ impl SessionContext {
         redactor: &(dyn Redactor + Sync),
     ) -> Result<Compaction, PortFailure> {
         self.context
-            .compact(summariser, &ByteCounter, redactor)
+            .compact(summariser, &self.counter, redactor)
             .await
     }
 

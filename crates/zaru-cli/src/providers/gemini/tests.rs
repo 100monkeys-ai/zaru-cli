@@ -727,7 +727,10 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
         }),
         GeminiFailure::ContextWindowExceeded(crate::providers::capacity::Exceeded {
             needed: 2_413,
+            bytes: 7_239,
             window: 2_000,
+            room: 250,
+            largest: None,
         }),
         GeminiFailure::ToolSchemaUnreadable {
             tool: "fs.read".to_owned(),
@@ -783,6 +786,7 @@ async fn an_oversized_request_is_refused_before_it_reaches_the_network() {
     let GeminiFailure::ContextWindowExceeded(crate::providers::capacity::Exceeded {
         needed,
         window,
+        ..
     }) = failure
     else {
         panic!("the oversized request reached the endpoint instead of being refused locally")
