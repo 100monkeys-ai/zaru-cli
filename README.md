@@ -43,7 +43,7 @@ Then name the model in `~/.zaru/config.toml`:
 default = "gemini-3.6-flash"
 ```
 
-Stored keys are encrypted with a key kept in your operating system's keyring. If the machine has no keyring (a server, WSL, a container), `zaru` tells you so and stops. Set `ZARU_CREDENTIAL_KEY` to 64 lower-case hexadecimal characters in your shell profile, for example the output of `openssl rand -hex 32`, and keep that value: without it, the keys you stored cannot be read again.
+Stored keys are encrypted with a key kept in your operating system's keyring. If the machine has no keyring (a server, WSL, a container) and a task needs a stored key, `zaru` tells you so and stops. Set `ZARU_CREDENTIAL_KEY` to 64 lower-case hexadecimal characters in your shell profile, for example the output of `openssl rand -hex 32`, and keep that value: without it, the keys you stored cannot be read again. A task that needs no stored key, such as one for Ollama, goes on without it and says that the stored keys could not be read.
 
 **Ollama.** No key is needed. Start the server, then write `~/.zaru/config.toml`:
 
@@ -215,7 +215,7 @@ Zaru acts on your machine with your user account's permissions. It is not a sand
 - **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing.
 - **Validators run only after you approve them.** The commands in a project's `./zaru.toml` are shown to you and run only once you say yes, and you are asked again when they change. The approval is kept under `~/.zaru/`, never in the project, and the permission mode does not skip it.
 - **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but are not built yet: at every tier, tool calls run directly on your machine. Zaru prints the not-a-sandbox warning at every tier, and at `contained` and `linked` it adds that the tier is not built yet and changes nothing about how tool calls run. `zaru runtime` says the same.
-- **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. It does not look for any other secret.
+- **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. When it cannot read them (no keyring and no `ZARU_CREDENTIAL_KEY`) and the task needs none of them, it says so and goes on without removing them. It does not look for any other secret.
 - **What stays on your machine.** Settings, stored keys and sessions are under `~/.zaru/`. Keys and tokens are in `~/.zaru/credentials.json`, encrypted with AES-256-GCM; the encryption key is in the OS keyring or in `ZARU_CREDENTIAL_KEY`. Session files are readable only by you and are kept until you delete them with `zaru sessions rm`.
 
 ### Known limitations

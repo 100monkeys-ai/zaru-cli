@@ -2467,6 +2467,95 @@ fn a_second_line_ending_is_the_users_and_is_refused_without_being_quoted() {
     );
 }
 
+// ------------------------------------ a stored key and a keyless provider
+
+/// Run the built binary as [`zaru`] does, but with no sealing key: the
+/// machine has no keyring and `ZARU_CREDENTIAL_KEY` is not set.
+fn zaru_without_the_sealing_key(
+    home: &Home,
+    variables: &[(&str, &str)],
+    arguments: &[&str],
+) -> Ran {
+    let mut command = owned::command(env!("CARGO_BIN_EXE_zaru"));
+    command
+        .args(arguments)
+        .env_clear()
+        .env("HOME", home.path())
+        .current_dir(home.project())
+        .stdin(Stdio::null());
+    for (name, value) in variables {
+        command.env(name, value);
+    }
+    let output: Output = command
+        .output()
+        .expect("failed to execute the built binary");
+    let ran = Ran {
+        stdout: String::from_utf8(output.stdout).expect("zaru printed invalid UTF-8"),
+        stderr: String::from_utf8(output.stderr).expect("zaru printed invalid UTF-8 on stderr"),
+        code: output
+            .status
+            .code()
+            .expect("the binary was killed by a signal rather than exiting"),
+    };
+    println!("-- zaru {} (no sealing key) --", arguments.join(" "));
+    for line in ran.stdout.lines() {
+        println!("   {line}");
+    }
+    for line in ran.stderr.lines() {
+        println!(" ! {line}");
+    }
+    println!("   exit {}", ran.code);
+    ran
+}
+
+/// A task that needs nothing from the credential store does not need the
+/// sealing key, even when a key is stored.
+///
+/// Measured on `970f60a`: with a `gemini` key stored and `ollama` chosen, a
+/// task on a machine with no keyring and no `ZARU_CREDENTIAL_KEY` was refused
+/// at exit 2, "there is no sealing key", though `ollama` needs no key. Now it
+/// goes on to the provider (a closed port here, so it then says nothing
+/// answered), and says in one sentence that the stored keys could not be
+/// read and so cannot be removed from what is sent. A provider that needs its
+/// key is still refused.
+#[test]
+fn a_keyless_provider_does_not_need_the_sealing_key_when_a_key_is_stored() {
+    let home = Home::new("keyless-with-a-stored-key");
+    let (value, _core) = nonce("keyless-with-a-stored-key");
+    store_a_key(&home, "gemini", &value);
+
+    let ran = zaru_without_the_sealing_key(
+        &home,
+        &[
+            ("ZARU_PROVIDER_DEFAULT_KIND", "ollama"),
+            ("ZARU_PROVIDER_OLLAMA_ENDPOINT", CLOSED_LOOPBACK),
+        ],
+        &["--model", "llama3.2", "say", "hello"],
+    );
+    assert!(
+        !ran.stderr.contains("sealing key") && ran.stderr.contains("nothing answered at"),
+        "a task for a provider that needs no key was refused for want of the key that seals the \
+         stored ones (exit {}); it should have gone on to the provider, a closed port here: {}",
+        ran.code,
+        ran.everything()
+    );
+    assert!(
+        ran.stdout
+            .contains(zaru_cli::compose::prose::STORED_KEYS_UNREAD),
+        "the task went on without saying the stored keys could not be read: {}",
+        ran.stdout
+    );
+
+    // The accepting sibling: a provider that needs its key is still refused.
+    let refused = zaru_without_the_sealing_key(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "say", "hello"],
+    );
+    assert_eq!(refused.code, 2, "{}", refused.everything());
+    assert!(refused.stderr.contains("sealing key"), "{}", refused.stderr);
+}
+
 // ------------------------------------------- a project's validators, approved
 
 /// A manifest whose one validator leaves a file behind when it runs.

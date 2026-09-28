@@ -354,3 +354,15 @@ pub const ITERATION_IS_ONE_EXCHANGE: &str = "This is one iteration of a validate
      iteration's prompt, in full, together with what the validators said. So propose the change \
      itself rather than looking first, and never ask again for output this prompt has already \
      given you.";
+
+/// What a task says when stored keys could not be read and it needs none of
+/// them.
+///
+/// Stored keys are removed from everything sent to a model, and that needs
+/// their values. When the store cannot be opened (no keyring and no
+/// `ZARU_CREDENTIAL_KEY`) and the task needs nothing from it, the task goes
+/// on and says this once. Ruled by the coordinator on 2026-09-28, open to
+/// Jeshua's veto.
+pub const STORED_KEYS_UNREAD: &str = "Your stored keys could not be read, so Zaru cannot remove \
+                                      them from what it sends to the model; this task needs none \
+                                      of them, so it goes on.";

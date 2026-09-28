@@ -362,6 +362,10 @@ pub struct Prepared {
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     session_grants: crate::tools::grants::SessionGrants,
+    /// Whether the stored keys could not be read, so nothing is removed from
+    /// what is sent to the model. Only ever `true` for a session that needs
+    /// nothing from the store; see [`prepare`].
+    stored_keys_unread: bool,
 }
 
 impl Prepared {
@@ -510,6 +514,9 @@ impl Prepared {
 #[derive(Debug, Default)]
 pub struct Owed {
     notice: Option<SessionNotice>,
+    /// Said once, before the first turn, when the stored keys could not be
+    /// read: [`prose::STORED_KEYS_UNREAD`].
+    unread: Option<SessionNotice>,
     recommendation: Option<crate::manifest::MissingManifest>,
     /// [ADR-0002] D8's `tips = false`, which "disables **both**".
     ///
@@ -561,6 +568,9 @@ impl Owed {
     pub fn of(prepared: &Prepared, said: &crate::session::AlreadySaid, tips: bool) -> Self {
         Self {
             notice: SessionNotice::in_session(prose::not_a_sandbox_at(prepared.tier.tier()), said),
+            unread: prepared
+                .stored_keys_unread
+                .then(|| SessionNotice::new(prose::STORED_KEYS_UNREAD)),
             recommendation: tips
                 .then(|| {
                     crate::manifest::MissingManifest::for_manifest_in_session(
@@ -888,19 +898,9 @@ pub fn prepare(
         }
         crate::providers::KeyUse::Optional | crate::providers::KeyUse::Never => None,
     };
-    // ADR-0008 clause 6's port, over every value the store holds -- built from
-    // the store rather than from the secret above, which is why it is
-    // unconditional even for a kind that sends none: the harness's OTHER
-    // secrets must still not reach a model, and a local provider is not a
-    // reason to relax that.
-    let held: HeldSecrets = match held_secrets_for_redaction(&store, &keys) {
-        Ok(held) => held,
-        Err(failure) => {
-            return Err(Box::new(Ran::refused(
-                surface.credential_store(&failure, SessionEvidence::NoSessionExists),
-            )));
-        }
-    };
+    // Whether this session reads a key out of the store. Taken before the
+    // secret moves into the client.
+    let reads_a_key = secret.is_some();
 
     // --- ADR-0012 D5's endpoint: configuration, then this kind's default ---
     let endpoint = match resolution.get(&kind.endpoint_key()) {
@@ -1063,6 +1063,35 @@ pub fn prepare(
         }
     };
 
+    // ADR-0008 clause 6's port, over every value the store holds -- built from
+    // the store rather than from the secret above, which is why it is
+    // unconditional even for a kind that sends none: the harness's OTHER
+    // secrets must still not reach a model, and a local provider is not a
+    // reason to relax that.
+    //
+    // **But the store is needed only when the session reads something from
+    // it**, since 2026-09-28: the provider's key, or a Nuclear Notes server
+    // the model is offered. When it reads nothing and the stored values will
+    // not open -- no keyring and no `ZARU_CREDENTIAL_KEY` -- the task goes on
+    // and says once that the stored keys could not be read and so cannot be
+    // removed from what is sent. Before, a stored `gemini` key made a keyless
+    // `ollama` task need the sealing key. The values cannot reach the model
+    // from the store either way: it is sealed. Ruled by the coordinator,
+    // open to Jeshua's veto.
+    let reaches_notes = declared_tools.len() > crate::tools::descriptor_set().len();
+    let (held, stored_keys_unread): (HeldSecrets, bool) =
+        match held_secrets_for_redaction(&store, &keys) {
+            Ok(held) => (held, false),
+            Err(crate::credentials::StoreError::Sealing(_)) if !reads_a_key && !reaches_notes => {
+                (HeldSecrets::none(), true)
+            }
+            Err(failure) => {
+                return Err(Box::new(Ran::refused(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                )));
+            }
+        };
+
     let reserved = match client.tool_surface_bytes(&declared_tools) {
         Ok(bytes) => bytes,
         Err(failure) => {
@@ -1110,6 +1139,7 @@ pub fn prepare(
         window,
         reserved,
         session_grants: crate::tools::grants::SessionGrants::none(),
+        stored_keys_unread,
     })
 }
 /// What a turn a skill started adds to it.
@@ -1377,6 +1407,21 @@ async fn ran(
             }))
         {
             return Ran::refused_having_said(lines, Surface::transcript(&failure, evidence));
+        }
+    }
+
+    // --- The stored keys, where they could not be read ----------------------
+    //
+    // Said once, where the session's notice is said and the same way.
+    if let Some(unread) = owed.unread.as_mut()
+        && let Some(sentence) = unread.state_once()
+    {
+        match narrator {
+            Some(narrator) => narrator.announce_session_notice(&sentence),
+            None => {
+                lines.push(sentence);
+                lines.push(String::new());
+            }
         }
     }
 
