@@ -193,14 +193,12 @@ fn an_outside_caller_starts_a_session_records_resumes_and_prunes_it() {
     assert_eq!(resumed.interrupted, None);
 
     // ---- ADR-0016 D3's seam, produced and consumed --------------------------
-    let caught = match guard(
-        "0.0.0",
-        "https://example.invalid",
-        session.evidence(),
-        || {
-            panic!("a deliberate panic, to reach D3's boundary");
-        },
-    ) {
+    let caught = match guard("0.0.0", "https://example.invalid", || {
+        // What opens a session tells the boundary as it does; this check
+        // opened its session above, outside the boundary, so it tells here.
+        session.entered();
+        panic!("a deliberate panic, to reach D3's boundary");
+    }) {
         Guarded::Defected(caught) => caught,
         Guarded::Ran(()) => panic!("the boundary did not catch the panic"),
     };

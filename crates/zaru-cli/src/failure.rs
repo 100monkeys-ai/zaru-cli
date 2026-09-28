@@ -97,7 +97,10 @@ pub mod wait;
 pub use class::{Class, Exit, SUCCESS, signalled};
 pub use classified::{Classified, Expected};
 pub use defect::{DefectReport, Location, SessionEvidence, SessionId, SessionIdRefused};
-pub use guard::{Caught, Guarded, HARNESS_THREAD, OwnWords, guard, thread};
+pub use guard::{
+    Caught, Guarded, HARNESS_THREAD, OwnWords, a_part_of_the_harness_has_died, guard, inside,
+    thread,
+};
 pub use partial::{Partial, PartialRefused, StepName};
 pub use present::{Line, Presentation};
 pub use remedy::{Action, Remedy, Statement, StatementRefused, THERE_ARE_EXACTLY, THIS_HARNESS};

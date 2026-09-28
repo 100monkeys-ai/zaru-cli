@@ -888,6 +888,10 @@ fn one_session(
     let session = store
         .existing(id)
         .map_err(|failure| Box::new(Exit::Failed(classify.session(&failure))))?;
+    // ADR-0016 D3: the session this shell is about to open over is the one a
+    // defect names from here -- the one resumed, continued or switched to, and
+    // again the one `mint` just started, which told the boundary as it did.
+    session.entered();
 
     // ADR-0010 D1's sixth thing under `~/.zaru/`, read into the shell before
     // the terminal is taken. **The directory is `WorkingDirectory`'s and not

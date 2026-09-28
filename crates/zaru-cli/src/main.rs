@@ -56,13 +56,14 @@
 //! runs one turn of [ADR-0008] D1's outer loop, and exits through
 //! [ADR-0016] D5.
 //!
-//! So [`SessionEvidence::NoSessionExists`] is **still what this boundary is
-//! given, and it is still true of this call**: `guard` wraps the whole
-//! process, including the parse, which happens before any session could exist.
-//! What changed is that the paths *inside* it that have a session now hand
-//! their own evidence to their own refusals — see [`zaru_cli::cli::run`]. A
-//! defect caught out here is a defect in the harness before it had a session
-//! to name, which is what this arm says.
+//! **The boundary is not handed a session, and until 2026-09-28 it was handed
+//! `NoSessionExists`.** That was true of this call — `guard` wraps the whole
+//! process, including the parse, before any session could exist — and false
+//! of every defect that happened after one had been opened: the report denied
+//! a session whose transcript was on disk. What opens a session tells the
+//! boundary as it opens it, through [`zaru_cli::failure::inside`], so a
+//! defect caught here names the session the harness was last inside, and one
+//! caught before any session was opened says there was none.
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
@@ -78,7 +79,7 @@
 use std::process::ExitCode;
 use zaru_cli::cli::{Run, classify::Surface, parse_process};
 use zaru_cli::config::{Home, Variables};
-use zaru_cli::failure::{Exit, Guarded, SessionEvidence, guard};
+use zaru_cli::failure::{Exit, Guarded, guard};
 
 /// Everything the binary does, inside the boundary.
 ///
@@ -159,12 +160,7 @@ fn main() -> ExitCode {
     // report URL are read out of this package's own metadata rather than
     // retyped, for the same reason `zaru_cli::composition` reads the crate
     // names.
-    let guarded = guard(
-        env!("CARGO_PKG_VERSION"),
-        env!("CARGO_PKG_REPOSITORY"),
-        SessionEvidence::NoSessionExists,
-        run,
-    );
+    let guarded = guard(env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY"), run);
 
     // Two arms and no third: a caught defect hands back no value, so there is
     // nothing here that could carry on past a corrupted state.

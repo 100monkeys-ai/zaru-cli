@@ -66,6 +66,44 @@
 //! returned, which for a session is once the terminal has been given back.
 //! A panic on a thread the harness did not start is not the harness's.
 //!
+//! # The session it is inside is told, not passed
+//!
+//! D3's report names "the session id" and says "the transcript is already on
+//! disk". Until 2026-09-28 the one call in `main` passed
+//! [`SessionEvidence::NoSessionExists`] and nothing ever told the boundary
+//! otherwise, so a defect inside a live session reported "there is no session
+//! and no transcript was written" about a session whose transcript was on disk
+//! — and a person told that does not look for the file that holds their work.
+//! `main` runs before any session exists and cannot know one; the code that
+//! opens a session does, and it is many calls down.
+//!
+//! So whatever opens a session calls [`inside`] as it opens it, and the
+//! boundary remembers the last session it was told of **on the thread its body
+//! runs on**, for as long as the body runs. The report is built there, after
+//! the body has returned or unwound — never inside the hook, whatever thread
+//! panicked — so a value is what is held, not a reference into a session that
+//! is unwinding. It is per boundary rather than per process because the checks
+//! run many sessions at once in one process, and a boundary that could be told
+//! about a session a neighbouring check opened would name the wrong one; a
+//! call to [`inside`] on a thread no boundary is running on is a session
+//! nothing is guarding, and tells nothing.
+//!
+//! **The transcript is claimed only if it is there when the report is
+//! built.** See [`SessionEvidence::of`]. Nothing is flushed first, because
+//! nothing is held back: ADR-0010 D2's writer writes, flushes and syncs each
+//! record before `record` returns, so every record a session reported written
+//! is on disk already, and one being written as the panic struck is the event
+//! in flight that D2 says a crash may lose.
+//!
+//! # A panic that leaves the session running is not left running
+//!
+//! A task on the session's runtime is polled on the thread the body runs on,
+//! so a panic in one reaches this hook as the harness's own — and tokio then
+//! swallows it, and the session carries on with a part of it gone until the
+//! person leaves, which is when the report appeared. [`a_part_of_the_harness_has_died`]
+//! is what the session's pump races, so the session ends as soon as the hook
+//! has kept a panic, and the report follows the terminal being given back.
+//!
 //! # A structural guard this arc did not have to write
 //!
 //! `catch_unwind` does nothing under `panic = "abort"`, and the root
@@ -78,10 +116,12 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 
 use crate::failure::classified::Classified;
-use crate::failure::defect::{DefectReport, Location, SessionEvidence};
+use crate::failure::defect::{DefectReport, Location, SessionEvidence, SessionId};
 use crate::failure::present::Presentation;
+use core::cell::RefCell;
 use core::fmt;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// What the name of every thread the harness starts begins with.
@@ -108,6 +148,79 @@ pub fn thread<T: Send + 'static>(
     std::thread::Builder::new()
         .name(format!("{HARNESS_THREAD}{name}"))
         .spawn(body)
+}
+
+/// What the boundary running on a thread knows, for as long as its body runs.
+///
+/// See the module documentation for why this is per boundary and per thread.
+struct Boundary {
+    /// The session the body is inside, as the code that opened it said.
+    told: Option<(SessionId, PathBuf)>,
+    /// What the hook kept, shared with the hook.
+    kept: Arc<Kept>,
+}
+
+/// The first panic of the harness's own, and the signal that there is one.
+struct Kept {
+    first: Mutex<Option<(Location, String)>>,
+    raised: tokio::sync::Notify,
+}
+
+impl Kept {
+    fn holds_a_panic(&self) -> bool {
+        self.first
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+}
+
+thread_local! {
+    static BOUNDARY: RefCell<Option<Boundary>> = const { RefCell::new(None) };
+}
+
+/// Tell the boundary this thread's body is running under which session it is
+/// now inside. ADR-0016 D3.
+///
+/// Called by whatever opens a session, as it opens it: `compose::turn::start`
+/// for a session it mints and `terminal::open` for one it resumes, continues
+/// or switches to. The last one told is the one a report names. On a thread
+/// no boundary is running on it tells nothing — see the module documentation.
+pub fn inside(id: SessionId, transcript: PathBuf) {
+    BOUNDARY.with(|boundary| {
+        if let Some(boundary) = boundary.borrow_mut().as_mut() {
+            boundary.told = Some((id, transcript));
+        }
+    });
+}
+
+/// Resolves once a thread or a task of the harness's own has panicked under
+/// the boundary this thread's body is running under.
+///
+/// The session's pump races this, so a panic that would otherwise leave the
+/// session running — a task on its runtime, whose panic tokio swallows — ends
+/// it at once, and `main` reports the defect. On a thread no boundary is
+/// running on it never resolves: nothing is guarding, so there is nothing to
+/// report and no reason to end anything.
+pub async fn a_part_of_the_harness_has_died() {
+    let kept = BOUNDARY.with(|boundary| {
+        boundary
+            .borrow()
+            .as_ref()
+            .map(|boundary| Arc::clone(&boundary.kept))
+    });
+    let Some(kept) = kept else {
+        return core::future::pending().await;
+    };
+    loop {
+        // Armed before the check, so a panic kept between the two still wakes
+        // it: `notify_one` leaves a permit when nothing is waiting yet.
+        let raised = kept.raised.notified();
+        if kept.holds_a_panic() {
+            return;
+        }
+        raised.await;
+    }
 }
 
 /// What the panic itself said.
@@ -183,33 +296,43 @@ pub enum Guarded<T> {
 ///
 /// `version` and `report_at` come from the caller's own package metadata
 /// rather than being retyped here — a list retyped beside the binary is a list
-/// that drifts. `session` is what ADR-0010 will supply and today is
-/// [`SessionEvidence::NoSessionExists`].
+/// that drifts. The session the report names is the one the body was last
+/// inside, told through [`inside`]; a body that opened none is reported as
+/// having none.
 ///
 /// Call this **once**, at the process boundary. See the module documentation
 /// for why.
-pub fn guard<T>(
-    version: &str,
-    report_at: &str,
-    session: SessionEvidence,
-    body: impl FnOnce() -> T,
-) -> Guarded<T> {
-    let captured: Arc<Mutex<Option<(Location, String)>>> = Arc::new(Mutex::new(None));
-    let sink = Arc::clone(&captured);
+pub fn guard<T>(version: &str, report_at: &str, body: impl FnOnce() -> T) -> Guarded<T> {
+    let kept = Arc::new(Kept {
+        first: Mutex::new(None),
+        raised: tokio::sync::Notify::new(),
+    });
+    let sink = Arc::clone(&kept);
     let boundary = std::thread::current().id();
+    BOUNDARY.with(|state| {
+        *state.borrow_mut() = Some(Boundary {
+            told: None,
+            kept: Arc::clone(&kept),
+        });
+    });
 
-    let previous = panic::take_hook();
+    let previous = Arc::new(panic::take_hook());
+    let forward = Arc::clone(&previous);
     panic::set_hook(Box::new(move |info| {
         // The harness's own panics are this thread's and those of the threads
         // it started through [`thread`]. The hook is the process's, so a
         // panic on anybody else's thread reaches it too, and is not ours to
-        // report.
+        // report -- so it goes to whatever hook was there before, as if this
+        // boundary were not. Until 2026-09-28 it was dropped: measured when a
+        // check's failing assertion printed no sentence at all, because a
+        // neighbouring check's boundary was installed at the moment it failed.
         let on = std::thread::current();
         let ours = on.id() == boundary
             || on
                 .name()
                 .is_some_and(|name| name.starts_with(HARNESS_THREAD));
         if !ours {
+            forward(info);
             return;
         }
         let location = info
@@ -230,18 +353,37 @@ pub fn guard<T>(
         );
         // The first is kept: a panic that follows another is usually its
         // consequence, and the report names where the defect surfaced.
-        let mut held = sink.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = sink.first.lock().unwrap_or_else(PoisonError::into_inner);
         if held.is_none() {
             *held = Some((location, said));
+            drop(held);
+            sink.raised.notify_one();
         }
     }));
 
     let outcome = panic::catch_unwind(AssertUnwindSafe(body));
-    panic::set_hook(previous);
-    let panicked = captured
+    // This boundary's hook is dropped first, and with it the second handle on
+    // the one before it, so the one before it goes back exactly as it was.
+    drop(panic::take_hook());
+    match Arc::try_unwrap(previous) {
+        Ok(previous) => panic::set_hook(previous),
+        Err(shared) => panic::set_hook(Box::new(move |info| shared(info))),
+    }
+    let told = BOUNDARY
+        .with(|state| state.borrow_mut().take())
+        .and_then(|boundary| boundary.told);
+    let panicked = kept
+        .first
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take();
+    // Read now, after the body, so the transcript is claimed only if it is on
+    // disk as the report is written. See `SessionEvidence::of`.
+    let session = || {
+        told.map_or(SessionEvidence::NoSessionExists, |(id, transcript)| {
+            SessionEvidence::of(id, transcript)
+        })
+    };
 
     match (outcome, panicked) {
         // A body that returned, with no panic on any thread of the harness's.
@@ -254,12 +396,12 @@ pub fn guard<T>(
         // boundary staying narrow: there is no arm that carries it on.
         (Ok(_), Some((location, said))) | (Err(_), Some((location, said))) => {
             Guarded::Defected(Caught {
-                report: DefectReport::new(version, report_at, location, session),
+                report: DefectReport::new(version, report_at, location, session()),
                 own_words: OwnWords(said),
             })
         }
         (Err(_), None) => Guarded::Defected(Caught {
-            report: DefectReport::new(version, report_at, Location::unknown(), session),
+            report: DefectReport::new(version, report_at, Location::unknown(), session()),
             own_words: OwnWords(String::new()),
         }),
     }

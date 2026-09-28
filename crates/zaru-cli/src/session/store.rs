@@ -332,25 +332,41 @@ impl Session {
     /// What [ADR-0016] D3's defect boundary is told about this session.
     ///
     /// **This is the producer of the seam that record left open.** D3 says a
-    /// defect report names the session and says the transcript is on disk,
-    /// and `SessionEvidence::NoSessionExists` exists so that claiming a
-    /// transcript that was never written is unrepresentable. This is the
-    /// other arm.
-    ///
-    /// The `expect` is unreachable rather than optimistic:
-    /// [`EvidenceId::new`](crate::failure::SessionId::new) refuses an empty id
-    /// and one carrying a control character, and a
-    /// [`SessionId`] is twenty-six characters of Crockford base32 by both of
-    /// its constructors. The mutant that would make it fire is widening
-    /// [`SessionId::parse`] to accept a name off the filesystem unchecked.
+    /// defect report names the session and says the transcript is on disk.
+    /// The transcript is claimed only if it is there as this is called —
+    /// [`SessionEvidence::of`] looks — because a directory exists a moment
+    /// before its transcript does, and a refusal raised in that moment named
+    /// a file that was not there until 2026-09-28.
     ///
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
     #[must_use]
     pub fn evidence(&self) -> SessionEvidence {
-        SessionEvidence::Session {
-            id: EvidenceId::new(self.id.as_str())
-                .expect("a ULID is neither empty nor a control character"),
-            transcript: self.transcript_path(),
-        }
+        SessionEvidence::of(self.evidence_id(), self.transcript_path())
+    }
+
+    /// Tell [ADR-0016] D3's boundary that the harness is now inside this
+    /// session, so a defect from here on names it.
+    ///
+    /// Called where a session is opened — `compose::turn::start` for one it
+    /// mints, `terminal::open` for one it resumes, continues or switches to —
+    /// and nowhere else. What the boundary keeps is the id and the path, not
+    /// this value, and whether the transcript is there is read when a report
+    /// is built rather than now. See [`crate::failure::inside`].
+    ///
+    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
+    pub fn entered(&self) {
+        crate::failure::inside(self.evidence_id(), self.transcript_path());
+    }
+
+    /// This session's id, in the defect report's own type.
+    ///
+    /// The `expect` is unreachable rather than optimistic:
+    /// [`EvidenceId::new`](crate::failure::SessionId::new) refuses an empty id
+    /// and one carrying a control character, and a [`SessionId`] is
+    /// twenty-six characters of Crockford base32 by both of its constructors.
+    /// The mutant that would make it fire is widening [`SessionId::parse`] to
+    /// accept a name off the filesystem unchecked.
+    fn evidence_id(&self) -> EvidenceId {
+        EvidenceId::new(self.id.as_str()).expect("a ULID is neither empty nor a control character")
     }
 }

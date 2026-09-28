@@ -8,20 +8,21 @@
 //! and where to report it. The transcript is already on disk and the message
 //! says so. **Never present a defect as a user error.**"
 //!
-//! # The session arrives as an input, and none of ADR-0010 is built
+//! # The session arrives as an input, and says only what is on disk
 //!
-//! [ADR-0010] is not started: there is no `~/.zaru/sessions/<ulid>/`, no ULID
-//! is minted anywhere in this workspace, and no directory is created. So the
-//! session's identity is a **seam** — [`SessionEvidence`], with no product
-//! implementation supplying its first variant — exactly as ADR-0011's identity
-//! seam, ADR-0007's sealing and `zaru-core`'s unimplemented ports are.
+//! [ADR-0010]'s session is a directory with a transcript in it, opened by
+//! `crate::session`, and this module mints nothing and opens nothing: what
+//! the report knows about a session is [`SessionEvidence`], handed to it.
 //!
-//! **[`SessionEvidence::NoSessionExists`] is the point of the type.** D3 says
-//! the message says the transcript is on disk. With no session there is no
-//! transcript, so saying it would be a lie, and this type makes that lie
-//! unrepresentable: a report can only claim a transcript when it was handed
-//! one. The day ADR-0010 lands, one call site in the binary changes and
-//! nothing here does.
+//! **Its three arms are the point of the type.** D3 says the message says the
+//! transcript is on disk. A report may name a transcript only when one is
+//! there, may deny a session only when there is none, and says which of the
+//! two a session with no transcript is — so neither lie is representable, and
+//! [`SessionEvidence::of`] is the one constructor that decides between the
+//! first two by looking. Until 2026-09-28 the binary's boundary was handed
+//! `NoSessionExists` on every path, and a defect inside a live session denied
+//! the session it was in; see [the boundary](mod@crate::failure::guard) for how it is told
+//! now.
 //!
 //! # The report does not carry the panic's own words
 //!
@@ -135,29 +136,51 @@ impl fmt::Display for SessionId {
 
 /// What the defect boundary knows about the session it is inside.
 ///
-/// A seam with no product implementation of its first variant. See the module
-/// documentation for why the second variant is the load-bearing one.
+/// See the module documentation for why there are three arms and which
+/// constructor chooses between the first two.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvidence {
     /// ADR-0010 D1's session directory exists, and this is its identity and
-    /// the transcript inside it.
+    /// the transcript inside it, which was on disk when this was built.
     Session {
         /// D1's ULID, as its owner minted it.
         id: SessionId,
         /// D1's `transcript.jsonl`.
         transcript: PathBuf,
     },
-    /// There is no session. **ADR-0010 is not started**, so this is what the
-    /// `zaru` binary passes today.
+    /// The session exists and **its transcript does not**: it was never
+    /// created, or it is gone. The report names the session and claims no
+    /// file.
+    SessionWithNoTranscript {
+        /// D1's ULID, as its owner minted it.
+        id: SessionId,
+    },
+    /// There is no session.
     NoSessionExists,
 }
 
 impl SessionEvidence {
+    /// A session's evidence, **claiming the transcript only if it is there
+    /// now**.
+    ///
+    /// A report naming a file a person then cannot find is the lie this type
+    /// exists to make unrepresentable, arriving from the other side: a
+    /// session's transcript is created after its directory, and a session a
+    /// person removed a file from is still a session.
+    #[must_use]
+    pub fn of(id: SessionId, transcript: PathBuf) -> Self {
+        if transcript.is_file() {
+            Self::Session { id, transcript }
+        } else {
+            Self::SessionWithNoTranscript { id }
+        }
+    }
+
     /// The session's id, where there is a session.
     #[must_use]
     pub const fn id(&self) -> Option<&SessionId> {
         match self {
-            Self::Session { id, .. } => Some(id),
+            Self::Session { id, .. } | Self::SessionWithNoTranscript { id } => Some(id),
             Self::NoSessionExists => None,
         }
     }
@@ -167,7 +190,7 @@ impl SessionEvidence {
     pub fn transcript(&self) -> Option<&Path> {
         match self {
             Self::Session { transcript, .. } => Some(transcript.as_path()),
-            Self::NoSessionExists => None,
+            Self::SessionWithNoTranscript { .. } | Self::NoSessionExists => None,
         }
     }
 }
