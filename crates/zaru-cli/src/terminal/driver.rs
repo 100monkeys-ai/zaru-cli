@@ -2171,7 +2171,8 @@ impl zaru_tui::shell::CommandVocabulary for WithCommands<'_> {
     }
 }
 
-/// Run the shell against a terminal until the user leaves.
+/// Run the shell against a terminal until the user leaves — or until a part
+/// of the harness dies.
 ///
 /// # What a command does here is what the subcommand does outside
 ///
@@ -2182,7 +2183,28 @@ impl zaru_tui::shell::CommandVocabulary for WithCommands<'_> {
 /// second implementation of any command, which is what makes the two spellings
 /// one operation rather than two things that agree today.
 ///
+/// # A session with a part gone is not one to keep typing into
+///
+/// [ADR-0016] D3's boundary keeps the first panic of a thread or a task of the
+/// harness's own, and until 2026-09-28 nothing asked it until the session was
+/// over. The terminal reader's panic ended the session anyway, by closing its
+/// channel; a task on the session's runtime did not — the three
+/// `terminal::open` spawns, and the ones `rmcp` and `hyper` spawn — because
+/// tokio swallows a task's panic when nothing joins it, and the session ran on
+/// with that part gone until the person left. So the pump races
+/// [`crate::failure::a_part_of_the_harness_has_died`], and the session ends as
+/// soon as the boundary holds a panic: `terminal::open` gives the terminal
+/// back, and `main` prints the report and exits 70.
+///
+/// **The exit this hands up on that path is never used**, and it is
+/// `Succeeded` because it is the one exit that says nothing about the work:
+/// `failure::guard` turns a body that returns after a panic of the harness's
+/// own into `Defected`, whatever it returned. A turn in flight is dropped with
+/// the pump, which is what `Ctrl-C` mid-turn already does to one — a child
+/// process it started is killed on drop.
+///
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
+/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[allow(
     clippy::too_many_arguments,
     reason = "\
@@ -2194,6 +2216,45 @@ impl zaru_tui::shell::CommandVocabulary for WithCommands<'_> {
     makes for its own"
 )]
 pub async fn run<S: Surface + Send, P: Pace + Sync>(
+    shell: &mut Shell,
+    surface: &mut S,
+    source: &Source,
+    pace: &P,
+    runner: &crate::cli::Run<'_>,
+    entries: &dyn zaru_tui::composer::Entries,
+    vocabulary: &dyn zaru_tui::shell::CommandVocabulary,
+    paths: &dyn zaru_tui::composer::Paths,
+    turns: &mut Turnable<'_>,
+    recording: Option<Recording<'_>>,
+    extensions: &mut Extensions<'_>,
+) -> std::io::Result<Pump> {
+    tokio::select! {
+        biased;
+
+        () = crate::failure::a_part_of_the_harness_has_died() => Ok(Pump {
+            outcome: Pumped::Left(Exit::Succeeded),
+        }),
+
+        pumped = pump(
+            shell, surface, source, pace, runner, entries, vocabulary, paths, turns, recording,
+            extensions,
+        ) => pumped,
+    }
+}
+
+/// The pump itself: [`run`] less the race against a part of the harness
+/// dying.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "\
+    the pump wants nine distinct capabilities and each is a port or a value \
+    some record owns -- the shell, the surface it paints on, the terminal's \
+    keys, the beat, the command runner, the composer's entries, the \
+    vocabulary, the session's turns and where a submitted line is recorded. Bundling them would be a second name \
+    for the same list, which is the argument `compose::turn::run_one` already \
+    makes for its own"
+)]
+async fn pump<S: Surface + Send, P: Pace + Sync>(
     shell: &mut Shell,
     surface: &mut S,
     source: &Source,

@@ -7344,3 +7344,118 @@ fn arming_with_the_mouse_left_to_the_terminal_asks_for_paste_alone() {
         String::from_utf8_lossy(&armed)
     );
 }
+
+// ------------------------------- ADR-0016 D3: a part of the harness that dies
+
+/// How long a check waits for a session to end after a part of it has died,
+/// before calling it one that did not.
+///
+/// A deadline on a condition rather than an interval anything waits out: the
+/// fixed pump ends within one poll of the panic, and the budget is for a
+/// loaded machine.
+const A_PART_DIES_WITHIN: core::time::Duration = core::time::Duration::from_secs(5);
+
+/// **A task on the session's runtime that panics ends the session at once, as
+/// a defect**, rather than leaving a person typing into a harness with a part
+/// gone until they leave.
+///
+/// # The defect this holds shut
+///
+/// The session's runtime is current-thread, so the three tasks
+/// `terminal::open` spawns on it — the notes corpus's refresh, the persona's
+/// refresh and the signal listener — and the tasks `rmcp` and `hyper` spawn on
+/// it are polled on the thread the boundary's body runs on. A panic in one
+/// reaches the boundary's hook as the harness's own, and tokio then swallows
+/// it: the task's handle is dropped, so nothing ever joins it. The pump never
+/// noticed, the session ran on, and the report appeared only when the person
+/// left — measured here as a session still open five seconds after the panic.
+///
+/// The session is the product's own pump over a source that never ends, as a
+/// person who has not left is; the task is spawned on the runtime the way
+/// `terminal::open` spawns its three.
+///
+/// **The mutant is the pump not racing `failure::a_part_of_the_harness_has_died`**,
+/// after which the session is still open at the deadline.
+#[test]
+fn a_task_on_the_sessions_runtime_that_panics_ends_the_session_as_a_defect() {
+    let mut ended_by_itself: Option<bool> = None;
+    let guarded = crate::failure::fixtures::serialised(|| {
+        crate::failure::guard(VERSION, REPORT_AT, || {
+            let runtime =
+                crate::compose::turn::runtime().expect("a current-thread runtime for the session");
+            let restores: Restores = Arc::new(AtomicUsize::new(0));
+            let mut surface = Recording::wide(Arc::clone(&restores), 72);
+            // A person who has not left: the reader waits for its stop flag
+            // and sends nothing, so the source never ends.
+            let source = Source::over(|_sender, stop| {
+                while !stop.load(Ordering::SeqCst) {
+                    std::thread::sleep(crate::terminal::source::POLL);
+                }
+            });
+            let home = crate::config::Home::none();
+            let runner = crate::cli::Run {
+                version: VERSION,
+                report_at: REPORT_AT,
+                home: &home,
+                variables: &crate::config::Variables::none(),
+            };
+            let mut shell = shell();
+            let mut turns = Turnable::Cannot(vec![zaru_tui::shell::port::Line::new(
+                Register::Failed,
+                CANNOT.to_owned(),
+            )]);
+            let trie = NotesTrie::nothing_cached(WORKSPACE);
+            let mut extensions = no_commands();
+            runtime.spawn(async {
+                panic!("a task on the session's runtime failed");
+            });
+            // Built inside the runtime, because a timer is the runtime's.
+            let pumped = runtime.block_on(async {
+                tokio::time::timeout(
+                    A_PART_DIES_WITHIN,
+                    run(
+                        &mut shell,
+                        &mut surface,
+                        &source,
+                        &Held::default(),
+                        &runner,
+                        &trie,
+                        &Vocabulary,
+                        &crate::terminal::ProjectPaths::under(None),
+                        &mut turns,
+                        None,
+                        &mut extensions,
+                    ),
+                )
+                .await
+            });
+            ended_by_itself = Some(pumped.is_ok());
+        })
+    });
+
+    let mut complaints: Vec<String> = Vec::new();
+    if ended_by_itself != Some(true) {
+        complaints.push(format!(
+            "the session was still open {A_PART_DIES_WITHIN:?} after a task on its runtime \
+             panicked, so a person goes on typing into a harness with a part gone and the \
+             defect waits for them to leave (the pump ended by itself: {ended_by_itself:?})"
+        ));
+    }
+    match guarded {
+        crate::failure::Guarded::Defected(caught) => {
+            if caught.own_words().as_str() != "a task on the session's runtime failed" {
+                complaints.push(format!(
+                    "the report is of a panic at {} that said {:?}, not of the task's",
+                    caught.report().location(),
+                    caught.own_words().as_str()
+                ));
+            }
+        }
+        crate::failure::Guarded::Ran(()) => complaints.push(
+            "a panic in a task on the session's runtime was handed back as Ran, so the session \
+             it broke would exit 0"
+                .to_owned(),
+        ),
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
