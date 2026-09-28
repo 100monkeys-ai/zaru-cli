@@ -383,7 +383,11 @@ fn a_grep_that_could_not_look_is_not_read_as_a_missing_signoff() {
 /// from an instruction would forbid explaining the defect it prevents.
 #[test]
 fn neither_gate_script_reads_a_verdict_out_of_a_pipeline_into_grep() {
-    let scripts = ["check-license-headers.sh", "check-dco.sh"];
+    let scripts = [
+        "check-license-headers.sh",
+        "check-dco.sh",
+        "check-no-survivors.sh",
+    ];
 
     for script in scripts {
         let path = repo_root().join("scripts").join(script);
@@ -467,6 +471,101 @@ fn every_child_process_is_spawned_outside_this_repository() {
         "line(s) {bare:?} spawn a child without git_free_command, so it inherits \
          GIT_DIR. Every spawn in this file goes through git_free_command."
     );
+}
+
+// ---------------------------------------------------------------------------
+// The survivor gate: nothing runs from `target/` once the suite has ended.
+// ---------------------------------------------------------------------------
+
+/// `scripts/check-no-survivors.sh` on `directory`.
+fn survivor_gate(directory: &Path) -> Output {
+    git_free_command(repo_root().join("scripts").join("check-no-survivors.sh"))
+        .arg(directory)
+        .output()
+        .unwrap_or_else(|error| panic!("could not execute scripts/check-no-survivors.sh: {error}"))
+}
+
+/// **The survivor gate names a process still running from the directory, and
+/// passes the same directory once it is gone.**
+///
+/// A copy of `sleep` stands in for a `zaru` a check left behind: an
+/// executable under a scratch `target/debug/`, started through the helper
+/// every check uses, so this check leaves nothing either. The control before
+/// and after is the same directory with nothing running from it, and the gate
+/// has to say how many processes it read, so a gate that read none cannot pass.
+///
+/// **The mutant:** the gate matching nothing, which prints what it answered
+/// while the survivor ran.
+#[test]
+fn the_survivor_gate_names_a_process_left_running_under_the_directory() {
+    let root = std::env::temp_dir().join(nonce("survivors"));
+    let debug = root.join("target").join("debug");
+    fs::create_dir_all(&debug).expect("a scratch target directory");
+    let sleep = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("sleep"))
+        .find(|candidate| candidate.is_file())
+        .expect("`sleep` is on this machine's PATH");
+    let left_behind = debug.join("left-behind");
+    fs::copy(&sleep, &left_behind).expect("a copy of sleep under the scratch target");
+    let target = root.join("target");
+
+    let before = survivor_gate(&target);
+    let mut complaints: Vec<String> = Vec::new();
+    if before.status.code() != Some(0) || !String::from_utf8_lossy(&before.stdout).contains("ok") {
+        complaints.push(format!(
+            "with nothing running from it the gate answered {:?}: {}",
+            before.status.code(),
+            stderr_of(&before)
+        ));
+    }
+
+    let survivor = git_free_command(&left_behind)
+        .arg("60")
+        .spawn()
+        .expect("the copy of sleep starts");
+    let pid = survivor.id();
+    // `setpriv` execs the copy in place; wait until the kernel says it is
+    // running the copy rather than `setpriv`.
+    let resolved = target.canonicalize().expect("the scratch target resolves");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|exe| exe.starts_with(&resolved)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the copy of sleep (pid {pid}) never became the process's executable"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let during = survivor_gate(&target);
+    let said = stderr_of(&during);
+    if during.status.code() != Some(1) || !said.contains(&pid.to_string()) {
+        complaints.push(format!(
+            "with pid {pid} running from {} the gate answered {:?} and did not name it: {said}{}",
+            target.display(),
+            during.status.code(),
+            String::from_utf8_lossy(&during.stdout)
+        ));
+    }
+
+    drop(survivor);
+    let after = survivor_gate(&target);
+    if after.status.code() != Some(0) {
+        complaints.push(format!(
+            "once pid {pid} was gone the gate still answered {:?}: {}",
+            after.status.code(),
+            stderr_of(&after)
+        ));
+    }
+
+    let _ = fs::remove_dir_all(&root);
+    let missing = survivor_gate(&root.join("not-there"));
+    if missing.status.code() != Some(2) {
+        complaints.push(format!(
+            "on a directory that is not there the gate answered {:?} where it could not look: {}",
+            missing.status.code(),
+            stderr_of(&missing)
+        ));
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
 }
 
 // ---------------------------------------------------------------------------
