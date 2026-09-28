@@ -83,7 +83,7 @@
 
 pub mod allowlist;
 pub mod arguments;
-mod codebase;
+pub(crate) mod codebase;
 pub mod decision;
 pub mod declared;
 pub mod destructive;

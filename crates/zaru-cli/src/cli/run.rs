@@ -219,6 +219,16 @@ impl Run<'_> {
             }
             Request::Init => self.init(),
             Request::ValidatorsApprove => self.validators_approve(),
+            Request::Index => self.configured(&line.overrides, |resolution| self.index(resolution)),
+            Request::IndexFetch => self.index_fetch_with(
+                crate::tools::prompt::Prompt::from_process()
+                    .as_ref()
+                    .map(|prompt| prompt as &dyn crate::tools::Confirm),
+            ),
+            Request::IndexRemove => self.index_remove(),
+            Request::IndexBuild => {
+                self.configured(&line.overrides, |resolution| self.index_build(resolution))
+            }
             Request::ValidatorsList => self.validators_list(),
             Request::SessionsList => self.sessions_list(),
             Request::SessionsRemove { id } => self.sessions_remove(id),
@@ -1130,6 +1140,179 @@ impl Run<'_> {
     /// One place, so every command that needs configuration reads the same
     /// three layers in the same order and a refusal from the fold has one
     /// classification rather than one per command.
+    /// `zaru index`: whether retrieval by meaning is on, whether its model
+    /// is fetched, and how far this project's index is.
+    fn index(&self, resolution: &Resolution) -> Outcome {
+        let Some(home) = self.home.root() else {
+            return Outcome::failed(Surface::index_without_a_home());
+        };
+        let here = match crate::tools::WorkingDirectory::of_this_process() {
+            Ok(here) => here,
+            Err(failure) => return Outcome::failed(Surface::working_directory(&failure)),
+        };
+        Outcome::printed(crate::meaning::said::status(
+            &crate::meaning::Places::under(home),
+            crate::meaning::on(resolution),
+            here.root(),
+        ))
+    }
+
+    /// `zaru index fetch`, with the question put through `confirmer`, so a
+    /// check can answer it.
+    pub(crate) fn index_fetch_with(
+        &self,
+        confirmer: Option<&dyn crate::tools::Confirm>,
+    ) -> Outcome {
+        use crate::meaning::{Places, fetch, said};
+        let Some(home) = self.home.root() else {
+            return Outcome::failed(Surface::index_without_a_home());
+        };
+        let Some(runtime) = fetch::runtime_for_this_machine() else {
+            return Outcome::failed(Surface::index_without_a_runtime());
+        };
+        let places = Places::under(home);
+        let (statement, detail) = said::fetch_question(&places, &runtime);
+        let Some(confirmer) = confirmer else {
+            let mut lines = vec![statement];
+            lines.extend(detail);
+            return Outcome {
+                lines,
+                exit: Exit::Failed(Surface::index_fetch_needs_a_terminal()),
+            };
+        };
+        let question = crate::tools::Question {
+            statement,
+            detail,
+            prominent: true,
+            answers: crate::tools::prompt::Answers::Admission,
+            about: None,
+        };
+        match confirmer.confirm(&question) {
+            Ok(crate::tools::port::Answer::Once | crate::tools::port::Answer::ForThisSession) => {}
+            Ok(_) => return Outcome::printed(vec![String::from("Nothing was fetched.")]),
+            Err(_) => return Outcome::failed(Surface::index_fetch_needs_a_terminal()),
+        }
+        for folder in [places.root.clone(), places.model(), places.runtime()] {
+            if let Err(failure) = crate::config::home::ensure(&folder) {
+                let (path, source) = failure.into_parts();
+                return Outcome::failed(Surface::index_not_fetched(&fetch::FetchFailure(format!(
+                    "could not make {}: {source}",
+                    path.display()
+                ))));
+            }
+        }
+        let runtime_driver = crate::compose::turn::runtime()
+            .expect("a current-thread runtime with the io and time drivers");
+        match runtime_driver.block_on(crate::meaning::fetch_all(&places, &runtime)) {
+            Ok(()) => Outcome::printed(vec![
+                format!(
+                    "Fetched and checked: the model in {} and the runtime library in {}.",
+                    places.model().display(),
+                    places.runtime().display()
+                ),
+                format!(
+                    "To turn retrieval by meaning on, set {} = true in ~/.zaru/config.toml, or \
+                     ZARU_SEARCH_MEANING=true.",
+                    crate::meaning::KEY
+                ),
+            ]),
+            Err(failure) => Outcome::failed(Surface::index_not_fetched(&failure)),
+        }
+    }
+
+    /// `zaru index build`: build this project's index now, or bring it up to
+    /// date, saying how far it is on standard error, and wait for it.
+    fn index_build(&self, resolution: &Resolution) -> Outcome {
+        use crate::meaning::{Meaning, Progress};
+        if !crate::meaning::on(resolution) {
+            return Outcome::failed(Surface::index_off());
+        }
+        let here = match crate::tools::WorkingDirectory::of_this_process() {
+            Ok(here) => here,
+            Err(failure) => return Outcome::failed(Surface::working_directory(&failure)),
+        };
+        let started = std::time::Instant::now();
+        let Some(meaning) =
+            Meaning::for_session(self.home, resolution, here.root(), layers::search_ceiling())
+        else {
+            return Outcome::failed(Surface::index_off());
+        };
+        let Some(progress) = meaning.progress() else {
+            return Outcome::failed(Surface::index_not_fetched(&crate::meaning::fetch::FetchFailure(
+                meaning.cannot().unwrap_or_default().to_owned(),
+            )));
+        };
+        let mut said_last = String::new();
+        let mut said_at = started;
+        loop {
+            let now = progress.borrow().clone();
+            match now {
+                Progress::Ready {
+                    files,
+                    chunks,
+                    left_out,
+                } => {
+                    let mut lines = vec![format!(
+                        "This project's index is up to date: {files} files in {chunks} pieces, \
+                         built or brought up to date in {}.",
+                        crate::meaning::duration(started.elapsed())
+                    )];
+                    if left_out > 0 {
+                        lines.push(format!(
+                            "{left_out} files or pieces are past the index's limits and were not \
+                             indexed."
+                        ));
+                    }
+                    return Outcome::printed(lines);
+                }
+                Progress::Failed(reason) => {
+                    return Outcome::failed(Surface::index_not_fetched(
+                        &crate::meaning::fetch::FetchFailure(reason),
+                    ));
+                }
+                Progress::Loading | Progress::Checking | Progress::Building { .. } => {
+                    if let Some((full, _)) = now.status()
+                        && full != said_last
+                        && said_at.elapsed() >= std::time::Duration::from_secs(5)
+                    {
+                        eprintln!("{full}");
+                        said_last = full;
+                        said_at = std::time::Instant::now();
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// `zaru index remove`: delete the model, the runtime library and every
+    /// project's index.
+    fn index_remove(&self) -> Outcome {
+        let Some(home) = self.home.root() else {
+            return Outcome::failed(Surface::index_without_a_home());
+        };
+        let places = crate::meaning::Places::under(home);
+        if !places.root.exists() {
+            return Outcome::printed(vec![format!(
+                "There is nothing to remove: {} does not exist.",
+                places.root.display()
+            )]);
+        }
+        match std::fs::remove_dir_all(&places.root) {
+            Ok(()) => Outcome::printed(vec![format!(
+                "Removed {}: the model, the runtime library and every project's index. \
+                 zaru index fetch fetches them again.",
+                places.root.display()
+            )]),
+            Err(source) => Outcome::failed(Surface::index_not_fetched(
+                &crate::meaning::fetch::FetchFailure(format!(
+                    "could not remove {}: {source}",
+                    places.root.display()
+                )),
+            )),
+        }
+    }
+
     fn configured(
         &self,
         overrides: &Overrides,

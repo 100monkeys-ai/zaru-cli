@@ -120,6 +120,11 @@ boon = { workspace = true }
 # what `.gitignore` says. See `[workspace.dependencies]` for the two measured
 # numbers, and for why a hand-written subset of that language was refused.
 ignore = { workspace = true }
+fastembed = { workspace = true }
+ort = { workspace = true }
+sha2 = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
 # ADR-0015 D2's in-session half needs a terminal, and this is where the
 # terminal backend arrives. Since `ratatui` 0.30 the backend is its own crate,
 # `ratatui-crossterm`, part of the `ratatui` project that ADR-0003 D2's row

@@ -907,6 +907,7 @@ async fn through_the_executor(
             budget: crate::tools::OutputBudget::new(4096).expect("a usable budget"),
             preview_budget: crate::tools::OutputBudget::new(4096).expect("a usable budget"),
             search_ceiling: crate::cli::layers::search_ceiling(),
+            meaning: None,
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: &crate::redaction::HeldSecrets::none(),

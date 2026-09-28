@@ -58,7 +58,7 @@ fn budget() -> OutputBudget {
 /// Search `root` inside `scratch`, with the scratch directory as the working
 /// directory, and return what the model would be given.
 async fn find(scratch: &Scratch, root: &Path, needle: &str, options: &Options) -> String {
-    let found = search(root, &scratch.0, needle, options, roomy(), budget()).await;
+    let found = search(root, &scratch.0, needle, options, roomy(), budget(), None).await;
     assert_eq!(
         found.exit_code, 0,
         "the search did not run: {}",
@@ -168,6 +168,7 @@ async fn an_answer_fits_its_budget_and_never_ends_in_half_a_line() {
         &Options::default(),
         roomy(),
         small,
+        None,
     )
     .await;
     println!("{}", found.stdout);
@@ -219,6 +220,7 @@ async fn nothing_found_says_what_was_searched_where_and_what_was_skipped() {
         &Options::default(),
         small,
         budget(),
+        None,
     )
     .await;
     let answer = found.stdout;
@@ -504,6 +506,7 @@ async fn links_are_never_followed_and_an_oversized_file_is_never_read() {
         &Options::default(),
         ceiling,
         budget(),
+        None,
     )
     .await;
     println!("{}", found.stdout);
@@ -530,6 +533,7 @@ async fn links_are_never_followed_and_an_oversized_file_is_never_read() {
         &Options::default(),
         roomy(),
         budget(),
+        None,
     )
     .await;
     assert_eq!(refused.exit_code, 1, "a root that is a link was searched");
@@ -542,6 +546,7 @@ async fn links_are_never_followed_and_an_oversized_file_is_never_read() {
         &Options::default(),
         roomy(),
         budget(),
+        None,
     )
     .await;
     assert_eq!(empty.exit_code, 1, "an empty needle was searched for");
@@ -611,6 +616,7 @@ fn a_search_yields_between_files() {
         &options,
         roomy(),
         budget(),
+        None,
     ));
     let waker = std::task::Waker::noop();
     let mut context = std::task::Context::from_waker(waker);
@@ -634,4 +640,185 @@ fn a_search_yields_between_files() {
         pending >= 40,
         "the search gave way {pending} times over 40 files, so it holds the interface still"
     );
+}
+
+/// A search the stand-in model answers: the project of `meaning::tests`,
+/// indexed, then searched for `needle` with retrieval by meaning on.
+async fn by_meaning(needle: &str) -> (String, crate::meaning::tests::Scratch) {
+    use crate::meaning::tests::{Words, ready, roomy as ceiling, words_loader};
+    let project = crate::meaning::tests::Scratch::new("search-meaning");
+    project.put(
+        "src/limits.rs",
+        "/// Per-capability rate limit configuration.\npub struct RateLimit {\n    pub calls: u32,\n    pub per_seconds: u32,\n}\n",
+    );
+    project.put(
+        "src/tokens.rs",
+        "/// Reject a replayed token: a duplicate identifier was seen before.\npub fn record_jti(seen: &mut Vec<String>, jti: &str) -> bool {\n    seen.iter().all(|one| one != jti)\n}\n",
+    );
+    project.put(
+        "src/greeting.rs",
+        "/// Say hello to a person by name.\npub fn greet(name: &str) -> String {\n    format!(\"hello {name}\")\n}\n",
+    );
+    let kept = crate::meaning::tests::Scratch::new("search-meaning-index");
+    let meaning =
+        crate::meaning::Meaning::start(&project.0, &kept.0, ceiling(), words_loader(Words::new()));
+    let waited = project.0.clone();
+    let meaning = tokio::task::spawn_blocking(move || {
+        ready(&meaning);
+        let _ = waited;
+        meaning
+    })
+    .await
+    .expect("the index is built");
+    let found = search(
+        &project.0,
+        &project.0,
+        needle,
+        &Options::default(),
+        roomy(),
+        budget(),
+        Some(&meaning),
+    )
+    .await;
+    drop(meaning);
+    drop(kept);
+    (found.stdout, project)
+}
+
+/// **Retrieval by meaning finds code whose words differ from the
+/// question's.** "throttle calls" shares no word with "rate limit"; the
+/// stand-in model counts the two as one meaning, as a real model does.
+#[tokio::test]
+async fn several_words_also_list_the_places_nearest_in_meaning() {
+    let (answer, _project) = by_meaning("where are calls throttled").await;
+    println!("{answer}");
+    let part = answer
+        .split_once(super::MEANING_HEADING)
+        .expect("the answer has a part found by meaning")
+        .1;
+    let first = part.lines().nth(1).expect("a file heading");
+    assert_eq!(
+        first, "src/limits.rs",
+        "the nearest place is not first: {answer}"
+    );
+    assert!(
+        part.contains("pub struct RateLimit {") && part.contains("[meaning 0."),
+        "a place shows its declaration and says it came by meaning: {answer}"
+    );
+    assert!(
+        part.contains("/// Per-capability rate limit configuration."),
+        "a place shows its comment: {answer}"
+    );
+    assert!(
+        part.contains("the index covers 3 of 3 files"),
+        "the answer says how much of the tree the index covers: {answer}"
+    );
+    let tally = super::tally(&answer).expect("an fs.search answer");
+    assert!(
+        tally.meanings >= 1,
+        "the tally counts the places: {tally:?}"
+    );
+    let view = crate::tools::result_view::search(".", "where are calls throttled", &answer);
+    let line = view.view.summary.clone();
+    assert!(
+        line.contains("by meaning"),
+        "the pane's one line says so: {line}"
+    );
+}
+
+/// **With it off, or for one word, the answer is the one it was.** A needle
+/// of one word is found by its lines, as before, and never waits on a model.
+#[tokio::test]
+async fn one_word_or_retrieval_off_leaves_the_answer_as_it_was() {
+    let (with_meaning, project) = by_meaning("RateLimit").await;
+    let without = search(
+        &project.0,
+        &project.0,
+        "RateLimit",
+        &Options::default(),
+        roomy(),
+        budget(),
+        None,
+    )
+    .await;
+    assert_eq!(with_meaning, without.stdout, "one word changed the answer");
+    assert!(!without.stdout.contains(super::MEANING_HEADING));
+    let (several, _) = by_meaning("rate limit configuration").await;
+    assert!(
+        several.contains(super::MEANING_HEADING),
+        "the accepting arm: several words are answered by meaning too: {several}"
+    );
+}
+
+/// **Before the index can answer, the search says so and answers by text.**
+#[tokio::test]
+async fn before_retrieval_by_meaning_can_answer_the_search_says_so_and_answers_by_text() {
+    let scratch = Scratch::new();
+    scratch.put(
+        "src/lib.rs",
+        "/// Throttle the calls.\npub fn throttle_calls() {}\n",
+    );
+    let meaning = crate::meaning::Meaning::unavailable(
+        "retrieval by meaning is on, but its model is not fetched. Run zaru index fetch",
+    );
+    let found = search(
+        &scratch.0,
+        &scratch.0,
+        "throttle calls",
+        &Options::default(),
+        roomy(),
+        budget(),
+        Some(&meaning),
+    )
+    .await;
+    let answer = found.stdout;
+    assert!(
+        answer.contains(
+            "Retrieval by meaning is on, but it cannot answer yet: retrieval by meaning is on, \
+             but its model is not fetched. Run zaru index fetch. The results below are by text \
+             alone."
+        ),
+        "the answer does not say why meaning did not answer: {answer}"
+    );
+    assert!(
+        answer.contains("src/lib.rs"),
+        "the text results are still there: {answer}"
+    );
+}
+
+/// **The stated rule: a place near in meaning that also holds a text match
+/// ranks above one a little nearer that holds none.** Reciprocal rank
+/// fusion over the three lists, with [`super::FUSION_K`].
+#[test]
+fn a_place_found_by_meaning_and_by_text_ranks_above_one_found_by_meaning_alone() {
+    let place = |path: &str, score: f32| super::Place {
+        path: path.to_owned(),
+        start: 1,
+        end: 3,
+        score,
+        lines: vec![String::from("pub fn here() {}")],
+    };
+    let meant = super::Meant::Places {
+        places: vec![place("a.rs", 0.90), place("b.rs", 0.85)],
+        indexed: 2,
+        files: 2,
+        building: None,
+    };
+    let mut walked = super::Walked::default();
+    walked.files = vec![String::from("b.rs")];
+    walked.hits.push(super::Hit {
+        file: 0,
+        line: 2,
+        text: String::from("the needle"),
+        tier: super::Tier::Source,
+    });
+    let part = super::meaning_part("the needle", &meant, &walked, 10_000);
+    let b = part.find("b.rs").expect("b is listed");
+    let a = part.find("a.rs").expect("a is listed");
+    assert!(
+        b < a,
+        "the place that also holds text did not rank first: {part}"
+    );
+    assert!(part.contains("[meaning 0.85; also by text]"), "{part}");
+    assert!(part.contains("[meaning 0.90]"), "{part}");
 }

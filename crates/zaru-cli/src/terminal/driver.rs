@@ -199,6 +199,15 @@ const fn answers_for_the_shell(answers: crate::tools::prompt::Answers) -> zaru_t
     }
 }
 
+/// The status row's index field for `progress`: how far the index is and how
+/// long is left, or nothing once it is up to date.
+#[must_use]
+pub fn index_segment(progress: &crate::meaning::Progress) -> Option<zaru_tui::shell::Segment> {
+    progress
+        .status()
+        .map(|(full, narrow)| zaru_tui::shell::Segment::new(full, narrow))
+}
+
 /// What the fall-through in [`dispatch`] says.
 ///
 /// Named once so a check can look for it rather than for a phrase somebody
@@ -436,6 +445,9 @@ pub struct Pane<'a, S: Surface + Send> {
     /// each key it hands to the question. Nothing else is shared between the
     /// two, and neither holds the lock while it waits.
     answer_awaited: Option<core::task::Waker>,
+    /// How far the index of retrieval by meaning is, read on every paint so
+    /// the status row says it while a turn runs. `None` when it is off.
+    index: Option<tokio::sync::watch::Receiver<crate::meaning::Progress>>,
 }
 
 impl<S: Surface + Send> core::fmt::Debug for Pane<'_, S> {
@@ -467,7 +479,19 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
             generating_since: None,
             said_generating: false,
             answer_awaited: None,
+            index: None,
         }
+    }
+
+    /// Keep the status row's index field current from `progress` on every
+    /// paint of this turn.
+    #[must_use]
+    pub fn watching(
+        mut self,
+        progress: Option<tokio::sync::watch::Receiver<crate::meaning::Progress>>,
+    ) -> Self {
+        self.index = progress;
+        self
     }
 
     /// Whether an exchange begins after this event, or one stops generating.
@@ -605,6 +629,9 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
 
     /// Paint, keeping the first paint that failed.
     fn paint(&mut self) {
+        if let Some(progress) = &self.index {
+            self.shell.set_index(index_segment(&progress.borrow()));
+        }
         if let Err(failure) = self.surface.draw(self.shell)
             && self.first_failure.is_none()
         {
@@ -1428,7 +1455,14 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let meter = Meter::started(&clock, &reported);
 
     let outcome: Result<crate::compose::Ran, Turned> = {
-        let pane = std::sync::Mutex::new(Pane::during(shell, surface, &clock));
+        let pane = std::sync::Mutex::new(
+            Pane::during(shell, surface, &clock).watching(
+                turns
+                    .prepared
+                    .meaning()
+                    .and_then(crate::meaning::Meaning::progress),
+            ),
+        );
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
         let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 1] = [&mut sink];
@@ -2384,6 +2418,20 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
     // agreeing with the first.
     let mut pending: Option<String> = None;
 
+    // How far the index of retrieval by meaning is, when it is on.
+    let mut index_progress = match &*turns {
+        Turnable::Ready(turns) => turns
+            .prepared
+            .meaning()
+            .and_then(crate::meaning::Meaning::progress),
+        Turnable::Cannot(_) => None,
+    };
+    let mut index_ended = false;
+    if let Some(progress) = &index_progress {
+        shell.set_index(index_segment(&progress.borrow()));
+        surface.draw(shell)?;
+    }
+
     loop {
         // ADR-0005 D8's honest degradation, re-asked because the answer moves
         // during the session. See `refresh_absence`. Above the action rather
@@ -2395,7 +2443,31 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
         let action = match pending.take() {
             Some(line) => shell.submit(&line, vocabulary),
             None => {
-                let Some(struck) = source.next().await else {
+                // While the index of retrieval by meaning is built, the row
+                // says how far it is between keystrokes too.
+                let next = match index_progress.as_mut() {
+                    Some(progress) => tokio::select! {
+                        struck = source.next() => Some(struck),
+                        changed = progress.changed() => {
+                            if changed.is_ok() {
+                                shell.set_index(index_segment(&progress.borrow_and_update()));
+                                surface.draw(shell)?;
+                            } else {
+                                index_ended = true;
+                            }
+                            None
+                        }
+                    },
+                    None => Some(source.next().await),
+                };
+                if index_ended {
+                    index_progress = None;
+                    index_ended = false;
+                }
+                let Some(struck) = next else {
+                    continue;
+                };
+                let Some(struck) = struck else {
                     break;
                 };
                 // The shell holds no clock, so the pump supplies one. A
@@ -3700,6 +3772,9 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
         ("/inbox", None) => Some(Request::Inbox),
         ("/learned", None) => Some(Request::Learned),
         ("/init", None) => Some(Request::Init),
+        // Retrieval by meaning's status. `fetch` and `remove` are not offered
+        // inside a session: see `Namespace::slash_verbs`.
+        ("/index", None) => Some(Request::Index),
         // **`if command.words.is_empty()`, exactly as `/providers keys`
         // below.** Without the guard `/notes tokens add work host` reached
         // `Request::NotesTokens` and **ran the listing**, saying nothing about

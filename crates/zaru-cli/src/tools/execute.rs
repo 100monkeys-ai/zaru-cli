@@ -298,6 +298,9 @@ pub struct Executor<'a, C, F, P> {
     /// module invents none; the binary's is
     /// [`crate::cli::layers::search_ceiling`].
     pub search_ceiling: crate::config::SizeCeiling,
+    /// Retrieval by meaning, when a person turned it on. `None` leaves
+    /// `fs.search` answering by text alone, exactly as before it existed.
+    pub meaning: Option<&'a crate::meaning::Meaning>,
     /// D5's overflow sink.
     pub overflow: &'a mut (dyn Overflow + Send),
     /// ADR-0010 D2's transcript. Written around every call.
@@ -530,6 +533,7 @@ where
                 options,
                 self.search_ceiling,
                 self.budget,
+                self.meaning,
             )
             .await),
             (Subject::Command(line), Requested::Builtin(Call::Run { .. })) => {

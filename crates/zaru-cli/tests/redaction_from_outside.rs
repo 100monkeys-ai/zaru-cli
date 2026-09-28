@@ -364,6 +364,7 @@ async fn read_a_file_carrying(
             budget: OutputBudget::new(budget).expect("a usable budget"),
             preview_budget: OutputBudget::new(4096).expect("a usable budget"),
             search_ceiling: zaru_cli::cli::layers::search_ceiling(),
+            meaning: None,
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor,

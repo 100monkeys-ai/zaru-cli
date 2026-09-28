@@ -704,7 +704,7 @@ pub fn list(shown: &str, answer: &str) -> Composed {
 #[must_use]
 pub fn search(shown: &str, needle: &str, found: &str) -> Composed {
     let tally = crate::tools::searching::tally(found).unwrap_or_default();
-    let what = if tally.lines > 0 {
+    let mut what = if tally.lines > 0 {
         format!(
             "{} found in {}",
             counted(tally.lines, "line", "lines"),
@@ -715,9 +715,24 @@ pub fn search(shown: &str, needle: &str, found: &str) -> Composed {
             "{} found",
             counted(tally.declarations, "declaration", "declarations")
         )
+    } else if tally.meanings > 0 {
+        String::new()
     } else {
         String::from("nothing found")
     };
+    // Retrieval by meaning adds its count, and only when it found something,
+    // so a search with it off shows the line it always did.
+    if tally.meanings > 0 {
+        let by_meaning = format!(
+            "{} found by meaning",
+            counted(tally.meanings, "place", "places")
+        );
+        what = if what.is_empty() {
+            by_meaning
+        } else {
+            format!("{what}, {by_meaning}")
+        };
+    }
     one_line(format!(
         "searched {} for \"{}\" · {what}",
         harmless(shown),

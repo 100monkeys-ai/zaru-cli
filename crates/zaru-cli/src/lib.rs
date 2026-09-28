@@ -137,6 +137,7 @@ pub mod config;
 pub mod credentials;
 pub mod failure;
 pub mod manifest;
+pub mod meaning;
 pub mod process;
 pub mod providers;
 pub mod redaction;

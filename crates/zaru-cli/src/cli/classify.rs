@@ -888,6 +888,72 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// `zaru index fetch` asks a question, and there is no terminal to ask on.
+    #[must_use]
+    pub fn index_fetch_needs_a_terminal() -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(
+                "`zaru index fetch` asks before it fetches anything, and standard input is not a \
+                 terminal, so nothing was fetched"
+                    .to_owned(),
+            ),
+            remedy: act("run `zaru index fetch` in a terminal".to_owned()),
+        }
+    }
+
+    /// A file retrieval by meaning needs could not be fetched or kept.
+    #[must_use]
+    pub fn index_not_fetched(failure: &crate::meaning::fetch::FetchFailure) -> Classified {
+        correctable(
+            failure,
+            run(
+                "check that this machine can reach huggingface.co and github.com, then fetch again",
+                "zaru index fetch",
+            ),
+        )
+    }
+
+    /// `zaru index build` was asked for with retrieval by meaning off.
+    #[must_use]
+    pub fn index_off() -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(
+                "retrieval by meaning is off, so there is no index to build".to_owned(),
+            ),
+            remedy: act(
+                "set search.meaning = true in ~/.zaru/config.toml, or ZARU_SEARCH_MEANING=true"
+                    .to_owned(),
+            ),
+        }
+    }
+
+    /// There is no home folder to keep the model and the index in.
+    #[must_use]
+    pub fn index_without_a_home() -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(
+                "retrieval by meaning keeps its model and its index under ~/.zaru, and this \
+                 process has no home folder"
+                    .to_owned(),
+            ),
+            remedy: act("set HOME to your home folder".to_owned()),
+        }
+    }
+
+    /// ONNX Runtime publishes no library for this machine that this build
+    /// has a digest for.
+    #[must_use]
+    pub fn index_without_a_runtime() -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(
+                "retrieval by meaning runs on ONNX Runtime, and this build carries a digest for \
+                 its library on Linux for x86_64 and aarch64 only"
+                    .to_owned(),
+            ),
+            remedy: act("use zaru on Linux for x86_64 or aarch64 to search by meaning".to_owned()),
+        }
+    }
+
     /// A session id that is not a ULID.
     #[must_use]
     pub fn session_id(&self, refusal: &SessionIdRefused) -> Classified {

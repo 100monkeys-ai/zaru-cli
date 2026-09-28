@@ -569,3 +569,49 @@ fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
         "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
 }
+
+/// What the README says of retrieval by meaning is this build's: its limits,
+/// its window of lines, and what `zaru index fetch` fetches.
+#[test]
+fn what_the_readme_says_of_retrieval_by_meaning_is_this_builds() {
+    use zaru_cli::meaning::chunk::WINDOW_LINES;
+    use zaru_cli::meaning::index::{MOST_CHUNKS, MOST_FILES};
+    use zaru_cli::meaning::{embed, fetch, said};
+    let with_commas = |n: usize| {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (at, digit) in digits.chars().enumerate() {
+            if at > 0 && (digits.len() - at) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(digit);
+        }
+        out
+    };
+    let text = section(&readme(), "### Retrieval by meaning");
+    for said in [
+        format!(
+            "at most {} files and {} pieces",
+            with_commas(MOST_FILES),
+            with_commas(MOST_CHUNKS)
+        ),
+        format!("each {WINDOW_LINES} lines"),
+        format!(
+            "{} ({}, from Hugging Face",
+            embed::MODEL,
+            said::megabytes(said::model_bytes())
+        ),
+        format!("ONNX Runtime library {}", fetch::RUNTIME_VERSION),
+        format!(
+            "a {} download",
+            said::megabytes(
+                fetch::runtime_for_this_machine()
+                    .expect("a runtime for the machine the checks run on")
+                    .archive
+                    .bytes
+            )
+        ),
+    ] {
+        assert!(text.contains(&said), "the README does not say {said:?}: {text}");
+    }
+}

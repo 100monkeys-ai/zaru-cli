@@ -63,6 +63,7 @@
 //! [ADR-0035]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0035-local-structural-code-retrieval
 
 use crate::config::SizeCeiling;
+use crate::meaning::{Meaning, Nearest, Progress};
 use crate::tools::codebase::{self, Symbol};
 use crate::tools::output::{Captured, OutputBudget};
 use std::collections::BTreeSet;
@@ -151,6 +152,21 @@ const SHOWN_DECLARATIONS: usize = 8;
 /// The heading of the part of an answer that lists declarations.
 pub const DECLARATIONS_HEADING: &str = "Declarations whose names or comments share words with";
 
+/// The heading of the part of an answer that retrieval by meaning found.
+pub const MEANING_HEADING: &str = "Nearest in meaning to";
+
+/// How many places the meaning part shows at most.
+pub const SHOWN_PLACES: usize = 6;
+
+/// The most bytes the meaning part takes.
+const MEANING_ROOM: usize = 2_400;
+
+/// The constant of reciprocal rank fusion, the rule the meaning part ranks
+/// by: a place scores `1 / (K + rank)` in each list it is in (by meaning, by
+/// text, by declaration), and the scores are added. 60 is the usual value,
+/// and the one Nuclear Notes' own search uses.
+pub const FUSION_K: f32 = 60.0;
+
 /// The optional fields of an `fs.search` call.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
@@ -174,6 +190,8 @@ pub struct Tally {
     pub files: usize,
     /// Declarations the words part lists.
     pub declarations: usize,
+    /// Places the meaning part lists.
+    pub meanings: usize,
 }
 
 /// How many lines matched in how many files, read from an answer's first
@@ -200,11 +218,22 @@ pub fn tally(answer: &str) -> Option<Tally> {
                 .filter(|line| line.starts_with("  "))
                 .count()
         });
+    let meanings = answer.split_once(MEANING_HEADING).map_or(0, |(_, rest)| {
+        rest.lines()
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter(|line| {
+                line.strip_prefix("  ")
+                    .is_some_and(|row| row.starts_with(|c: char| c.is_ascii_digit()))
+            })
+            .count()
+    });
     if first.ends_with(": no line holds it.") {
         return Some(Tally {
             lines: 0,
             files: 0,
             declarations,
+            meanings,
         });
     }
     let (_, said) = first.rsplit_once(": ")?;
@@ -215,6 +244,7 @@ pub fn tally(answer: &str) -> Option<Tally> {
         lines: number(lines)?,
         files: number(files)?,
         declarations,
+        meanings,
     })
 }
 
@@ -239,6 +269,7 @@ pub async fn search(
     options: &Options,
     ceiling: SizeCeiling,
     budget: OutputBudget,
+    meaning: Option<&Meaning>,
 ) -> Captured {
     if needle.is_empty() {
         return failed(String::from(
@@ -301,6 +332,14 @@ pub async fn search(
         .map(|folders| folders.clone())
         .unwrap_or_default();
 
+    // Retrieval by meaning answers the same questions the words part does.
+    let meant = match meaning {
+        Some(meaning) if words.len() >= 2 => {
+            Some(by_meaning(meaning, root, base, needle, ceiling).await)
+        }
+        _ => None,
+    };
+
     Captured {
         exit_code: 0,
         stdout: compose(
@@ -311,6 +350,7 @@ pub async fn search(
             &words,
             walked,
             budget,
+            meant.as_ref(),
         ),
         stderr: String::new(),
     }
@@ -318,7 +358,11 @@ pub async fn search(
 
 /// The walk: ignore files honoured, skipped folders pruned and counted, no
 /// link followed, in path order.
-fn walker(root: &Path, options: &Options, folders: Arc<Mutex<BTreeSet<String>>>) -> ignore::Walk {
+pub(crate) fn walker(
+    root: &Path,
+    options: &Options,
+    folders: Arc<Mutex<BTreeSet<String>>>,
+) -> ignore::Walk {
     let honour = !options.include_ignored;
     let include = options.include_ignored;
     ignore::WalkBuilder::new(root)
@@ -484,10 +528,7 @@ impl Walked {
             }
         }
         let display = shown(path, base);
-        let generated_name = GENERATED_NAMES.contains(&name.as_str())
-            || GENERATED_ENDINGS
-                .iter()
-                .any(|ending| name.ends_with(ending));
+        let generated_name = is_generated_name(&name);
         if generated_name && !options.include_ignored {
             self.skipped.generated.push(display);
             return;
@@ -525,11 +566,7 @@ impl Walked {
                 .components()
                 .any(|part| SKIPPED_FOLDERS.contains(&part.as_os_str().to_string_lossy().as_ref()))
         });
-        let head_text: String = text.chars().take(HEAD_BYTES).collect();
-        let tier = if generated_name
-            || in_skipped_folder
-            || GENERATED_MARKS.iter().any(|mark| head_text.contains(mark))
-        {
+        let tier = if generated_name || in_skipped_folder || is_marked_generated(&text) {
             Tier::Generated
         } else if is_test(&display) {
             Tier::Test
@@ -578,8 +615,22 @@ impl Walked {
     }
 }
 
+/// Whether a file name is one a tool writes: a lock or a minified file.
+pub(crate) fn is_generated_name(name: &str) -> bool {
+    GENERATED_NAMES.contains(&name)
+        || GENERATED_ENDINGS
+            .iter()
+            .any(|ending| name.ends_with(ending))
+}
+
+/// Whether the head of a file says a tool wrote it.
+pub(crate) fn is_marked_generated(text: &str) -> bool {
+    let head: String = text.chars().take(HEAD_BYTES).collect();
+    GENERATED_MARKS.iter().any(|mark| head.contains(mark))
+}
+
 /// Whether a path is a test by the common conventions.
-fn is_test(path: &str) -> bool {
+pub(crate) fn is_test(path: &str) -> bool {
     let path = Path::new(path);
     let in_tests = path.components().any(|part| {
         matches!(
@@ -636,6 +687,7 @@ fn compose(
     words: &[String],
     walked: Walked,
     budget: OutputBudget,
+    meant: Option<&Meant>,
 ) -> String {
     let room = (budget.get() - budget.get() / 16).saturating_sub(700 + root.len());
 
@@ -684,6 +736,14 @@ fn compose(
 
     // Room kept for the closing and the count of what is not shown.
     let keep = closing.len() + 400;
+    if let Some(meant) = meant {
+        answer.push_str(&meaning_part(
+            needle,
+            meant,
+            &walked,
+            room.saturating_sub(answer.len() + keep).min(MEANING_ROOM),
+        ));
+    }
     let (lines, shown) = lines_part(&walked, room.saturating_sub(answer.len() + keep));
     let shown_lines = shown.iter().sum::<usize>();
     let files_with_hidden = matched_files
@@ -789,6 +849,221 @@ fn lines_part(walked: &Walked, room: usize) -> (String, Vec<usize>) {
         text.push_str(&group);
     }
     (text, shown)
+}
+
+/// What retrieval by meaning gave a search.
+enum Meant {
+    /// The places nearest the question.
+    Places {
+        places: Vec<Place>,
+        /// Files in the index.
+        indexed: usize,
+        /// Files the tree holds that an index would hold.
+        files: usize,
+        /// How far the index is, when it is still being built.
+        building: Option<String>,
+    },
+    /// It is on and cannot answer, and why.
+    NotReady(String),
+}
+
+/// A piece of a file near the question in meaning.
+struct Place {
+    path: String,
+    start: usize,
+    end: usize,
+    score: f32,
+    lines: Vec<String>,
+}
+
+/// Ask the index for the pieces nearest `needle` in meaning, under `root`.
+async fn by_meaning(
+    meaning: &Meaning,
+    root: &Path,
+    base: &Path,
+    needle: &str,
+    ceiling: SizeCeiling,
+) -> Meant {
+    let (project, within) = match meaning.project() {
+        Some(project) => match root.strip_prefix(project) {
+            Ok(within) => (project.to_path_buf(), within.display().to_string()),
+            Err(_) => {
+                return Meant::NotReady(String::from(
+                    "the folder searched is outside the project the index is of",
+                ));
+            }
+        },
+        None => (base.to_path_buf(), String::new()),
+    };
+    match meaning.nearest(&within, needle).await {
+        Nearest::NotReady(reason) => Meant::NotReady(reason),
+        Nearest::Found {
+            places,
+            indexed,
+            files,
+            progress,
+        } => {
+            let places = places
+                .into_iter()
+                .filter_map(|near| {
+                    let path = project.join(&near.path);
+                    let metadata = std::fs::symlink_metadata(&path).ok()?;
+                    if !metadata.is_file() || metadata.len() > ceiling.get() {
+                        return None;
+                    }
+                    let text = std::fs::read_to_string(&path).ok()?;
+                    let lines: Vec<String> = text
+                        .lines()
+                        .skip(near.start.saturating_sub(1))
+                        .take(near.end + 1 - near.start)
+                        .map(str::to_owned)
+                        .collect();
+                    Some(Place {
+                        path: shown(&path, base),
+                        start: near.start,
+                        end: near.end,
+                        score: near.score,
+                        lines,
+                    })
+                })
+                .collect();
+            let building = match progress {
+                Progress::Building { done, total, left } => Some(match left {
+                    Some(left) => format!(
+                        "it is still being built: {done} of {total} pieces embedded, about {} left",
+                        crate::meaning::duration(left)
+                    ),
+                    None => format!("it is still being built: {done} of {total} pieces embedded"),
+                }),
+                Progress::Loading => Some(String::from("the model is still loading")),
+                Progress::Checking => Some(String::from("it is checking which files changed")),
+                Progress::Ready { .. } | Progress::Failed(_) => None,
+            };
+            Meant::Places {
+                places,
+                indexed,
+                files,
+                building,
+            }
+        }
+    }
+}
+
+/// The places nearest the question in meaning, ranked together with the text
+/// and declaration matches by reciprocal rank fusion (see [`FUSION_K`]).
+fn meaning_part(needle: &str, meant: &Meant, walked: &Walked, room: usize) -> String {
+    let (places, indexed, files, building) = match meant {
+        Meant::NotReady(reason) => {
+            return format!(
+                "\nRetrieval by meaning is on, but it cannot answer yet: {reason}. The results \
+                 below are by text alone.\n"
+            );
+        }
+        Meant::Places {
+            places,
+            indexed,
+            files,
+            building,
+        } => (places, indexed, files, building),
+    };
+    let mut hits: Vec<&Hit> = walked.hits.iter().collect();
+    hits.sort_by(|left, right| {
+        left.tier
+            .cmp(&right.tier)
+            .then_with(|| walked.files[left.file].cmp(&walked.files[right.file]))
+            .then_with(|| left.line.cmp(&right.line))
+    });
+    let declarations = codebase::retrieve(&walked.symbols, needle);
+    let fused = |rank: usize| 1.0 / (FUSION_K + rank as f32);
+    let mut ranked: Vec<(f32, &Place, bool, bool)> = places
+        .iter()
+        .enumerate()
+        .map(|(at, place)| {
+            let inside = |path: &str, line: usize| {
+                path == place.path && (place.start..=place.end).contains(&line)
+            };
+            let by_text = hits
+                .iter()
+                .position(|hit| inside(&walked.files[hit.file], hit.line));
+            let by_name = declarations
+                .iter()
+                .position(|symbol| inside(&symbol.path, symbol.line));
+            let score = fused(at + 1)
+                + by_text.map_or(0.0, |rank| fused(rank + 1))
+                + by_name.map_or(0.0, |rank| fused(rank + 1));
+            (score, place, by_text.is_some(), by_name.is_some())
+        })
+        .collect();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| right.1.score.total_cmp(&left.1.score))
+    });
+    if ranked.is_empty() {
+        return String::new();
+    }
+
+    let mut text = format!(
+        "\n{MEANING_HEADING} \"{needle}\" (by the embedding model, not by the words; the index \
+         covers {indexed} of {files} files{}):\n",
+        building
+            .as_ref()
+            .map_or_else(String::new, |building| format!("; {building}"))
+    );
+    let mut current = "";
+    for (_, place, by_text, by_name) in ranked.into_iter().take(SHOWN_PLACES) {
+        let mut piece = String::new();
+        if place.path != current {
+            piece.push_str(&format!("{}\n", place.path));
+        }
+        let code = place
+            .lines
+            .iter()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty() && !is_comment_or_attribute(line))
+            .unwrap_or_default();
+        let comment = place
+            .lines
+            .iter()
+            .map(|line| line.trim())
+            .take_while(|line| is_comment_or_attribute(line))
+            .find(|line| !line.starts_with("#[") && !line.starts_with('@'));
+        let mut also = Vec::new();
+        if by_text {
+            also.push("also by text");
+        }
+        if by_name {
+            also.push("also by name");
+        }
+        let mark = if also.is_empty() {
+            format!("[meaning {:.2}]", place.score)
+        } else {
+            format!("[meaning {:.2}; {}]", place.score, also.join(", "))
+        };
+        piece.push_str(&format!(
+            "  {}-{}: {} {mark}\n",
+            place.start,
+            place.end,
+            row_text(code)
+        ));
+        if let Some(comment) = comment {
+            piece.push_str(&format!("      {}\n", row_text(comment)));
+        }
+        if text.len() + piece.len() > room {
+            break;
+        }
+        current = &place.path;
+        text.push_str(&piece);
+    }
+    text
+}
+
+/// Whether a line is a comment or an attribute.
+fn is_comment_or_attribute(line: &str) -> bool {
+    ["//", "#", "*", "/*", "\"\"\"", "--", "@"]
+        .iter()
+        .any(|mark| line.starts_with(mark))
 }
 
 /// The declarations whose names or comments share words with the needle.

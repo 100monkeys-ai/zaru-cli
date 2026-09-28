@@ -511,6 +511,23 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
         // `Namespace::is_built`.
         Namespace::Inbox => whole(namespace, rest, Request::Inbox),
         Namespace::Learned => whole(namespace, rest, Request::Learned),
+        Namespace::Index => match rest {
+            [] => Ok(Request::Index),
+            [verb, extra, ..] if namespace.verbs().contains(&verb.as_str()) => {
+                Err(CommandRefused::UnexpectedWord {
+                    command: format!("{namespace} {verb}"),
+                    offered: extra.to_string(),
+                })
+            }
+            [verb] if verb == "build" => Ok(Request::IndexBuild),
+            [verb] if verb == "fetch" => Ok(Request::IndexFetch),
+            [verb] if verb == "remove" => Ok(Request::IndexRemove),
+            [other, ..] => Err(CommandRefused::UnknownVerb {
+                command: namespace.to_string(),
+                offered: other.escape_debug().to_string(),
+                nearest: crate::config::nearest::nearest(namespace.verbs().iter().copied(), other),
+            }),
+        },
         Namespace::Stack | Namespace::Memory => {
             Err(CommandRefused::NamespaceNotBuilt { namespace })
         }

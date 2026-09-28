@@ -16,6 +16,9 @@ pub(crate) struct Symbol {
     pub(crate) path: String,
     /// The line it starts on, from 1.
     pub(crate) line: usize,
+    /// The line it ends on, from 1. Retrieval by meaning cuts a file into
+    /// pieces at these bounds.
+    pub(crate) end: usize,
     /// What it is: `function`, `class`, `import`, `reference` and so on.
     pub(crate) kind: &'static str,
     /// Its name.
@@ -206,6 +209,7 @@ fn push(
     symbols.push(Symbol {
         path: path.display().to_string(),
         line: node.start_position().row + 1,
+        end: node.end_position().row + 1,
         kind,
         name: name.to_owned(),
         scope: scope.to_owned(),

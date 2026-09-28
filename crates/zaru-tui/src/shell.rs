@@ -511,6 +511,12 @@ pub struct Status {
     /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     pub credential: Option<String>,
+    /// How far the index retrieval by meaning searches is, while it is
+    /// being built. [`Rank::Index`].
+    ///
+    /// `None` when retrieval by meaning is off, and when its index is up to
+    /// date: a row that says nothing new says nothing.
+    pub index: Option<Segment>,
 }
 
 /// One field of the row: what it says, and what it says when the row is narrow.
@@ -637,20 +643,23 @@ pub enum Rank {
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
     Credential = 4,
+    /// No record. How far the index retrieval by meaning searches is.
+    Index = 5,
     /// No record. Survey row 14.
-    Model = 5,
+    Model = 6,
     /// No record. Survey row 14.
-    Mode = 6,
+    Mode = 7,
     /// No record. The first thing dropped.
-    Session = 7,
+    Session = 8,
 }
 
 impl Rank {
     /// Every rank, worst first, so a check walks them rather than listing them.
-    pub const WORST_FIRST: [Self; 8] = [
+    pub const WORST_FIRST: [Self; 9] = [
         Self::Session,
         Self::Mode,
         Self::Model,
+        Self::Index,
         Self::Credential,
         Self::Elapsed,
         Self::Tokens,
@@ -711,6 +720,7 @@ impl Status {
             model: None,
             mode: None,
             credential: None,
+            index: None,
         }
     }
 
@@ -722,7 +732,7 @@ impl Status {
     /// reshuffled on every resize is a row nobody can read at a glance, which
     /// is the whole purpose a status line serves.
     fn fields(&self) -> Vec<(Rank, &str, &str)> {
-        let mut fields: Vec<(Rank, &str, &str)> = Vec::with_capacity(8);
+        let mut fields: Vec<(Rank, &str, &str)> = Vec::with_capacity(9);
         // The tier's own spelling is composed here rather than stored, and it
         // is the one field with no narrow form: shortening it is what
         // ADR-0001 clause 6's check forbids.
@@ -751,6 +761,9 @@ impl Status {
         }
         if let Some(tokens) = self.tokens.as_ref() {
             fields.push((Rank::Tokens, &tokens.full, &tokens.narrow));
+        }
+        if let Some(index) = self.index.as_ref() {
+            fields.push((Rank::Index, &index.full, &index.narrow));
         }
         fields.push((Rank::Session, "", ""));
         fields
@@ -1015,6 +1028,16 @@ impl Shell {
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     pub fn set_elapsed(&mut self, rendered: Option<String>) {
         self.status.elapsed = rendered;
+    }
+
+    /// Say how far the index of retrieval by meaning is, or take the field
+    /// off the row when there is nothing to say.
+    ///
+    /// A setter of its own for the reason [`Self::set_elapsed`] has one: it
+    /// changes on its own beat, while the index is built, and not at a turn's
+    /// boundary.
+    pub fn set_index(&mut self, rendered: Option<Segment>) {
+        self.status.index = rendered;
     }
 
     /// Say which model is answering and which permission mode is in force.

@@ -369,6 +369,10 @@ pub struct Prepared {
     /// what is sent to the model. Only ever `true` for a session that needs
     /// nothing from the store; see [`prepare`].
     stored_keys_unread: bool,
+    /// Retrieval by meaning for this session's project, when a person turned
+    /// it on. Its index is built in the background from the moment the
+    /// session is prepared.
+    meaning: Option<crate::meaning::Meaning>,
 }
 
 impl Prepared {
@@ -395,6 +399,12 @@ impl Prepared {
     #[must_use]
     pub const fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Retrieval by meaning for this session, when a person turned it on.
+    #[must_use]
+    pub fn meaning(&self) -> Option<&crate::meaning::Meaning> {
+        self.meaning.as_ref()
     }
 
     /// Every tool this session offers a model: the built-ins and any a
@@ -1188,6 +1198,12 @@ pub fn prepare(
         }
     };
 
+    let meaning = crate::meaning::Meaning::for_session(
+        home,
+        resolution,
+        here.root(),
+        layers::search_ceiling(),
+    );
     Ok(Prepared {
         tier,
         plan,
@@ -1213,6 +1229,7 @@ pub fn prepare(
         reserved,
         session_grants: crate::tools::grants::SessionGrants::none(),
         stored_keys_unread,
+        meaning,
     })
 }
 /// What a turn a skill started adds to it.
@@ -1644,6 +1661,7 @@ async fn ran(
         budget: layers::output_budget(),
         preview_budget: layers::preview_budget(),
         search_ceiling: layers::search_ceiling(),
+        meaning: prepared.meaning.as_ref(),
         overflow: &mut overflow,
         transcript: &mut transcript,
         redactor: &prepared.held,

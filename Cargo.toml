@@ -477,6 +477,12 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 # feature.
 ignore = { version = "0.4.33", default-features = false }
 
+fastembed = { version = "7.1.0", default-features = false, features = ["ort-load-dynamic"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "std", "api-24"] }
+sha2 = { version = "0.11.0", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4", default-features = false }
+
 [workspace.lints.rust]
 # Every public item carries a doc comment. `cargo clippy -- -D warnings` in CI
 # turns this into a failure, which is what keeps ADR-0003 D8's one-crate-one-

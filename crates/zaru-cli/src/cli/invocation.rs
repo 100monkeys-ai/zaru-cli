@@ -160,6 +160,17 @@ pub enum Request {
     Learned,
     /// `zaru validators approve`: show this directory's validators and ask.
     ValidatorsApprove,
+    /// `zaru index`: whether retrieval by meaning is on, whether its model is
+    /// fetched, and how far this project's index is.
+    Index,
+    /// `zaru index build`: build this project's index now, or bring it up to
+    /// date, and wait for it.
+    IndexBuild,
+    /// `zaru index fetch`: say what would be fetched, ask, then fetch and
+    /// check it.
+    IndexFetch,
+    /// `zaru index remove`: delete the model and every index.
+    IndexRemove,
     /// `zaru validators list`: every project whose validators are approved.
     ValidatorsList,
     /// `zaru sessions list`.

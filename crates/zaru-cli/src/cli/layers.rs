@@ -153,6 +153,12 @@ impl BuiltIn {
             &crate::terminal::mouse::key(),
             Value::Bool(crate::terminal::mouse::BUILT_IN),
         );
+        // Retrieval by meaning: off. See `meaning` for why a person turns it
+        // on and a project cannot.
+        document.insert_path(
+            &crate::meaning::key(),
+            Value::Bool(crate::meaning::BUILT_IN),
+        );
         Self { document }
     }
 }
@@ -624,6 +630,7 @@ pub fn schema() -> Schema {
     let declared = crate::credentials::grant::declare(declared);
     let declared = crate::compose::persona::declare(declared);
     let declared = crate::terminal::mouse::declare(declared);
+    let declared = crate::meaning::declare(declared);
     declared
         .with(crate::runtime::key(), crate::runtime::field())
         .with(

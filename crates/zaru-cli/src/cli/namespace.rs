@@ -119,6 +119,16 @@ pub enum Namespace {
     /// what is approved. Ruled by the coordinator under Jeshua's directives
     /// 58 and 62, open to his veto.
     Validators,
+    /// Added 2026-09-28 — retrieval by meaning: the model it runs on and the
+    /// index of this project.
+    ///
+    /// `zaru index` says whether it is on, whether the model is fetched and
+    /// how far this project's index is; `zaru index build` builds or brings
+    /// it up to date now and waits; `zaru index fetch` asks, then fetches the
+    /// model and the runtime it needs; `zaru index remove` deletes them and
+    /// every index. Ruled by the coordinator under Jeshua's directives 58
+    /// and 61, open to his veto.
+    Index,
 }
 
 impl Namespace {
@@ -126,7 +136,7 @@ impl Namespace {
     ///
     /// The length is annotated, so a thirteenth fails to compile here as well
     /// as in every exhaustive match below.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Runtime,
         Self::Stack,
         Self::Notes,
@@ -140,6 +150,7 @@ impl Namespace {
         Self::Providers,
         Self::Help,
         Self::Validators,
+        Self::Index,
     ];
 
     /// The spelling inside a session — D2's own first column.
@@ -159,6 +170,7 @@ impl Namespace {
             Self::Providers => "/providers",
             Self::Help => "/help",
             Self::Validators => "/validators",
+            Self::Index => "/index",
         }
     }
 
@@ -184,6 +196,7 @@ impl Namespace {
             Self::Providers => "providers",
             Self::Help => "help",
             Self::Validators => "validators",
+            Self::Index => "index",
         }
     }
 
@@ -204,6 +217,7 @@ impl Namespace {
             Self::Providers => "provider credentials",
             Self::Help => "the surface itself",
             Self::Validators => "which project validators may run",
+            Self::Index => "retrieval by meaning: its model and this project's index",
         }
     }
 
@@ -257,7 +271,8 @@ impl Namespace {
             | Self::Learned
             | Self::Inbox
             | Self::Help
-            | Self::Validators => true,
+            | Self::Validators
+            | Self::Index => true,
             Self::Stack | Self::Memory => false,
         }
     }
@@ -288,6 +303,12 @@ impl Namespace {
             // the first turn that would run a validator, so `list` is the one
             // verb a session needs.
             Self::Validators => &["list"],
+            // `fetch` asks on standard input, which a session has taken,
+            // `build` holds the terminal until it is done, which a session's
+            // own index does in the background, and `remove` deletes what a
+            // running index is using. Inside a session `/index` says how far
+            // the index is.
+            Self::Index => &[],
             Self::Runtime
             | Self::Models
             | Self::Init
@@ -315,6 +336,7 @@ impl Namespace {
             Self::Config => &["explain"],
             Self::Session => &["list", "rm"],
             Self::Validators => &["approve", "list"],
+            Self::Index => &["build", "fetch", "remove"],
             // Like `providers`, one verb with a verb of its own under it:
             // `notes tokens` lists and `notes tokens add <alias> <host>`
             // writes. Both namespaces are therefore parsed by matching the

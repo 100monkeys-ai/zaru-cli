@@ -140,6 +140,24 @@ pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static s
                 "print every project whose validators are approved, and their commands",
             ),
         ],
+        Namespace::Index => &[
+            (
+                "index",
+                "say whether retrieval by meaning is on and how far this project's index is",
+            ),
+            (
+                "index build",
+                "build this project's index now, or bring it up to date, and wait for it",
+            ),
+            (
+                "index fetch",
+                "fetch the model retrieval by meaning runs on, after saying what and asking",
+            ),
+            (
+                "index remove",
+                "delete that model and every project's index",
+            ),
+        ],
         Namespace::Stack | Namespace::Memory => &[],
     }
 }

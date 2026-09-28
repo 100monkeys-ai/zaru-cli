@@ -710,13 +710,25 @@ fn the_in_session_verbs_of_validators_leave_out_approve() {
     assert_eq!(Namespace::Validators.verbs(), &["approve", "list"]);
 }
 
-/// The accepting sibling: only `/session` and `/validators` differ, and every
-/// other namespace answers identically on both surfaces rather than by a
-/// second list.
+/// `fetch` asks on standard input, which a session has taken, `build` holds
+/// the terminal, and `remove` deletes what a running index is using, so a
+/// session offers `/index` alone: how far the index is.
 #[test]
-fn every_namespace_but_session_and_validators_answers_identically_on_both_surfaces() {
+fn the_in_session_index_says_how_far_it_is_and_neither_builds_fetches_nor_removes() {
+    assert!(Namespace::Index.slash_verbs().is_empty());
+    assert_eq!(Namespace::Index.verbs(), &["build", "fetch", "remove"]);
+}
+
+/// The accepting sibling: only `/session`, `/validators` and `/index`
+/// differ, and every other namespace answers identically on both surfaces
+/// rather than by a second list.
+#[test]
+fn every_namespace_but_session_validators_and_index_answers_identically_on_both_surfaces() {
     for namespace in Namespace::ALL {
-        if matches!(namespace, Namespace::Session | Namespace::Validators) {
+        if matches!(
+            namespace,
+            Namespace::Session | Namespace::Validators | Namespace::Index
+        ) {
             continue;
         }
         assert_eq!(

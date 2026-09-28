@@ -306,6 +306,7 @@ async fn a_turn_within(
             budget: OutputBudget::new(budget).expect("a budget"),
             preview_budget: OutputBudget::new(budget).expect("a budget"),
             search_ceiling: zaru_cli::cli::layers::search_ceiling(),
+            meaning: None,
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor: held,
