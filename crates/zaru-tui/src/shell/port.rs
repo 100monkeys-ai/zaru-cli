@@ -458,6 +458,14 @@ pub enum Prose {
         /// Where the answer starts inside [`Line::text`].
         from: usize,
     },
+    /// One row, whatever the pane's width: the text is cut at the pane's
+    /// edge, and the cut is marked.
+    ///
+    /// For the rows under a tool call that show what it printed or changed.
+    /// Their number is stated, so a person can count on the block fitting,
+    /// and a long line that wrapped would make ten rows thirty. The whole of
+    /// such a block is kept in a file its note names.
+    Clipped,
 }
 
 impl Line {
@@ -468,6 +476,17 @@ impl Line {
             register,
             text: text.into(),
             prose: Prose::Verbatim,
+        }
+    }
+
+    /// A line that is always one row: cut at the pane's edge, with the cut
+    /// marked. See [`Prose::Clipped`].
+    #[must_use]
+    pub fn clipped(register: Register, text: impl Into<String>) -> Self {
+        Self {
+            register,
+            text: text.into(),
+            prose: Prose::Clipped,
         }
     }
 
@@ -557,6 +576,15 @@ impl Line {
             Prose::CommonMark { from } => {
                 let (lead, answer) = self.text.split_at(from);
                 crate::shell::markdown::rows_after(lead, answer, self.register, width)
+            }
+            Prose::Clipped => {
+                let budget = usize::from(width).saturating_sub(self.indent());
+                vec![Row {
+                    register: self.register,
+                    lead: format!("{} ", self.register.glyph()),
+                    text: crate::shell::wrap::elided(&self.text, budget),
+                    emphasis: Vec::new(),
+                }]
             }
         }
     }

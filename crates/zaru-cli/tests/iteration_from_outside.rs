@@ -48,7 +48,7 @@
 
 use core::time::Duration;
 use std::sync::Mutex;
-use zaru_cli::compose::{Applying, Generating, Inner, Records, Shared};
+use zaru_cli::compose::{Applying, Generating, Inner, Records, Shared, Telling};
 use zaru_cli::credentials::{
     Alias, CredentialStore, Description, Entry, Instance, KeyStore, Reach, SealingError,
     SealingKey, Secret, ToolScope,
@@ -378,8 +378,14 @@ fn drive_narrating<P: ContextPolicy + Sync>(
     let outcome = {
         let cell = tokio::sync::Mutex::new(executor);
         let mut tools = Shared::over(&cell, zaru_cli::tools::descriptor_set());
-        let generating = Generating::over(staged.provider);
-        let applying = Applying::through(tools);
+        // The iterations' conversation, told to the transcript as the product
+        // tells it.
+        let told = std::sync::Mutex::new(
+            Records::appending_to(&transcript_path).expect("a handle for the conversation"),
+        );
+        let telling = Telling::to(vec![&told], narrator, staged.held);
+        let generating = Generating::over(staged.provider, &telling);
+        let applying = Applying::through(tools, &telling);
         let inner = Inner::over(
             zaru_core::iteration::Ports {
                 generator: &generating,
@@ -642,6 +648,116 @@ fn a_validator_that_fails_once_passes_after_the_models_fix() {
         "ADR-0008 D4 carries the validator's own output into the next prompt verbatim, and the \
          model was given {:?}",
         prompts[1]
+    );
+}
+
+/// **An iterating turn leaves its candidates and their results in the next
+/// turn's conversation**, and not the refinement prompts.
+///
+/// Until 2026-09-28 a project with validators left only its task there: the
+/// inner loop emitted no message, so the transcript held none and the
+/// conversation rebuilt from it at the turn boundary had the task and
+/// nothing of what the iterations did. Now each candidate's message and each
+/// call's result are told to the transcript as a turn's are, and the rebuild
+/// places them in that turn's exchange.
+///
+/// Red with `Generating` and `Applying` telling nothing: "the next turn's
+/// conversation holds 1 message(s) of this turn, the task alone".
+#[test]
+fn an_iterating_turns_candidates_and_results_are_the_next_turns_conversation() {
+    let scratch = Scratch::new("iteration-memory");
+    let plan = one_validator("cat report.txt", "TOTAL: 3");
+    let provider = Provider::scripted([
+        writes("not-the-report", "no"),
+        writes("report.txt", "TOTAL: 3\n"),
+        writes("not-the-report", "nor this"),
+    ]);
+    let held = HeldSecrets::none();
+    let accepting = Declining::nothing();
+    let (outcome, _) = drive(
+        &Run_ {
+            scratch: &scratch,
+            plan: &plan,
+            provider: &provider,
+            ceiling: 3,
+            mode: Mode::Ask,
+            confirmer: Some(&accepting),
+            held: &held,
+            with_inner: true,
+        },
+        &Policy,
+    );
+    assert!(
+        matches!(
+            expect_iterated(&outcome),
+            LoopOutcome::Succeeded { iterations: 2, .. }
+        ),
+        "staging: the loop succeeds on its second iteration: {outcome:?}"
+    );
+
+    let session = std::fs::read_dir(scratch.sessions().join("sessions"))
+        .expect("the sessions directory")
+        .next()
+        .expect("one session")
+        .expect("an entry")
+        .path();
+    let records = Transcript::read(&session.join("transcript.jsonl"))
+        .expect("the transcript reads back")
+        .records;
+    let rebuilt = zaru_cli::compose::conversation_of(&records);
+    let messages: Vec<zaru_core::conversation::Message> = rebuilt
+        .exchanges()
+        .iter()
+        .flat_map(|exchange| exchange.messages().to_vec())
+        .collect();
+    assert!(
+        messages.len() > 1,
+        "the next turn's conversation holds {} message(s) of this turn, the task alone",
+        messages.len()
+    );
+
+    let calls: Vec<String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            zaru_core::conversation::Message::Assistant { calls, .. } => Some(calls.clone()),
+            _ => None,
+        })
+        .flatten()
+        .map(|call| format!("{} {}", call.name, call.arguments))
+        .collect();
+    assert_eq!(
+        calls.len(),
+        2,
+        "each iteration's call is there once: {calls:#?}"
+    );
+    assert!(
+        calls[0].contains("not-the-report") && calls[1].contains("report.txt"),
+        "the candidates are not there in the order the model sent them: {calls:#?}"
+    );
+    let results: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| match message {
+            zaru_core::conversation::Message::Tool { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results.len(),
+        2,
+        "each call's result is there: {results:#?}"
+    );
+    assert!(
+        results.iter().all(|content| content.contains("created")),
+        "a result is not what the call returned: {results:#?}"
+    );
+    assert!(
+        matches!(messages.first(), Some(zaru_core::conversation::Message::User { text }) if text.contains("do the work")),
+        "the task does not open the exchange: {messages:#?}"
+    );
+    let everything = format!("{messages:?}");
+    assert!(
+        !everything.contains("did not satisfy the declared validators"),
+        "a refinement prompt reached the next turn's conversation: {everything}"
     );
 }
 
@@ -1014,8 +1130,9 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
 
             let cell = tokio::sync::Mutex::new(executor);
             let mut tools = Shared::over(&cell, zaru_cli::tools::descriptor_set());
-            let generating = Generating::over(&provider);
-            let applying = Applying::through(tools);
+            let telling = Telling::to(Vec::new(), None, &held);
+            let generating = Generating::over(&provider, &telling);
+            let applying = Applying::through(tools, &telling);
             let inner = Inner::over(
                 zaru_core::iteration::Ports {
                     generator: &generating,

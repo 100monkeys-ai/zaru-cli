@@ -354,7 +354,7 @@ where
             );
 
             match &outcome {
-                ToolOutcome::Completed { result, .. } => {
+                ToolOutcome::Completed { result, view, .. } => {
                     calls_executed += 1;
                     emit(
                         sinks,
@@ -367,6 +367,21 @@ where
                             elapsed,
                         },
                     );
+                    // What the person is shown, after the line that says the
+                    // call returned and before the result joins the
+                    // conversation. It is not a message, so the model is
+                    // never sent it.
+                    if let Some(view) = view {
+                        emit(
+                            sinks,
+                            &Event::ToolShown {
+                                round,
+                                call,
+                                name: request.name.clone(),
+                                view: view.clone(),
+                            },
+                        );
+                    }
                 }
                 ToolOutcome::Refused { because, .. } => {
                     emit(

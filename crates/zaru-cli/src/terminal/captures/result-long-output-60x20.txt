@@ -1,0 +1,20 @@
+runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X
+· cmd.run returned · 6204 bytes · 41.20s
+    exit 0 · 121 lines on standard output
+    … 114 earlier lines not shown · all of it:
+  /home/person/.zaru/sessions/01JQZX8N3K4M5P6R7S8T9V0W1X/sho
+  wn-0001.txt
+    out │ test tools::reading::tests::case_115 ... ok
+    out │ test tools::reading::tests::case_116 ... ok
+    out │ test tools::reading::tests::case_117 ... ok
+    out │ test tools::reading::tests::case_118 ... ok
+    out │ test tools::reading::tests::case_119 ... ok
+    out │ test tools::reading::tests::case_120 ... ok
+    out │ test result: ok. 120 passed; 0 failed; 0 ignored;…
+
+
+
+
+
+
+

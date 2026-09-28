@@ -1386,3 +1386,107 @@ fn results(turn: &[Message]) -> Vec<(String, String, bool)> {
         })
         .collect()
 }
+
+/// **What a person is shown of a call is on the stream, after the line that
+/// says it returned, and is never sent to the model.**
+///
+/// The view is the person's: a command's last lines, an edit's changed lines.
+/// It rides [`Event::ToolShown`] so the pane and the transcript both have it,
+/// and it is on no message, so the conversation the next request carries is
+/// what it was before a view existed.
+///
+/// The mutant: building the result message from the view, or leaving the
+/// event out. The first prints that the view reached the model; the second
+/// that the stream holds no `ToolShown` after `ToolCompleted`.
+#[tokio::test]
+async fn a_calls_view_is_on_the_stream_after_it_returned_and_never_reaches_the_model() {
+    let clock = manual_clock();
+    let returned = nonce("what-the-model-reads");
+    let shown = nonce("what-the-person-sees");
+    let view = crate::tool_call::ResultView {
+        summary: shown.clone(),
+        rows: vec![crate::tool_call::ViewRow::new(
+            crate::tool_call::Mark::Output,
+            shown.clone(),
+        )],
+    };
+    let model = StagedModel::new(
+        vec![
+            Answer::Calls(vec![request("a", "cmd.run")]),
+            Answer::Text(nonce("done")),
+        ],
+        Arc::clone(&clock),
+        Duration::ZERO,
+    );
+    let seen = Arc::clone(&model.seen);
+    let mut executor = StagedTools::new(
+        vec![Act::ReturnShowing(returned.clone(), view.clone())],
+        tools(),
+        Arc::clone(&clock),
+        Duration::ZERO,
+    );
+    let context = RecordingContext::default();
+    let mut recorder = Recorder::default();
+
+    run::<_, _, _, _, _, StagedInner>(
+        1,
+        Start::Task("t"),
+        roomy(),
+        ToolCalling::required(&model, "staged").expect("can call tools"),
+        Ports {
+            model: &model,
+            tools: &mut executor,
+            context: &context,
+            clock: &*clock,
+            redactor: &NothingHeld,
+        },
+        None,
+        &mut [&mut recorder],
+    )
+    .await
+    .expect("no port failed");
+
+    let tags: Vec<&'static str> = recorder.events.iter().map(tag).collect();
+    let completed = tags
+        .iter()
+        .position(|tag| *tag == "ToolCompleted")
+        .expect("the call completed");
+    assert_eq!(
+        tags.get(completed + 1),
+        Some(&"ToolShown"),
+        "the stream holds no ToolShown after ToolCompleted: {tags:?}"
+    );
+    let on_the_stream = recorder
+        .events
+        .iter()
+        .find_map(|event| match event {
+            Event::ToolShown { view, name, .. } => Some((name.clone(), view.clone())),
+            _ => None,
+        })
+        .expect("asserted above");
+    assert_eq!(on_the_stream, ("cmd.run".to_owned(), view));
+
+    let sent = format!("{:?}", seen.lock().expect("seen poisoned")[1]);
+    // The ASCII core, because a debug rendering escapes the nonce's
+    // combining mark.
+    assert!(
+        sent.contains("what-the-model-reads"),
+        "the model was not sent the call's result: {sent}"
+    );
+    assert!(
+        !sent.contains("what-the-person-sees"),
+        "the view reached the model: {sent}"
+    );
+    let messages = format!(
+        "{:?}",
+        recorder
+            .events
+            .iter()
+            .filter(|event| matches!(event, Event::Message(_)))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !messages.contains("what-the-person-sees"),
+        "the view is on a message, so a rebuilt conversation would send it: {messages}"
+    );
+}

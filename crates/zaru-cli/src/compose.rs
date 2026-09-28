@@ -109,7 +109,10 @@ pub mod turn;
 pub use boundary::{ContextShape, Rebuilt, SessionContext, conversation_of};
 pub use context::{Facts, TurnContext, prefix_for, system_prompt};
 pub use emission::{Cause, Door, Subject, Unprompted, Wording};
-pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrated, Narrator};
+pub use iterate::{
+    Applying, Candidate, Generating, Inner, Iterations, Kept, NOT_APPLIED, Narrated, Narrator,
+    Telling,
+};
 pub use model::Classifying;
 pub use persona::{CachedPersona, Fetched, PersonaCache};
 pub use shared::Shared;

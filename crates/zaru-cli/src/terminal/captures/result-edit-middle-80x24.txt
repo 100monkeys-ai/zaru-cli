@@ -1,0 +1,24 @@
+runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X
+· exchange 4, call 1: fs.edit
+· fs.edit /home/person/project/src/values.rs — permitted
+· fs.edit returned · 188 bytes · 0.01s
+    changed src/values.rs · 2 lines removed, 2 added
+     98   │     let value_098 = 98;
+     99   │     let value_099 = 99;
+    100 - │     let value_100 = 100;
+    101 - │     let value_101 = 101;
+    100 + │     let value_100 = compute(100)?;
+    101 + │     log::debug!("value_100 = {value_100}");
+    102   │     let value_102 = 102;
+    … 1 more row of the change not shown · all of it:
+  /home/person/.zaru/sessions/01JQZX8N3K4M5P6R7S8T9V0W1X/shown-0001.txt
+
+
+
+
+
+
+
+
+
+

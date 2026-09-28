@@ -81,6 +81,9 @@ Run `zaru` with the task in quotes, from the directory you want it to work in:
 $ zaru "read src/main.rs and tell me what it does"
 Zaru is not a sandbox. Tool calls run on your machine with your permissions. A permission prompt asks before a call runs; it does not limit what an allowed call can do.
 
+fs.read /home/you/project/src/main.rs — permitted
+  read src/main.rs · lines 1 to 42 of 42
+
 <the model's answer>
 
 tokens: 120 prompt + 7 completion = 127, counted by the provider
@@ -88,7 +91,7 @@ tokens: 120 prompt + 7 completion = 127, counted by the provider
 no validators are declared, so the iteration loop cannot run · declare one in `./zaru.toml`
 ```
 
-It prints a warning that it is not a sandbox (see [Safety](#safety)), the model's answer, the tokens the task used as the provider counted them, and a note about validators (see [Validators](#validators-and-the-iteration-loop)).
+It prints a warning that it is not a sandbox (see [Safety](#safety)), each tool call the model made with what it did (see [What a tool call shows](#what-a-tool-call-shows)), the model's answer, the tokens the task used as the provider counted them, and a note about validators (see [Validators](#validators-and-the-iteration-loop)). These lines use plain ASCII marks, so they read the same through a pipe.
 
 When the model wants to write a file or run a command, Zaru asks you first. If there is no terminal to ask (for example, when `zaru` runs in a script), the call is refused and the model is told so.
 
@@ -101,7 +104,7 @@ zaru sessions list
 cat ~/.zaru/sessions/<id>/transcript.jsonl
 ```
 
-The transcript has one JSON object per line: your task, each model reply with the tool calls it asked for and their arguments, each tool call and whether it was allowed, what each call returned exactly as the model was given it, and the answer. Stored keys and tokens are replaced with a marker before a model reply or a tool result is written.
+The transcript has one JSON object per line: your task, each model reply with the tool calls it asked for and their arguments, each tool call and whether it was allowed, what each call returned exactly as the model was given it, what the screen showed of each call's result, and the answer. Stored keys and tokens are replaced with a marker before a model reply or a tool result is written.
 
 ## Using Zaru
 
@@ -114,6 +117,16 @@ Run `zaru` with no arguments in a terminal to open a session. Type a task and pr
 **When the conversation gets long.** At three quarters of the window Zaru summarises the oldest turns and says so (`◈ compacted …`); the whole history stays in the transcript. The last eighth of the window is kept for the model's answer, so a request is sent only when its estimate fits in the other seven eighths. If one request cannot fit, for example after a tool returned a very large result, Zaru does not send it: it says how large the request is, which tool result is largest, and what to do. For Ollama, every request also tells the server not to cut the prompt (`"truncate": false`).
 
 **Selecting text.** A session takes over the mouse so that the scroll wheel scrolls the transcript. To select text, hold Shift while you drag (this works in most terminals, including Windows Terminal and VS Code). To give the mouse back to your terminal instead, set `terminal.mouse = false` in `~/.zaru/config.toml`; the scroll wheel then no longer scrolls the transcript.
+
+### What a tool call shows
+
+Under each tool call the screen shows what the call did, as the model was given it:
+
+- **A command**: its exit code and how many lines it printed on standard output and on standard error, then its last 7 lines. Lines from standard output start with `out` and lines from standard error with `err`. A command that printed nothing says so. The output is shown when the command ends, not while it runs.
+- **An edit or a write**: the lines it changed, with each line's number. A removed line is marked `-` and an added line `+`, with 2 unchanged lines on each side of a change, and at most 7 rows. A new file shows its first 5 lines and how long it is.
+- **A read, a listing, a search or a fetch**: one line saying what came back: which lines of which file, how many entries, how many lines matched in how many files, or the page's status, size and title.
+
+The marks are characters, so they do not depend on colour. A long line is cut at the edge of the screen. When a block leaves lines out, or cuts a long line, all of it is kept in a file in the session's folder, such as `~/.zaru/sessions/<id>/shown-0001.txt`, and the block's last or first line gives the file's path. A stored key is shown as its marker, never its value. Output that would move the cursor, clear the screen or change the terminal's title is shown written out, for example `\u{1b}[2J`, and the terminal does not act on it. Nothing shown here is sent to the model.
 
 ### Permission prompts and modes
 
@@ -158,7 +171,7 @@ When a session opens, Zaru asks the provider how large the model's context windo
 
 ### Validators and the iteration loop
 
-A validator is a command in `./zaru.toml` that checks the model's work, such as a build or a test run. When a project declares validators, a task runs in a loop: the model makes a change, the validators run, and if any fails, its output goes back to the model for another attempt. The loop stops when every validator passes or when it reaches `runtime.max_iterations` attempts, which is one at the `bare` tier unless you set it.
+A validator is a command in `./zaru.toml` that checks the model's work, such as a build or a test run. When a project declares validators, a task runs in a loop: the model makes a change, the validators run, and if any fails, its output goes back to the model for another attempt. The loop stops when every validator passes or when it reaches `runtime.max_iterations` attempts, which is one at the `bare` tier unless you set it. The screen shows each attempt's tool calls and what they did, as it does for any task. The next task you type is sent each attempt's tool calls and their results, as it is sent a task's; the harness's requests for another attempt are not sent again.
 
 `zaru init` writes an example `./zaru.toml` to edit. A small one:
 

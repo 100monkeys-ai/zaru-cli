@@ -318,6 +318,36 @@ fn the_lines_fs_read_returns_at_a_time_are_this_builds() {
     );
 }
 
+/// The rows the README says a tool call's block shows are the ones it shows.
+#[test]
+fn the_rows_a_calls_block_shows_are_this_builds() {
+    use zaru_cli::tools::result_view::{CHANGE_ROWS, CONTEXT_LINES, NEW_FILE_ROWS, OUTPUT_ROWS};
+    let text = readme();
+    let command = sentence_with(&text, "then its last");
+    assert!(
+        command.contains(&format!("then its last {OUTPUT_ROWS} lines")),
+        "the README says a command shows a different number of lines from the {OUTPUT_ROWS} it \
+         shows: {command:?}"
+    );
+    let change = line_with(&text, "unchanged lines on each side of a change");
+    assert!(
+        change.contains(&format!(
+            "with {CONTEXT_LINES} unchanged lines on each side"
+        )) && change.contains(&format!("at most {CHANGE_ROWS} rows"))
+            && change.contains(&format!("its first {NEW_FILE_ROWS} lines")),
+        "the README states other limits for a change than {CONTEXT_LINES} lines around it, \
+         {CHANGE_ROWS} rows and a new file's first {NEW_FILE_ROWS} lines: {change:?}"
+    );
+    let kept = line_with(&text, "all of it is kept in a file in the session's folder");
+    assert!(
+        kept.contains(&format!(
+            "`~/.zaru/sessions/<id>/{}0001.txt`",
+            zaru_cli::tools::result_view::WHOLE_PREFIX
+        )),
+        "the README names the kept file other than the harness does: {kept:?}"
+    );
+}
+
 /// The ratio and the shares the README states are the ones the estimate uses.
 #[test]
 fn the_estimates_starting_ratio_and_shares_are_this_builds() {

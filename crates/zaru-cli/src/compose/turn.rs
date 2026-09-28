@@ -1678,6 +1678,11 @@ async fn ran(
 
     // --- ADR-0013's context, assembled once inside the turn ----------------
     let clock = SystemClock::started_now();
+    let plain = std::sync::Mutex::new(PlainCalls::default());
+    let told = match Records::appending_to(session.transcript_path()) {
+        Ok(told) => std::sync::Mutex::new(told),
+        Err(failure) => return Ran::refused(Surface::transcript(&failure, evidence)),
+    };
     let outcome = {
         let policy = context.policy(&prepared.held, iterating);
         // ADR-0008's execution, decided 2026-09-05: one tool surface, reached
@@ -1698,8 +1703,17 @@ async fn ran(
         let schemas = crate::validators::SchemaFiles::new(&prepared.here, layers::file_ceiling());
         let dispatch =
             zaru_core::iteration::validator::Dispatch::new(plan, &spawn, &patterns, &schemas);
-        let generating = crate::compose::Generating::over(&provider);
-        let applying = crate::compose::Applying::through(tools);
+        // An iterating turn's candidates and results, told to the transcript
+        // and the pane as a turn's own messages are, so the next turn is sent
+        // what the iterations did. See `compose::iterate::Telling`.
+        let mut telling_sinks: Vec<&std::sync::Mutex<dyn zaru_core::tool_call::EventSink + Send>> =
+            vec![&told];
+        if narrator.is_none() {
+            telling_sinks.push(&plain);
+        }
+        let telling = crate::compose::Telling::to(telling_sinks, narrator, &prepared.held);
+        let generating = crate::compose::Generating::over(&provider, &telling);
+        let applying = crate::compose::Applying::through(tools, &telling);
         let inner = crate::compose::Inner::over(
             zaru_core::iteration::Ports {
                 generator: &generating,
@@ -1734,6 +1748,14 @@ async fn ran(
         for sink in extra.iter_mut() {
             sinks.push(&mut **sink);
         }
+        // `zaru "<task>"` has no pane, so what the pane shows of each call is
+        // kept as plain lines and printed with the turn's other lines, before
+        // the answer. The narrator is `None` exactly there, which is the rule
+        // the session's notice already follows above.
+        let mut plain_sink = Locked(&plain);
+        if narrator.is_none() {
+            sinks.push(&mut plain_sink);
+        }
         let ran = tool_call::run(
             n,
             start,
@@ -1756,6 +1778,19 @@ async fn ran(
         (ran, inner.kept())
     };
     let (outcome, kept) = outcome;
+    let mut plain = plain
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !plain.lines.is_empty() {
+        lines.append(&mut plain.lines);
+        lines.push(String::new());
+    }
+    let told = told
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(failure) = told.first_failure() {
+        return Ran::refused_having_said(lines, Surface::transcript(failure, evidence));
+    }
 
     // A transcript that lost an event has not recorded what happened, whatever
     // the loop returned, and ADR-0010 D2 makes this file the replayable record.
@@ -2136,6 +2171,58 @@ pub fn task(
     crate::compose::persona::refresh_now(&mut serving);
 
     ran
+}
+
+/// What `zaru "<task>"` prints of each call: the line that says what the
+/// call was and whether it ran, and what the pane would show of its result,
+/// as plain lines with ASCII marks.
+///
+/// The words are the pane's own, from `terminal::vocabulary` and
+/// `tools::result_view`, so the two surfaces cannot come to say different
+/// things about one call.
+#[derive(Debug, Default)]
+struct PlainCalls {
+    lines: Vec<String>,
+}
+
+impl zaru_core::tool_call::EventSink for PlainCalls {
+    fn emit(&mut self, event: &zaru_core::tool_call::Event) {
+        use zaru_core::tool_call::Event;
+        match event {
+            Event::ToolPermissionDecided { .. } | Event::ToolRefused { .. } => {
+                if let Some(line) = crate::terminal::vocabulary::turn_line(event) {
+                    self.lines
+                        .push(crate::tools::result_view::harmless(&line.text));
+                }
+            }
+            Event::ToolShown { view, .. } => {
+                self.lines
+                    .extend(crate::tools::result_view::plain_lines(view));
+            }
+            Event::TurnStarted { .. }
+            | Event::ModelResponded { .. }
+            | Event::ToolRequested { .. }
+            | Event::ToolCompleted { .. }
+            | Event::Message(_)
+            | Event::TurnEnded { .. } => {}
+        }
+    }
+}
+
+/// A sink behind a lock, as a slice's [`zaru_core::tool_call::EventSink`].
+///
+/// The plain lines are written to by the outer loop's slice and by an
+/// iterating turn's [`crate::compose::Telling`] alike, so they live behind a
+/// lock and each writer holds it for one event.
+struct Locked<'a, S>(&'a std::sync::Mutex<S>);
+
+impl<S: zaru_core::tool_call::EventSink> zaru_core::tool_call::EventSink for Locked<'_, S> {
+    fn emit(&mut self, event: &zaru_core::tool_call::Event) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .emit(event);
+    }
 }
 
 /// Run one turn, and record what refused it if it was refused.

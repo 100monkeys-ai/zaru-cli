@@ -7591,3 +7591,319 @@ fn a_decisions_question_says_the_same_thing_in_two_parts() {
         "the two parts do not read as the statement"
     );
 }
+
+// ----------------------------------- what a call did, under the call
+
+/// Where a capture's view says the whole is kept: a session directory of the
+/// shape a person's machine has.
+const KEPT_AT: &str = "/home/person/.zaru/sessions/01JQZX8N3K4M5P6R7S8T9V0W1X/shown-0001.txt";
+
+/// The five calls a person most needs to see the result of, each as the
+/// lines the pane paints above it and the view the executor composes.
+fn result_cases() -> Vec<(
+    &'static str,
+    Vec<zaru_tui::shell::port::Line>,
+    zaru_core::tool_call::ResultView,
+)> {
+    use crate::tools::result_view::{Before, change, command};
+    use std::path::Path;
+    use zaru_tui::shell::port::Line;
+
+    let call = |lines: [&str; 3]| -> Vec<Line> {
+        lines
+            .into_iter()
+            .map(|text| Line::new(Register::Call, text))
+            .collect()
+    };
+    let kept = Some(Path::new(KEPT_AT));
+
+    let long_output: String = (1..=120)
+        .map(|n| format!("test tools::reading::tests::case_{n:03} ... ok\n"))
+        .chain(core::iter::once(String::from(
+            "test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s\n",
+        )))
+        .collect();
+    let failing_stderr = "   Compiling zaru-cli v0.0.0 (/home/person/zaru-cli/crates/zaru-cli)\n\
+error[E0308]: mismatched types\n\
+  --> crates/zaru-cli/src/tools/files.rs:218:5\n\
+    |\n\
+217 | fn line_count(text: &str) -> usize {\n\
+    |                              ----- expected `usize` because of return type\n\
+218 |     text.matches('\\n').count() as u32\n\
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `usize`, found `u32`\n\
+\n\
+error: could not compile `zaru-cli` (lib) due to 1 previous error\n";
+    let before: String = (1..=200)
+        .map(|n| format!("    let value_{n:03} = {n};\n"))
+        .collect();
+    let after: String = (1..=200)
+        .map(|n| match n {
+            100 => String::from("    let value_100 = compute(100)?;\n    log::debug!(\"value_100 = {value_100}\");\n"),
+            101 => String::new(),
+            n => format!("    let value_{n:03} = {n};\n"),
+        })
+        .collect();
+    let new_file: String = (1..=40)
+        .map(|n| format!("- note {n}: what the model wrote\n"))
+        .collect();
+    let hostile = "before\n\u{1b}[2J\u{1b}[H\u{1b}]0;PWNED\u{7}\u{1b}[31mred\u{1b}[0m\n\
+                   \u{1b}[10;10Hmoved\nvisible\rOVERWRITE\nback\u{8}\u{8}XX\n\u{9b}31m one byte\n\
+                   \u{202e}reversed\u{202c}\nafter\n";
+
+    vec![
+        (
+            "long-output",
+            call([
+                "exchange 3, call 1: cmd.run",
+                "cmd.run cargo test -p zaru-cli — permitted",
+                "cmd.run returned · 6204 bytes · 41.20s",
+            ]),
+            command(0, &long_output, "").finished(kept),
+        ),
+        (
+            "stderr-failing",
+            call([
+                "exchange 2, call 1: cmd.run",
+                "cmd.run cargo build — permitted",
+                "cmd.run reported a failure · 612 bytes · 3.05s",
+            ]),
+            command(101, "", failing_stderr).finished(kept),
+        ),
+        (
+            "edit-middle",
+            call([
+                "exchange 4, call 1: fs.edit",
+                "fs.edit /home/person/project/src/values.rs — permitted",
+                "fs.edit returned · 188 bytes · 0.01s",
+            ]),
+            change(
+                "src/values.rs",
+                "changed",
+                &Before::Text(before),
+                &Before::Text(after),
+            )
+            .finished(kept),
+        ),
+        (
+            "new-file",
+            call([
+                "exchange 5, call 1: fs.write",
+                "fs.write /home/person/project/notes/plan.md — permitted",
+                "fs.write returned · 140 bytes · 0.01s",
+            ]),
+            change(
+                "notes/plan.md",
+                "replaced",
+                &Before::Absent,
+                &Before::Text(new_file),
+            )
+            .finished(kept),
+        ),
+        (
+            "hostile",
+            call([
+                "exchange 6, call 1: cmd.run",
+                "cmd.run python3 hostile.py — permitted",
+                "cmd.run returned · 195 bytes · 0.02s",
+            ]),
+            command(0, hostile, "\u{1b}[?1049h on standard error\n").finished(kept),
+        ),
+    ]
+}
+
+/// The rows a shell paints at `width` by `height` after a call and its view.
+fn painted_result(
+    call: &[zaru_tui::shell::port::Line],
+    view: &zaru_core::tool_call::ResultView,
+    width: u16,
+    height: u16,
+) -> (String, Vec<String>) {
+    let mut shell = shell();
+    for line in call {
+        shell.notice(line.clone());
+    }
+    for line in crate::terminal::vocabulary::shown_lines(view) {
+        shell.notice(line);
+    }
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("a test terminal");
+    let Ok(_) = terminal.draw(|frame| shell.render(frame, frame.area(), Palette::Monochrome));
+    let buffer = terminal.backend().buffer();
+    let mut painted = String::new();
+    let mut cells = Vec::new();
+    for y in 0..buffer.area.height {
+        let row: String = (0..buffer.area.width)
+            .map(|x| {
+                cells.push(buffer[(x, y)].symbol().to_owned());
+                buffer[(x, y)].symbol()
+            })
+            .collect();
+        painted.push_str(row.trim_end());
+        painted.push('\n');
+    }
+    (painted, cells)
+}
+
+/// **After a call, the pane shows what it did, under the call, at every
+/// size.** Fifteen renderings, committed: a command with long output, a
+/// command that failed on standard error, an edit in the middle of a file, a
+/// new file and hostile output, at 80 by 24, 60 by 20 and 120 by 40.
+///
+/// Measured on `c1769f6` from the binary, before this: every call painted its
+/// byte count and nothing of what it printed or changed.
+///
+/// Each rendering is held four ways: it matches the committed file; the
+/// view's summary is on the screen; the whole view fits the pane with the
+/// call's last line above it; and no cell holds a control character. A
+/// change that alters what a person sees reddens the first by design:
+/// regenerate the named file from the "painted" block the failure prints, and
+/// say in the commit what changed and why a person should see it.
+///
+/// **The mutant:** painting the view's rows as wrapped lines rather than one
+/// row each, which prints that the view does not fit the pane at 60 by 20.
+#[test]
+fn a_calls_view_is_painted_under_it_at_every_size() {
+    let sizes: [(u16, u16); 3] = [(80, 24), (60, 20), (120, 40)];
+    let committed: [(&str, &str); 15] = [
+        (
+            "long-output-80x24",
+            include_str!("captures/result-long-output-80x24.txt"),
+        ),
+        (
+            "long-output-60x20",
+            include_str!("captures/result-long-output-60x20.txt"),
+        ),
+        (
+            "long-output-120x40",
+            include_str!("captures/result-long-output-120x40.txt"),
+        ),
+        (
+            "stderr-failing-80x24",
+            include_str!("captures/result-stderr-failing-80x24.txt"),
+        ),
+        (
+            "stderr-failing-60x20",
+            include_str!("captures/result-stderr-failing-60x20.txt"),
+        ),
+        (
+            "stderr-failing-120x40",
+            include_str!("captures/result-stderr-failing-120x40.txt"),
+        ),
+        (
+            "edit-middle-80x24",
+            include_str!("captures/result-edit-middle-80x24.txt"),
+        ),
+        (
+            "edit-middle-60x20",
+            include_str!("captures/result-edit-middle-60x20.txt"),
+        ),
+        (
+            "edit-middle-120x40",
+            include_str!("captures/result-edit-middle-120x40.txt"),
+        ),
+        (
+            "new-file-80x24",
+            include_str!("captures/result-new-file-80x24.txt"),
+        ),
+        (
+            "new-file-60x20",
+            include_str!("captures/result-new-file-60x20.txt"),
+        ),
+        (
+            "new-file-120x40",
+            include_str!("captures/result-new-file-120x40.txt"),
+        ),
+        (
+            "hostile-80x24",
+            include_str!("captures/result-hostile-80x24.txt"),
+        ),
+        (
+            "hostile-60x20",
+            include_str!("captures/result-hostile-60x20.txt"),
+        ),
+        (
+            "hostile-120x40",
+            include_str!("captures/result-hostile-120x40.txt"),
+        ),
+    ];
+    let mut differ = Vec::new();
+    let mut lost = Vec::new();
+    for (case, call, view) in result_cases() {
+        for (width, height) in sizes {
+            let label = format!("{case}-{width}x{height}");
+            let (painted, cells) = painted_result(&call, &view, width, height);
+            if !painted.contains(view.summary.as_str()) {
+                lost.push(format!(
+                    "{label}: the view's summary is not on the screen:\n{painted}"
+                ));
+            }
+            let call_line = call
+                .last()
+                .map(|line| line.text.as_str())
+                .unwrap_or_default();
+            if !painted.contains(call_line) {
+                lost.push(format!(
+                    "{label}: the view does not fit the pane with the call's line above it:\n{painted}"
+                ));
+            }
+            let controls: Vec<&String> = cells
+                .iter()
+                .filter(|cell| cell.chars().any(char::is_control))
+                .collect();
+            if !controls.is_empty() {
+                lost.push(format!(
+                    "{label}: cells hold control characters: {controls:?}"
+                ));
+            }
+            let held = committed
+                .iter()
+                .find(|(named, _)| *named == label)
+                .map_or("", |(_, text)| *text);
+            if held != painted {
+                differ.push(format!(
+                    "=== capture result-{label}: committed ===\n{held}=== capture \
+                     result-{label}: painted ===\n{painted}=== end result-{label} ==="
+                ));
+            }
+        }
+    }
+    assert!(lost.is_empty(), "{}", lost.join("\n"));
+    assert!(
+        differ.is_empty(),
+        "{} of 15 result captures differ from the committed renderings:\n{}",
+        differ.len(),
+        differ.join("\n")
+    );
+}
+
+/// **What a person watched and what they read back are the same rows.** A
+/// view recorded on the transcript replays as the lines the live pane
+/// painted for it, and nothing of it is a message, so the conversation
+/// rebuilt from the same records does not hold it.
+///
+/// The mutant: replaying `Record::TurnLoop` through `turn_line` alone, which
+/// paints nothing for a view on `--resume`.
+#[test]
+fn a_recorded_view_replays_as_the_live_pane_painted_it_and_is_not_conversation() {
+    let view = crate::tools::result_view::command(1, "", "one\ntwo\n").finished(None);
+    let event = zaru_core::tool_call::Event::ToolShown {
+        round: 1,
+        call: 1,
+        name: String::from("cmd.run"),
+        view: view.clone(),
+    };
+    let live = crate::terminal::vocabulary::turn_lines(&event);
+    let replayed = Pane::of(&[Record::TurnLoop(event.clone())]).lines();
+    assert_eq!(
+        replayed, live,
+        "a view replays differently from how the live pane painted it"
+    );
+    assert_eq!(live.len(), 3, "the summary and two rows: {live:?}");
+
+    let rebuilt = crate::compose::conversation_of(&[Record::TurnLoop(event)]);
+    assert!(
+        rebuilt.exchanges().is_empty(),
+        "a view was rebuilt into the conversation the model is sent: {:?}",
+        rebuilt.exchanges()
+    );
+}

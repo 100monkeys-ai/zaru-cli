@@ -217,13 +217,19 @@ impl ContextPolicy for Policy<'_> {
     }
 }
 
-/// Prints every event, which is half of what this file is for.
+/// Prints every event, which is half of what this file is for, and keeps
+/// what the person was shown of each call.
 #[derive(Default)]
-struct Printing;
+struct Printing {
+    shown: Vec<zaru_core::tool_call::ResultView>,
+}
 
 impl EventSink for Printing {
     fn emit(&mut self, event: &Event) {
         println!("  event: {event:?}");
+        if let Event::ToolShown { view, .. } = event {
+            self.shown.push(view.clone());
+        }
     }
 }
 
@@ -301,6 +307,8 @@ struct Run {
     session_directory: std::path::PathBuf,
     /// Every question the user was asked, in order.
     asked: Vec<String>,
+    /// What the person was shown of each call that completed, in order.
+    shown: Vec<zaru_core::tool_call::ResultView>,
 }
 
 /// Drive `script` through the real loop over the real tool surface, with a
@@ -320,6 +328,17 @@ async fn drive_within(
     redactor: &(dyn Redactor + Sync),
     budget: usize,
 ) -> Run {
+    drive_running(scratch, script, redactor, budget, &Unbuilt).await
+}
+
+/// Drive `script`, running commands through `subprocess`.
+async fn drive_running<C: Subprocess + Sync>(
+    scratch: &Scratch,
+    script: Vec<ModelResponse>,
+    redactor: &(dyn Redactor + Sync),
+    budget: usize,
+    subprocess: &C,
+) -> Run {
     let store = SessionStore::open(scratch.base.join("sessions")).expect("the session store opens");
     let id = SessionId::mint(&SystemWallClock).expect("an id");
     let session = store.start(id).expect("the session starts");
@@ -335,7 +354,7 @@ async fn drive_within(
     let accepting = Accepting::default();
     let clock = Ticking::default();
     let policy = Policy { redactor };
-    let mut sink = Printing;
+    let mut sink = Printing::default();
     let calls = script.len();
     // The terminating text is appended here rather than written into every
     // script: a turn whose model only ever asks for tools never ends, and
@@ -364,7 +383,7 @@ async fn drive_within(
             overflow: &mut overflow,
             transcript: &mut transcript,
             redactor,
-            subprocess: &unbuilt,
+            subprocess,
             fetch: &unbuilt,
             projected: &zaru_cli::tools::NoProjection,
             declared: zaru_cli::tools::descriptor_set(),
@@ -410,6 +429,7 @@ async fn drive_within(
             .collect(),
         session_directory: directory,
         asked: accepting.asked.into_inner().expect("asked poisoned"),
+        shown: sink.shown,
     }
 }
 
@@ -1054,6 +1074,324 @@ async fn a_write_over_an_existing_file_says_it_replaced_it_and_how_large_it_was(
         given[1].contains("created") && given[1].contains("2 line(s)"),
         "a write of a new file did not say it created it: {:?}",
         given[1]
+    );
+}
+
+// --- what the person is shown of each call --------------------------------
+
+/// A real process runner over the scratch project, with the five variables
+/// ADR-0011 D2 gives a child.
+fn spawner(scratch: &Scratch) -> (WorkingDirectory, zaru_cli::process::Environment) {
+    let working = WorkingDirectory::at(scratch.project()).expect("the working directory resolves");
+    let environment = zaru_cli::process::Environment::inherited_minimum(
+        &zaru_cli::config::Variables::of([("PATH", "/usr/bin:/bin")]),
+    )
+    .expect("the harness's own values pass on");
+    (working, environment)
+}
+
+/// Every text a view holds, summary first.
+fn texts(view: &zaru_core::tool_call::ResultView) -> Vec<String> {
+    std::iter::once(view.summary.clone())
+        .chain(view.rows.iter().map(|row| row.text.clone()))
+        .collect()
+}
+
+/// The file a view's note names, when it names one.
+fn kept_file(view: &zaru_core::tool_call::ResultView) -> Option<std::path::PathBuf> {
+    view.rows.iter().find_map(|row| {
+        let (_, path) = row.text.split_once("all of it: ")?;
+        Some(std::path::PathBuf::from(path))
+    })
+}
+
+/// **After a command runs, the person is shown its exit, how much it printed
+/// on each stream and its last lines, and the whole is kept in the session
+/// directory; the model is sent what it was sent before.**
+///
+/// The survey of 2026-09-28 measured the pane saying `cmd.run reported a
+/// failure · 1256 bytes` and nothing of the output. Red with the executor
+/// composing no view: "the person was shown nothing of the command: []".
+#[tokio::test]
+async fn a_command_shows_the_person_its_exit_and_its_last_lines() {
+    let scratch = Scratch::new("command-shown");
+    let (working, environment) = spawner(&scratch);
+    let spawn = zaru_cli::process::Spawn::new(
+        &working,
+        environment,
+        zaru_cli::process::ProcessCeiling::new(Duration::from_secs(30)).expect("not zero"),
+    );
+    let run = drive_running(
+        &scratch,
+        vec![call(
+            "c1",
+            "cmd.run",
+            serde_json::json!({"command": "sh -c \"seq 1 30; echo boom 1>&2; exit 3\""}),
+        )],
+        &HeldSecrets::none(),
+        4096,
+        &spawn,
+    )
+    .await;
+
+    let view = run.shown.first().unwrap_or_else(|| {
+        panic!(
+            "the person was shown nothing of the command: {:?}",
+            run.shown
+        )
+    });
+    assert_eq!(
+        view.summary,
+        "exit 3 · 30 lines on standard output, 1 on standard error"
+    );
+    let shown = texts(view);
+    assert!(
+        shown.iter().any(|text| text == "30") && shown.iter().any(|text| text == "boom"),
+        "the command's last line and its standard error are not shown: {shown:#?}"
+    );
+    let kept = kept_file(view).expect("thirty lines do not fit, so the note names the whole");
+    assert!(
+        kept.starts_with(&run.session_directory),
+        "the whole is kept outside the session directory: {}",
+        kept.display()
+    );
+    let whole = std::fs::read_to_string(&kept).expect("the file the note names is there");
+    assert!(
+        whole.contains("\n1\n2\n3\n"),
+        "the whole does not hold the first lines: {whole}"
+    );
+
+    assert_eq!(
+        run.given_to_the_model.first().map(String::as_str),
+        Some(
+            format!(
+                "exit code: 3\nstdout:\n{}\nstderr:\nboom\n",
+                (1..=30).map(|n| format!("{n}\n")).collect::<String>()
+            )
+            .as_str()
+        ),
+        "the model was sent something other than the command's result"
+    );
+}
+
+/// **Security corpus.** A stored key a command prints reaches no row the
+/// person is shown and no file that keeps the whole: the redaction marker
+/// stands where it was.
+///
+/// The mutant: composing the view from the capture before it is redacted,
+/// which prints the key's ASCII core in a row.
+#[tokio::test]
+async fn a_stored_key_a_command_prints_is_shown_as_its_marker_and_kept_nowhere() {
+    let scratch = Scratch::new("command-secret");
+    let bearer = planted_bearer("printed");
+    let (held, alias) = store_holding(&scratch, "printed", &bearer);
+    std::fs::write(scratch.project().join("secret.txt"), format!("{bearer}\n"))
+        .expect("staging: a file holding the key");
+    let (working, environment) = spawner(&scratch);
+    let spawn = zaru_cli::process::Spawn::new(
+        &working,
+        environment,
+        zaru_cli::process::ProcessCeiling::new(Duration::from_secs(30)).expect("not zero"),
+    );
+    let run = drive_running(
+        &scratch,
+        vec![call(
+            "c1",
+            "cmd.run",
+            serde_json::json!({"command": "sh -c \"seq 1 20; cat secret.txt; cat secret.txt 1>&2\""}),
+        )],
+        &held,
+        4096,
+        &spawn,
+    )
+    .await;
+
+    let view = run.shown.first().expect("the command completed");
+    let core = ascii_core(&bearer);
+    for text in texts(view) {
+        assert!(
+            !text.contains(core),
+            "a row the person is shown holds the stored key: {text:?}"
+        );
+    }
+    assert!(
+        texts(view)
+            .iter()
+            .any(|text| text.contains(&marker(&alias))),
+        "the marker does not stand where the key was: {:#?}",
+        texts(view)
+    );
+    let kept = kept_file(view).expect("twenty-one lines do not fit");
+    let whole = std::fs::read_to_string(&kept).expect("the kept file is there");
+    assert!(
+        !whole.contains(core),
+        "the file that keeps the whole holds the stored key"
+    );
+}
+
+/// **Security corpus.** A command's output that would move the cursor, clear
+/// the screen, set the title or switch screens reaches the person written
+/// out, and nothing in a row is a control character.
+///
+/// The mutant: rows built from the output as it came, which prints the first
+/// control character in a row.
+#[tokio::test]
+async fn hostile_output_reaches_no_row_as_a_control_character() {
+    let scratch = Scratch::new("command-hostile");
+    std::fs::write(
+        scratch.project().join("hostile.txt"),
+        "\u{1b}[2J\u{1b}[H\u{1b}]0;TITLE\u{7}\u{1b}[?1049h\u{1b}[10;10Hmoved\rOVER\u{8}\u{9b}31m\n",
+    )
+    .expect("staging: hostile bytes");
+    let (working, environment) = spawner(&scratch);
+    let spawn = zaru_cli::process::Spawn::new(
+        &working,
+        environment,
+        zaru_cli::process::ProcessCeiling::new(Duration::from_secs(30)).expect("not zero"),
+    );
+    let run = drive_running(
+        &scratch,
+        vec![call(
+            "c1",
+            "cmd.run",
+            serde_json::json!({"command": "cat hostile.txt"}),
+        )],
+        &HeldSecrets::none(),
+        4096,
+        &spawn,
+    )
+    .await;
+
+    let view = run.shown.first().expect("the command completed");
+    for text in texts(view) {
+        let bad: Vec<char> = text
+            .chars()
+            .filter(|character| character.is_control())
+            .collect();
+        assert!(bad.is_empty(), "a row holds {bad:?}: {text:?}");
+    }
+    assert!(
+        texts(view)
+            .iter()
+            .any(|text| text.contains("\\u{1b}]0;TITLE\\u{7}")),
+        "the title sequence is not written out where it was: {:#?}",
+        texts(view)
+    );
+}
+
+/// **After an edit or a write, the person is shown what changed**: an edit in
+/// the middle of a file as its removed and added lines with the lines around
+/// them and their numbers; a new file as its first lines and its length; a
+/// file replaced as the lines that differ. The model is sent what it was
+/// sent before.
+///
+/// Red with the executor composing no view: "the person was shown nothing
+/// of the edit".
+#[tokio::test]
+async fn an_edit_and_a_write_show_the_person_what_changed() {
+    let scratch = Scratch::new("change-shown");
+    let forty: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(scratch.project().join("src").join("lib.rs"), &forty)
+        .expect("staging: a forty-line file");
+    let run = drive(
+        &scratch,
+        vec![
+            call(
+                "c1",
+                "fs.edit",
+                serde_json::json!({"path": "src/lib.rs", "old": "line 20\n", "new": "line twenty\n"}),
+            ),
+            call(
+                "c2",
+                "fs.write",
+                serde_json::json!({"path": "notes.txt", "contents": "one\ntwo\n"}),
+            ),
+            call(
+                "c3",
+                "fs.write",
+                serde_json::json!({"path": "notes.txt", "contents": "one\n2\n"}),
+            ),
+        ],
+        &HeldSecrets::none(),
+    )
+    .await;
+
+    let edit = run
+        .shown
+        .first()
+        .expect("the person was shown nothing of the edit");
+    assert_eq!(edit.summary, "changed src/lib.rs · 1 line removed, 1 added");
+    let rows: Vec<(zaru_core::tool_call::Mark, Option<usize>, &str)> = edit
+        .rows
+        .iter()
+        .map(|row| (row.mark, row.number, row.text.as_str()))
+        .collect();
+    use zaru_core::tool_call::Mark::{Added, Context, Removed};
+    assert_eq!(
+        rows,
+        vec![
+            (Context, Some(18), "line 18"),
+            (Context, Some(19), "line 19"),
+            (Removed, Some(20), "line 20"),
+            (Added, Some(20), "line twenty"),
+            (Context, Some(21), "line 21"),
+            (Context, Some(22), "line 22"),
+        ]
+    );
+
+    let created = run.shown.get(1).expect("the write completed");
+    assert_eq!(created.summary, "created notes.txt · 2 lines, 8 bytes");
+    let replaced = run.shown.get(2).expect("the second write completed");
+    assert_eq!(
+        replaced.summary,
+        "replaced notes.txt · 1 line removed, 1 added"
+    );
+
+    assert!(
+        run.given_to_the_model
+            .first()
+            .is_some_and(|given| given.contains("replaced 1 occurrence(s) in")),
+        "the model was not sent the edit's own answer: {:?}",
+        run.given_to_the_model
+    );
+}
+
+/// A read, a listing and a search are each one line: which lines of which
+/// file, how many entries, how many matches.
+#[tokio::test]
+async fn a_read_a_listing_and_a_search_are_one_line_each() {
+    let scratch = Scratch::new("one-line-shown");
+    std::fs::write(
+        scratch.project().join("src").join("a.rs"),
+        "let retry = 1;\nretry += 1;\nlast\n",
+    )
+    .expect("staging: a file");
+    let run = drive(
+        &scratch,
+        vec![
+            call("c1", "fs.read", serde_json::json!({"path": "src/a.rs"})),
+            call("c2", "fs.list", serde_json::json!({"path": "src"})),
+            call(
+                "c3",
+                "fs.search",
+                serde_json::json!({"root": ".", "needle": "retry"}),
+            ),
+        ],
+        &HeldSecrets::none(),
+    )
+    .await;
+    let summaries: Vec<(&str, usize)> = run
+        .shown
+        .iter()
+        .map(|view| (view.summary.as_str(), view.rows.len()))
+        .collect();
+    assert_eq!(
+        summaries,
+        vec![
+            ("read src/a.rs · lines 1 to 3 of 3", 0),
+            ("listed src · 1 entry", 0),
+            ("searched . for \"retry\" · 2 lines found in 1 file", 0),
+        ]
     );
 }
 

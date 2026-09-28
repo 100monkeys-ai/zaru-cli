@@ -207,6 +207,7 @@ async fn an_outside_caller_drives_a_turn_through_a_tool_call_to_an_answer() {
                     content: Redacted::by(&NothingHeld, "fn main() { println!(\"zaru\") }"),
                     failed: false,
                 },
+                view: None,
             }]
             .into(),
         ),

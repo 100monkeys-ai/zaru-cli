@@ -102,6 +102,7 @@
 use crate::compose::Shared;
 use crate::session::{Record, Transcript, TranscriptError};
 use crate::tools::{Fetch, Subprocess};
+use zaru_core::conversation::Message;
 use zaru_core::iteration::{
     Clock, ContextPolicy, Event, EventSink, ExecutionOutcome, Executor, Generated, Generator,
     IterationError, Limits, Outcome, PortFailure, Ports, Prompt, Validators,
@@ -161,13 +162,15 @@ impl AsRef<str> for Candidate {
 #[derive(Debug)]
 pub struct Generating<'a, M: ?Sized> {
     model: &'a M,
+    telling: &'a Telling<'a>,
 }
 
 impl<'a, M: ?Sized> Generating<'a, M> {
-    /// Generate candidates from this model.
+    /// Generate candidates from this model, telling `telling` each message
+    /// the model sends.
     #[must_use]
-    pub const fn over(model: &'a M) -> Self {
-        Self { model }
+    pub const fn over(model: &'a M, telling: &'a Telling<'a>) -> Self {
+        Self { model, telling }
     }
 }
 
@@ -193,14 +196,30 @@ where
             .await?;
         let tokens = response.tokens().total();
         let candidate = match response {
-            ModelResponse::Calls { calls, .. } => Candidate {
-                rendered: Candidate::render(&calls),
-                calls,
-            },
-            ModelResponse::Text { text, .. } => Candidate {
-                calls: Vec::new(),
-                rendered: text,
-            },
+            ModelResponse::Calls {
+                calls, text, echo, ..
+            } => {
+                // The model's message joins the turn's conversation, so the
+                // next turn is sent what this candidate asked for.
+                self.telling.said(Message::assistant(
+                    self.telling.redactor,
+                    &text,
+                    &calls,
+                    echo,
+                ));
+                Candidate {
+                    rendered: Candidate::render(&calls),
+                    calls,
+                }
+            }
+            ModelResponse::Text { text, echo, .. } => {
+                self.telling
+                    .said(Message::assistant(self.telling.redactor, &text, &[], echo));
+                Candidate {
+                    calls: Vec::new(),
+                    rendered: text,
+                }
+            }
             ModelResponse::Stopped { reason, .. } => Candidate {
                 calls: Vec::new(),
                 rendered: reason,
@@ -218,13 +237,20 @@ where
 #[derive(Debug)]
 pub struct Applying<'m, 'e, C, F, P> {
     surface: Shared<'m, 'e, C, F, P>,
+    telling: &'m Telling<'m>,
+    candidates: std::sync::atomic::AtomicU32,
 }
 
 impl<'m, 'e, C, F, P> Applying<'m, 'e, C, F, P> {
-    /// Apply candidates through this surface.
+    /// Apply candidates through this surface, telling `telling` each call's
+    /// result and what the person is shown of it.
     #[must_use]
-    pub const fn through(surface: Shared<'m, 'e, C, F, P>) -> Self {
-        Self { surface }
+    pub const fn through(surface: Shared<'m, 'e, C, F, P>, telling: &'m Telling<'m>) -> Self {
+        Self {
+            surface,
+            telling,
+            candidates: std::sync::atomic::AtomicU32::new(0),
+        }
     }
 }
 
@@ -254,9 +280,33 @@ where
         let mut stdout = String::new();
         let mut stderr = String::new();
         let mut failed = false;
+        let round = self
+            .candidates
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
 
-        for call in &candidate.calls {
-            match surface.execute(call).await? {
+        let mut applied = 0;
+        for (at, call) in candidate.calls.iter().enumerate() {
+            let outcome = surface.execute(call).await?;
+            applied += 1;
+            if let ToolOutcome::Completed {
+                view: Some(view), ..
+            } = &outcome
+            {
+                self.telling.told(&zaru_core::tool_call::Event::ToolShown {
+                    round,
+                    call: u32::try_from(at + 1).unwrap_or(u32::MAX),
+                    name: call.name.clone(),
+                    view: view.clone(),
+                });
+            }
+            // Each call's result joins the conversation as the model would
+            // have been sent it in a turn, refusals included.
+            self.telling.said(Message::result(
+                &call.name,
+                &outcome.for_the_model(self.telling.redactor),
+            ));
+            match outcome {
                 ToolOutcome::Completed { result, .. } => {
                     if !stdout.is_empty() {
                         stdout.push('\n');
@@ -276,12 +326,113 @@ where
                 }
             }
         }
+        // A call the model asked for and nothing applied still gets a result,
+        // because a provider refuses a conversation with a call left
+        // unanswered, and the model must be told the call did not run. It is
+        // a call that did not act, so it takes a refusal's path to the model,
+        // the one that redacts a refusal's sentence.
+        for call in &candidate.calls[applied..] {
+            let not_applied = ToolOutcome::Refused {
+                decision: zaru_core::tool_call::ToolDecision {
+                    statement: NOT_APPLIED.to_owned(),
+                    permitted: false,
+                },
+                id: call.id.clone(),
+                because: NOT_APPLIED.to_owned(),
+            };
+            self.telling.said(Message::result(
+                &call.name,
+                &not_applied.for_the_model(self.telling.redactor),
+            ));
+        }
 
         Ok(ExecutionOutcome {
             exit_code: i32::from(failed),
             stdout,
             stderr,
         })
+    }
+}
+
+/// What a call the model asked for in a candidate is answered with when it
+/// was not applied because an earlier call in the same candidate was refused.
+///
+/// Read by a model and never by a person: it is a tool result in the
+/// conversation the next turn is sent. Authored under the coordinator's
+/// ruling of 2026-09-28 that an iterating turn's candidates and results join
+/// the conversation; no record drafted it.
+pub const NOT_APPLIED: &str = "This call was not applied: an earlier call in the same attempt \
+     was refused, so nothing after it ran.";
+
+/// Where an iterating turn's conversation and the person's view of its calls
+/// go: the same places a turn's own go.
+///
+/// # Why this exists
+///
+/// Until 2026-09-28 an iterating turn (a project that declares validators)
+/// left only its task in the next turn's conversation: the candidates the
+/// model sent and the results of their calls were emitted nowhere, so the
+/// transcript held none of them and the rebuilt conversation had the task
+/// and nothing of what the iterations did. [`Generating`] now says each of
+/// the model's messages and [`Applying`] each call's result, as
+/// [`Event::Message`](zaru_core::tool_call::Event::Message), through this.
+/// The refinement prompts are not said: they are the harness's words to the
+/// model, and the next turn is sent what happened, not how it was asked.
+///
+/// # Why a second set of sinks rather than the outer loop's
+///
+/// The inner loop runs inside the outer loop's `run`, which holds its sinks
+/// by `&mut` for the whole turn, and [`InnerLoop::iterate`] takes `&self`. So
+/// this holds its own handles: a transcript writer on the same file, as
+/// [`Iterations`] does, whatever else the turn's caller handed it behind a
+/// lock, and the pane through the [`Narrator`] the inner loop is already
+/// given. Each lock is taken and released inside one call and never held
+/// across an await.
+pub struct Telling<'a> {
+    sinks: Vec<&'a std::sync::Mutex<dyn zaru_core::tool_call::EventSink + Send>>,
+    narrator: Option<&'a dyn Narrator>,
+    redactor: &'a (dyn Redactor + Sync),
+}
+
+impl core::fmt::Debug for Telling<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Telling")
+            .field("sinks", &self.sinks.len())
+            .field("narrating", &self.narrator.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> Telling<'a> {
+    /// Tell these sinks and this narrator, redacting through `redactor`.
+    #[must_use]
+    pub fn to(
+        sinks: Vec<&'a std::sync::Mutex<dyn zaru_core::tool_call::EventSink + Send>>,
+        narrator: Option<&'a dyn Narrator>,
+        redactor: &'a (dyn Redactor + Sync),
+    ) -> Self {
+        Self {
+            sinks,
+            narrator,
+            redactor,
+        }
+    }
+
+    /// A message joined the turn's conversation.
+    fn said(&self, message: Message) {
+        self.told(&zaru_core::tool_call::Event::Message(message));
+    }
+
+    /// Hand one event to every sink, then to the narrator.
+    fn told(&self, event: &zaru_core::tool_call::Event) {
+        for sink in &self.sinks {
+            sink.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .emit(event);
+        }
+        if let Some(narrator) = self.narrator {
+            narrator.told(event);
+        }
     }
 }
 
@@ -475,6 +626,17 @@ pub trait Narrator: Sync {
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     /// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
     fn announce_session_notice(&self, sentence: &str);
+
+    /// One of the outer loop's events that the inner loop produced: a
+    /// candidate's message, a call's result, or what the person is shown of a
+    /// call.
+    ///
+    /// An iterating turn's calls run inside the inner loop, whose stream has
+    /// no event for a call, so this is how the pane hears of them. Provided,
+    /// doing nothing, for a narrator that paints only the loop's narrative.
+    fn told(&self, event: &zaru_core::tool_call::Event) {
+        let _ = event;
+    }
 
     /// Say it, and hand back the proof that it was said.
     ///
