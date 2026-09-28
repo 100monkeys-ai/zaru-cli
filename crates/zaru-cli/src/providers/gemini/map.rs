@@ -69,9 +69,11 @@ use zaru_core::tool_call::{ModelRequest, ModelResponse, TokenUsage, ToolRequest}
 /// - the system text becomes `systemInstruction`, Google's place for
 ///   instructions that are not the person's;
 /// - every earlier turn, then this turn's task, then this turn's messages,
-///   each in its role: a person's message as a `user` turn with a text part,
+///   each in its role: a person's message as a text part of a `user` turn,
 ///   the model's message as a `model` turn, and each call's result as a
-///   `functionResponse` part in a `user` turn, named for the tool;
+///   `functionResponse` part of a `user` turn, named for the tool;
+/// - turns alternate: messages of one role side by side are joined into one
+///   turn, their parts in order;
 /// - a model message that arrived with parts this client must give back
 ///   exactly — a `thoughtSignature`, or a part it does not model — carries
 ///   them in its `echo`, and they are sent as they arrived.
@@ -95,30 +97,26 @@ pub fn request_from(request: &ModelRequest<'_>) -> Result<wire::Request, GeminiF
 
     let mut contents: Vec<wire::Content> = Vec::new();
     for message in conversation {
-        match message {
-            Message::User { text } => contents.push(wire::Content {
-                role: wire::ROLE_USER.to_owned(),
-                parts: vec![wire::Part::Text {
+        let (role, parts) = match message {
+            Message::User { text } => (
+                wire::ROLE_USER,
+                vec![wire::Part::Text {
                     text: text.clone(),
                     thought_signature: None,
                 }],
-            }),
-            Message::Assistant { text, calls, echo } => {
-                let parts = echoed(echo.as_deref()).unwrap_or_else(|| parts_of(text, calls));
-                if !parts.is_empty() {
-                    contents.push(wire::Content {
-                        role: wire::ROLE_MODEL.to_owned(),
-                        parts,
-                    });
-                }
-            }
+            ),
+            Message::Assistant { text, calls, echo } => (
+                wire::ROLE_MODEL,
+                echoed(echo.as_deref()).unwrap_or_else(|| parts_of(text, calls)),
+            ),
             Message::Tool {
                 id,
                 name,
                 content,
                 failed,
-            } => {
-                let part = wire::Part::FunctionResponse {
+            } => (
+                wire::ROLE_USER,
+                vec![wire::Part::FunctionResponse {
                     function_response: wire::FunctionResponse {
                         // Google asks for it: "Include this exact `id` in your
                         // `functionResponse` so the model can accurately map
@@ -132,24 +130,23 @@ pub fn request_from(request: &ModelRequest<'_>) -> Result<wire::Request, GeminiF
                             "failed": failed,
                         }),
                     },
-                };
-                // The results of one model message go back in one `user`
-                // turn, as Google's examples show for parallel calls.
-                match contents.last_mut() {
-                    Some(last)
-                        if last.role == wire::ROLE_USER
-                            && last.parts.iter().all(|part| {
-                                matches!(part, wire::Part::FunctionResponse { .. })
-                            }) =>
-                    {
-                        last.parts.push(part);
-                    }
-                    _ => contents.push(wire::Content {
-                        role: wire::ROLE_USER.to_owned(),
-                        parts: vec![part],
-                    }),
-                }
-            }
+                }],
+            ),
+        };
+        if parts.is_empty() {
+            continue;
+        }
+        // **Turns alternate.** Two messages of one role side by side -- the
+        // results of one model message, a result followed by the person's
+        // next task, or two tasks with no answer between them -- are joined
+        // into one turn with their parts in order, so Google is never sent
+        // two `user` or two `model` turns in a row.
+        match contents.last_mut() {
+            Some(last) if last.role == role => last.parts.extend(parts),
+            _ => contents.push(wire::Content {
+                role: role.to_owned(),
+                parts,
+            }),
         }
     }
 

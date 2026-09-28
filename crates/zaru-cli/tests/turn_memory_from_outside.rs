@@ -38,7 +38,7 @@ use zaru_cli::tools::{
 };
 use zaru_core::context::{ContextLimits, ContextWindow, PressureThreshold};
 use zaru_core::conversation::Message;
-use zaru_core::iteration::{Clock, PortFailure};
+use zaru_core::iteration::{Clock, PortFailure, Prompt};
 use zaru_core::tool_call::{
     Capabilities, EventSink, InnerLoop, Model, ModelRequest, ModelResponse, Outcome, Ports, Start,
     TokenUsage, ToolCallCeiling, ToolCalling, ToolRequest, run,
@@ -597,8 +597,9 @@ async fn a_session_resumed_in_a_new_process_is_sent_the_same_conversation() {
 /// A result the output budget cut is recorded and sent again exactly as the
 /// model first read it, cut marks included.
 ///
-/// The mutant: recording the whole output rather than what the model was
-/// given, which makes the later turn's copy longer than the first.
+/// The mutant: a result altered by a single character on its way back into a
+/// later prompt (its trailing newline trimmed), which the byte-for-byte
+/// comparison sees.
 #[tokio::test]
 async fn a_result_cut_by_the_budget_is_sent_again_exactly_as_the_model_first_read_it() {
     let scratch = Scratch::new("turn-memory-cut");
@@ -1064,17 +1065,154 @@ async fn a_stored_key_in_a_tool_result_reaches_neither_a_request_nor_the_transcr
             bodies.push((format!("request {n} to {provider}"), body.clone()));
         }
     }
-    for (what, body) in &bodies {
-        assert!(
-            !body.contains(&planted) && !body.contains(&core),
-            "a stored key reached {what}"
-        );
-    }
+    let reached: Vec<&str> = bodies
+        .iter()
+        .filter(|(_, body)| body.contains(&planted) || body.contains(&core))
+        .map(|(what, _)| what.as_str())
+        .collect();
+    assert!(
+        reached.is_empty(),
+        "a stored key reached {} of {} places: {reached:?}",
+        reached.len(),
+        bodies.len()
+    );
     assert!(
         bodies[0].1.contains(&marker) && bodies.last().expect("a body").1.contains(&marker),
         "nothing was replaced in the transcript or in turn 2's request, so the absence above \
          could be of a result that was never there"
     );
+}
+
+/// Two messages of one role side by side are joined into one turn for
+/// Gemini, whose protocol expects the roles to alternate, and sent as they
+/// are to the two kinds that accept a repeated role.
+///
+/// They arise after an interrupted turn (the closing result, then the next
+/// task) and after a turn that left no answer (an iterating turn, or an old
+/// transcript): two `user` messages in a row. What each kind is sent is
+/// pinned here, on the request each mapping builds.
+///
+/// The mutant: pushing every message as a turn of its own, which puts two
+/// `user` turns side by side on the Gemini wire.
+#[test]
+fn messages_of_one_role_side_by_side_are_one_gemini_turn_and_are_pinned_for_the_other_two() {
+    let nothing = HeldSecrets::none();
+    let interrupted = [
+        Message::User {
+            text: "run the slow command".to_owned(),
+        },
+        Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: "call_s".to_owned(),
+                name: "cmd.run".to_owned(),
+                arguments: r#"{"command":"sleep 20"}"#.to_owned(),
+            }],
+            echo: None,
+        },
+        Message::Tool {
+            id: "call_s".to_owned(),
+            name: "cmd.run".to_owned(),
+            content: zaru_cli::compose::prose::CALL_DID_NOT_COMPLETE.to_owned(),
+            failed: true,
+        },
+    ];
+    let unanswered = [Message::User {
+        text: "a task that left no answer".to_owned(),
+    }];
+
+    for (what, history, gemini_roles, gemini_last_parts, chat_roles) in [
+        (
+            "after an interrupted call",
+            &interrupted[..],
+            vec!["user", "model", "user"],
+            vec!["functionResponse", "text"],
+            vec!["system", "user", "assistant", "tool", "user"],
+        ),
+        (
+            "after a turn with no answer",
+            &unanswered[..],
+            vec!["user"],
+            vec!["text", "text"],
+            vec!["system", "user", "user"],
+        ),
+    ] {
+        let prompt = Prompt::assembled(&nothing, "SYSTEM", history, "the next task");
+        let request = ModelRequest {
+            prompt: &prompt,
+            tools: &[],
+            turn: &[],
+        };
+
+        let gemini = serde_json::to_value(
+            zaru_cli::providers::gemini::map::request_from(&request).expect("gemini maps"),
+        )
+        .expect("json");
+        let contents = gemini["contents"].as_array().expect("contents");
+        let roles: Vec<&str> = contents
+            .iter()
+            .map(|content| content["role"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            roles, gemini_roles,
+            "{what}: gemini was sent two turns of one role side by side: {gemini}"
+        );
+        let last: Vec<&str> = contents.last().expect("a turn")["parts"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .map(|part| {
+                if part.get("functionResponse").is_some() {
+                    "functionResponse"
+                } else {
+                    "text"
+                }
+            })
+            .collect();
+        assert_eq!(
+            last, gemini_last_parts,
+            "{what}: the joined turn's parts are not in the order the messages came: {gemini}"
+        );
+        assert_eq!(
+            contents.last().expect("a turn")["parts"]
+                .as_array()
+                .expect("parts")
+                .last()
+                .expect("a part")["text"],
+            "the next task",
+            "{what}: the task is not the last part of the last turn: {gemini}"
+        );
+
+        for (kind, body) in [
+            (
+                "ollama",
+                serde_json::to_value(
+                    zaru_cli::providers::ollama::map::request_from(&request, "m", 4096)
+                        .expect("maps"),
+                )
+                .expect("json"),
+            ),
+            (
+                "openai-compatible",
+                serde_json::to_value(
+                    zaru_cli::providers::openai_compatible::map::request_from(&request, "m")
+                        .expect("maps"),
+                )
+                .expect("json"),
+            ),
+        ] {
+            let roles: Vec<&str> = body["messages"]
+                .as_array()
+                .expect("messages")
+                .iter()
+                .map(|message| message["role"].as_str().unwrap_or_default())
+                .collect();
+            assert_eq!(
+                roles, chat_roles,
+                "{what}: {kind} was not sent the messages as they are: {body}"
+            );
+        }
+    }
 }
 
 #[path = "support/decoy.rs"]
