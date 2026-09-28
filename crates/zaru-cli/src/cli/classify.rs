@@ -171,6 +171,33 @@ fn correctable(refusal: &impl core::fmt::Display, remedy: Remedy) -> Classified 
     }
 }
 
+/// What a person can try when a provider refused a request or sent what
+/// could not be read, and the refusal is not one of theirs to fix.
+///
+/// Not "check your configuration": ADR-0016 D3 says a defect is never
+/// presented as a user error. What is left is to try again, or with another
+/// model, and to report it with the provider's own words.
+pub const TRY_AFTER_A_PROVIDER_REFUSAL: &str = "run the task again, or with another model \
+     (`--model <identifier>`); if the provider says the same, report it with these lines";
+
+/// A provider refusal classed as a defect, carrying the provider's words.
+///
+/// **One rule for every provider arm that is a defect**: the person is shown
+/// the failure's own sentence, which holds the HTTP status and what the
+/// provider said with the provider's key already removed by the client, and
+/// what to try. "A defect" with no words is never the whole message. Ruled by
+/// the coordinator on 2026-09-28 under directive 58, open to Jeshua's veto.
+fn provider_refused(defect: Classified, failure: &impl core::fmt::Display) -> Classified {
+    match defect {
+        Classified::Defect(report) => Classified::Defect(report.saying(crate::failure::Said {
+            who: "the provider said:",
+            what: Statement::sanitised(failure.to_string()),
+            try_this: Statement::sanitised(TRY_AFTER_A_PROVIDER_REFUSAL.to_owned()),
+        })),
+        other => other,
+    }
+}
+
 /// A failure whose class no record states, carried as what it is.
 ///
 /// The version and where to report come from the caller rather than from this
@@ -1886,7 +1913,10 @@ impl Surface<'_> {
             // The harness built the request, mapped the response, or supplied
             // the descriptor, so none of these is the reader's to fix.
             F::RequestRefused { .. } | F::Unreadable { .. } | F::ToolSchemaUnreadable { .. } => {
-                undecided(self.version, self.report_at, session, line!())
+                provider_refused(
+                    undecided(self.version, self.report_at, session, line!()),
+                    failure,
+                )
             }
         }
     }
@@ -1954,7 +1984,10 @@ impl Surface<'_> {
             // The harness built the request, mapped the response, or supplied
             // the descriptor, so none of these is the reader's to fix.
             F::RequestRefused { .. } | F::Unreadable { .. } | F::ToolSchemaUnreadable { .. } => {
-                undecided(self.version, self.report_at, session, line!())
+                provider_refused(
+                    undecided(self.version, self.report_at, session, line!()),
+                    failure,
+                )
             }
         }
     }
@@ -1977,6 +2010,18 @@ impl Surface<'_> {
             F::CredentialRejected { kind, .. } => correctable(
                 failure,
                 run("replace the key", &format!("providers keys add {kind}")),
+            ),
+            // The model is the person's to name, as it is for the other two
+            // kinds. `--model` takes an identifier and not an alias, which is
+            // how this was met on 2026-09-28: `--model cheap` asked Gemini for
+            // a model called "cheap".
+            F::ModelNotFound { .. } => correctable(
+                failure,
+                act(
+                    "set `model.default` to a model Gemini serves. `--model` takes a model \
+                     identifier, not an alias; `zaru models` shows what each alias resolves to"
+                        .to_owned(),
+                ),
             ),
             F::ContextWindowExceeded(exceeded) => {
                 Self::request_window_exceeded(exceeded, ProviderKind::Gemini)
@@ -2005,7 +2050,10 @@ impl Surface<'_> {
             // defect: the mapping is ours"; "a tool descriptor whose schema is
             // not JSON -- defect: the harness supplied the descriptor".
             F::RequestRefused { .. } | F::Unreadable { .. } | F::ToolSchemaUnreadable { .. } => {
-                undecided(self.version, self.report_at, session, line!())
+                provider_refused(
+                    undecided(self.version, self.report_at, session, line!()),
+                    failure,
+                )
             }
         }
     }
