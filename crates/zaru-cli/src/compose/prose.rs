@@ -65,16 +65,17 @@
 /// 2026-09-28** under a coordinator ruling open to Jeshua's veto. The last
 /// sentence, "Run --runtime contained for a membrane that enforces rather than
 /// asks.", is gone, because no tier enforces anything yet and the program
-/// never recommends protection it does not give. And the opening "bare tier
-/// has no membrane." and the word "here" are gone, because the same warning
-/// is now said at every tier.
+/// never recommends protection it does not give. And the rest was rewritten
+/// in plain words, because the same warning is now said at every tier and
+/// "a prompt is a question rather than a barrier" left a person to work out
+/// what it meant. The wording is the coordinator's, open to Jeshua's veto.
 ///
 /// At `contained` and `linked` [`not_built`] adds one sentence to it.
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-pub const NOT_A_SANDBOX: &str = "Zaru is not a sandbox: a tool call runs with your permissions, \
-                                 on your machine, and a prompt is a question rather than a \
-                                 barrier.";
+pub const NOT_A_SANDBOX: &str = "Zaru is not a sandbox. Tool calls run on your machine with your \
+                                 permissions. A permission prompt asks before a call runs; it \
+                                 does not limit what an allowed call can do.";
 
 /// The sentence said after [`NOT_A_SANDBOX`] at a tier that is not built.
 ///

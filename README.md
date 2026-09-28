@@ -79,7 +79,7 @@ Run `zaru` with the task in quotes, from the directory you want it to work in:
 
 ```console
 $ zaru "read src/main.rs and tell me what it does"
-Zaru is not a sandbox: a tool call runs with your permissions, on your machine, and a prompt is a question rather than a barrier.
+Zaru is not a sandbox. Tool calls run on your machine with your permissions. A permission prompt asks before a call runs; it does not limit what an allowed call can do.
 
 <the model's answer>
 
@@ -212,7 +212,7 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 Zaru acts on your machine with your user account's permissions. It is not a sandbox.
 
 - **What the model can do.** It has seven built-in tools: `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.edit`, `cmd.run` and `web.fetch`. `cmd.run` starts a program directly, without a shell, in the working directory, with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TMPDIR` from your environment, and stops it after two minutes. Nothing limits what that program does while it runs. `web.fetch` fetches `http` and `https` URLs only. In `ask` mode it asks first and shows the whole URL, because a URL can carry data off your machine. A redirect to another host is asked about again, and refused when there is no terminal to ask on. It refuses this machine's own addresses and the link-local range, which includes the cloud metadata address.
-- **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing.
+- **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing, so a model can also change which validators are approved; use `yolo` only for a directory and a task you trust entirely.
 - **Validators run only after you approve them.** The commands in a project's `./zaru.toml` are shown to you and run only once you say yes, and you are asked again when they change. The approval is kept under `~/.zaru/`, never in the project, and the permission mode does not skip it.
 - **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but are not built yet: at every tier, tool calls run directly on your machine. Zaru prints the not-a-sandbox warning at every tier, and at `contained` and `linked` it adds that the tier is not built yet and changes nothing about how tool calls run. `zaru runtime` says the same.
 - **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. When it cannot read them (no keyring and no `ZARU_CREDENTIAL_KEY`) and the task needs none of them, it says so and goes on without removing them. It does not look for any other secret.

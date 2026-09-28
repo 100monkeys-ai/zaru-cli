@@ -220,6 +220,27 @@ fn the_exit_code_table_is_the_taxonomy() {
 /// Where the README says which provider kinds work and which do not, it names
 /// exactly the kinds that have a client and exactly the ones that do not.
 #[test]
+fn the_warning_the_quick_start_shows_is_the_one_the_program_prints() {
+    let text = section(&readme(), "### 2. Run a task");
+    assert!(
+        text.contains(zaru_cli::compose::prose::NOT_A_SANDBOX),
+        "the quick start shows a warning the program does not print; it prints {:?}",
+        zaru_cli::compose::prose::NOT_A_SANDBOX
+    );
+}
+
+/// The Safety section says that `yolo` asks nothing, and so lets a model
+/// change which validators are approved.
+#[test]
+fn the_safety_section_says_what_yolo_gives_a_model() {
+    let text = section(&readme(), "## Safety");
+    assert!(
+        text.contains("In `yolo` mode it asks nothing, so a model can also change which validators are approved"),
+        "the Safety section does not say what `yolo` lets a model do: {text}"
+    );
+}
+
+#[test]
 fn the_provider_kinds_named_as_working_are_the_ones_with_a_client() {
     use zaru_cli::providers::ProviderKind;
     let text = readme();
