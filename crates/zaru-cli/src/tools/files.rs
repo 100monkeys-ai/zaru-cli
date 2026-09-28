@@ -124,18 +124,6 @@ fn mode_for(path: &Path) -> u32 {
     })
 }
 
-/// Read a file. `fs.read`.
-///
-/// The contents are decoded **lossily**, because this is the path that shows a
-/// model text and a file it cannot read is more useful shown with replacement
-/// characters than refused. [`edit`] does the opposite for the opposite reason.
-pub(crate) fn read(path: &Path) -> Captured {
-    match std::fs::read(path) {
-        Ok(bytes) => succeeded(String::from_utf8_lossy(&bytes).into_owned()),
-        Err(source) => failed(format!("could not read {}: {source}", path.display())),
-    }
-}
-
 /// List a directory. `fs.list`.
 ///
 /// Entries are sorted, because a directory's own order is a property of the
@@ -209,12 +197,13 @@ pub(crate) fn write(path: &Path, contents: &str) -> Captured {
 
 /// Replace an exact string within a file, once. `fs.edit`.
 ///
-/// # The read is strict, and `fs.read`'s is not
+/// # The read is strict
 ///
-/// [`read`] decodes lossily because it shows a model text. This one must not:
-/// a lossy decode replaces every invalid sequence with U+FFFD, and writing the
-/// result back would **destroy those bytes** in a file the user owns. A file
-/// that is not UTF-8 is refused, naming the offset of the first invalid byte.
+/// A lossy decode replaces every invalid sequence with U+FFFD, and writing
+/// the result back would **destroy those bytes** in a file the user owns. A
+/// file that is not UTF-8 is refused, naming the offset of the first invalid
+/// byte. `fs.read` refuses such a file too, since 2026-09-28, where it used
+/// to decode it lossily; see [`crate::tools::reading`].
 ///
 /// # Exactly one occurrence, and never a fuzzy match
 ///

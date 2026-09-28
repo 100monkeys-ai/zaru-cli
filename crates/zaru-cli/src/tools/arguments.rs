@@ -73,7 +73,7 @@
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 //! [`ToolRequest`]: zaru_core::tool_call::ToolRequest
 
-use crate::tools::name::{SubjectKind, ToolName};
+use crate::tools::name::{FieldKind, SubjectKind, ToolName};
 use core::fmt;
 use serde_json::Value;
 
@@ -86,12 +86,21 @@ use serde_json::Value;
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
-    /// A tool addressed to a single path: `fs.read`, `fs.list`.
+    /// A tool addressed to a single path and nothing else: `fs.list`.
     OnPath {
-        /// Which of the two.
+        /// Which tool.
         tool: ToolName,
         /// The `path` field.
         path: String,
+    },
+    /// `fs.read`: a path, and optionally which lines.
+    Read {
+        /// The `path` field.
+        path: String,
+        /// The `start_line` field: the first line wanted, counting from 1.
+        start_line: Option<usize>,
+        /// The `line_count` field: how many lines at most.
+        line_count: Option<usize>,
     },
     /// `fs.write`: a path and the bytes to put there.
     Write {
@@ -134,6 +143,7 @@ impl Call {
     pub const fn tool(&self) -> ToolName {
         match self {
             Self::OnPath { tool, .. } => *tool,
+            Self::Read { .. } => ToolName::FsRead,
             Self::Write { .. } => ToolName::FsWrite,
             Self::Edit { .. } => ToolName::FsEdit,
             Self::Search { .. } => ToolName::FsSearch,
@@ -147,8 +157,8 @@ impl Call {
     /// # Errors
     ///
     /// [`ArgumentsRefused`] when the text is not JSON, is not an object, is
-    /// missing a declared field, carries one that is not a string, or carries
-    /// a field the tool did not declare.
+    /// missing a required field, carries one that is not of its declared kind,
+    /// or carries a field the tool did not declare.
     pub fn parse(tool: ToolName, arguments: &str) -> Result<Self, ArgumentsRefused> {
         let value: Value = serde_json::from_str(arguments).map_err(|error| {
             // The error's own `Display` is not used. `serde_json` renders the
@@ -171,19 +181,44 @@ impl Call {
         // Declared first, so a call missing a field is told which one before
         // it is told about a field it should not have sent. A reader fixing
         // one thing at a time fixes the required one first.
-        let mut taken = Vec::with_capacity(tool.fields().len());
+        let mut given = Given::default();
         for field in tool.fields() {
-            let Some(value) = object.get(*field) else {
-                return Err(ArgumentsRefused::MissingField { tool, field });
+            let Some(value) = object.get(field.name) else {
+                if field.required {
+                    return Err(ArgumentsRefused::MissingField {
+                        tool,
+                        field: field.name,
+                    });
+                }
+                continue;
             };
-            let Value::String(text) = value else {
-                return Err(ArgumentsRefused::NotAString {
-                    tool,
-                    field,
-                    found: kind_of(value),
-                });
+            let refused = || ArgumentsRefused::WrongKind {
+                tool,
+                field: field.name,
+                wanted: field.kind,
+                found: match value {
+                    Value::Number(_) => "a number that is below 1 or not whole",
+                    other => kind_of(other),
+                },
             };
-            taken.push(text.clone());
+            match field.kind {
+                FieldKind::Text => {
+                    let Value::String(text) = value else {
+                        return Err(refused());
+                    };
+                    given.texts.push((field.name, text.clone()));
+                }
+                FieldKind::Number => {
+                    let number = whole_number(value).ok_or_else(refused)?;
+                    given.numbers.push((field.name, number));
+                }
+                FieldKind::Flag => {
+                    let Value::Bool(flag) = value else {
+                        return Err(refused());
+                    };
+                    given.flags.push((field.name, *flag));
+                }
+            }
         }
         // "Exactly the declared fields": a field nobody declared is refused
         // rather than ignored, because a model that spelled `contents` as
@@ -191,7 +226,7 @@ impl Call {
         // succeeded.
         if let Some(extra) = object
             .keys()
-            .find(|key| !tool.fields().contains(&key.as_str()))
+            .find(|key| !tool.fields().iter().any(|field| field.name == key.as_str()))
         {
             return Err(ArgumentsRefused::UnexpectedField {
                 tool,
@@ -199,33 +234,103 @@ impl Call {
             });
         }
 
-        let mut taken = taken.into_iter();
-        let mut next = || {
-            taken
-                .next()
-                .expect("one value was taken per declared field")
-        };
         Ok(match tool.subject_kind() {
             SubjectKind::Path => match tool {
+                ToolName::FsRead => Self::Read {
+                    path: given.text("path"),
+                    start_line: given.number("start_line"),
+                    line_count: given.number("line_count"),
+                },
                 ToolName::FsWrite => Self::Write {
-                    path: next(),
-                    contents: next(),
+                    path: given.text("path"),
+                    contents: given.text("contents"),
                 },
                 ToolName::FsEdit => Self::Edit {
-                    path: next(),
-                    old: next(),
-                    new: next(),
+                    path: given.text("path"),
+                    old: given.text("old"),
+                    new: given.text("new"),
                 },
-                _ => Self::OnPath { tool, path: next() },
+                _ => Self::OnPath {
+                    tool,
+                    path: given.text("path"),
+                },
             },
             SubjectKind::SearchRoot => Self::Search {
-                root: next(),
-                needle: next(),
+                root: given.text("root"),
+                needle: given.text("needle"),
             },
-            SubjectKind::CommandLine => Self::Run { command: next() },
-            SubjectKind::Url => Self::Fetch { url: next() },
+            SubjectKind::CommandLine => Self::Run {
+                command: given.text("command"),
+            },
+            SubjectKind::Url => Self::Fetch {
+                url: given.text("url"),
+            },
         })
     }
+}
+
+/// The values a call carried, by field name, each already of its declared kind.
+#[derive(Default)]
+struct Given {
+    texts: Vec<(&'static str, String)>,
+    numbers: Vec<(&'static str, usize)>,
+    #[allow(dead_code, reason = "no tool before fs.edit's `all` declares a flag")]
+    flags: Vec<(&'static str, bool)>,
+}
+
+impl Given {
+    /// A required text field's value.
+    ///
+    /// # Panics
+    ///
+    /// When `name` is not a required text field of the tool being parsed,
+    /// which is this module asking for a field it did not declare: a defect
+    /// here, never anything a model sent.
+    fn text(&mut self, name: &str) -> String {
+        let at = self
+            .texts
+            .iter()
+            .position(|(field, _)| *field == name)
+            .expect("a required text field was taken when it was declared");
+        self.texts.swap_remove(at).1
+    }
+
+    /// An optional number field's value, if the call carried it.
+    fn number(&self, name: &str) -> Option<usize> {
+        self.numbers
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, number)| *number)
+    }
+}
+
+/// A JSON number that is a whole number of 1 or more, as a `usize`.
+///
+/// **A whole number written with a fraction of zero is taken**, so `10.0` is
+/// 10. JSON has one number type, and a provider that carries arguments
+/// through a structure of doubles may hand back `10.0` for the 10 its model
+/// wrote; refusing that would refuse the model for the provider's spelling.
+/// Anything with a real fraction, anything below 1 and anything that is not
+/// a number is refused.
+fn whole_number(value: &Value) -> Option<usize> {
+    let Value::Number(number) = value else {
+        return None;
+    };
+    let whole = number.as_u64().or_else(|| {
+        number
+            .as_f64()
+            .filter(|float| float.fract() == 0.0 && *float >= 1.0 && *float <= 9.0e15)
+            .map(|float| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "checked above: a whole number from 1 to 9e15"
+                )]
+                let whole = float as u64;
+                whole
+            })
+    })?;
+    usize::try_from(whole).ok().filter(|whole| *whole >= 1)
 }
 
 /// What a JSON value is, for a refusal that must not render it.
@@ -269,12 +374,14 @@ pub enum ArgumentsRefused {
         /// The field that is missing.
         field: &'static str,
     },
-    /// A declared field arrived as something other than a string.
-    NotAString {
+    /// A declared field arrived as something other than its declared kind.
+    WrongKind {
         /// Which built-in was asked for.
         tool: ToolName,
         /// The field.
         field: &'static str,
+        /// What the field holds.
+        wanted: FieldKind,
         /// What arrived instead.
         found: &'static str,
     },
@@ -307,9 +414,15 @@ impl fmt::Display for ArgumentsRefused {
                  the call to. {tool} takes {}",
                 declared(*tool)
             ),
-            Self::NotAString { tool, field, found } => write!(
+            Self::WrongKind {
+                tool,
+                field,
+                wanted,
+                found,
+            } => write!(
                 f,
-                "the {field:?} field of {tool} is {found} rather than a string. {tool} takes {}",
+                "the {field:?} field of {tool} is {found} rather than {}. {tool} takes {}",
+                wanted.described(),
                 declared(*tool)
             ),
             Self::UnexpectedField { tool, field } => write!(
@@ -327,13 +440,27 @@ impl fmt::Display for ArgumentsRefused {
 impl std::error::Error for ArgumentsRefused {}
 
 /// The fields a tool declares, as a refusal names them.
+///
+/// Every required field is text, so they are named together; an optional one
+/// is named with what it holds.
 fn declared(tool: ToolName) -> String {
-    let fields: Vec<String> = tool
+    let required: Vec<String> = tool
         .fields()
         .iter()
-        .map(|field| format!("{field:?}"))
+        .filter(|field| field.required)
+        .map(|field| format!("{:?}", field.name))
         .collect();
-    format!("exactly {}, each a string", fields.join(" and "))
+    let optional: Vec<String> = tool
+        .fields()
+        .iter()
+        .filter(|field| !field.required)
+        .map(|field| format!("{:?} ({})", field.name, field.kind.described()))
+        .collect();
+    let mut said = format!("exactly {}, each a string", required.join(" and "));
+    if !optional.is_empty() {
+        said.push_str(&format!(", and may also carry {}", optional.join(" and ")));
+    }
+    said
 }
 
 /// The JSON Schema a tool is offered under.
@@ -347,16 +474,15 @@ fn declared(tool: ToolName) -> String {
 ///
 /// # There are no field descriptions, and that is deliberate
 ///
-/// [ADR-0011] D1 gives each tool one sentence — which is
-/// [`ToolName::purpose`], transcribed, and is the descriptor's `description` —
-/// and says nothing about any field. A per-field sentence would be prose a
-/// model reads, invented beside the code, which is the thing the whole of this
-/// module exists to stop being done silently. The types and the required set
-/// are mechanical; anything more is the record's author's, and it is raised
-/// there rather than filled in here.
+/// [ADR-0011] D1 gives each tool one sentence and says nothing about any
+/// field. Since 2026-09-28 the tool's own description says what the optional
+/// fields of `fs.read` do, in the same few sentences, rather than a second
+/// sentence per field: every byte of this schema is sent on every request
+/// and counted against the context window, and an `ollama` window is 4,096.
 ///
 /// `additionalProperties` is `false`, which is the schema saying what
-/// [`Call::parse`] enforces.
+/// [`Call::parse`] enforces. A number field says `minimum: 1`, which is the
+/// schema saying what [`Call::parse`] enforces for a number.
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[must_use]
@@ -364,12 +490,25 @@ pub fn schema(tool: ToolName) -> String {
     let properties: serde_json::Map<String, Value> = tool
         .fields()
         .iter()
-        .map(|field| ((*field).to_owned(), serde_json::json!({ "type": "string" })))
+        .map(|field| {
+            let property = match field.kind {
+                FieldKind::Text => serde_json::json!({ "type": "string" }),
+                FieldKind::Number => serde_json::json!({ "type": "integer", "minimum": 1 }),
+                FieldKind::Flag => serde_json::json!({ "type": "boolean" }),
+            };
+            (field.name.to_owned(), property)
+        })
+        .collect();
+    let required: Vec<&str> = tool
+        .fields()
+        .iter()
+        .filter(|field| field.required)
+        .map(|field| field.name)
         .collect();
     serde_json::json!({
         "type": "object",
         "properties": properties,
-        "required": tool.fields(),
+        "required": required,
         "additionalProperties": false,
     })
     .to_string()

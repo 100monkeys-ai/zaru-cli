@@ -494,12 +494,24 @@ where
                     arguments,
                 },
             ) => self.projected.call(alias, tool, arguments).await,
-            (Subject::Path(target), Requested::Builtin(Call::OnPath { tool, .. })) => {
-                Ok(match tool {
-                    ToolName::FsList => files::list(target.resolved()),
-                    _ => files::read(target.resolved()),
-                })
+            (Subject::Path(target), Requested::Builtin(Call::OnPath { .. })) => {
+                Ok(files::list(target.resolved()))
             }
+            (
+                Subject::Path(target),
+                Requested::Builtin(Call::Read {
+                    start_line,
+                    line_count,
+                    ..
+                }),
+            ) => Ok(crate::tools::reading::read(
+                target.resolved(),
+                crate::tools::reading::Lines {
+                    start: *start_line,
+                    count: *line_count,
+                },
+                self.budget,
+            )),
             (Subject::Write { target, .. }, Requested::Builtin(Call::Write { contents, .. })) => {
                 Ok(files::write(target.resolved(), contents))
             }
@@ -712,7 +724,7 @@ where
                 classified = self.working_directory.classify(path);
                 Invocation::editing(&classified, old, new)
             }
-            Requested::Builtin(inner @ Call::OnPath { path, .. }) => {
+            Requested::Builtin(inner @ (Call::OnPath { path, .. } | Call::Read { path, .. })) => {
                 classified = self.working_directory.classify(path);
                 Invocation::on_path(inner.tool(), &classified).map_err(|refused| {
                     // A tool that is not described by a bare path given a path

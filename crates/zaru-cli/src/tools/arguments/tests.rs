@@ -19,7 +19,7 @@
 use crate::tools::arguments::{ArgumentsRefused, Call, schema};
 use crate::tools::execute::descriptors;
 use crate::tools::fixtures::nonce;
-use crate::tools::name::ToolName;
+use crate::tools::name::{FieldKind, ToolName};
 use serde_json::Value;
 
 /// A value shaped like a bearer token, ending in text an escaping formatter
@@ -66,10 +66,15 @@ fn the_schema_offered_and_the_object_accepted_are_one_list() {
             .iter()
             .map(|value| value.as_str().unwrap_or_default())
             .collect();
-        if required != tool.fields() {
+        let must: Vec<&str> = tool
+            .fields()
+            .iter()
+            .filter(|field| field.required)
+            .map(|field| field.name)
+            .collect();
+        if required != must {
             disagreements.push(format!(
-                "{tool}: required is {required:?} and the parser takes {:?}",
-                tool.fields()
+                "{tool}: required is {required:?} and the parser requires {must:?}"
             ));
         }
 
@@ -80,7 +85,7 @@ fn the_schema_offered_and_the_object_accepted_are_one_list() {
             .map(String::as_str)
             .collect();
         properties.sort_unstable();
-        let mut expected = tool.fields().to_vec();
+        let mut expected: Vec<&str> = tool.fields().iter().map(|field| field.name).collect();
         expected.sort_unstable();
         if properties != expected {
             disagreements.push(format!(
@@ -88,8 +93,16 @@ fn the_schema_offered_and_the_object_accepted_are_one_list() {
             ));
         }
         for field in tool.fields() {
-            if document["properties"][*field]["type"] != "string" {
-                disagreements.push(format!("{tool}: {field} is not declared as a string"));
+            let declared = match field.kind {
+                FieldKind::Text => "string",
+                FieldKind::Number => "integer",
+                FieldKind::Flag => "boolean",
+            };
+            if document["properties"][field.name]["type"] != declared {
+                disagreements.push(format!(
+                    "{tool}: {} is not declared as {declared}",
+                    field.name
+                ));
             }
         }
         println!("{tool}  {rendered}");
@@ -151,9 +164,46 @@ fn a_call_is_built_from_the_fields_the_tool_declares() {
     let read = Call::parse(ToolName::FsRead, r#"{"path":"src/main.rs"}"#).expect("a read parses");
     assert_eq!(
         read,
-        Call::OnPath {
-            tool: ToolName::FsRead,
+        Call::Read {
             path: String::from("src/main.rs"),
+            start_line: None,
+            line_count: None,
+        }
+    );
+    // The two numbers are different so that swapping them shows.
+    let ranged = Call::parse(
+        ToolName::FsRead,
+        r#"{"path":"src/main.rs","start_line":40,"line_count":7}"#,
+    )
+    .expect("a ranged read parses");
+    assert_eq!(
+        ranged,
+        Call::Read {
+            path: String::from("src/main.rs"),
+            start_line: Some(40),
+            line_count: Some(7),
+        }
+    );
+
+    // JSON has one number type, and a provider may hand back 3.0 for the 3
+    // its model wrote.
+    let whole = Call::parse(ToolName::FsRead, r#"{"path":"a","start_line":3.0}"#)
+        .expect("a whole number with a zero fraction parses");
+    assert_eq!(
+        whole,
+        Call::Read {
+            path: String::from("a"),
+            start_line: Some(3),
+            line_count: None,
+        }
+    );
+
+    let list = Call::parse(ToolName::FsList, r#"{"path":"src"}"#).expect("a list parses");
+    assert_eq!(
+        list,
+        Call::OnPath {
+            tool: ToolName::FsList,
+            path: String::from("src"),
         }
     );
 
@@ -217,7 +267,8 @@ fn a_call_is_built_from_the_fields_the_tool_declares() {
         let object: serde_json::Map<String, Value> = tool
             .fields()
             .iter()
-            .map(|field| ((*field).to_owned(), Value::String(String::from("x"))))
+            .filter(|field| field.required)
+            .map(|field| (field.name.to_owned(), Value::String(String::from("x"))))
             .collect();
         let arguments = Value::Object(object).to_string();
         let call = Call::parse(tool, &arguments).unwrap_or_else(|refused| {
@@ -257,12 +308,12 @@ fn arguments_that_are_not_the_declared_object_are_refused_naming_the_field() {
             ArgumentsRefused::NotJson { .. } => "NotJson",
             ArgumentsRefused::NotAnObject { .. } => "NotAnObject",
             ArgumentsRefused::MissingField { .. } => "MissingField",
-            ArgumentsRefused::NotAString { .. } => "NotAString",
+            ArgumentsRefused::WrongKind { .. } => "WrongKind",
             ArgumentsRefused::UnexpectedField { .. } => "UnexpectedField",
         }
     }
 
-    let cases: [(ToolName, &str, &str, &str); 7] = [
+    let cases: [(ToolName, &str, &str, &str); 11] = [
         // Not JSON at all -- which is what a bare path was, before the
         // contract existed.
         (ToolName::FsRead, "src/main.rs", "NotJson", "a bare path"),
@@ -298,7 +349,32 @@ fn arguments_that_are_not_the_declared_object_are_refused_naming_the_field() {
             "an undeclared field",
         ),
         // Declared, and not a string.
-        (ToolName::FsRead, r#"{"path":7}"#, "NotAString", "a number"),
+        (ToolName::FsRead, r#"{"path":7}"#, "WrongKind", "a number"),
+        // Declared as a whole number of 1 or more, and not one.
+        (
+            ToolName::FsRead,
+            r#"{"path":"a","start_line":"7"}"#,
+            "WrongKind",
+            "a number as a string",
+        ),
+        (
+            ToolName::FsRead,
+            r#"{"path":"a","start_line":0}"#,
+            "WrongKind",
+            "line 0",
+        ),
+        (
+            ToolName::FsRead,
+            r#"{"path":"a","line_count":2.5}"#,
+            "WrongKind",
+            "half a line",
+        ),
+        (
+            ToolName::FsRead,
+            r#"{"path":"a","line_count":-3}"#,
+            "WrongKind",
+            "a negative count",
+        ),
         (
             ToolName::FsEdit,
             r#"{"path":"a","old":"b"}"#,
@@ -343,7 +419,8 @@ fn arguments_that_are_not_the_declared_object_are_refused_naming_the_field() {
         let object: serde_json::Map<String, Value> = tool
             .fields()
             .iter()
-            .map(|field| ((*field).to_owned(), Value::String(String::from("x"))))
+            .filter(|field| field.required)
+            .map(|field| (field.name.to_owned(), Value::String(String::from("x"))))
             .collect();
         Call::parse(tool, &Value::Object(object).to_string())
             .unwrap_or_else(|refused| panic!("{tool}: the declared object must parse: {refused}"));

@@ -256,11 +256,19 @@ impl zaru_cli::tools::DestructiveMatch for Nothing {
     }
 }
 
-/// A user who says yes, because ADR-0011 D3's `ask` prompts before any write.
-struct Accepting;
+/// A user who says yes, because ADR-0011 D3's `ask` prompts before any write,
+/// and who remembers what they were asked.
+#[derive(Default)]
+struct Accepting {
+    asked: Mutex<Vec<String>>,
+}
 impl zaru_cli::tools::Confirm for Accepting {
     fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         println!("  the user was asked: {}", question.statement);
+        self.asked
+            .lock()
+            .expect("asked poisoned")
+            .push(question.statement.clone());
         Ok(Answer::Once)
     }
 }
@@ -290,13 +298,26 @@ fn call(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
 struct Run {
     given_to_the_model: Vec<String>,
     session_directory: std::path::PathBuf,
+    /// Every question the user was asked, in order.
+    asked: Vec<String>,
 }
 
-/// Drive `script` through the real loop over the real tool surface.
+/// Drive `script` through the real loop over the real tool surface, with a
+/// small output budget.
 async fn drive(
     scratch: &Scratch,
     script: Vec<ModelResponse>,
     redactor: &(dyn Redactor + Sync),
+) -> Run {
+    drive_within(scratch, script, redactor, 4096).await
+}
+
+/// Drive `script` with an output budget of `budget` bytes.
+async fn drive_within(
+    scratch: &Scratch,
+    script: Vec<ModelResponse>,
+    redactor: &(dyn Redactor + Sync),
+    budget: usize,
 ) -> Run {
     let store = SessionStore::open(scratch.base.join("sessions")).expect("the session store opens");
     let id = SessionId::mint(&SystemWallClock).expect("an id");
@@ -310,7 +331,7 @@ async fn drive(
     let nothing = Nothing;
     let unbuilt = Unbuilt;
     let membrane = NoMembrane;
-    let accepting = Accepting;
+    let accepting = Accepting::default();
     let clock = Ticking::default();
     let policy = Policy { redactor };
     let mut sink = Printing;
@@ -336,7 +357,7 @@ async fn drive(
             session_grants: &no_grants,
             confirmer: Some(&accepting),
             verdicts: &membrane,
-            budget: OutputBudget::new(4096).expect("a usable budget"),
+            budget: OutputBudget::new(budget).expect("a usable budget"),
             preview_budget: OutputBudget::new(4096).expect("a usable budget"),
             search_ceiling: zaru_cli::cli::layers::search_ceiling(),
             overflow: &mut overflow,
@@ -387,6 +408,7 @@ async fn drive(
             .map(|(_, content)| content.clone())
             .collect(),
         session_directory: directory,
+        asked: accepting.asked.into_inner().expect("asked poisoned"),
     }
 }
 
@@ -616,6 +638,225 @@ async fn a_held_bearer_a_search_finds_is_redacted_and_the_session_keeps_it() {
         carried.given_to_the_model[0].contains(&value),
         "with nothing held the value must reach the model unaltered: {:?}",
         carried.given_to_the_model[0]
+    );
+}
+
+// --------------------------------------------- reading a file in parts
+
+/// What separates a line's number from the line in an `fs.read` answer.
+const MARK: &str = "\u{2502}";
+
+/// The binary's own output budget, so these checks see what a model sees.
+const BUDGET: usize = zaru_cli::cli::layers::OUTPUT_BUDGET_BYTES;
+
+/// One line of the large file these checks read, by its number.
+fn entry(n: usize) -> String {
+    format!("entry {n:05}: value {}", n * 7)
+}
+
+/// **A model finds the middle of a large file with a ranged read and edits
+/// it there.**
+///
+/// The defect this was written against: `fs.read` took a path and nothing
+/// else, and a large file reached the model as its first and last 16 KiB with
+/// the middle cut out. Watched red on `6e94f43`: the ranged read was refused
+/// for carrying a field `fs.read` did not take.
+#[tokio::test]
+async fn a_ranged_read_finds_the_middle_of_a_large_file_and_an_edit_there_lands() {
+    let scratch = Scratch::new("ranged");
+    let target = scratch.project().join("src").join("big.txt");
+    let before: String = (1..=5_000).map(|n| format!("{}\n", entry(n))).collect();
+    std::fs::write(&target, &before).expect("staging");
+
+    let run = drive_within(
+        &scratch,
+        vec![
+            call(
+                "c1",
+                "fs.read",
+                serde_json::json!({ "path": "src/big.txt", "start_line": 2_498, "line_count": 5 }),
+            ),
+            call(
+                "c2",
+                "fs.edit",
+                serde_json::json!({
+                    "path": "src/big.txt",
+                    "old": format!("{}\n", entry(2_500)),
+                    "new": "entry 02500: CHANGED\n",
+                }),
+            ),
+        ],
+        &HeldSecrets::none(),
+        BUDGET,
+    )
+    .await;
+
+    let read = &run.given_to_the_model[0];
+    let wanted: Vec<String> = (2_498..=2_502)
+        .map(|n| format!("{n}{MARK}{}", entry(n)))
+        .collect();
+    assert!(
+        wanted.iter().all(|line| read.contains(line.as_str())) && read.contains("5000 line(s)"),
+        "a ranged fs.read did not return lines 2498 to 2502 of the 5,000-line file, numbered, \
+         with the file's length, so the middle of a large file cannot be found: {read:?}"
+    );
+    assert!(
+        !read.contains(&entry(2_497)) && !read.contains(&entry(2_503)),
+        "the ranged read returned lines it was not asked for: {read:?}"
+    );
+
+    let after = std::fs::read_to_string(&target).expect("on disk");
+    let expected: String = (1..=5_000)
+        .map(|n| {
+            if n == 2_500 {
+                String::from("entry 02500: CHANGED\n")
+            } else {
+                format!("{}\n", entry(n))
+            }
+        })
+        .collect();
+    assert!(
+        after == expected,
+        "the edit found by the ranged read did not change line 2500 and only line 2500: {:?}",
+        run.given_to_the_model[1]
+    );
+}
+
+/// **Every kind of file a model may read is answered plainly**, through the
+/// real loop at the binary's own budget, and none is cut by the budget.
+///
+/// Watched red on `6e94f43`, where a 100-line file came back with no line
+/// numbers, a binary file came back as control bytes and a large one as its
+/// two ends.
+#[tokio::test]
+async fn every_kind_of_file_a_model_reads_is_answered_plainly() {
+    let scratch = Scratch::new("kinds");
+    let project = scratch.project();
+    let data = project.join("data");
+    std::fs::create_dir_all(data.join("sub")).expect("staging");
+    let write = |name: &str, bytes: &[u8]| std::fs::write(data.join(name), bytes).expect("staging");
+    let hundred: String = (1..=100).map(|n| format!("line {n}\n")).collect();
+    write("l100.txt", hundred.as_bytes());
+    let two_thousand: String = (1..=2_000).map(|n| format!("{}\n", entry(n))).collect();
+    write("l2000.txt", two_thousand.as_bytes());
+    write(
+        "oneline.txt",
+        format!("{}\n", "x".repeat(1 << 20)).as_bytes(),
+    );
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend((0..=255_u8).cycle().take(10_000));
+    write("logo.png", &png);
+    write("latin1.txt", b"caf\xe9\n");
+    write("empty.txt", b"");
+    write("sub/a.txt", b"a\n");
+    write("sub/b.txt", b"b\n");
+    let outside = scratch.base.join("outside.txt");
+    std::fs::write(&outside, "OUTSIDE-CONTENT\n").expect("staging");
+    std::os::unix::fs::symlink(&outside, data.join("link")).expect("staging: a link out");
+
+    let reads = [
+        "data/l100.txt",
+        "data/l2000.txt",
+        "data/oneline.txt",
+        "data/logo.png",
+        "data/latin1.txt",
+        "data/empty.txt",
+        "data/sub",
+        "data/missing.txt",
+        "data/link",
+    ];
+    let script = reads
+        .iter()
+        .enumerate()
+        .map(|(n, path)| {
+            call(
+                &format!("r{n}"),
+                "fs.read",
+                serde_json::json!({ "path": path }),
+            )
+        })
+        .collect();
+    let run = drive_within(&scratch, script, &HeldSecrets::none(), BUDGET).await;
+    let given = &run.given_to_the_model;
+    assert_eq!(given.len(), reads.len(), "one result per read");
+    for (path, result) in reads.iter().zip(given) {
+        println!(
+            "--- {path}: {} bytes\n{}",
+            result.len(),
+            &result[..result.len().min(600)]
+        );
+        assert!(
+            !result.contains("bytes elided"),
+            "the output budget cut the answer to {path} in the middle"
+        );
+        assert!(
+            !result.chars().any(|c| c.is_control() && c != '\n'),
+            "the answer to {path} carries control bytes"
+        );
+    }
+
+    assert!(
+        given[0].contains(&format!("1{MARK}line 1\n"))
+            && given[0].contains(&format!("100{MARK}line 100\n"))
+            && given[0].contains("That is the whole file."),
+        "a 100-line file did not come back whole and numbered: {:?}",
+        given[0]
+    );
+    assert!(
+        given[1].contains(&format!("500{MARK}{}", entry(500)))
+            && !given[1].contains(&entry(501))
+            && given[1].contains("2000 line(s)")
+            && given[1].contains("start_line 501"),
+        "a 2,000-line file did not come back as its first 500 lines with where to read on: {:?}",
+        given[1]
+    );
+    assert!(
+        given[2].contains("this line is 1048576 bytes long") && given[2].len() < 4_096,
+        "a line of a mebibyte was not cut with its length named"
+    );
+    assert!(
+        given[3].contains("a PNG image") && given[3].contains("10008 bytes"),
+        "a binary file was not refused naming what it is and its size: {:?}",
+        &given[3][..given[3].len().min(300)]
+    );
+    assert!(
+        given[4].contains("is not UTF-8 text") && given[4].contains("5 bytes"),
+        "a file that is not UTF-8 was not refused naming its size: {:?}",
+        given[4]
+    );
+    assert!(
+        given[5].contains("is empty"),
+        "an empty file was not said to be empty: {:?}",
+        given[5]
+    );
+    assert!(
+        given[6].contains("is a folder") && given[6].contains("a.txt, b.txt"),
+        "a folder was not said to be one with what it holds: {:?}",
+        given[6]
+    );
+    assert!(
+        given[7].contains("there is no file or folder at"),
+        "a missing path was not said to be missing: {:?}",
+        given[7]
+    );
+
+    // The permission rule is today's: a link out of the tree is asked about,
+    // marked as outside, and read once allowed.
+    assert_eq!(
+        run.asked.len(),
+        1,
+        "exactly one read was outside the tree, so exactly one question: {:?}",
+        run.asked
+    );
+    assert!(
+        run.asked[0].contains("OUTSIDE"),
+        "the question about a link out of the tree does not mark it: {:?}",
+        run.asked[0]
+    );
+    assert!(
+        given[8].contains(&format!("1{MARK}OUTSIDE-CONTENT")),
+        "the link, once allowed, was not read: {:?}",
+        given[8]
     );
 }
 

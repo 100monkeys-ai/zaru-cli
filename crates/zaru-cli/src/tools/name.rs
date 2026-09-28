@@ -162,16 +162,24 @@ impl ToolName {
         }
     }
 
-    /// What ADR-0011 D1's second column says this tool does.
+    /// What the model is told this tool does.
     ///
-    /// Transcribed from the record's table rather than written here, for the
-    /// reason [`ToolName::as_str`] is: it is what a model is told the tool is
-    /// for, and a description invented beside the code is a contract nobody
-    /// decided.
+    /// For six of the seven this is ADR-0011 D1's second column, transcribed,
+    /// because it is what a model learns the tool from and a description
+    /// invented beside the code is a contract nobody decided.
+    ///
+    /// **`fs.read` says more, since 2026-09-28.** The model could not learn
+    /// from "Read a file" that a large file comes back in parts, how to ask
+    /// for the rest, or that the line numbers are not in the file. So it says,
+    /// in a few plain sentences, what it takes, what it gives back and what it
+    /// refuses. Ruled by the coordinator at the `file-tools` arc's spawn under
+    /// Jeshua's directive 58 and recorded on ADR-0011 D1, open to his veto.
+    /// The numbers in it are the constants [`crate::tools::reading`] uses, so
+    /// the text and the tool cannot disagree.
     #[must_use]
     pub const fn purpose(self) -> &'static str {
         match self {
-            Self::FsRead => "Read a file",
+            Self::FsRead => crate::tools::reading::READ_DESCRIPTION,
             Self::FsWrite => "Create or overwrite a file",
             Self::FsEdit => "Replace an exact string within a file",
             Self::FsList => "List a directory",
@@ -212,15 +220,36 @@ impl ToolName {
     /// `path` that would mean a different thing from the other four.
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    ///
+    /// # Some fields are optional, and they are not text
+    ///
+    /// Until 2026-09-28 every field was a required string. `fs.read` now takes
+    /// an optional `start_line` and `line_count`, whole numbers, so a model can
+    /// ask for part of a file. Ruled at the `file-tools` arc's spawn and
+    /// recorded on ADR-0011 D1.
     #[must_use]
-    pub const fn fields(self) -> &'static [&'static str] {
+    pub const fn fields(self) -> &'static [Field] {
+        // Each list is a named constant because a slice of `const fn` calls
+        // is not promoted to `'static` on its own.
+        const PATH: [Field; 1] = [Field::text("path")];
+        const READ: [Field; 3] = [
+            Field::text("path"),
+            Field::number("start_line"),
+            Field::number("line_count"),
+        ];
+        const WRITE: [Field; 2] = [Field::text("path"), Field::text("contents")];
+        const EDIT: [Field; 3] = [Field::text("path"), Field::text("old"), Field::text("new")];
+        const SEARCH: [Field; 2] = [Field::text("root"), Field::text("needle")];
+        const RUN: [Field; 1] = [Field::text("command")];
+        const FETCH: [Field; 1] = [Field::text("url")];
         match self {
-            Self::FsRead | Self::FsList => &["path"],
-            Self::FsWrite => &["path", "contents"],
-            Self::FsEdit => &["path", "old", "new"],
-            Self::FsSearch => &["root", "needle"],
-            Self::CmdRun => &["command"],
-            Self::WebFetch => &["url"],
+            Self::FsRead => &READ,
+            Self::FsList => &PATH,
+            Self::FsWrite => &WRITE,
+            Self::FsEdit => &EDIT,
+            Self::FsSearch => &SEARCH,
+            Self::CmdRun => &RUN,
+            Self::WebFetch => &FETCH,
         }
     }
 
@@ -310,6 +339,76 @@ pub enum SubjectKind {
     CommandLine,
     /// A URL, which D4 says nothing about.
     Url,
+}
+
+/// One field of a tool's arguments object.
+///
+/// The schema a model is shown and the object
+/// [`Call::parse`](crate::tools::arguments::Call::parse) accepts are both
+/// built from these, so the two cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    /// The field's name on the wire.
+    pub name: &'static str,
+    /// What kind of value it holds.
+    pub kind: FieldKind,
+    /// Whether a call must carry it.
+    pub required: bool,
+}
+
+impl Field {
+    /// A required text field.
+    #[must_use]
+    pub const fn text(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: FieldKind::Text,
+            required: true,
+        }
+    }
+
+    /// An optional whole number of 1 or more.
+    #[must_use]
+    pub const fn number(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: FieldKind::Number,
+            required: false,
+        }
+    }
+
+    /// An optional yes or no.
+    #[must_use]
+    pub const fn flag(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: FieldKind::Flag,
+            required: false,
+        }
+    }
+}
+
+/// What kind of value a [`Field`] holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// A JSON string.
+    Text,
+    /// A JSON number that is a whole number of 1 or more.
+    Number,
+    /// A JSON `true` or `false`.
+    Flag,
+}
+
+impl FieldKind {
+    /// What a refusal calls this kind.
+    #[must_use]
+    pub const fn described(self) -> &'static str {
+        match self {
+            Self::Text => "a string",
+            Self::Number => "a whole number of 1 or more",
+            Self::Flag => "true or false",
+        }
+    }
 }
 
 impl fmt::Display for ToolName {
