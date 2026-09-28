@@ -322,9 +322,7 @@ impl Context {
         tail: &str,
     ) -> Result<Assembled, Exceeded> {
         let prompt = self.prompt(redactor, tail);
-        let needed = counter
-            .count(&prompt.rendered())
-            .saturating_add(counter.count_bytes(self.reserved));
+        let needed = measure(counter, &prompt).saturating_add(counter.count_bytes(self.reserved));
         let window = self.limits.window().get();
         if needed > window {
             return Err(Exceeded { needed, window });
@@ -372,10 +370,9 @@ impl Context {
         let taken = self.oldest_span_covering(counter, overage);
         if taken > 0 {
             let span = Span::of(&self.exchanges[..taken]);
-            let before: u64 = span
-                .exchanges()
+            let before: u64 = self.exchanges[..taken]
                 .iter()
-                .map(|exchange| counter.count(exchange.as_str()))
+                .map(|exchange| measure_exchange(counter, exchange))
                 .sum();
             // The summary is obtained before anything is removed, so a
             // failing summariser leaves the context exactly as it was.
@@ -414,8 +411,7 @@ impl Context {
     /// a marker is not the same length as the value it replaced, so counting
     /// the raw render would be counting text nobody will ever be shown.
     fn measured<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> u64 {
-        counter
-            .count(&self.prompt(redactor, "").rendered())
+        measure(counter, &self.prompt(redactor, ""))
             .saturating_add(counter.count_bytes(self.reserved))
     }
 
@@ -426,7 +422,7 @@ impl Context {
     fn oldest_span_covering<C: TokenCounter>(&self, counter: &C, overage: u64) -> usize {
         let mut covered: u64 = 0;
         for (index, exchange) in self.exchanges.iter().enumerate() {
-            covered = covered.saturating_add(counter.count(&exchange.rendered()));
+            covered = covered.saturating_add(measure_exchange(counter, exchange));
             if covered >= overage {
                 return index + 1;
             }
@@ -493,4 +489,27 @@ fn push_section(out: &mut String, section: &str) {
         out.push_str(SEPARATOR);
     }
     out.push_str(section);
+}
+
+/// What a prompt costs: its system text, each message of its history as the
+/// counter measures a message, and its task.
+fn measure<C: TokenCounter>(counter: &C, prompt: &Prompt) -> u64 {
+    let history: u64 = prompt
+        .history()
+        .iter()
+        .map(|message| counter.count_message(message))
+        .sum();
+    counter
+        .count(prompt.system().unwrap_or_default())
+        .saturating_add(history)
+        .saturating_add(counter.count(prompt.task()))
+}
+
+/// What one exchange of layer 6 costs, message by message.
+fn measure_exchange<C: TokenCounter>(counter: &C, exchange: &Exchange) -> u64 {
+    exchange
+        .messages()
+        .iter()
+        .map(|message| counter.count_message(message))
+        .sum()
 }

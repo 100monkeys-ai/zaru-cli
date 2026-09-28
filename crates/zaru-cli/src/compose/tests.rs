@@ -611,6 +611,16 @@ impl zaru_core::tool_call::Model for StagedModel {
     }
 }
 
+/// What one staged exchange of a person's words costs at one token a byte:
+/// the message as JSON, which is how the estimate measures a message.
+fn staged_cost(text: &str) -> u64 {
+    serde_json::to_string(&zaru_core::conversation::Message::User {
+        text: text.to_owned(),
+    })
+    .expect("a message serialises")
+    .len() as u64
+}
+
 /// A span of layer 6, oldest first.
 fn span_of(exchanges: &[&str]) -> zaru_core::context::Span {
     zaru_core::context::Span::of(
@@ -996,7 +1006,7 @@ fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() 
                 taken.len(),
                 "D3's count is how many exchanges were replaced"
             );
-            let measured: u64 = taken.iter().map(|text| text.len() as u64).sum();
+            let measured: u64 = taken.iter().map(|text| staged_cost(text)).sum();
             assert_eq!(
                 *cost, measured,
                 "D3 asks for real before-and-after counts, so `before` is what the replaced \
@@ -1671,7 +1681,8 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
 /// Watched red with `STARTING_BYTES_PER_TOKEN` set to one, the byte count
 /// this replaced: "a 4,096-token window held 0 bytes of conversation before
 /// compaction, where counting bytes as tokens held 72". With the estimate it
-/// held 6,063 bytes where a byte count held 72.
+/// holds 5,031 bytes where a byte count held 72, each message counted with
+/// its wrapping.
 #[test]
 fn a_4096_token_window_holds_four_times_the_conversation_counting_bytes_held() {
     let client = crate::providers::ollama::OllamaClient::new(
@@ -1725,6 +1736,107 @@ fn a_4096_token_window_holds_four_times_the_conversation_counting_bytes_held() {
         held_bytes >= 4 * byte_room.max(1),
         "a 4,096-token window held {held_bytes} bytes of conversation before compaction, where \
          counting bytes as tokens held {byte_room}"
+    );
+}
+
+/// After one answer, the estimate of a history of many short tool calls is
+/// within a fifth of what the provider counts for it.
+///
+/// A provider is sent each message wrapped: a role, a call's id, the
+/// structure around it. For a short call that wrapping is most of the bytes.
+/// Measured with the scripted server on 2026-09-28, after a turn of fifty
+/// `fs.list` calls: the row read `~1.5k` where the server counted 3,279 prompt
+/// tokens, because the estimate was made over the messages' text alone. Here
+/// the provider's count is the `ollama` wire body of the same conversation at
+/// four bytes a token, which is what the scripted server reports, and the
+/// estimate is taught that ratio from one answer, as the client teaches it.
+///
+/// Watched red with `Calibration::count_message` removed, so a message was
+/// counted by its text: "the estimate of fifty short tool calls is 1105
+/// tokens where the provider counts 3023".
+#[test]
+fn the_estimate_of_many_short_tool_calls_is_near_the_providers_count() {
+    use zaru_core::conversation::Message;
+    use zaru_core::tool_call::ToolRequest;
+
+    let client = crate::providers::ollama::OllamaClient::new(
+        crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
+            .expect("a well-formed origin"),
+        model_named("llama3.2:3b"),
+        131_072,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let reserved = client
+        .tool_surface_bytes(crate::tools::descriptor_set())
+        .expect("the built-in descriptors map");
+    let held = HeldSecrets::none();
+    let mut session = crate::compose::SessionContext::opened(
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
+        crate::compose::ContextShape::of(
+            crate::cli::layers::context_limits(131_072),
+            reserved,
+            client.calibration(),
+        ),
+    );
+
+    let mut records = vec![
+        Record::Conversation(crate::session::Utterance {
+            n: 1,
+            voice: crate::session::Voice::User,
+            text: "list the files".to_owned(),
+        }),
+        Record::TurnLoop(Event::Message(Message::User {
+            text: "list the files".to_owned(),
+        })),
+    ];
+    for n in 1..=50 {
+        records.push(Record::TurnLoop(Event::Message(Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: format!("call-{n}"),
+                name: "fs.list".to_owned(),
+                arguments: r#"{"path":"."}"#.to_owned(),
+            }],
+            echo: None,
+        })));
+        records.push(Record::TurnLoop(Event::Message(Message::Tool {
+            id: format!("call-{n}"),
+            name: "fs.list".to_owned(),
+            content: "a.txt".to_owned(),
+            failed: false,
+        })));
+    }
+    session.rebuild_from(&records);
+
+    // What the provider is sent for this context, and what it counts.
+    let prompt = {
+        let policy = session.policy(&held, false);
+        futures_lite_block_on(policy.assemble(&Turn::Initial { task: "continue" }))
+            .expect("the context fits")
+    };
+    let body = crate::providers::ollama::map::request_from(
+        &zaru_core::tool_call::ModelRequest {
+            prompt: &prompt,
+            tools: crate::tools::descriptor_set(),
+            turn: &[],
+        },
+        "llama3.2:3b",
+        131_072,
+    )
+    .expect("the request maps");
+    let wire = crate::providers::capacity::request_bytes(&body);
+    let counted = wire / 4;
+    assert!(
+        client.calibration().learn(wire, counted),
+        "one answer's count is learned"
+    );
+
+    let estimated = session.usage(&held).used();
+    let off = estimated.abs_diff(counted);
+    assert!(
+        off * 5 <= counted,
+        "the estimate of fifty short tool calls is {estimated} tokens where the provider counts \
+         {counted}"
     );
 }
 
@@ -1955,7 +2067,7 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
     else {
         panic!("a crossing announces itself once, with counts: {compaction:?}");
     };
-    let staged: u64 = taken.iter().map(|text| text.len() as u64).sum();
+    let staged: u64 = taken.iter().map(|text| staged_cost(text)).sum();
     assert_eq!(
         (*turns as usize, *cost_before),
         (taken.len(), staged),

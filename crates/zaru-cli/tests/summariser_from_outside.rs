@@ -422,6 +422,7 @@ async fn a_compaction_announces_once_with_what_it_cost() {
     let planted = planted_bearer("announce");
     let mut session = session_carrying(&planted);
     let nothing = HeldSecrets::none();
+    let staged = session.exchanges().to_vec();
 
     let (_, compaction) = compacted_through(&mut session, &nothing).await;
 
@@ -450,10 +451,16 @@ async fn a_compaction_announces_once_with_what_it_cost() {
             after,
         } => {
             assert_eq!(*turns as usize, raw.len());
-            let measured: u64 = raw
-                .exchanges()
+            // Each message as JSON, at one token a byte: how the estimate
+            // measures a message of the conversation.
+            let measured: u64 = staged[..raw.len()]
                 .iter()
-                .map(|exchange| exchange.as_str().len() as u64)
+                .flat_map(|exchange| exchange.messages().iter())
+                .map(|message| {
+                    serde_json::to_string(message)
+                        .expect("a message serialises")
+                        .len() as u64
+                })
                 .sum();
             assert_eq!(
                 *before, measured,
