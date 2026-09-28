@@ -163,6 +163,21 @@ const BOTH_LISTINGS: &str =
 const SET_THE_WINDOW_OR_READ_LESS: &str =
     "set `{key}` to the number of tokens that server accepts, or give this turn less to read";
 
+/// What a reader does about one request that will not fit, even after the
+/// session compacted what it could.
+///
+/// The request that fails here is the one a turn builds between two tool
+/// calls, and what grows a turn is what its tools return: a single large file
+/// read whole, or a search that matched too much. Compaction cannot help
+/// inside a turn ([ADR-0013] D7), so the first thing to do is to ask for less
+/// at a time, and `fs.read`'s own two fields are how. The second half is the
+/// window, as [`SET_THE_WINDOW_OR_READ_LESS`] says it.
+///
+/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
+const ASK_FOR_LESS_OR_SET_THE_WINDOW: &str = "ask for less at a time, for example a part of a \
+     file with `fs.read`'s `start_line` and `line_count`; or set `{key}` to the \
+     number of tokens that server accepts";
+
 /// A user-correctable failure: the refusal's own words, and what to change.
 fn correctable(refusal: &impl core::fmt::Display, remedy: Remedy) -> Classified {
     Classified::UserCorrectable {
@@ -1715,14 +1730,12 @@ impl Surface<'_> {
     ///
     /// [ADR-0036] D1's preflight, for every kind. **Its own statement rather
     /// than [`Self::context_window_exceeded`]'s**, because the two measure
-    /// different things in different words: that one is the turn's assembled
-    /// context, and this one is the provider-native request, counted in
-    /// "the workspace's conservative byte accounting" against a window
-    /// configured in tokens. Rendered through the turn-level sentence it read
-    /// "the assembled context needs N tokens", naming a byte count as tokens,
-    /// so a reader sizing the window from it was sizing it from the wrong
-    /// unit. [`crate::providers::capacity::Exceeded`]'s sentence states both
-    /// units; the remedy is the same key.
+    /// different things: that one is the turn's assembled context at the start
+    /// of a turn, and this one is the provider-native request built inside a
+    /// turn, after its tool results. [`crate::providers::capacity::Exceeded`]
+    /// says the estimate, the bytes it was made from, the window and the room
+    /// kept for the answer, and names the largest tool result; the remedy is
+    /// [`ASK_FOR_LESS_OR_SET_THE_WINDOW`].
     ///
     /// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
     fn request_window_exceeded(
@@ -1731,7 +1744,7 @@ impl Surface<'_> {
     ) -> Classified {
         correctable(
             exceeded,
-            act(SET_THE_WINDOW_OR_READ_LESS.replace("{key}", kind.context_tokens_key().as_str())),
+            act(ASK_FOR_LESS_OR_SET_THE_WINDOW.replace("{key}", kind.context_tokens_key().as_str())),
         )
     }
 

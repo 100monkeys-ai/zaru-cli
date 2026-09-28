@@ -590,6 +590,7 @@ pub fn context_shape_of(
             crate::compose::ContextShape::of(
                 crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
                 0,
+                crate::providers::capacity::Calibration::starting(),
             )
         },
         crate::compose::Prepared::context_shape,

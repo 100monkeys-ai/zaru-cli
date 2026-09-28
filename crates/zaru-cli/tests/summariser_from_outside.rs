@@ -281,7 +281,7 @@ fn carrying_records(planted: &str) -> Vec<Record> {
 fn session_carrying(planted: &str) -> SessionContext {
     let mut session = SessionContext::opened(
         prefix_for(None, &facts()),
-        zaru_cli::compose::ContextShape::of(tight(), 0),
+        zaru_cli::compose::ContextShape::of(tight(), 0, one_token_a_byte()),
     );
     session.rebuild_from(&carrying_records(planted));
     session
@@ -529,7 +529,7 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
 
     let mut session = SessionContext::opened(
         prefix_for(None, &facts()),
-        zaru_cli::compose::ContextShape::of(tight(), 0),
+        zaru_cli::compose::ContextShape::of(tight(), 0, one_token_a_byte()),
     );
     let staged = [
         "we agreed the indentation is four spaces and never tabs",
@@ -666,7 +666,7 @@ fn a_rebuilt_context_puts_the_count_the_live_one_had_on_the_row() {
 
     let (restored, _) = SessionContext::rebuilt(
         prefix_for(None, &facts()),
-        zaru_cli::compose::ContextShape::of(tight(), 0),
+        zaru_cli::compose::ContextShape::of(tight(), 0, one_token_a_byte()),
         &carrying_records("nothing-here"),
     );
 
@@ -703,7 +703,7 @@ fn a_rebuilt_context_puts_the_count_the_live_one_had_on_the_row() {
     // alone, and that is a smaller number than the one above.
     let (empty, _) = SessionContext::rebuilt(
         prefix_for(None, &facts()),
-        zaru_cli::compose::ContextShape::of(tight(), 0),
+        zaru_cli::compose::ContextShape::of(tight(), 0, one_token_a_byte()),
         &[],
     );
     assert!(
@@ -837,4 +837,15 @@ fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
     decoy::every_other_check_keeps_its_verdict(
         "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
+}
+
+/// A calibration that has learned one token a byte, so this file's numbers,
+/// written in bytes, are the counts the context is measured at.
+fn one_token_a_byte() -> zaru_cli::providers::capacity::Calibration {
+    let calibration = zaru_cli::providers::capacity::Calibration::starting();
+    assert!(
+        calibration.learn(1_000, 1_000),
+        "one token a byte is a count"
+    );
+    calibration
 }

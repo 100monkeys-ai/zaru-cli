@@ -124,6 +124,10 @@ pub struct OllamaClient {
     /// `impl Future + Send`, so the future borrowing `&self` requires
     /// `Self: Sync` and a `Cell` is not.
     last: Mutex<Option<(u64, u64)>>,
+    /// The bytes-per-token ratio this session has learned from the server's
+    /// counts, shared with the session's context. See
+    /// [`crate::providers::capacity::Calibration`].
+    calibration: crate::providers::capacity::Calibration,
 }
 
 impl OllamaClient {
@@ -167,7 +171,14 @@ impl OllamaClient {
             http,
             deltas: Mutex::new(None),
             last: Mutex::new(None),
+            calibration: crate::providers::capacity::Calibration::starting(),
         })
+    }
+
+    /// The ratio this client estimates requests at and learns into, shared.
+    #[must_use]
+    pub fn calibration(&self) -> crate::providers::capacity::Calibration {
+        self.calibration.clone()
     }
 
     /// What this client's tool surface costs, in bytes as it is sent.
@@ -240,10 +251,16 @@ impl OllamaClient {
         // `Send` future, so holding one across an await would not compile.
         let body = map::request_from(request, self.model.as_str(), self.context_tokens)?;
         // ADR-0036 D1, before any network I/O: the whole native request, the
-        // model's own prior turns and every tool result included, against the
-        // window this client also sends as `num_ctx`.
-        crate::providers::capacity::preflight(&body, self.context_tokens)
-            .map_err(OllamaFailure::ContextWindowExceeded)?;
+        // model's own prior turns and every tool result included, estimated in
+        // tokens against the window this client also sends as `num_ctx`, less
+        // the room kept for the answer.
+        let sent_bytes = crate::providers::capacity::preflight(
+            &body,
+            self.context_tokens,
+            &self.calibration,
+            request.turn,
+        )
+        .map_err(OllamaFailure::ContextWindowExceeded)?;
 
         let mut response = self
             .http
@@ -331,15 +348,33 @@ impl OllamaClient {
             });
         }
 
+        self.settled(&received, bytes, sent_bytes)
+    }
+
+    /// The end of an exchange: fold the frames into one response, keep what
+    /// it cost, and learn the ratio from the server's count.
+    ///
+    /// `bytes` is what the stream carried and `sent_bytes` what the request
+    /// carried. Separate from [`Self::exchange`] so a check can hand it the
+    /// frames of a recorded answer and read what was learned, with no socket.
+    fn settled(
+        &self,
+        received: &[wire::Response],
+        bytes: usize,
+        sent_bytes: u64,
+    ) -> Result<ModelResponse, OllamaFailure> {
         // One exchange is one response. See `map::fold` for the measurement
         // that makes folding load-bearing rather than tidy.
-        let answer = map::fold(&received);
+        let answer = map::fold(received);
         let mapped = map::response_from(&answer, bytes)?;
         let usage = (mapped.tokens().prompt, mapped.tokens().completion);
         match self.last.lock() {
             Ok(mut slot) => *slot = Some(usage),
             Err(poisoned) => *poisoned.into_inner() = Some(usage),
         }
+        // The server's count for the request just sent is the truth about it,
+        // and the next estimate is made from it.
+        self.calibration.learn(sent_bytes, usage.0);
 
         Ok(mapped)
     }

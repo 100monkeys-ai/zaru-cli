@@ -101,10 +101,10 @@ pub enum OllamaFailure {
     /// The complete request for the next exchange would exceed the window this
     /// client was configured with, and was not sent.
     ///
-    /// See [`crate::providers::capacity::preflight`]. For this kind it is also
-    /// what stops a request reaching the server's own silent truncation: at
-    /// `16b4376`, Ollama's `/api/chat` drops the oldest messages until the
-    /// prompt fits `num_ctx` unless the request says `"truncate": false`.
+    /// See [`crate::providers::capacity::preflight`]. The request itself also
+    /// says `"truncate": false`, because at `16b4376` Ollama's `/api/chat`
+    /// drops the oldest messages until the prompt fits `num_ctx` unless it
+    /// does, and the preflight's figure is an estimate.
     ContextWindowExceeded(Exceeded),
     /// The server failed on its own side.
     ///

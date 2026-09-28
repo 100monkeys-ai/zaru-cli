@@ -2313,6 +2313,7 @@ fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
             0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
         ),
         None,
         &crate::compose::context::fixtures::facts(),
@@ -2345,6 +2346,7 @@ fn adr_0006_d5s_pinned_workspace_reaches_the_meta_toml_a_session_writes() {
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
             0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
         ),
         None,
         &crate::compose::context::fixtures::facts(),
@@ -2589,6 +2591,7 @@ fn a_live_session(scratch: &ScratchRoot, here: &ScratchRoot) -> crate::session::
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
             0,
+            crate::providers::capacity::fixtures::one_token_a_byte(),
         ),
         None,
         &crate::compose::context::fixtures::facts(),

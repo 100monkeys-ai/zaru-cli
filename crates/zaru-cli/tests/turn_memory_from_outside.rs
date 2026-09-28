@@ -245,6 +245,7 @@ fn shape() -> ContextShape {
         )
         .expect("limits"),
         0,
+        one_token_a_byte(),
     )
 }
 
@@ -935,8 +936,10 @@ async fn a_compaction_takes_whole_turns_and_a_rebuild_keeps_its_summary() {
         )
         .expect("limits"),
         0,
+        one_token_a_byte(),
     );
-    let mut context = SessionContext::opened(zaru_cli::compose::prefix_for(None, &facts()), tight);
+    let mut context =
+        SessionContext::opened(zaru_cli::compose::prefix_for(None, &facts()), tight.clone());
     let mut script = Vec::new();
     for n in 0..4 {
         script.push(calls(
@@ -1318,4 +1321,15 @@ fn corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed() {
     decoy::every_other_check_keeps_its_verdict(
         "corpus_no_check_here_reads_a_home_or_an_environment_it_was_not_handed",
     );
+}
+
+/// A calibration that has learned one token a byte, so this file's numbers,
+/// written in bytes, are the counts the context is measured at.
+fn one_token_a_byte() -> zaru_cli::providers::capacity::Calibration {
+    let calibration = zaru_cli::providers::capacity::Calibration::starting();
+    assert!(
+        calibration.learn(1_000, 1_000),
+        "one token a byte is a count"
+    );
+    calibration
 }

@@ -133,6 +133,10 @@ pub struct OpenAiCompatibleClient {
     deltas: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
     /// What the last exchange cost, for [`Provider::usage`].
     last: Mutex<Option<(u64, u64)>>,
+    /// The bytes-per-token ratio this session has learned from the
+    /// provider's counts, shared with the session's context. See
+    /// [`crate::providers::capacity::Calibration`].
+    calibration: crate::providers::capacity::Calibration,
 }
 
 impl OpenAiCompatibleClient {
@@ -176,7 +180,14 @@ impl OpenAiCompatibleClient {
             http,
             deltas: Mutex::new(None),
             last: Mutex::new(None),
+            calibration: crate::providers::capacity::Calibration::starting(),
         })
+    }
+
+    /// The ratio this client estimates requests at and learns into, shared.
+    #[must_use]
+    pub fn calibration(&self) -> crate::providers::capacity::Calibration {
+        self.calibration.clone()
     }
 
     /// What this client's tool surface costs, in bytes as it is sent.
@@ -271,10 +282,16 @@ impl OpenAiCompatibleClient {
         // `require_context_size` refuses it by name before a loop starts,
         // which is this kind having no default -- so `None` is the one case
         // with nothing to measure against, and it is refused upstream.
-        if let Some(window) = self.context_tokens {
-            crate::providers::capacity::preflight(&body, window)
-                .map_err(OpenAiCompatibleFailure::ContextWindowExceeded)?;
-        }
+        let sent_bytes = match self.context_tokens {
+            Some(window) => crate::providers::capacity::preflight(
+                &body,
+                window,
+                &self.calibration,
+                request.turn,
+            )
+            .map_err(OpenAiCompatibleFailure::ContextWindowExceeded)?,
+            None => crate::providers::capacity::request_bytes(&body),
+        };
 
         let mut sending = self.http.post(self.endpoint.chat_url());
         // **The one place the key is attached**, and a header rather than a
@@ -381,6 +398,9 @@ impl OpenAiCompatibleClient {
             Ok(mut slot) => *slot = Some(usage),
             Err(poisoned) => *poisoned.into_inner() = Some(usage),
         }
+        // The provider's count for the request just sent is the truth about
+        // it, and the next estimate is made from it.
+        self.calibration.learn(sent_bytes, usage.0);
 
         Ok(mapped)
     }

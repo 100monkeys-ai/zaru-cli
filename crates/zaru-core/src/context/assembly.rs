@@ -119,7 +119,7 @@ impl fmt::Display for Exceeded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the assembled context needs {} tokens and the window allows {}",
+            "the assembled context needs an estimated {} tokens and the window allows {}",
             self.needed, self.window
         )
     }
@@ -216,6 +216,11 @@ impl Context {
     /// [`TokenCounter`]'s only implementation in this workspace claims for
     /// itself.
     ///
+    /// **It is held in bytes as the caller measured them** and turned into
+    /// tokens through [`TokenCounter::count_bytes`] at every measurement, by
+    /// the same counter as the text, so a counter that learns as a session
+    /// goes on converts the reserve at what it has learned too.
+    ///
     /// This number closes that gap. It is added to what
     /// [`Self::usage`] reports, to what [`Self::assemble`] refuses on, and to
     /// what [`Self::compact`] compares against the threshold — and it is
@@ -232,6 +237,12 @@ impl Context {
     #[must_use]
     pub const fn reserved(&self) -> u64 {
         self.reserved
+    }
+
+    /// The window and the threshold this context is held under.
+    #[must_use]
+    pub const fn limits(&self) -> ContextLimits {
+        self.limits
     }
 
     /// The stable prefix. Borrowed, never handed over.
@@ -313,7 +324,7 @@ impl Context {
         let prompt = self.prompt(redactor, tail);
         let needed = counter
             .count(&prompt.rendered())
-            .saturating_add(self.reserved);
+            .saturating_add(counter.count_bytes(self.reserved));
         let window = self.limits.window().get();
         if needed > window {
             return Err(Exceeded { needed, window });
@@ -405,7 +416,7 @@ impl Context {
     fn measured<C: TokenCounter, R: Redactor + ?Sized>(&self, counter: &C, redactor: &R) -> u64 {
         counter
             .count(&self.prompt(redactor, "").rendered())
-            .saturating_add(self.reserved)
+            .saturating_add(counter.count_bytes(self.reserved))
     }
 
     /// How many of the oldest exchanges it takes to cover `overage`.

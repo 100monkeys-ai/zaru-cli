@@ -296,7 +296,7 @@ impl fmt::Display for ContextRefusal {
             Self::Failed(failure) => failure.fmt(f),
             Self::WindowExceeded { needed, window } => write!(
                 f,
-                "the assembled context needs {needed} tokens and the window allows {window}"
+                "the assembled context needs an estimated {needed} tokens and the window allows {window}"
             ),
         }
     }

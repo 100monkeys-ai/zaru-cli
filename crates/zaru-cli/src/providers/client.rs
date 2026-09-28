@@ -165,6 +165,18 @@ impl ProviderClient {
         }
     }
 
+    /// The ratio this client estimates requests at and learns into, shared
+    /// with whatever measures the session's context. See
+    /// [`crate::providers::capacity::Calibration`].
+    #[must_use]
+    pub fn calibration(&self) -> super::capacity::Calibration {
+        match self {
+            Self::Gemini(client) => client.calibration(),
+            Self::Ollama(client) => client.calibration(),
+            Self::OpenAiCompatible(client) => client.calibration(),
+        }
+    }
+
     /// Send this client's answer text to `sender` as each frame arrives.
     pub fn stream_deltas_to(&self, sender: tokio::sync::mpsc::UnboundedSender<String>) {
         match self {

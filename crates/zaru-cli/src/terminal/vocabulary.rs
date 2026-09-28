@@ -477,7 +477,7 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Option<Line> {
         } => Line::new(
             Register::Plain,
             format!(
-                "exchange {round}: {tokens} tokens, {calls} tool call(s) · {}",
+                "exchange {round}: {tokens} tokens counted by the provider, {calls} tool call(s) · {}",
                 seconds(*elapsed)
             ),
         ),

@@ -59,6 +59,12 @@ impl TokenCounter for Words {
     fn count(&self, text: &str) -> u64 {
         text.split_whitespace().count() as u64
     }
+
+    /// A reserve is staged in this fixture's own unit, one per token, so a
+    /// reserve of 100 costs 100.
+    fn count_bytes(&self, bytes: u64) -> u64 {
+        bytes
+    }
 }
 
 /// Summarises to a fixed size and keeps every span it was handed.

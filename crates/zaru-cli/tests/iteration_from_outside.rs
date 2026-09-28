@@ -1136,12 +1136,20 @@ fn corpus_an_interrupt_during_a_validator_ends_its_child_and_the_loop_reports_no
 /// about the **prompt** instead, so they use the product's own policy: the
 /// prefix, the byte counter, the redactor and the prepend are all the ones a
 /// person's run gets.
+/// The product's estimate before any answer, held for the life of the test
+/// binary so a policy may borrow it.
+fn estimate() -> &'static zaru_cli::providers::capacity::Calibration {
+    static STARTING: std::sync::OnceLock<zaru_cli::providers::capacity::Calibration> =
+        std::sync::OnceLock::new();
+    STARTING.get_or_init(zaru_cli::providers::capacity::Calibration::starting)
+}
+
 fn product_policy<'a>(
     context: &'a zaru_core::context::Context,
     held: &'a HeldSecrets,
     iterating: bool,
 ) -> zaru_cli::compose::TurnContext<'a> {
-    zaru_cli::compose::TurnContext::over(context, held, iterating)
+    zaru_cli::compose::TurnContext::over(context, estimate(), held, iterating)
 }
 
 /// [ADR-0008] D1's sentence reaches the model on the **first** exchange and on

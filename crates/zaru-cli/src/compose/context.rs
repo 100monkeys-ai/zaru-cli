@@ -98,8 +98,8 @@
 //! [ADR-0031]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0031-relationship-memory
 //! [`Context`]: zaru_core::context::Context
 
-use crate::compose::count::ByteCounter;
 use crate::compose::prose;
+use crate::providers::capacity::Calibration;
 use zaru_core::context::{Context, PrefixParts, StablePrefix};
 use zaru_core::iteration::{ContextPolicy, ContextRefusal, Prompt, Turn};
 use zaru_core::redaction::Redactor;
@@ -272,7 +272,7 @@ pub fn prefix_for(persona: Option<&str>, facts: &Facts) -> StablePrefix {
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 pub struct TurnContext<'a> {
     context: &'a Context,
-    counter: ByteCounter,
+    counter: &'a Calibration,
     redactor: &'a (dyn Redactor + Sync),
     /// Whether this turn's body is [ADR-0008] D1's iteration.
     ///
@@ -302,7 +302,8 @@ impl core::fmt::Debug for TurnContext<'_> {
 }
 
 impl<'a> TurnContext<'a> {
-    /// Assemble against this context, counting bytes, redacting held secrets.
+    /// Assemble against this context, estimating tokens through `counter`,
+    /// redacting held secrets.
     ///
     /// `iterating` is the composition's own boolean and decides one thing:
     /// whether the assembled prompt carries
@@ -310,12 +311,13 @@ impl<'a> TurnContext<'a> {
     #[must_use]
     pub const fn over(
         context: &'a Context,
+        counter: &'a Calibration,
         redactor: &'a (dyn Redactor + Sync),
         iterating: bool,
     ) -> Self {
         Self {
             context,
-            counter: ByteCounter,
+            counter,
             redactor,
             iterating,
         }
@@ -330,7 +332,7 @@ impl<'a> TurnContext<'a> {
     /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
     #[must_use]
     pub fn usage(&self) -> zaru_core::context::Usage {
-        self.context.usage(&self.counter, self.redactor)
+        self.context.usage(self.counter, self.redactor)
     }
 }
 
@@ -367,7 +369,7 @@ impl ContextPolicy for TurnContext<'_> {
     /// nothing.
     ///
     /// The prepend goes through the same assembly the tail does, so it is
-    /// counted by the same [`ByteCounter`] against [ADR-0013] D6's window and
+    /// counted by the same [`Calibration`] against [ADR-0013] D6's window and
     /// passes the same [`Redactor`] — it is not a second path into a prompt
     /// and [ADR-0008]'s clause-6 enumeration gains no row, because a static
     /// constant of this harness's own is not captured bytes.
@@ -387,7 +389,7 @@ impl ContextPolicy for TurnContext<'_> {
         };
         let assembled = self
             .context
-            .assemble(&self.counter, self.redactor, &tail)
+            .assemble(self.counter, self.redactor, &tail)
             .map_err(ContextRefusal::from)?;
         Ok(assembled.into_prompt())
     }

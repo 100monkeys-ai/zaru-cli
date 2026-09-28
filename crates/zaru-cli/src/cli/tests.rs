@@ -1885,14 +1885,14 @@ fn the_context_segment_abbreviates_as_adr_0013_d3_does_and_never_rounds_up() {
 
     assert_eq!(
         render::context_usage(Usage::new(12_390, 1_048_576), render::Window::Known),
-        "context 12.3k/1048.5k tokens",
+        "context ~12.3k/1048.5k tokens, estimated",
         "12,390 truncates to 12.3k and 1,048,576 to 1048.5k; rounding would give 12.4k and \
          1048.6k, and D3's reading is that the line never reports more than was measured"
     );
 
     assert_eq!(
         render::context_usage(Usage::new(999, 1_048_576), render::Window::Known),
-        "context 999/1048.5k tokens",
+        "context ~999/1048.5k tokens, estimated",
         "below a thousand D3's abbreviation is the integer itself, so a session that has barely \
          started shows what it really holds rather than 0.9k"
     );
@@ -2090,15 +2090,18 @@ fn a_narrow_spelling_drops_labelling_and_never_a_number() {
     let spent = crate::providers::TokenUsage::counted(390, 79);
     let tokens = render::usage_row(&spent);
     assert_eq!(
-        tokens.full, "tokens: 390 prompt + 79 completion = 469",
+        tokens.full, "tokens: 390 prompt + 79 completion = 469, counted by the provider",
         "the full spelling is the line the session prints on exit"
     );
     assert_eq!(
-        tokens.narrow, "469 tokens",
+        tokens.narrow, "469 tokens counted",
         "the narrow spelling keeps the total and drops the two parts of it"
     );
     assert!(
-        tokens.full.ends_with(&tokens.narrow.replace(" tokens", "")),
+        tokens.full.contains(&format!(
+            "= {}",
+            tokens.narrow.replace(" tokens counted", "")
+        )),
         "both spellings must carry the same total; they were {:?} and {:?}",
         tokens.full,
         tokens.narrow
@@ -2106,11 +2109,11 @@ fn a_narrow_spelling_drops_labelling_and_never_a_number() {
 
     let context = render::context_row(Usage::new(12_390, 1_048_576), render::Window::Known);
     assert_eq!(
-        context.full, "context 12.3k/1048.5k tokens",
+        context.full, "context ~12.3k/1048.5k tokens, estimated",
         "the full spelling is ADR-0013 D3's own register"
     );
     assert_eq!(
-        context.narrow, "12.3k/1048.5k",
+        context.narrow, "~12.3k/1048.5k",
         "the narrow spelling keeps both numbers, because D6's claim is that approaching is a \
          relation and a figure without its window cannot be read as near or far"
     );
@@ -2119,6 +2122,45 @@ fn a_narrow_spelling_drops_labelling_and_never_a_number() {
             context.narrow.contains(number),
             "the narrow context spelling must keep {number}; it was {:?}",
             context.narrow
+        );
+    }
+}
+
+/// The status row says which of its numbers is the harness's estimate and
+/// which is the provider's count, at every width.
+///
+/// Until 2026-09-28 the row read `8.0k/32.7k · 537 tokens`: two figures,
+/// both called tokens, fifteen times apart, because the first was a byte
+/// count. The first is now an estimate in tokens and the second the
+/// provider's own count, and each says so: the estimate carries `~` in both
+/// spellings and `estimated` in the full one, and the count says `counted`
+/// in both.
+///
+/// Watched red on `254e2b6`'s spellings: "the context figure does not say it
+/// is an estimate: \"8.0k/32.7k\"".
+#[test]
+fn the_status_row_says_which_figure_is_estimated_and_which_is_counted() {
+    use zaru_core::context::Usage;
+
+    for window in [render::Window::Known, render::Window::Unknown] {
+        let context = render::context_row(Usage::new(8_000, 32_768), window);
+        for spelling in [&context.full, &context.narrow] {
+            assert!(
+                spelling.starts_with('~') || spelling.contains(" ~"),
+                "the context figure does not say it is an estimate: {spelling:?}"
+            );
+        }
+        assert!(
+            context.full.contains("estimated"),
+            "the full context spelling does not say `estimated`: {:?}",
+            context.full
+        );
+    }
+    let counted = render::usage_row(&crate::providers::TokenUsage::counted(512, 25));
+    for spelling in [&counted.full, &counted.narrow] {
+        assert!(
+            spelling.contains("counted") && !spelling.contains('~'),
+            "the provider's figure does not say it is the provider's count: {spelling:?}"
         );
     }
 }
@@ -2590,7 +2632,10 @@ fn an_in_turn_gemini_context_refusal_names_its_window_and_key() {
         &ProviderFailure::Gemini(GeminiFailure::ContextWindowExceeded(
             crate::providers::capacity::Exceeded {
                 needed: 2413,
+                bytes: 7239,
                 window: 2000,
+                room: 250,
+                largest: None,
             },
         )),
         SessionEvidence::NoSessionExists,
@@ -3012,17 +3057,19 @@ fn the_opening_line_names_the_working_directory_and_how_to_ask() {
     );
 }
 
-/// ADR-0036 D1's preflight counts **bytes** -- "the workspace's conservative
-/// byte accounting" -- against a window configured in **tokens**, and its
-/// refusal must say so. Until this check the three kinds rendered it through
-/// the turn-level sentence, "the assembled context needs N tokens and the
-/// window allows M", which named a byte count as tokens: a reader told
-/// "needs 5200 tokens" against 4096 raises the window to 5200, a number that
-/// happens to work, or to what their model's tokenizer says the request
-/// costs, which does not. The statement is `capacity::Exceeded`'s own
-/// sentence, one for every kind, and the remedy still names the kind's key.
+/// ADR-0036 D1's preflight estimates the request in **tokens**, from its
+/// **bytes**, against a window in tokens less the room kept for the answer,
+/// and its refusal must say which number is the estimate. Until 2026-09-28 it
+/// compared bytes with tokens as though they were one unit, so a window of
+/// 4,096 tokens held about a quarter of what it holds. The statement is
+/// `capacity::Exceeded`'s own sentence, one for every kind, and the remedy
+/// names the kind's key and says to ask for less at a time.
+///
+/// Watched red on `254e2b6`'s sentence, "the next provider request needs 5200
+/// byte(s), exceeding this provider's configured context window of 4096
+/// token(s)": it names no estimate and no room for the answer.
 #[test]
-fn an_in_turn_window_refusal_states_the_bytes_it_measured_on_every_kind() {
+fn an_in_turn_window_refusal_states_its_estimate_and_what_to_do_on_every_kind() {
     use crate::failure::{Class, Presentation, SessionEvidence};
     use crate::providers::capacity::Exceeded;
     use crate::providers::{
@@ -3032,22 +3079,25 @@ fn an_in_turn_window_refusal_states_the_bytes_it_measured_on_every_kind() {
     let surface = classify::Surface::new("0.0.0", "https://example.invalid/report");
     let exceeded = Exceeded {
         needed: 5200,
+        bytes: 15600,
         window: 4096,
+        room: 512,
+        largest: Some(("fs.read".to_owned(), 4800)),
     };
     let mut misses = Vec::new();
     for (kind, failure) in [
         (
             ProviderKind::Gemini,
-            ProviderFailure::Gemini(GeminiFailure::ContextWindowExceeded(exceeded)),
+            ProviderFailure::Gemini(GeminiFailure::ContextWindowExceeded(exceeded.clone())),
         ),
         (
             ProviderKind::Ollama,
-            ProviderFailure::Ollama(OllamaFailure::ContextWindowExceeded(exceeded)),
+            ProviderFailure::Ollama(OllamaFailure::ContextWindowExceeded(exceeded.clone())),
         ),
         (
             ProviderKind::OpenAiCompatible,
             ProviderFailure::OpenAiCompatible(OpenAiCompatibleFailure::ContextWindowExceeded(
-                exceeded,
+                exceeded.clone(),
             )),
         ),
     ] {
@@ -3056,14 +3106,22 @@ fn an_in_turn_window_refusal_states_the_bytes_it_measured_on_every_kind() {
         let said = shown.to_string();
         println!("{kind}: {said}");
         if shown.class != Class::UserCorrectable
-            || !shown.headline.contains("5200 byte(s)")
-            || !shown.headline.contains("4096 token(s)")
-            || said.contains("5200 tokens")
+            || !shown
+                .headline
+                .contains("needs an estimated 5200 tokens (15600 bytes)")
+            || !shown
+                .headline
+                .contains("window of 4096 tokens holds 3584 once 512 are kept for its answer")
+            || !shown
+                .headline
+                .contains("what `fs.read` returned, an estimated 4800 tokens")
+            || !said.contains("ask for less at a time")
             || !said.contains(kind.context_tokens_key().as_str())
         {
             misses.push(format!(
-                "{kind}: the refusal does not state the bytes it measured against the window \
-                 in tokens, with the kind's key: {said}"
+                "{kind}: the refusal does not state the estimate, the bytes it was made from, \
+                 the window, the room kept for the answer, the largest result and what to do, \
+                 with the kind's key: {said}"
             ));
         }
     }

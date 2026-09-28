@@ -446,7 +446,7 @@ pub fn provider_keys(store: &crate::credentials::CredentialStore) -> Vec<String>
 #[must_use]
 pub fn usage(usage: &crate::providers::TokenUsage) -> String {
     let mut line = format!(
-        "tokens: {} prompt + {} completion = {}",
+        "tokens: {} prompt + {} completion = {}, counted by the provider",
         usage.prompt_tokens(),
         usage.completion_tokens(),
         usage.prompt_tokens() + usage.completion_tokens(),
@@ -491,7 +491,8 @@ pub fn announcement(announcement: &zaru_core::context::Announcement) -> String {
             before,
             after,
         } => format!(
-            "compacted {turns} earlier turns · {} → {} tokens · full history in transcript",
+            "compacted {turns} earlier turns · ~{} → ~{} tokens, estimated · full history in \
+             transcript",
             thousands(*before),
             thousands(*after),
         ),
@@ -562,7 +563,8 @@ pub fn exhaustion(iterations: u32, reason: zaru_core::iteration::ExhaustionReaso
     match reason {
         Why::CeilingReached => format!("the ceiling of {iterations} iteration(s) was reached"),
         Why::ContextWindowExceeded { needed, window } => format!(
-            "assembling the next iteration needed {needed} tokens and the window allows {window}"
+            "assembling the next iteration needed an estimated {needed} tokens and the window \
+             allows {window}"
         ),
     }
 }
@@ -630,14 +632,18 @@ pub fn thousands(tokens: u64) -> String {
 /// # The abbreviation is D3's and the unit is D3's word
 ///
 /// [`thousands`] is the record's own, read off `18.2k` and `2.1k`, and
-/// `tokens` is the word D3's line uses. **Nothing here is authored except the
-/// separator** between the two numbers and the leading word `context`, which
-/// name which of the row's segments this is — the row carries two.
+/// `tokens` is the word D3's line uses. The leading word `context` names
+/// which of the row's segments this is — the row carries two.
 ///
-/// The count is honest about what it counted: `compose::count::ByteCounter`
-/// measures **bytes** against a window stated in tokens, deliberately and with
-/// its reasons in that module. This renders the number the harness actually
-/// holds rather than one it would like to.
+/// # The used figure is an estimate, and it says so
+///
+/// Since 2026-09-28 (`token-accounting`) what is used is **estimated in
+/// tokens**: the request's bytes divided by the bytes-per-token ratio
+/// [`Calibration`](crate::providers::capacity::Calibration) learned from the
+/// provider's own counts, or its starting ratio before the first answer.
+/// Before that it was a byte count printed as tokens. So the figure carries a
+/// `~` at every width and the full form ends `estimated`; the provider's own
+/// count is the row's other segment, [`usage_row`], which says `counted`.
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 /// [`Usage`]: zaru_core::context::Usage
@@ -645,11 +651,11 @@ pub fn thousands(tokens: u64) -> String {
 pub fn context_usage(usage: zaru_core::context::Usage, window: Window) -> String {
     match window {
         Window::Known => format!(
-            "context {}/{} tokens",
+            "context ~{}/{} tokens, estimated",
             thousands(usage.used()),
             thousands(usage.window())
         ),
-        Window::Unknown => format!("context {} tokens", thousands(usage.used())),
+        Window::Unknown => format!("context ~{} tokens, estimated", thousands(usage.used())),
     }
 }
 
@@ -712,7 +718,10 @@ pub enum Window {
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[must_use]
 pub fn usage_row(spent: &crate::providers::TokenUsage) -> zaru_tui::shell::Segment {
-    zaru_tui::shell::Segment::new(usage(spent), format!("{} tokens", tokens_total(spent)))
+    zaru_tui::shell::Segment::new(
+        usage(spent),
+        format!("{} tokens counted", tokens_total(spent)),
+    )
 }
 
 /// What a request spent, in the one place both spellings read it.
@@ -800,8 +809,8 @@ pub fn context_row(usage: zaru_core::context::Usage, window: Window) -> zaru_tui
     // both numbers `1.4k/1048.5k` reads as a figure over its room and needs no
     // noun, and with one `1.4k` is a number with nothing saying what it counts.
     let narrow = match window {
-        Window::Known => format!("{}/{}", thousands(usage.used()), thousands(usage.window())),
-        Window::Unknown => format!("{} tokens", thousands(usage.used())),
+        Window::Known => format!("~{}/{}", thousands(usage.used()), thousands(usage.window())),
+        Window::Unknown => format!("~{} tokens", thousands(usage.used())),
     };
     zaru_tui::shell::Segment::new(context_usage(usage, window), narrow)
 }

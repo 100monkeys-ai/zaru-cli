@@ -46,6 +46,25 @@ pub struct Request {
     ///
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
     pub options: Options,
+    /// Always `false`: the server must not cut the prompt to fit `num_ctx`.
+    ///
+    /// **Ollama drops the oldest messages in silence by default.** At
+    /// `16b4376`, `chatPrompt` (`server/prompt.go`) and
+    /// `truncateNativeChatMessages` (`server/routes.go`) drop messages until
+    /// the prompt fits `num_ctx` unless the request says `"truncate": false`.
+    /// The harness estimates a request in tokens before sending it, and an
+    /// estimate can be low; with this field an overflow comes back as the
+    /// server's refusal, which names a capacity and is classified as one,
+    /// rather than as a model that has forgotten the start of the session.
+    pub truncate: bool,
+    /// Always `false`: the server must not shift the context while it
+    /// generates.
+    ///
+    /// A context shift, the server's default, discards part of the prompt when
+    /// the answer outgrows the window, which is the same silent loss in the
+    /// middle of an answer. The harness keeps an eighth of the window for the
+    /// answer instead (`providers::capacity::answer_room`).
+    pub shift: bool,
 }
 
 /// What this client asks the server to do differently from its defaults.

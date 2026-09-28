@@ -949,18 +949,36 @@ async fn adr_0036_d1_an_oversized_ollama_request_is_refused_before_it_reaches_th
     let client = super::OllamaClient::new(
         ProviderEndpoint::new("http://127.0.0.1:1").expect("a well-formed endpoint"),
         model("llama3.2:3b"),
-        64,
+        512,
     )
     .expect("constructing a client does not contact the endpoint");
-    let prompt = prompt("a request whose body alone is larger than sixty-four bytes");
+    // A turn that read one large result: the request carries it back.
+    let prompt = prompt("find where retries happen");
+    let turn = [
+        Message::Assistant {
+            text: String::new(),
+            calls: vec![ToolRequest {
+                id: "c1".to_owned(),
+                name: "fs.search".to_owned(),
+                arguments: r#"{"needle":"retry"}"#.to_owned(),
+            }],
+            echo: None,
+        },
+        Message::Tool {
+            id: "c1".to_owned(),
+            name: "fs.search".to_owned(),
+            content: "retry.py:1: retry\n".repeat(200),
+            failed: false,
+        },
+    ];
     let failure = client
         .exchange(&ModelRequest {
             prompt: &prompt,
             tools: &[],
-            turn: &[],
+            turn: &turn,
         })
         .await
-        .expect_err("the locally measured request exceeds sixty-four bytes");
+        .expect_err("a request of several thousand bytes does not fit a 512-token window");
 
     let presented = Presentation::of(
         &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
@@ -973,16 +991,115 @@ async fn adr_0036_d1_an_oversized_ollama_request_is_refused_before_it_reaches_th
     assert_eq!(presented.class, Class::UserCorrectable, "{said}");
     // The statement is `capacity::Exceeded`'s, one for every kind; what
     // differs by kind is the key.
+    let key = ProviderKind::Ollama.context_tokens_key();
+    let wanted = [
+        "needs an estimated",
+        "this model's window of 512 tokens holds 448 once 64 are kept for its answer",
+        "it was not sent",
+        "The largest part of it is what `fs.search` returned",
+        "ask for less at a time",
+        "`start_line` and `line_count`",
+        key.as_str(),
+    ];
+    let missing: Vec<&str> = wanted
+        .iter()
+        .copied()
+        .filter(|part| !said.contains(part))
+        .collect();
     assert!(
-        !said.contains("nothing answered")
-            && said.contains("configured context window of 64 token(s); it was not sent")
-            && said.contains(ProviderKind::Ollama.context_tokens_key().as_str()),
-        "the request was not refused locally with its window and the key that sizes it: {said}"
+        !said.contains("nothing answered") && missing.is_empty(),
+        "a request that cannot fit must be refused before it is sent, saying the estimate, the \
+         window, the room kept for the answer, the tool whose result is largest and what to do. \
+         Missing {missing:?} from: {said}"
     );
 }
 
-// ADR-0036 D1 counts bytes against a window in tokens, deliberately, and for
-// this kind the built-in window is 4,096 -- so the preflight must leave a
+/// After one answer, the next estimate is made from what the server counted.
+///
+/// The recorded answer is a real Ollama's, v0.34.0 serving `llama3.2:3b`,
+/// and it counted 31 prompt tokens. Here the request it answered is taken to
+/// have been 124 bytes, four bytes a token. Before the answer the estimate is
+/// the starting ratio's, three bytes a token, so 42; after it, the server's
+/// own 31.
+///
+/// Watched red with the client's `learn` call removed: "after one answer the
+/// estimate of the same request is 42 tokens where the server counted 31".
+/// The same call is in the `gemini` and `openai-compatible` clients, after
+/// their own usage is read.
+#[test]
+fn the_estimate_moves_to_the_servers_count_after_one_answer() {
+    let client = super::OllamaClient::new(
+        ProviderEndpoint::new("http://127.0.0.1:1").expect("a well-formed endpoint"),
+        model("llama3.2:3b"),
+        crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
+    )
+    .expect("constructing a client does not contact the endpoint");
+    let estimate = client.calibration();
+    let sent = 124;
+    assert_eq!(
+        estimate.tokens_in(sent),
+        42,
+        "before any answer, three bytes a token"
+    );
+
+    let frames = frames_of(RECORDED_TEXT);
+    let answered = client
+        .settled(&frames, RECORDED_TEXT.len(), sent)
+        .expect("the recorded answer maps");
+    let counted = answered.tokens().prompt;
+    assert_eq!(counted, 31, "the recorded server counted 31 prompt tokens");
+    assert_eq!(
+        estimate.tokens_in(sent),
+        counted,
+        "after one answer the estimate of the same request is {} tokens where the server \
+         counted {counted}",
+        estimate.tokens_in(sent)
+    );
+}
+
+/// Every request tells the server not to cut the prompt and not to shift the
+/// context while it answers.
+///
+/// At `16b4376` Ollama drops the oldest messages until the prompt fits
+/// `num_ctx` unless the request says `"truncate": false`, and shifts the
+/// context during generation unless it says `"shift": false`. Both are the
+/// silent loss [ADR-0036] D4 names, on the server. An estimate can be low,
+/// so the harness's own refusal is not enough on its own: with these fields
+/// an overflow comes back as the server's refusal, which is classified as a
+/// capacity refusal.
+///
+/// Red on `254e2b6`, where neither field was sent, and watched red with both
+/// set to `true`: "the request does not tell the server `truncate: false`:
+/// true".
+///
+/// [ADR-0036]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0036-in-turn-provider-request-budgets
+#[test]
+fn every_request_tells_the_server_not_to_truncate_or_shift() {
+    let prompt = prompt("say ok");
+    let request = ModelRequest {
+        prompt: &prompt,
+        tools: crate::tools::descriptor_set(),
+        turn: &[],
+    };
+    let body = map::request_from(&request, "llama3.2:3b", 4_096).expect("the built-ins map");
+    let json = serde_json::to_value(&body).expect("the body serialises");
+    assert_eq!(
+        json["truncate"].as_bool(),
+        Some(false),
+        "the request does not tell the server `truncate: false`: {}",
+        json["truncate"]
+    );
+    assert_eq!(
+        json["shift"].as_bool(),
+        Some(false),
+        "the request does not tell the server `shift: false`: {}",
+        json["shift"]
+    );
+    assert_eq!(json["options"]["num_ctx"].as_u64(), Some(4_096));
+}
+
+// ADR-0036 D1 estimates the request in tokens from its bytes, and for this
+// kind the built-in window is 4,096 -- so the preflight must leave a
 // first turn room at that default, or every `ollama` turn a person starts
 // without configuring anything would be refused. Measured 2026-09-27 from the
 // debug binary through the whole composition against a closed port with a

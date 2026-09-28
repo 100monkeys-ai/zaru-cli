@@ -83,12 +83,12 @@ Zaru is not a sandbox. Tool calls run on your machine with your permissions. A p
 
 <the model's answer>
 
-tokens: 120 prompt + 7 completion = 127
+tokens: 120 prompt + 7 completion = 127, counted by the provider
 
 no validators are declared, so the iteration loop cannot run · declare one in `./zaru.toml`
 ```
 
-It prints a warning that it is not a sandbox (see [Safety](#safety)), the model's answer, the tokens the task used, and a note about validators (see [Validators](#validators-and-the-iteration-loop)).
+It prints a warning that it is not a sandbox (see [Safety](#safety)), the model's answer, the tokens the task used as the provider counted them, and a note about validators (see [Validators](#validators-and-the-iteration-loop)).
 
 When the model wants to write a file or run a command, Zaru asks you first. If there is no terminal to ask (for example, when `zaru` runs in a script), the call is refused and the model is told so.
 
@@ -109,7 +109,9 @@ The transcript has one JSON object per line: your task, each model reply with th
 
 Run `zaru` with no arguments in a terminal to open a session. Type a task and press Enter; each task you type continues the same conversation, and the model is sent every earlier task, reply, tool call and tool result in it. Type `/help` to list commands. Type `/exit`, or press Ctrl-C when nothing is running and the prompt is empty, to leave. Ctrl-C while a task runs, or at a permission prompt, stops the task and keeps the session open.
 
-`zaru --continue` reopens the most recent session started in the current directory, and `zaru --resume <id>` reopens the session with that ID. The conversation is rebuilt from the transcript, so the model is sent the same conversation it had before. A session recorded before tool results were kept reopens with your tasks and the answers, and says once that the earlier tool results were not recorded. When the output is not a terminal, both print the session's transcript and exit instead. The line at the top of the screen shows the runtime tier, the model, the permission mode, how much of the model's context window is used, and the session ID.
+`zaru --continue` reopens the most recent session started in the current directory, and `zaru --resume <id>` reopens the session with that ID. The conversation is rebuilt from the transcript, so the model is sent the same conversation it had before. A session recorded before tool results were kept reopens with your tasks and the answers, and says once that the earlier tool results were not recorded. When the output is not a terminal, both print the session's transcript and exit instead. The line at the top of the screen shows the runtime tier, the model, the permission mode, how much of the model's context window is used, the tokens the provider counted for the last request, and the session ID. The context figure is an estimate and is marked `~`, for example `~2.1k/4.0k`: Zaru has no tokenizer, so it divides a request's bytes by a bytes-per-token ratio. It starts at 3 bytes a token and, after each answer, uses what the provider counted. The provider's own count is marked `counted`.
+
+**When the conversation gets long.** At three quarters of the window Zaru summarises the oldest turns and says so (`◈ compacted …`); the whole history stays in the transcript. The last eighth of the window is kept for the model's answer, so a request is sent only when its estimate fits in the other seven eighths. If one request cannot fit, for example after a tool returned a very large result, Zaru does not send it: it says how large the request is, which tool result is largest, and what to do. For Ollama, every request also tells the server not to cut the prompt (`"truncate": false`).
 
 **Selecting text.** A session takes over the mouse so that the scroll wheel scrolls the transcript. To select text, hold Shift while you drag (this works in most terminals, including Windows Terminal and VS Code). To give the mouse back to your terminal instead, set `terminal.mouse = false` in `~/.zaru/config.toml`; the scroll wheel then no longer scrolls the transcript.
 

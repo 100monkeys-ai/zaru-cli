@@ -429,6 +429,7 @@ impl Prepared {
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(self.window),
             self.reserved,
+            self.client.calibration(),
         )
     }
 
@@ -1467,7 +1468,8 @@ async fn ran(
     // which tokio refuses at run time. It reached ADR-0016 D3's boundary as a
     // defect on six checks the moment the two changes met, and the fix is not
     // a nested runtime but no nesting at all: this is one sequence of awaits.
-    let summariser = ModelSummariser::over(&provider, &prepared.held);
+    let summariser =
+        ModelSummariser::over(&provider, &prepared.held).within(context.summary_bytes());
     let compaction = match context.at_turn_boundary(&summariser, &prepared.held).await {
         Ok(compaction) => compaction,
         Err(failure) => {
