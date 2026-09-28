@@ -119,21 +119,16 @@ fn the_built_in_set_is_the_seven_adr_0011_d1_names() {
 /// is a finding.**
 ///
 /// D3: "`ask` — Prompts before any write or command." So `fs.write`,
-/// `fs.edit` and `cmd.run` prompt, and `fs.read`, `fs.list`, `fs.search` and
-/// `web.fetch` do not.
+/// `fs.edit` and `cmd.run` prompt, and since 2026-09-28 so does `web.fetch`:
+/// a URL is a way out of the machine, and a model that has read something
+/// malicious can put data in one. `fs.read`, `fs.list` and `fs.search` do not
+/// prompt on their effect.
 ///
-/// `web.fetch` is the finding: at the **default** mode a URL the model chose
-/// is retrieved with no prompt, because it is neither a write nor a command.
-/// That is recorded as an open question on the record rather than fixed here,
-/// and this check is what makes the built behaviour visible rather than
-/// incidental.
-///
-/// The mutant: folding `Retrieve` in with `Write | Command`, which would make
-/// the harness prompt on `web.fetch` and quietly answer a question the record
-/// left open. Both arms are asserted, so "prompt on everything" and "prompt
-/// on nothing" each fail.
+/// The mutant: dropping `Retrieve` from the effects that prompt, which lets a
+/// model send data out in a URL with nobody asked. Both arms are asserted, so
+/// "prompt on everything" and "prompt on nothing" each fail.
 #[test]
-fn only_a_write_or_a_command_prompts_in_ask_mode() {
+fn a_write_a_command_or_a_retrieval_prompts_in_ask_mode() {
     let mut prompting = Vec::new();
     let mut silent = Vec::new();
     for tool in ToolName::ALL {
@@ -146,15 +141,14 @@ fn only_a_write_or_a_command_prompts_in_ask_mode() {
 
     assert_eq!(
         prompting,
-        vec!["fs.write", "fs.edit", "cmd.run"],
-        "ADR-0011 D3's `ask` mode \"prompts before any write or command\"; the tools that prompt \
-         are {prompting:?}"
+        vec!["fs.write", "fs.edit", "cmd.run", "web.fetch"],
+        "in `ask` mode a write, a command and a retrieval prompt; the tools that prompt are \
+         {prompting:?}"
     );
     assert_eq!(
         silent,
-        vec!["fs.read", "fs.list", "fs.search", "web.fetch"],
-        "these are the tools D3's `ask` sentence does not name, so none of them prompts on its \
-         effect alone; `web.fetch` among them is the open question recorded on ADR-0011. Note \
+        vec!["fs.read", "fs.list", "fs.search"],
+        "these read inside the working directory and do not prompt on their effect alone. Note \
          that D4 still prompts for any of them outside the working directory"
     );
 
@@ -300,47 +294,59 @@ fn the_default_mode_is_ask() {
     assert_eq!(Mode::ALL.len(), 3, "ADR-0011 D3 names exactly three modes");
 }
 
-/// **ADR-0011 D2's not-a-sandbox line: once, at bare tier, and nowhere else.**
+/// **ADR-0011 D2's not-a-sandbox line: once, at every tier.**
 ///
 /// D2: "At bare tier the harness states plainly, once at session start, that
 /// it is not a sandbox." The sentence is the caller's — see
 /// [`SessionNotice`] — so this asserts the mechanism and not the wording.
 ///
-/// Two mutants: making `state_once` clone rather than take, which states it
-/// on every call; and dropping the `has_membrane` guard, which states at
-/// `contained` and `linked` a sentence that would be false there.
+/// The mutant: making `state_once` clone rather than take, which states it on
+/// every call.
 #[test]
-fn the_session_notice_is_stated_once_and_only_where_there_is_no_membrane() {
+fn the_session_notice_is_stated_once() {
     let sentence = nonce("not-a-sandbox");
 
-    let mut bare = SessionNotice::for_tier(Tier::Bare, sentence.clone())
-        .expect("bare tier has no membrane, so it owes the user the line");
-    assert!(bare.is_owed(), "the line is owed before it is stated");
+    let mut notice = SessionNotice::new(sentence.clone());
+    assert!(notice.is_owed(), "the line is owed before it is stated");
     assert_eq!(
-        bare.state_once(),
+        notice.state_once(),
         Some(sentence.clone()),
         "the sentence the caller supplied is not the sentence stated"
     );
-    assert!(!bare.is_owed(), "the line is still owed after being stated");
+    assert!(
+        !notice.is_owed(),
+        "the line is still owed after being stated"
+    );
     for again in 0..3 {
         assert_eq!(
-            bare.state_once(),
+            notice.state_once(),
             None,
             "the line was stated a second time (call {again}); D2 says once at session start"
         );
     }
+}
 
-    let membraned: Vec<&str> = Tier::ALL
-        .into_iter()
-        .filter(|tier| SessionNotice::for_tier(*tier, sentence.clone()).is_none())
-        .map(Tier::as_str)
-        .collect();
-    assert_eq!(
-        membraned,
-        vec!["contained", "linked"],
-        "ADR-0011 D2 gives `bare` no enforcement and the other two a membrane, so only `bare` \
-         owes this line; this crate withholds it from {membraned:?}"
+/// No tier is built past `bare`, so every tier gets the warning, and the two
+/// that are not built say so in one more sentence.
+///
+/// Measured on `970f60a`: at `--runtime contained` no warning was printed and
+/// a tool call ran on the machine as at bare.
+#[test]
+fn every_tier_is_warned_and_a_tier_that_is_not_built_says_so() {
+    use crate::compose::prose::{NOT_A_SANDBOX, not_a_sandbox_at};
+    assert_eq!(not_a_sandbox_at(Tier::Bare), NOT_A_SANDBOX);
+    assert!(
+        !NOT_A_SANDBOX.contains("--runtime"),
+        "the warning recommends a tier that enforces nothing: {NOT_A_SANDBOX}"
     );
+    for tier in [Tier::Contained, Tier::Linked] {
+        assert_eq!(
+            not_a_sandbox_at(tier),
+            format!(
+                "{NOT_A_SANDBOX} The {tier} tier is not built yet and changes nothing about how tool calls run."
+            )
+        );
+    }
 }
 
 /// The three tiers are ADR-0001 D1's, spelled as that record spells them.
@@ -2745,6 +2751,51 @@ fn a_session_grant_is_typed_past_at_the_door_and_taken_at_a_tool_call() {
     assert!(wrong.is_empty(), "{}", wrong.join("; "));
 }
 
+/// `h` allows every URL on a host for the session, and only a `web.fetch`
+/// question offers it; its line names it.
+#[test]
+fn a_host_grant_is_taken_at_a_fetch_and_nowhere_else() {
+    let mut wrong = Vec::new();
+    for typed in ["h", "H", "host", "HOST", " h ", "h\n"] {
+        if prompt::answer(prompt::Answers::Fetch, Some(typed)) != Answer::ForThisHost {
+            wrong.push(format!("{typed:?} was not a host grant at a fetch"));
+        }
+        for elsewhere in [prompt::Answers::ToolCall, prompt::Answers::Admission] {
+            if prompt::answer(elsewhere, Some(typed)) != Answer::No {
+                wrong.push(format!("{typed:?} answered a {elsewhere:?} question"));
+            }
+        }
+    }
+    for (typed, expected) in [
+        ("y", Answer::Once),
+        ("a", Answer::ForThisSession),
+        ("n", Answer::No),
+        ("", Answer::No),
+    ] {
+        if prompt::answer(prompt::Answers::Fetch, Some(typed)) != expected {
+            wrong.push(format!("{typed:?} is not {expected:?} at a fetch"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("; "));
+    assert_eq!(prompt::Answers::Fetch.line(), prompt::FETCH_SUFFIX);
+    assert!(prompt::FETCH_SUFFIX.contains("h allows every URL on this host"));
+
+    // A `web.fetch` question takes these answers, and a write does not.
+    let url = crate::web::RequestedUrl::parse("https://example.com/a?b=c").expect("parses");
+    let question = Decision::reach(
+        Mode::Ask,
+        &crate::tools::Invocation::fetching(&url),
+        Assessment::default(),
+    )
+    .question()
+    .expect("a retrieval is asked about in `ask` mode");
+    assert_eq!(question.answers, prompt::Answers::Fetch);
+    assert_eq!(
+        question.statement,
+        "Allow web.fetch https://example.com/a?b=c?"
+    );
+}
+
 /// The line a question shows and the keys it takes are one value.
 ///
 /// **The mutant:** either arm of [`prompt::Answers::line`] returning the other
@@ -2880,64 +2931,30 @@ fn a_prompt_without_a_terminal_is_no_confirmer_at_all() {
 /// process, which is what `--resume` did until 2026-09-05. **Reading the other
 /// line's field** decides the two lines by one rule, the shape ADR-0002's
 /// Status tracking names — and the arm that separates them is a session that
-/// has said the recommendation and never the notice, which is an ordinary
-/// session whose first process ran with a membrane.
+/// has said the recommendation and never the notice.
 ///
-/// The tier is still re-read, and the last two arms are why it must be: this
-/// sentence is false where there is a membrane, so a session started at
-/// `contained` and resumed at `bare` is owed it **for the first time** even
-/// though it has already had a turn.
+/// The tier is no longer read: every tier owes the line, so the transcript
+/// alone decides.
 #[test]
-fn the_session_notice_is_owed_once_per_session_and_the_tier_is_read_again() {
+fn the_session_notice_is_owed_once_per_session() {
     use crate::session::fixtures::already_said;
     let sentence = nonce("not-a-sandbox");
 
     assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Bare,
-            sentence.clone(),
-            &crate::session::AlreadySaid::none()
-        )
-        .is_some(),
-        "a session that has said nothing is owed D2's line at the tier where it is true",
+        SessionNotice::in_session(sentence.clone(), &crate::session::AlreadySaid::none()).is_some(),
+        "a session that has said nothing is owed D2's line",
     );
     assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Bare,
-            sentence.clone(),
-            &already_said(true, false)
-        )
-        .is_none(),
+        SessionNotice::in_session(sentence.clone(), &already_said(true, false)).is_none(),
         "this session's transcript says it already stated D2's line, and D2 says once at session \
          start",
     );
     // The arm that tells the two rules apart: the *other* line was said and
     // this one was not.
     assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Bare,
-            sentence.clone(),
-            &already_said(false, true)
-        )
-        .is_some(),
+        SessionNotice::in_session(sentence.clone(), &already_said(false, true)).is_some(),
         "a session that stated ADR-0002 D8's recommendation has not been told it is not in a \
          sandbox; deciding this line by that one's witness is two rules in one place",
-    );
-    // The tier half, which the transcript never overrides in either direction.
-    assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Contained,
-            sentence.clone(),
-            &crate::session::AlreadySaid::none()
-        )
-        .is_none(),
-        "D2's table gives `contained` a membrane, so the sentence would be false there",
-    );
-    assert!(
-        SessionNotice::for_tier_in_session(Tier::Bare, sentence, &already_said(false, false))
-            .is_some(),
-        "a session resumed at `bare` after running at `contained` has said nothing and is owed \
-         the line for the first time, however many turns it has had",
     );
 }
 
@@ -3739,19 +3756,19 @@ fn adr_0011_d3_a_projected_call_is_asked_about_at_every_mode_short_of_yolo() {
         Requirement::Proceed,
     );
 
-    // The accepting sibling for the `web.fetch` contrast, so the assertion
-    // above is about `Remote` rather than about every effect: a retrieval
-    // still does not prompt at the default mode.
-    let url = crate::web::RequestedUrl::parse("https://example.com/").expect("a well-formed URL");
+    // The accepting sibling, so the assertion above is about `Remote` rather
+    // than about every effect: a read inside the tree does not prompt.
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("resolves");
+    let inside = working.classify("inside.txt");
     assert_eq!(
         Decision::reach(
             Mode::Ask,
-            &crate::tools::Invocation::fetching(&url),
+            &crate::tools::Invocation::on_path(ToolName::FsRead, &inside).expect("a path call"),
             Assessment::default()
         )
         .requirement(),
         Requirement::Proceed,
-        "ADR-0011's open question on `web.fetch` is untouched by this work"
     );
 }
 

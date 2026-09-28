@@ -177,6 +177,7 @@ const fn answers_for_the_shell(answers: crate::tools::prompt::Answers) -> zaru_t
     match answers {
         crate::tools::prompt::Answers::ToolCall => zaru_tui::shell::Answers::ToolCall,
         crate::tools::prompt::Answers::Admission => zaru_tui::shell::Answers::Admission,
+        crate::tools::prompt::Answers::Fetch => zaru_tui::shell::Answers::Fetch,
     }
 }
 
@@ -997,6 +998,9 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
                     zaru_tui::shell::Answered::Once => crate::tools::port::Answer::Once,
                     zaru_tui::shell::Answered::ForThisSession => {
                         crate::tools::port::Answer::ForThisSession
+                    }
+                    zaru_tui::shell::Answered::ForThisHost => {
+                        crate::tools::port::Answer::ForThisHost
                     }
                 });
             }
@@ -3823,6 +3827,7 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
                 _ => None,
             }
         }
+        ("/validators", Some("list")) if command.words.is_empty() => Some(Request::ValidatorsList),
         ("/session", Some("list")) => Some(Request::SessionsList),
         ("/session", Some("rm")) => command
             .words

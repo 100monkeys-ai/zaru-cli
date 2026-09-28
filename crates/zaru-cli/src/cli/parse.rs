@@ -314,6 +314,15 @@ fn read_positionals(positionals: &[String]) -> Result<Request, CommandRefused> {
             }
             (other, _, _) => unreachable!("`{other}` is not one of Namespace::Session's verbs"),
         },
+        Namespace::Validators => match verb(namespace, rest)? {
+            ("approve", None, _) => Ok(Request::ValidatorsApprove),
+            ("list", None, _) => Ok(Request::ValidatorsList),
+            ("approve" | "list", Some(extra), command) => Err(CommandRefused::UnexpectedWord {
+                command,
+                offered: extra.to_string(),
+            }),
+            (other, _, _) => unreachable!("`{other}` is not one of Namespace::Validators's verbs"),
+        },
         // The second namespace whose grammar is two words deep, and it stopped
         // going through `verb` on 2026-09-05 when `tokens add` arrived. The
         // nesting is `providers keys add <kind>`'s and for the same reason:

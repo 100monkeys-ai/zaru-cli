@@ -79,7 +79,11 @@ impl Subprocess for Unbuilt {
     }
 }
 impl Fetch for Unbuilt {
-    async fn retrieve(&self, _url: &crate::web::RequestedUrl) -> Result<Captured, PortFailure> {
+    async fn retrieve(
+        &self,
+        _url: &crate::web::RequestedUrl,
+        _followed: usize,
+    ) -> Result<crate::tools::Retrieved, PortFailure> {
         Err(PortFailure::new(format!("web.fetch {UNBUILT}")))
     }
 }

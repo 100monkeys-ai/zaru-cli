@@ -120,7 +120,7 @@ pub use output::{
 };
 pub use port::{
     Allowlist, Confirm, ConfirmFailure, DestructiveMatch, Fetch, NoProjection, Projected, Question,
-    Subprocess,
+    Retrieved, Subprocess,
 };
 // `prompt` is deliberately **not** re-exported here. `zaru-core` already has
 // an `iteration::Prompt` and several checks in this crate import it, so a

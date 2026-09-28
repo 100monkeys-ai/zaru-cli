@@ -107,8 +107,19 @@ impl InATerminal {
     }
 
     fn started(environment: &[(&str, &str)], prelude: &str) -> Self {
+        Self::started_in(environment, prelude, |_, _| {})
+    }
+
+    /// As [`Self::started`], with `setup` given the home and the working
+    /// directory before `zaru` starts.
+    fn started_in(
+        environment: &[(&str, &str)],
+        prelude: &str,
+        setup: impl FnOnce(&std::path::Path, &std::path::Path),
+    ) -> Self {
         let home = Scratch::new("home");
         let work = Scratch::new("work");
+        setup(&home.0, &work.0);
         let zaru = env!("CARGO_BIN_EXE_zaru");
         // The inner `sh` prints its own pid and `exec`s `zaru`, so the pid is
         // `zaru`'s and `zaru` is the terminal's foreground process rather than
@@ -176,6 +187,16 @@ impl InATerminal {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Type `text` at the terminal.
+    fn type_in(&mut self, text: &str) {
+        use std::io::Write as _;
+        self.child
+            .stdin()
+            .write_all(text.as_bytes())
+            .and_then(|()| self.child.stdin().flush())
+            .expect("the keys reach the terminal");
     }
 
     /// The process id the wrapping shell reported for `zaru`.
@@ -725,6 +746,91 @@ fn the_killed_checks_child_holds_a_session_open() {
     // Held until the check above kills this process. Its own deadline, so a
     // child nobody kills still ends.
     std::thread::sleep(Duration::from_secs(120));
+}
+
+// ------------------------------------------- a project's validators, approved
+
+/// The sealing key for the store this file's sessions read.
+const SEALING_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// Inside a session, a project's validators are asked about on the pane before
+/// the first turn that would run them, and a no stops the turn before the
+/// model or any validator is reached.
+///
+/// The provider is a closed port on this machine, so nothing leaves it.
+#[test]
+fn a_session_asks_before_a_projects_validators_run_and_a_no_stops_the_turn() {
+    let mut session = InATerminal::started_in(
+        &[
+            ("ZARU_CREDENTIAL_KEY", SEALING_KEY),
+            ("ZARU_PROVIDER_GEMINI_ENDPOINT", "http://127.0.0.1:1"),
+            ("ZARU_MODEL_DEFAULT", "gemini-3.6-flash"),
+        ],
+        "",
+        |home, work| {
+            use std::io::Write as _;
+            let mut child = owned::command(env!("CARGO_BIN_EXE_zaru"))
+                .args(["providers", "keys", "add", "gemini"])
+                .env_clear()
+                .env("HOME", home)
+                .env("ZARU_CREDENTIAL_KEY", SEALING_KEY)
+                .current_dir(work)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the built binary runs");
+            child
+                .stdin()
+                .write_all(b"nonce-terminal-validators\n")
+                .expect("the key reaches the child");
+            assert!(
+                child.wait().expect("it exits").success(),
+                "the key was not stored"
+            );
+            std::fs::write(
+                work.join("zaru.toml"),
+                "[[validator]]\nname = \"plant\"\nrun = \"touch VALIDATOR-RAN\"\nexpect = \
+                 \"exit-zero\"\n",
+            )
+            .expect("the manifest is written");
+        },
+    );
+    session.until(b"\x1b[?25h", "the session's first frame");
+    session.type_in("build it\r");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !glyphs(&session.bytes()).contains("plant:touchVALIDATOR-RAN") {
+        assert!(
+            Instant::now() < deadline,
+            "the session never asked about the project's validators; it painted {:?}",
+            glyphs(&session.bytes())
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let asked = glyphs(&session.bytes());
+    assert!(
+        asked.contains("Allowthesecommandstoruninthisproject?"),
+        "the question did not ask: {asked:?}"
+    );
+    session.type_in("n");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !glyphs(&session.bytes()).contains("youdidnotapprovethevalidators") {
+        assert!(
+            Instant::now() < deadline,
+            "a no did not stop the turn; the session painted {:?}",
+            glyphs(&session.bytes())
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !session.work.0.join("VALIDATOR-RAN").exists(),
+        "the validator ran after the person said no"
+    );
+    let painted = glyphs(&session.bytes());
+    assert!(
+        !painted.contains("providercouldnotbereached"),
+        "the turn went on to the provider after a no: {painted:?}"
+    );
 }
 
 // --------------------------------- a home and an environment nobody handed

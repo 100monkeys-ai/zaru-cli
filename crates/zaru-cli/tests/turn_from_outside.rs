@@ -1092,6 +1092,9 @@ fn a_project_that_declares_validators_takes_adr_0009_d4s_other_branch() {
          \"exit-zero\"\n",
     )
     .expect("the manifest is written");
+    // A project's validators run only once the person approves them.
+    let (seen, status) = approve_in_a_terminal(&iterating_home, "y");
+    assert_eq!(status, 0, "{seen}");
 
     let iterated = zaru(
         &iterating_home,
@@ -1501,10 +1504,50 @@ fn adr_0011_d2s_not_a_sandbox_line_is_stated_once_at_bare_tier() {
         ran.stderr
     );
     assert!(
-        ran.stdout.contains("--runtime contained"),
-        "the sentence must name what a reader can do about it: {}",
+        !ran.stdout.contains("--runtime contained"),
+        "the warning recommends a tier that is not built and contains nothing: {}",
         ran.stdout
     );
+}
+
+/// `contained` and `linked` can be selected and enforce nothing, so selecting
+/// one says the same as `bare` and one sentence more: that the tier is not
+/// built yet and changes nothing.
+///
+/// Measured on `970f60a`: a task at `--runtime contained` printed no warning
+/// at all, and a tool call the model asked for ran on the machine as at bare.
+#[test]
+fn a_tier_that_is_not_built_warns_as_bare_does_and_says_it_is_not_built() {
+    for tier in ["contained", "linked"] {
+        let home = Home::new(&format!("notice-{tier}"));
+        let (value, _core) = nonce(&format!("notice-{tier}"));
+        store_a_key(&home, "gemini", &value);
+        let ran = zaru(
+            &home,
+            &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+            &[
+                "--runtime",
+                tier,
+                "--model",
+                "gemini-3.6-flash",
+                "say",
+                "hello",
+            ],
+        );
+        assert!(
+            ran.stdout.contains("Zaru is not a sandbox"),
+            "at `{tier}` the not-a-sandbox warning was not printed, and that tier contains \
+             nothing: {}",
+            ran.stdout
+        );
+        assert!(
+            ran.stdout.contains(&format!(
+                "The {tier} tier is not built yet and changes nothing about how tool calls run."
+            )),
+            "at `{tier}` the warning does not say the tier is not built: {}",
+            ran.stdout
+        );
+    }
 }
 
 /// [ADR-0009] D4's missing-manifest line is **not** stated at session start.
@@ -2422,6 +2465,288 @@ fn a_second_line_ending_is_the_users_and_is_refused_without_being_quoted() {
         !stderr.contains(&value),
         "the refusal quoted part of the offered key:\n{stderr}"
     );
+}
+
+// ------------------------------------ a stored key and a keyless provider
+
+/// Run the built binary as [`zaru`] does, but with no sealing key: the
+/// machine has no keyring and `ZARU_CREDENTIAL_KEY` is not set.
+fn zaru_without_the_sealing_key(
+    home: &Home,
+    variables: &[(&str, &str)],
+    arguments: &[&str],
+) -> Ran {
+    let mut command = owned::command(env!("CARGO_BIN_EXE_zaru"));
+    command
+        .args(arguments)
+        .env_clear()
+        .env("HOME", home.path())
+        .current_dir(home.project())
+        .stdin(Stdio::null());
+    for (name, value) in variables {
+        command.env(name, value);
+    }
+    let output: Output = command
+        .output()
+        .expect("failed to execute the built binary");
+    let ran = Ran {
+        stdout: String::from_utf8(output.stdout).expect("zaru printed invalid UTF-8"),
+        stderr: String::from_utf8(output.stderr).expect("zaru printed invalid UTF-8 on stderr"),
+        code: output
+            .status
+            .code()
+            .expect("the binary was killed by a signal rather than exiting"),
+    };
+    println!("-- zaru {} (no sealing key) --", arguments.join(" "));
+    for line in ran.stdout.lines() {
+        println!("   {line}");
+    }
+    for line in ran.stderr.lines() {
+        println!(" ! {line}");
+    }
+    println!("   exit {}", ran.code);
+    ran
+}
+
+/// A task that needs nothing from the credential store does not need the
+/// sealing key, even when a key is stored.
+///
+/// Measured on `970f60a`: with a `gemini` key stored and `ollama` chosen, a
+/// task on a machine with no keyring and no `ZARU_CREDENTIAL_KEY` was refused
+/// at exit 2, "there is no sealing key", though `ollama` needs no key. Now it
+/// goes on to the provider (a closed port here, so it then says nothing
+/// answered), and says in one sentence that the stored keys could not be
+/// read and so cannot be removed from what is sent. A provider that needs its
+/// key is still refused.
+#[test]
+fn a_keyless_provider_does_not_need_the_sealing_key_when_a_key_is_stored() {
+    let home = Home::new("keyless-with-a-stored-key");
+    let (value, _core) = nonce("keyless-with-a-stored-key");
+    store_a_key(&home, "gemini", &value);
+
+    let ran = zaru_without_the_sealing_key(
+        &home,
+        &[
+            ("ZARU_PROVIDER_DEFAULT_KIND", "ollama"),
+            ("ZARU_PROVIDER_OLLAMA_ENDPOINT", CLOSED_LOOPBACK),
+        ],
+        &["--model", "llama3.2", "say", "hello"],
+    );
+    assert!(
+        !ran.stderr.contains("sealing key") && ran.stderr.contains("nothing answered at"),
+        "a task for a provider that needs no key was refused for want of the key that seals the \
+         stored ones (exit {}); it should have gone on to the provider, a closed port here: {}",
+        ran.code,
+        ran.everything()
+    );
+    assert!(
+        ran.stdout
+            .contains(zaru_cli::compose::prose::STORED_KEYS_UNREAD),
+        "the task went on without saying the stored keys could not be read: {}",
+        ran.stdout
+    );
+
+    // The accepting sibling: a provider that needs its key is still refused.
+    let refused = zaru_without_the_sealing_key(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "say", "hello"],
+    );
+    assert_eq!(refused.code, 2, "{}", refused.everything());
+    assert!(refused.stderr.contains("sealing key"), "{}", refused.stderr);
+}
+
+// ------------------------------------------- a project's validators, approved
+
+/// A manifest whose one validator leaves a file behind when it runs.
+const PLANTING_MANIFEST: &str =
+    "[[validator]]\nname = \"plant\"\nrun = \"touch VALIDATOR-RAN\"\nexpect = \"exit-zero\"\n";
+
+/// A project's validators are commands, and none runs until the person has
+/// approved them.
+///
+/// Measured on `970f60a` before this check existed: with this manifest, a
+/// task given with `--mode ask` and standard input on `/dev/null` ran the
+/// validator and left `VALIDATOR-RAN` in the project. Here the provider is a
+/// closed port, so an unfixed build goes on to the provider and exits 3; a
+/// fixed one refuses at exit 2, before anything runs, in every mode.
+#[test]
+fn a_projects_validators_do_not_run_until_the_person_approves_them() {
+    let home = Home::new("validators-unapproved");
+    let (value, _core) = nonce("validators-unapproved");
+    store_a_key(&home, "gemini", &value);
+    std::fs::write(home.project().join("zaru.toml"), PLANTING_MANIFEST)
+        .expect("the manifest is written");
+
+    for mode in ["ask", "allow", "yolo"] {
+        let ran = zaru(
+            &home,
+            &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+            &["--mode", mode, "--model", "gemini-3.6-flash", "build", "it"],
+        );
+        assert_eq!(
+            ran.code,
+            2,
+            "in `{mode}` mode a project whose validators nobody approved went on with the task \
+             (exit {}), so its commands would have run as soon as the model answered: {}",
+            ran.code,
+            ran.everything()
+        );
+        assert!(
+            ran.stderr.contains("zaru validators approve"),
+            "the refusal must say how to approve the validators: {}",
+            ran.stderr
+        );
+        assert!(
+            !home.project().join("VALIDATOR-RAN").exists(),
+            "in `{mode}` mode the validator ran"
+        );
+    }
+    assert!(
+        !ran_anything(&home),
+        "a task refused before anything ran still reached the model or a validator"
+    );
+}
+
+/// Run `zaru validators approve` in a pseudo-terminal and type `answer`.
+///
+/// `script` from util-linux puts the command on a terminal and relays what is
+/// written to its standard input, the way `terminal_from_outside.rs` drives a
+/// session. Returns everything the terminal was sent and the exit status.
+fn approve_in_a_terminal(home: &Home, answer: &str) -> (String, i32) {
+    use std::io::Write as _;
+    let zaru = env!("CARGO_BIN_EXE_zaru");
+    let inner = format!("'{zaru}' validators approve; echo ZARU-STATUS=$?");
+    let mut child = owned::command("script")
+        .args(["-q", "-e", "-c", &inner, "/dev/null"])
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(home.project())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("`script` from util-linux allocates the terminal this check answers on");
+    child
+        .stdin()
+        .write_all(format!("{answer}\n").as_bytes())
+        .expect("the answer reaches the terminal");
+    let output = child.wait_with_output().expect("script exits");
+    let seen = String::from_utf8_lossy(&output.stdout).replace('\r', "");
+    let status = seen
+        .split("ZARU-STATUS=")
+        .nth(1)
+        .and_then(|rest| rest.trim().lines().next())
+        .and_then(|code| code.trim().parse().ok())
+        .unwrap_or_else(|| panic!("the terminal never showed zaru's exit status: {seen}"));
+    println!("-- zaru validators approve, answered {answer:?} --\n{seen}");
+    (seen, status)
+}
+
+/// Approving shows every validator's name and exact command and asks once; a
+/// yes is remembered for this directory and this exact set, a changed set is
+/// asked about again, and `zaru validators list` shows what is approved.
+#[test]
+fn approving_a_projects_validators_shows_them_asks_once_and_remembers_the_exact_set() {
+    let home = Home::new("validators-approve");
+    let (value, _core) = nonce("validators-approve");
+    store_a_key(&home, "gemini", &value);
+    std::fs::write(home.project().join("zaru.toml"), PLANTING_MANIFEST)
+        .expect("the manifest is written");
+
+    // A pipe is refused: nothing typed it, so nothing is approved.
+    let piped = zaru(&home, &[], &["validators", "approve"]);
+    assert_eq!(piped.code, 2, "{}", piped.everything());
+    assert!(
+        piped.stdout.contains("  plant: touch VALIDATOR-RAN"),
+        "the refusal still shows the command it would have asked about: {}",
+        piped.stdout
+    );
+
+    // A no approves nothing.
+    let (seen, status) = approve_in_a_terminal(&home, "n");
+    assert_eq!(status, 0, "{seen}");
+    assert!(
+        seen.contains(zaru_cli::validators::approval::ASK_FIRST),
+        "{seen}"
+    );
+    assert!(seen.contains("  plant: touch VALIDATOR-RAN"), "{seen}");
+    assert!(seen.contains("Nothing was approved."), "{seen}");
+    let refused = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "build", "it"],
+    );
+    assert_eq!(
+        refused.code,
+        2,
+        "a no approved something: {}",
+        refused.everything()
+    );
+
+    // A yes approves this set in this directory.
+    let (seen, status) = approve_in_a_terminal(&home, "y");
+    assert_eq!(status, 0, "{seen}");
+    assert!(seen.contains("Approved."), "{seen}");
+    let listed = zaru(&home, &[], &["validators", "list"]);
+    assert_eq!(listed.code, 0, "{}", listed.everything());
+    assert!(
+        listed.stdout.contains("  plant: touch VALIDATOR-RAN"),
+        "the listing must show the approved command: {}",
+        listed.stdout
+    );
+    let approved = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "build", "it"],
+    );
+    assert_eq!(
+        approved.code,
+        3,
+        "an approved project goes on to the provider, which is a closed port here: {}",
+        approved.everything()
+    );
+
+    // Changed validators are asked about again, and the question says what
+    // changed.
+    std::fs::write(
+        home.project().join("zaru.toml"),
+        PLANTING_MANIFEST.replace("touch VALIDATOR-RAN", "touch SOMETHING-ELSE"),
+    )
+    .expect("the manifest is rewritten");
+    let changed = zaru(
+        &home,
+        &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+        &["--model", "gemini-3.6-flash", "build", "it"],
+    );
+    assert_eq!(changed.code, 2, "{}", changed.everything());
+    assert!(
+        changed.stderr.contains("changed since you approved them"),
+        "{}",
+        changed.stderr
+    );
+    let (seen, _) = approve_in_a_terminal(&home, "n");
+    assert!(
+        seen.contains(zaru_cli::validators::approval::ASK_AGAIN),
+        "{seen}"
+    );
+    assert!(
+        seen.contains(
+            "changed plant: it ran touch VALIDATOR-RAN and now runs touch SOMETHING-ELSE"
+        ),
+        "{seen}"
+    );
+    assert!(!home.project().join("VALIDATOR-RAN").exists());
+    assert!(!home.project().join("SOMETHING-ELSE").exists());
+}
+
+/// Whether any session under this home recorded an iteration or a model call.
+fn ran_anything(home: &Home) -> bool {
+    home.sessions().iter().any(|session| {
+        std::fs::read_to_string(session.join("transcript.jsonl"))
+            .is_ok_and(|text| text.contains("iteration_started") || text.contains("exchange"))
+    })
 }
 
 // --------------------------------- a home and an environment nobody handed

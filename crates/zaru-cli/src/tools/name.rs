@@ -83,22 +83,25 @@ impl Effect {
     ///
     /// D3: "`ask` — Prompts before any write or command. Default."
     ///
-    /// # This is a literal reading, and one consequence of it is a finding
+    /// # `web.fetch` asks too, since 2026-09-28
     ///
-    /// `web.fetch` is neither a write nor a command, so at the **default**
-    /// mode a URL the model chose is retrieved with no prompt. That may be
-    /// what D3 means — the built-in set is small and `web.fetch` reaches
-    /// nothing on the user's disk — or "write or command" may be shorthand
-    /// for "anything with a side effect or an outbound reach". The record
-    /// does not say, so the literal reading is built and the question is
-    /// recorded as open rather than answered by an implementer's instinct.
+    /// `web.fetch` is neither a write nor a command, and until 2026-09-28 a
+    /// URL the model chose was fetched at the default mode with no prompt.
+    /// But a URL is a way out of the machine: a model that has read something
+    /// malicious can put a secret in one. So a retrieval asks like any other
+    /// call that reaches outside the machine. Ruled by the coordinator on
+    /// 2026-09-28 under Jeshua's directive 62, open to his veto; it answers
+    /// the open question ADR-0011 recorded about this row.
     ///
     /// Note that this is not the whole prompting rule: ADR-0011 D4 makes
     /// out-of-tree access prompt in `ask` and `allow` whatever the effect is,
     /// so a *read* outside the working directory still prompts.
     #[must_use]
     pub const fn prompts_in_ask(self) -> bool {
-        matches!(self, Self::Write | Self::Command | Self::Remote)
+        matches!(
+            self,
+            Self::Write | Self::Command | Self::Retrieve | Self::Remote
+        )
     }
 }
 

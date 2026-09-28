@@ -53,28 +53,51 @@
 //!
 //! [Autonomous Development]: https://100monkeys-ai.cortex.page/project-management/p/process/autonomous-development
 
-/// [ADR-0011] D2's statement that `bare` tier is not a sandbox.
+/// [ADR-0011] D2's statement that Zaru is not a sandbox.
 ///
 /// D2: "**At bare tier the harness states plainly, once at session start, that
 /// it is not a sandbox.** A permission prompt that reads like containment
 /// while being a suggestion is worse than no prompt, because it manufactures a
 /// confidence the user has not earned."
 ///
-/// **Transcribed verbatim from that record's Update of 2026-09-04**, which
-/// introduces it as "The exact text proposed, for this record's author to
-/// accept or replace". It is still a proposal; this constant is where it is
-/// said, not where it was decided.
+/// Transcribed from that record's Update of 2026-09-04, which proposed it "for
+/// this record's author to accept or replace", **with two changes made on
+/// 2026-09-28** under a coordinator ruling open to Jeshua's veto. The last
+/// sentence, "Run --runtime contained for a membrane that enforces rather than
+/// asks.", is gone, because no tier enforces anything yet and the program
+/// never recommends protection it does not give. And the rest was rewritten
+/// in plain words, because the same warning is now said at every tier and
+/// "a prompt is a question rather than a barrier" left a person to work out
+/// what it meant. The wording is the coordinator's, open to Jeshua's veto.
 ///
-/// [`SessionNotice::for_tier`](crate::tools::SessionNotice::for_tier) returns
-/// nothing at `contained` and `linked`, where a membrane exists and the
-/// sentence would be false — so the line is not stated where it would be
-/// untrue by absence rather than by a branch here.
+/// At `contained` and `linked` [`not_built`] adds one sentence to it.
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-pub const NOT_A_SANDBOX: &str = "bare tier has no membrane. Zaru is not a sandbox here: a tool \
-                                 call runs with your permissions, on your machine, and a prompt \
-                                 is a question rather than a barrier. Run --runtime contained for \
-                                 a membrane that enforces rather than asks.";
+pub const NOT_A_SANDBOX: &str = "Zaru is not a sandbox. Tool calls run on your machine with your \
+                                 permissions. A permission prompt asks before a call runs; it \
+                                 does not limit what an allowed call can do.";
+
+/// The sentence said after [`NOT_A_SANDBOX`] at a tier that is not built.
+///
+/// `contained` and `linked` can be selected and enforce nothing. Until a tier
+/// enforces something, selecting it prints the same warning as `bare` and
+/// this. Ruled by the coordinator on 2026-09-28, open to Jeshua's veto.
+#[must_use]
+pub fn not_built(tier: crate::runtime::Tier) -> String {
+    format!("The {tier} tier is not built yet and changes nothing about how tool calls run.")
+}
+
+/// The whole warning for `tier`: [`NOT_A_SANDBOX`], and at a tier that is not
+/// built, [`not_built`] after it.
+#[must_use]
+pub fn not_a_sandbox_at(tier: crate::runtime::Tier) -> String {
+    match tier {
+        crate::runtime::Tier::Bare => NOT_A_SANDBOX.to_owned(),
+        crate::runtime::Tier::Contained | crate::runtime::Tier::Linked => {
+            format!("{NOT_A_SANDBOX} {}", not_built(tier))
+        }
+    }
+}
 
 /// The first half of [ADR-0009] D4's line: what is unavailable.
 ///
@@ -332,3 +355,15 @@ pub const ITERATION_IS_ONE_EXCHANGE: &str = "This is one iteration of a validate
      iteration's prompt, in full, together with what the validators said. So propose the change \
      itself rather than looking first, and never ask again for output this prompt has already \
      given you.";
+
+/// What a task says when stored keys could not be read and it needs none of
+/// them.
+///
+/// Stored keys are removed from everything sent to a model, and that needs
+/// their values. When the store cannot be opened (no keyring and no
+/// `ZARU_CREDENTIAL_KEY`) and the task needs nothing from it, the task goes
+/// on and says this once. Ruled by the coordinator on 2026-09-28, open to
+/// Jeshua's veto.
+pub const STORED_KEYS_UNREAD: &str = "Your stored keys could not be read, so Zaru cannot remove \
+                                      them from what it sends to the model; this task needs none \
+                                      of them, so it goes on.";

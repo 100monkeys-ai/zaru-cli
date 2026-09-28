@@ -1447,3 +1447,195 @@ fn a_flattened_line_carries_its_lead_in_and_its_text() {
          would pass every assertion above. {lines_seen} line(s) seen"
     );
 }
+
+/// Whether `text` carries a newline or a tab written out as a backslash and a
+/// letter, which is what a person reads when a sentence holding a real one
+/// is escaped on its way to them.
+fn carries_an_escaped_newline_or_tab(text: &str) -> bool {
+    text.contains("\\n") || text.contains("\\t")
+}
+
+/// Every message a person can be shown for a failure, rendered.
+///
+/// The mapped refusals, and the classifier arms that build their sentence
+/// from text the harness did not write: the validators' own output, a
+/// provider's words, a path.
+fn every_rendered_failure() -> Vec<(String, Presentation)> {
+    use crate::cli::classify::Surface;
+    use crate::validators::approval::NotApproved;
+    use zaru_core::iteration::ExhaustionReason;
+
+    let mut rendered: Vec<(String, Presentation)> = super::fixtures::every_mapped_refusal()
+        .into_iter()
+        .map(|(name, classified, _)| (name.to_owned(), Presentation::of(&classified)))
+        .collect();
+    let mut add = |name: &str, classified: Classified| {
+        rendered.push((name.to_owned(), Presentation::of(&classified)));
+    };
+    add(
+        "loop_exhausted, with validator output over two lines and a tab",
+        Surface::loop_exhausted(
+            1,
+            ExhaustionReason::CeilingReached,
+            Some("never:\nproduced no output\n\tand a tabbed line"),
+        ),
+    );
+    add(
+        "loop_exhausted, with no evaluation",
+        Surface::loop_exhausted(3, ExhaustionReason::CeilingReached, None),
+    );
+    add("turn_exhausted", Surface::turn_exhausted(8, 12));
+    for (name, refusal) in [
+        (
+            "not approved, no terminal",
+            NotApproved::NobodyToAsk { changed: false },
+        ),
+        (
+            "not approved, changed",
+            NotApproved::NobodyToAsk { changed: true },
+        ),
+        ("not approved, declined", NotApproved::Declined),
+    ] {
+        add(name, Surface::validators_not_approved(&refusal));
+    }
+    add(
+        "approval needs a terminal",
+        Surface::approval_needs_a_terminal(),
+    );
+    rendered
+}
+
+/// No message a person reads shows a newline or a tab as `\n` or `\t`.
+///
+/// Measured on `970f60a`: a task whose validator never passed ended on
+/// standard error with "What the validators last said:\nnever:\nproduced no
+/// output". The validators' output was put into one sentence with real
+/// newlines, and the sentence escapes every control character so that text
+/// the harness did not write cannot forge a line of its own. Each line of
+/// that output is now its own line under the sentence, escaped on its own.
+#[test]
+fn no_message_a_person_reads_carries_an_escaped_newline_or_tab() {
+    let rendered = every_rendered_failure();
+    let mut escaped = Vec::new();
+    for (name, shown) in &rendered {
+        let mut parts = vec![shown.headline.as_str()];
+        for line in &shown.lines {
+            if let Some(lead) = &line.lead {
+                parts.push(lead);
+            }
+            parts.push(&line.text);
+        }
+        for part in parts {
+            if carries_an_escaped_newline_or_tab(part) {
+                escaped.push(format!("{name}: {part}"));
+            }
+        }
+    }
+    assert!(
+        escaped.is_empty(),
+        "{} of {} messages show a newline or a tab as a backslash and a letter: {escaped:#?}",
+        escaped.len(),
+        rendered.len()
+    );
+
+    // What the validators said is still there, one line each.
+    let (_, exhausted) = &rendered
+        .iter()
+        .find(|(name, _)| name.starts_with("loop_exhausted, with validator output"))
+        .expect("staged above");
+    let texts: Vec<&str> = exhausted
+        .lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["never:", "produced no output", "and a tabbed line"],
+        "the validators' last output must reach the person, one line each: {exhausted:?}"
+    );
+}
+
+/// The predicate sees what it is for, so the green above is not vacuous.
+#[test]
+fn the_escape_predicate_sees_an_escaped_newline_and_a_tab() {
+    assert!(carries_an_escaped_newline_or_tab(
+        Statement::sanitised("a\nb").as_str()
+    ));
+    assert!(carries_an_escaped_newline_or_tab(
+        Statement::sanitised("a\tb").as_str()
+    ));
+    assert!(!carries_an_escaped_newline_or_tab(
+        "a sentence with no control"
+    ));
+}
+
+/// No sentence written in the modules that compose failures carries a
+/// newline or a tab of its own, because it would reach a person escaped.
+///
+/// A walk over the source, so a sentence added tomorrow is held too.
+#[test]
+fn no_sentence_a_failure_is_built_from_writes_a_newline_or_a_tab() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    for file in [
+        "src/cli/classify.rs",
+        "src/failure/classify.rs",
+        "src/compose/prose.rs",
+        "src/validators/approval.rs",
+    ] {
+        let source = std::fs::read_to_string(root.join(file)).expect("the source is readable");
+        for (at, line) in source.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if a_string_in(code).any(|literal| literal.contains("\\n") || literal.contains("\\t")) {
+                found.push(format!("{file}:{}: {code}", at + 1));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a sentence a failure is built from writes a newline or a tab, which a person reads as a \
+         backslash and a letter: {found:#?}"
+    );
+}
+
+/// The double-quoted string literals on one line of source, as written.
+///
+/// A character literal such as `'\n'` is file handling rather than a
+/// sentence, so it is not one of them; a lifetime is neither.
+fn a_string_in(line: &str) -> impl Iterator<Item = String> {
+    let characters: Vec<char> = line.chars().collect();
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < characters.len() {
+        match characters[at] {
+            '"' => {
+                let mut literal = String::new();
+                at += 1;
+                while at < characters.len() && characters[at] != '"' {
+                    if characters[at] == '\\' && at + 1 < characters.len() {
+                        literal.push('\\');
+                        at += 1;
+                    }
+                    literal.push(characters[at]);
+                    at += 1;
+                }
+                found.push(literal);
+            }
+            // `'\n'` or `'x'` is a character literal; anything else is a
+            // lifetime and is stepped over one character at a time.
+            '\'' if characters.get(at + 1) == Some(&'\\') => {
+                at += 2;
+                while at < characters.len() && characters[at] != '\'' {
+                    at += 1;
+                }
+            }
+            '\'' if characters.get(at + 2) == Some(&'\'') => at += 2,
+            _ => {}
+        }
+        at += 1;
+    }
+    found.into_iter()
+}

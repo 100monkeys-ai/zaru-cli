@@ -2026,7 +2026,7 @@ fn a_stored_attachment_identity_with_no_workspace_is_refused_on_the_way_back_in(
 /// ADR-0010 D2's sixth producer, accepted 2026-09-05 under directive 20. The
 /// mutant this catches is the two `SaidOnce` variants being indistinguishable
 /// on disk — one spelling, or a `bool` — which would make
-/// `SessionNotice::for_tier_in_session` and
+/// `SessionNotice::in_session` and
 /// `MissingManifest::for_manifest_in_session` decide by one rule, the shape
 /// ADR-0002's Status tracking names as "two rules in one place".
 #[test]

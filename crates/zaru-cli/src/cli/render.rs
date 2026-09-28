@@ -59,9 +59,17 @@ pub fn explanation(explanation: &Explanation) -> Vec<String> {
 /// different question from the one D2 asks.
 ///
 /// [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
+///
+/// # What is built comes first, and what is planned is marked as planned
+///
+/// D1's columns describe what each tier is **planned** to be. Until
+/// 2026-09-28 this printed them as the current tier's state, so `contained`
+/// read "membrane local containers" while a tool call at `contained` ran on
+/// the machine exactly as at `bare`. Now the first lines say what is true
+/// today, in the words the session's own warning uses, and D1's cells follow
+/// under a line that says none of it is built.
 #[must_use]
 pub fn runtime(datum: &Runtime) -> Vec<String> {
-    let engagement = datum.engagement;
     let mut lines = vec![
         format!(
             "{} = {} (from {})",
@@ -69,10 +77,12 @@ pub fn runtime(datum: &Runtime) -> Vec<String> {
             datum.tier,
             datum.supplied_by.label()
         ),
-        format!("  membrane  {}", engagement.membrane.as_str()),
-        format!("  loop      {}", engagement.r#loop.as_str()),
-        format!("  cortex    {}", engagement.cortex.as_str()),
-        format!("  network   {}", engagement.network.as_str()),
+        format!("  {}", crate::compose::prose::not_a_sandbox_at(datum.tier)),
+        "  Only the bare tier is built. At every tier a tool call runs directly on your \
+         machine. The tier also sets the default for runtime.max_iterations."
+            .to_owned(),
+        String::new(),
+        "What each tier is planned to change. None of it is built yet.".to_owned(),
     ];
 
     for (other, differences) in &datum.would_change {

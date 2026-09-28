@@ -494,14 +494,18 @@ pub enum Unprompted {
     ///
     /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
     Opening,
+    /// The stored keys could not be read, so nothing is removed from what is
+    /// sent to the model, and the task goes on because it needs none of
+    /// them. Added 2026-09-28.
+    StoredKeysUnread,
 }
 
 impl Unprompted {
     /// Every line in the set, so a check can walk them rather than list them.
     ///
-    /// The length is annotated, so an eighteenth fails to compile here as well
+    /// The length is annotated, so a twentieth fails to compile here as well
     /// as in every exhaustive match below.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::NotASandbox,
         Self::MissingValidators,
         Self::DeclareOne,
@@ -520,6 +524,7 @@ impl Unprompted {
         Self::TurnCounter,
         Self::StillGenerating,
         Self::Opening,
+        Self::StoredKeysUnread,
     ];
 
     /// Where this line's wording comes from — by reference, never retyped.
@@ -529,6 +534,10 @@ impl Unprompted {
             Self::NotASandbox => Wording::Authored {
                 name: "NOT_A_SANDBOX",
                 text: prose::NOT_A_SANDBOX,
+            },
+            Self::StoredKeysUnread => Wording::Authored {
+                name: "STORED_KEYS_UNREAD",
+                text: prose::STORED_KEYS_UNREAD,
             },
             Self::MissingValidators => Wording::Authored {
                 name: "NO_VALIDATORS",
@@ -618,6 +627,7 @@ impl Unprompted {
             | Self::NotesFromCache
             | Self::Opening => Cause::UserMessage,
             Self::NotASandbox
+            | Self::StoredKeysUnread
             | Self::MissingValidators
             | Self::DeclareOne
             | Self::Interrupted
@@ -644,6 +654,7 @@ impl Unprompted {
             Self::NotASandbox => Subject::ATier,
             Self::MissingValidators | Self::DeclareOne => Subject::TheProject,
             Self::StandingTip
+            | Self::StoredKeysUnread
             | Self::NothingCached
             | Self::LookingInNotes
             | Self::NotesUnreachable
@@ -670,7 +681,7 @@ impl Unprompted {
     #[must_use]
     pub const fn door(self) -> Door {
         match self {
-            Self::NotASandbox => Door::SessionNotice,
+            Self::NotASandbox | Self::StoredKeysUnread => Door::SessionNotice,
             Self::MissingValidators | Self::DeclareOne => Door::Recommendation,
             Self::Interrupted => Door::InterruptNotice,
             Self::StandingTip => Door::StandingStrip,
@@ -697,6 +708,7 @@ impl Unprompted {
     pub const fn clause(self) -> (&'static str, &'static str) {
         match self {
             Self::NotASandbox => ("ADR-0011", "D2"),
+            Self::StoredKeysUnread => ("ADR-0007", "D3"),
             Self::MissingValidators | Self::DeclareOne => ("ADR-0009", "D4"),
             Self::Interrupted => ("ADR-0010", "D2"),
             Self::StandingTip => ("ADR-0002", "D8"),

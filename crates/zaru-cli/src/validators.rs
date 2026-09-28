@@ -72,6 +72,7 @@
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 //! [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 
+pub mod approval;
 pub mod ceiling;
 pub mod pattern;
 pub mod schema;

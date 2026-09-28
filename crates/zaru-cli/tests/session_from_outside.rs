@@ -323,7 +323,7 @@ fn an_outside_caller_can_mint_an_id_from_the_machine() {
 fn corpus_what_a_session_has_said_is_read_from_its_transcript_and_not_its_checkpoint() {
     use zaru_cli::manifest::MissingManifest;
     use zaru_cli::session::{Said, SaidOnce};
-    use zaru_cli::tools::{SessionNotice, Tier};
+    use zaru_cli::tools::SessionNotice;
 
     let scratch = Scratch::new();
     let store = SessionStore::open(scratch.home()).expect("the store opened");
@@ -336,7 +336,7 @@ fn corpus_what_a_session_has_said_is_read_from_its_transcript_and_not_its_checkp
     /// The two decisions, taken exactly as the composition takes them.
     fn owed(said: &zaru_cli::session::AlreadySaid) -> (bool, bool) {
         (
-            SessionNotice::for_tier_in_session(Tier::Bare, "the sentence", said).is_some(),
+            SessionNotice::in_session("the sentence", said).is_some(),
             MissingManifest::for_manifest_in_session(
                 None,
                 zaru_cli::failure::Statement::new("unavailable").expect("a statement"),

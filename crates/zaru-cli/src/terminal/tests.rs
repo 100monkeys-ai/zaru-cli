@@ -679,12 +679,22 @@ fn the_in_session_verbs_of_session_are_adr_0010_d4s_four() {
     );
 }
 
-/// The accepting sibling: only `/session` differs, and every other namespace
-/// answers identically on both surfaces rather than by a second list.
+/// `approve` asks on standard input, which a session has taken, so a session
+/// offers `/validators list` alone; the question itself is put on the pane
+/// before the first turn that would run a validator.
 #[test]
-fn every_namespace_but_session_answers_identically_on_both_surfaces() {
+fn the_in_session_verbs_of_validators_leave_out_approve() {
+    assert_eq!(Namespace::Validators.slash_verbs(), &["list"]);
+    assert_eq!(Namespace::Validators.verbs(), &["approve", "list"]);
+}
+
+/// The accepting sibling: only `/session` and `/validators` differ, and every
+/// other namespace answers identically on both surfaces rather than by a
+/// second list.
+#[test]
+fn every_namespace_but_session_and_validators_answers_identically_on_both_surfaces() {
     for namespace in Namespace::ALL {
-        if namespace == Namespace::Session {
+        if matches!(namespace, Namespace::Session | Namespace::Validators) {
             continue;
         }
         assert_eq!(

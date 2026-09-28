@@ -158,6 +158,10 @@ pub enum Request {
     ///
     /// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
     Learned,
+    /// `zaru validators approve`: show this directory's validators and ask.
+    ValidatorsApprove,
+    /// `zaru validators list`: every project whose validators are approved.
+    ValidatorsList,
     /// `zaru sessions list`.
     SessionsList,
     /// `zaru sessions rm <id>` — [ADR-0010] D6.

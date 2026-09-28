@@ -43,7 +43,7 @@ Then name the model in `~/.zaru/config.toml`:
 default = "gemini-3.6-flash"
 ```
 
-Stored keys are encrypted with a key kept in your operating system's keyring. If the machine has no keyring (a server, WSL, a container), `zaru` tells you so and stops. Set `ZARU_CREDENTIAL_KEY` to 64 lower-case hexadecimal characters in your shell profile, for example the output of `openssl rand -hex 32`, and keep that value: without it, the keys you stored cannot be read again.
+Stored keys are encrypted with a key kept in your operating system's keyring. If the machine has no keyring (a server, WSL, a container) and a task needs a stored key, `zaru` tells you so and stops. Set `ZARU_CREDENTIAL_KEY` to 64 lower-case hexadecimal characters in your shell profile, for example the output of `openssl rand -hex 32`, and keep that value: without it, the keys you stored cannot be read again. A task that needs no stored key, such as one for Ollama, goes on without it and says that the stored keys could not be read.
 
 **Ollama.** No key is needed. Start the server, then write `~/.zaru/config.toml`:
 
@@ -79,7 +79,7 @@ Run `zaru` with the task in quotes, from the directory you want it to work in:
 
 ```console
 $ zaru "read src/main.rs and tell me what it does"
-bare tier has no membrane. Zaru is not a sandbox here: a tool call runs with your permissions, on your machine, and a prompt is a question rather than a barrier. ...
+Zaru is not a sandbox. Tool calls run on your machine with your permissions. A permission prompt asks before a call runs; it does not limit what an allowed call can do.
 
 <the model's answer>
 
@@ -115,17 +115,17 @@ Run `zaru` with no arguments in a terminal to open a session. Type a task and pr
 
 ### Permission prompts and modes
 
-Before a tool call that needs permission, Zaru shows what the call will do (for a file write, the file and its new contents) and asks `[y/N/a · a allows this exact line for this session · esc declines]`. `y` allows the call once. `N`, Enter or Esc declines it. `a` allows the same call for the rest of the session.
+Before a tool call that needs permission, Zaru shows what the call will do (for a file write, the file and its new contents) and asks `[y/N/a · a allows this exact line for this session · esc declines]`. `y` allows the call once. `N`, Enter or Esc declines it. `a` allows the same call for the rest of the session. Before fetching a web page, Zaru shows the whole URL and also offers `h`, which allows every URL on that host for the rest of the session.
 
 The permission mode decides what needs asking. Set it with `tools.mode` in `~/.zaru/config.toml`, the `ZARU_TOOLS_MODE` environment variable, or `--mode` on the command line:
 
 | Mode | What it asks about |
 | --- | --- |
-| `ask` (default) | Every file write, file edit, command and Nuclear Notes call, and anything outside the working directory. Reading, listing and searching files inside it, and fetching web pages, do not ask. |
+| `ask` (default) | Every file write, file edit, command, web page fetch and Nuclear Notes call, and anything outside the working directory. Reading, listing and searching files inside it do not ask. |
 | `allow` | Nothing on your allowlist; everything else. |
 | `yolo` | Nothing. Every call the model makes runs. |
 
-The allowlist is `tools.allowlist` in `~/.zaru/config.toml`: a list of the exact lines the prompt shows, for example `"cmd.run cargo test"`. A project's own files cannot set the mode or the allowlist.
+The allowlist is `tools.allowlist` in `~/.zaru/config.toml`: a list of the exact lines the prompt shows, for example `"cmd.run cargo test"`. For `web.fetch` an entry may also name a host with no `http://` or `https://`, for example `"web.fetch docs.rs"`, which allows every URL on exactly that host. A project's own files cannot set the mode or the allowlist.
 
 ### Configuration
 
@@ -152,7 +152,7 @@ Zaru reads settings from these places. A later one overrides an earlier one:
 
 ### Validators and the iteration loop
 
-A validator is a command in `./zaru.toml` that checks the model's work, such as a build or a test run. When a project declares validators, a task runs in a loop: the model makes a change, the validators run, and if any fails, its output goes back to the model for another attempt. The loop stops when every validator passes or when it reaches `runtime.max_iterations` attempts, which is one unless you set it.
+A validator is a command in `./zaru.toml` that checks the model's work, such as a build or a test run. When a project declares validators, a task runs in a loop: the model makes a change, the validators run, and if any fails, its output goes back to the model for another attempt. The loop stops when every validator passes or when it reaches `runtime.max_iterations` attempts, which is one at the `bare` tier unless you set it.
 
 `zaru init` writes an example `./zaru.toml` to edit. A small one:
 
@@ -164,6 +164,8 @@ expect = "exit-zero"
 ```
 
 `expect` can be `"exit-zero"`, `{ exit-code = 2 }`, `{ matches = "<regex>" }` or `{ json_schema = "<file>" }`. If the validators never all pass, `zaru` exits with code 1.
+
+Validators are commands, so none runs until you approve them. Before the first one runs in a project, Zaru shows every validator's name and command and asks. Your answer is kept in `~/.zaru/approved-validators.jsonl`, for that directory and that exact set of commands. If `zaru.toml` changes them, Zaru asks again and shows what changed. When there is no terminal to ask on, the task is refused: run `zaru validators approve` in the project's directory to see the commands and approve them, and `zaru validators list` to see what you have approved. The permission mode does not change this, `yolo` included.
 
 ### Nuclear Notes
 
@@ -182,6 +184,8 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 | `zaru providers keys` | List the provider keys stored on this machine. |
 | `zaru providers keys add <kind>` | Store a provider key, read from standard input. |
 | `zaru providers keys rm <kind>` | Delete a stored provider key. |
+| `zaru validators approve` | Show the validators in `./zaru.toml` and ask to approve them. |
+| `zaru validators list` | List every project whose validators you approved, and their commands. |
 | `zaru sessions list` | List the sessions on this machine. |
 | `zaru sessions rm <id>` | Delete a session's directory. |
 | `zaru notes tokens` | List the stored Nuclear Notes tokens. |
@@ -207,11 +211,11 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 
 Zaru acts on your machine with your user account's permissions. It is not a sandbox.
 
-- **What the model can do.** It has seven built-in tools: `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.edit`, `cmd.run` and `web.fetch`. `cmd.run` starts a program directly, without a shell, in the working directory, with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TMPDIR` from your environment, and stops it after two minutes. Nothing limits what that program does while it runs. `web.fetch` fetches `http` and `https` URLs only, without asking, and refuses this machine's own addresses and the link-local range, which includes the cloud metadata address.
-- **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing.
-- **Validators run without asking.** The commands in `./zaru.toml` run whenever you give a task in that directory, in every mode. Read the `zaru.toml` of a project you cloned before you run `zaru` in it.
-- **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but enforce nothing yet: at every tier, tool calls run directly on your machine.
-- **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. It does not look for any other secret.
+- **What the model can do.** It has seven built-in tools: `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.edit`, `cmd.run` and `web.fetch`. `cmd.run` starts a program directly, without a shell, in the working directory, with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TMPDIR` from your environment, and stops it after two minutes. Nothing limits what that program does while it runs. `web.fetch` fetches `http` and `https` URLs only. In `ask` mode it asks first and shows the whole URL, because a URL can carry data off your machine. A redirect to another host is asked about again, and refused when there is no terminal to ask on. It refuses this machine's own addresses and the link-local range, which includes the cloud metadata address.
+- **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing, so a model can also change which validators are approved; use `yolo` only for a directory and a task you trust entirely.
+- **Validators run only after you approve them.** The commands in a project's `./zaru.toml` are shown to you and run only once you say yes, and you are asked again when they change. The approval is kept under `~/.zaru/`, never in the project, and the permission mode does not skip it.
+- **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but are not built yet: at every tier, tool calls run directly on your machine. Zaru prints the not-a-sandbox warning at every tier, and at `contained` and `linked` it adds that the tier is not built yet and changes nothing about how tool calls run. `zaru runtime` says the same.
+- **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. When it cannot read them (no keyring and no `ZARU_CREDENTIAL_KEY`) and the task needs none of them, it says so and goes on without removing them. It does not look for any other secret.
 - **What stays on your machine.** Settings, stored keys and sessions are under `~/.zaru/`. Keys and tokens are in `~/.zaru/credentials.json`, encrypted with AES-256-GCM; the encryption key is in the OS keyring or in `ZARU_CREDENTIAL_KEY`. Session files are readable only by you and are kept until you delete them with `zaru sessions rm`.
 
 ### Known limitations

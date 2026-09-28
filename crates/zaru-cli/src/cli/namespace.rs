@@ -111,6 +111,14 @@ pub enum Namespace {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Help,
+    /// Added 2026-09-28 — which project validators may run.
+    ///
+    /// A project's validators are commands its `zaru.toml` declares, and none
+    /// runs until the person approves them. `zaru validators approve` shows
+    /// this directory's validators and asks; `zaru validators list` prints
+    /// what is approved. Ruled by the coordinator under Jeshua's directives
+    /// 58 and 62, open to his veto.
+    Validators,
 }
 
 impl Namespace {
@@ -118,7 +126,7 @@ impl Namespace {
     ///
     /// The length is annotated, so a thirteenth fails to compile here as well
     /// as in every exhaustive match below.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Runtime,
         Self::Stack,
         Self::Notes,
@@ -131,6 +139,7 @@ impl Namespace {
         Self::Init,
         Self::Providers,
         Self::Help,
+        Self::Validators,
     ];
 
     /// The spelling inside a session — D2's own first column.
@@ -149,6 +158,7 @@ impl Namespace {
             Self::Init => "/init",
             Self::Providers => "/providers",
             Self::Help => "/help",
+            Self::Validators => "/validators",
         }
     }
 
@@ -173,6 +183,7 @@ impl Namespace {
             Self::Init => "init",
             Self::Providers => "providers",
             Self::Help => "help",
+            Self::Validators => "validators",
         }
     }
 
@@ -192,6 +203,7 @@ impl Namespace {
             Self::Init => "the project manifest",
             Self::Providers => "provider credentials",
             Self::Help => "the surface itself",
+            Self::Validators => "which project validators may run",
         }
     }
 
@@ -244,7 +256,8 @@ impl Namespace {
             | Self::Providers
             | Self::Learned
             | Self::Inbox
-            | Self::Help => true,
+            | Self::Help
+            | Self::Validators => true,
             Self::Stack | Self::Memory => false,
         }
     }
@@ -261,15 +274,20 @@ impl Namespace {
     /// nowhere to go. So `/session` takes four verbs where `zaru sessions`
     /// takes two, and the difference is two records rather than an oversight.
     ///
-    /// Every other namespace answers identically on both surfaces, and that is
-    /// written as a delegation rather than as a second copy: only `Session`
-    /// has an arm of its own.
+    /// Every other namespace but `Validators` answers identically on both
+    /// surfaces, and that is written as a delegation rather than as a second
+    /// copy.
     ///
     /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
     #[must_use]
     pub const fn slash_verbs(self) -> &'static [&'static str] {
         match self {
             Self::Session => &["resume", "continue", "list", "rm"],
+            // `approve` asks on standard input, which a session has taken.
+            // Inside a session the same question is put on the pane before
+            // the first turn that would run a validator, so `list` is the one
+            // verb a session needs.
+            Self::Validators => &["list"],
             Self::Runtime
             | Self::Models
             | Self::Init
@@ -296,6 +314,7 @@ impl Namespace {
             Self::Runtime | Self::Models | Self::Init | Self::Help => &[],
             Self::Config => &["explain"],
             Self::Session => &["list", "rm"],
+            Self::Validators => &["approve", "list"],
             // Like `providers`, one verb with a verb of its own under it:
             // `notes tokens` lists and `notes tokens add <alias> <host>`
             // writes. Both namespaces are therefore parsed by matching the

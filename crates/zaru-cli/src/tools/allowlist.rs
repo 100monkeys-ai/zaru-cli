@@ -353,9 +353,27 @@ impl Entry {
     ///
     /// Both halves compared byte for byte. See the module documentation for
     /// why there is no glob and no path resolution here.
+    ///
+    /// **One exception, for `web.fetch`, since 2026-09-28**: an entry whose
+    /// target has no `://` names a host, and approves a retrieval of any URL
+    /// on exactly that host, compared without regard to case. A whole URL
+    /// always carries `://`, so the two forms cannot be confused. It is the
+    /// form `web.fetch`'s `h` answer grants for the session, and a person may
+    /// write it in `tools.allowlist` too, for example `"web.fetch docs.rs"`.
     #[must_use]
     pub fn approves(&self, invocation: &Invocation<'_>) -> bool {
-        &self.tool == invocation.called() && self.target == invocation.subject_text()
+        if &self.tool != invocation.called() {
+            return false;
+        }
+        if self.target == invocation.subject_text() {
+            return true;
+        }
+        match invocation.subject() {
+            crate::tools::decision::Subject::Url(url) if !self.target.contains("://") => {
+                url.host().eq_ignore_ascii_case(&self.target)
+            }
+            _ => false,
+        }
     }
 }
 

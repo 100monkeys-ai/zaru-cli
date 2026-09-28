@@ -106,7 +106,7 @@ impl Interrupted {
 /// once and both rebuilt when a process opens, but what "already said" means
 /// differs for them and so does what re-checks the condition each process.
 /// This type reports the two facts and **decides neither**: the decisions are
-/// [`SessionNotice::for_tier_in_session`](crate::tools::SessionNotice) and
+/// [`SessionNotice::in_session`](crate::tools::SessionNotice) and
 /// [`MissingManifest::for_manifest_in_session`](crate::manifest::MissingManifest),
 /// each beside the carrier it gates. A single flag here would be the "two
 /// rules in one place" shape ADR-0002's own Status tracking names.

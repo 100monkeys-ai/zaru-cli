@@ -779,6 +779,73 @@ impl<'a> Surface<'a> {
         )
     }
 
+    /// A project's validators were not approved, so the task did not run.
+    ///
+    /// User-correctable: the person approves them, or does not.
+    #[must_use]
+    pub fn validators_not_approved(
+        refusal: &crate::validators::approval::NotApproved,
+    ) -> Classified {
+        use crate::validators::approval::{APPROVE_COMMAND, NotApproved};
+        let approve = || {
+            run(
+                "to see the commands and approve them, run this in the project's directory:",
+                APPROVE_COMMAND,
+            )
+        };
+        match refusal {
+            NotApproved::NobodyToAsk { changed: false } => Classified::UserCorrectable {
+                statement: Statement::sanitised(
+                    "this project's zaru.toml declares validators, which are commands Zaru runs \
+                     on your machine, and you have not approved them. There was no terminal to \
+                     ask you on, so the task did not run"
+                        .to_owned(),
+                ),
+                remedy: approve(),
+            },
+            NotApproved::NobodyToAsk { changed: true } => Classified::UserCorrectable {
+                statement: Statement::sanitised(
+                    "the validators in this project's zaru.toml changed since you approved them. \
+                     There was no terminal to ask you on, so the task did not run"
+                        .to_owned(),
+                ),
+                remedy: approve(),
+            },
+            NotApproved::Declined => Classified::UserCorrectable {
+                statement: Statement::sanitised(
+                    "you did not approve the validators in this project's zaru.toml, so the task \
+                     did not run"
+                        .to_owned(),
+                ),
+                remedy: approve(),
+            },
+            NotApproved::File(failure) => correctable(
+                failure,
+                act(format!(
+                    "fix or remove {} and approve the validators again; removing it forgets \
+                     every approval",
+                    crate::validators::approval::APPROVALS_FILE
+                )),
+            ),
+        }
+    }
+
+    /// `zaru validators approve` was run where it cannot ask.
+    #[must_use]
+    pub fn approval_needs_a_terminal() -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(
+                "`zaru validators approve` asks you a question, and standard input is not a \
+                 terminal, so nothing was approved"
+                    .to_owned(),
+            ),
+            remedy: act(
+                "run `zaru validators approve` in a terminal, in the project's directory"
+                    .to_owned(),
+            ),
+        }
+    }
+
     /// A session id that is not a ULID.
     #[must_use]
     pub fn session_id(&self, refusal: &SessionIdRefused) -> Classified {
@@ -2059,16 +2126,33 @@ impl Surface<'_> {
         // The validators' own output, carried rather than summarised: ADR-0008
         // D4 forbids paraphrase on the path into a prompt and D5 asks the
         // harness to present "what was tried", which is the same bytes.
-        let tried = last_failure.map_or_else(
-            || " No iteration reached an evaluation.".to_owned(),
-            |failure| format!(" What the validators last said:\n{failure}"),
-        );
-        Classified::Expected(crate::failure::Expected::new(Statement::sanitised(
-            format!(
+        //
+        // **Each line of it on a row of its own, since 2026-09-28.** It was put
+        // into the sentence after a newline, and the sentence escapes every
+        // control character, so a person read "What the validators last
+        // said:\nnever:\nproduced no output" with the backslashes. Each line
+        // is escaped on its own now, so text the harness did not write still
+        // cannot forge a line or move the cursor, and a tab or a carriage
+        // return inside a line is dropped to the edges rather than shown.
+        let (tried, said) = match last_failure {
+            None => (" No iteration reached an evaluation.", Vec::new()),
+            Some(failure) => (
+                " What the validators last said:",
+                failure
+                    .lines()
+                    .map(|line| line.trim_matches(|c: char| c == '\t' || c == '\r'))
+                    .filter(|line| !line.trim().is_empty())
+                    .map(Statement::sanitised)
+                    .collect(),
+            ),
+        };
+        Classified::Expected(
+            crate::failure::Expected::new(Statement::sanitised(format!(
                 "the iteration loop ran {iterations} iteration(s) and the declared validators \
                  were never all satisfied: {why}.{tried}"
-            ),
-        )))
+            )))
+            .showing(said),
+        )
     }
 
     /// The inner loop's own port failed.

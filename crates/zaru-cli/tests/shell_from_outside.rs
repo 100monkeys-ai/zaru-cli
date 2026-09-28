@@ -2689,7 +2689,7 @@ fn the_sessions_once_ever_notice_is_painted_above_the_turns_own_lines() {
         .collect();
     let notice_at = painted
         .iter()
-        .position(|line| line.contains("bare tier has no membrane"))
+        .position(|line| line.contains("Zaru is not a sandbox"))
         .unwrap_or_else(|| panic!("the session's notice reached no row at all: {painted:?}"));
     let turn_at = painted
         .iter()
