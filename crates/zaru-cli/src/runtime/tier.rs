@@ -123,12 +123,12 @@ impl Tier {
         }
     }
 
-    /// Whether a membrane exists at this tier.
+    /// Whether D1's table plans a membrane at this tier.
     ///
-    /// **Derived from D1's Membrane column**, not a second match. ADR-0011
-    /// D2's table gives `bare` no enforcement at all, which is why the
-    /// not-a-sandbox line of D2 exists and why it is emitted at this tier and
-    /// no other. See [`SessionNotice`](crate::tools::SessionNotice).
+    /// **Derived from D1's Membrane column**, not a second match. It says what
+    /// the record plans and nothing about what is built: no tier encloses a
+    /// tool call yet, which is why ADR-0011 D2's not-a-sandbox line is said at
+    /// every tier. See [`SessionNotice`](crate::tools::SessionNotice).
     #[must_use]
     pub const fn has_membrane(self) -> bool {
         !matches!(self.engagement().membrane, Membrane::None)

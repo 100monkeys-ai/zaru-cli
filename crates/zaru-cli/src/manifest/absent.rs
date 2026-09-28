@@ -186,7 +186,7 @@ impl MissingManifest {
     /// wrong derivation: a project that *had* a manifest on turn one and lost
     /// it before the resume was never owed the line, and is owed it now.
     ///
-    /// [`SessionNotice::for_tier_in_session`](crate::tools::SessionNotice) is
+    /// [`SessionNotice::in_session`](crate::tools::SessionNotice) is
     /// the other line's rule and reads a different field of the same witness
     /// for a different reason; see there.
     ///

@@ -1504,10 +1504,50 @@ fn adr_0011_d2s_not_a_sandbox_line_is_stated_once_at_bare_tier() {
         ran.stderr
     );
     assert!(
-        ran.stdout.contains("--runtime contained"),
-        "the sentence must name what a reader can do about it: {}",
+        !ran.stdout.contains("--runtime contained"),
+        "the warning recommends a tier that is not built and contains nothing: {}",
         ran.stdout
     );
+}
+
+/// `contained` and `linked` can be selected and enforce nothing, so selecting
+/// one says the same as `bare` and one sentence more: that the tier is not
+/// built yet and changes nothing.
+///
+/// Measured on `970f60a`: a task at `--runtime contained` printed no warning
+/// at all, and a tool call the model asked for ran on the machine as at bare.
+#[test]
+fn a_tier_that_is_not_built_warns_as_bare_does_and_says_it_is_not_built() {
+    for tier in ["contained", "linked"] {
+        let home = Home::new(&format!("notice-{tier}"));
+        let (value, _core) = nonce(&format!("notice-{tier}"));
+        store_a_key(&home, "gemini", &value);
+        let ran = zaru(
+            &home,
+            &[("ZARU_PROVIDER_GEMINI_ENDPOINT", CLOSED_LOOPBACK)],
+            &[
+                "--runtime",
+                tier,
+                "--model",
+                "gemini-3.6-flash",
+                "say",
+                "hello",
+            ],
+        );
+        assert!(
+            ran.stdout.contains("Zaru is not a sandbox"),
+            "at `{tier}` the not-a-sandbox warning was not printed, and that tier contains \
+             nothing: {}",
+            ran.stdout
+        );
+        assert!(
+            ran.stdout.contains(&format!(
+                "The {tier} tier is not built yet and changes nothing about how tool calls run."
+            )),
+            "at `{tier}` the warning does not say the tier is not built: {}",
+            ran.stdout
+        );
+    }
 }
 
 /// [ADR-0009] D4's missing-manifest line is **not** stated at session start.

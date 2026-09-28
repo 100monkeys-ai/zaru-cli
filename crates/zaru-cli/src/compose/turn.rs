@@ -560,11 +560,7 @@ impl Owed {
     #[must_use]
     pub fn of(prepared: &Prepared, said: &crate::session::AlreadySaid, tips: bool) -> Self {
         Self {
-            notice: SessionNotice::for_tier_in_session(
-                prepared.tier.tier(),
-                prose::NOT_A_SANDBOX,
-                said,
-            ),
+            notice: SessionNotice::in_session(prose::not_a_sandbox_at(prepared.tier.tier()), said),
             recommendation: tips
                 .then(|| {
                     crate::manifest::MissingManifest::for_manifest_in_session(

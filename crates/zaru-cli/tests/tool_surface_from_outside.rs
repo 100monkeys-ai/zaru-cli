@@ -45,7 +45,7 @@ use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
     Allowlist, Assessment, Captured, Confirm, ConfirmFailure, Decision, DestructiveMatch,
     Invocation, Layer, Mode, ModeRefused, Overflow, OverflowFailure, Permission, Question,
-    RefusedBecause, Requirement, SessionNotice, Tier, ToolName, WorkingDirectory,
+    RefusedBecause, Requirement, SessionNotice, ToolName, WorkingDirectory,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -151,8 +151,7 @@ fn a_caller_outside_this_crate_can_classify_decide_and_be_refused() {
     // ADR-0011 D2: the bare tier says once, at session start, that it is not a
     // sandbox. The sentence is the caller's; this one is a placeholder and is
     // not proposed wording.
-    let mut notice = SessionNotice::for_tier(Tier::Bare, nonce("a caller's sentence"))
-        .expect("bare tier owes the user this line");
+    let mut notice = SessionNotice::new(nonce("a caller's sentence"));
     println!("--- ADR-0011 D2: stated once at session start ---");
     println!("  {:?}", notice.state_once());
     println!("  {:?}   (and never again)", notice.state_once());

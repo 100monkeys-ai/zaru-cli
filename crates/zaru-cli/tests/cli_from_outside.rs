@@ -396,8 +396,20 @@ fn adr_0001_d2s_datum_is_printed_with_d1s_own_cells() {
         ran.lines()[0]
     );
     assert!(
+        ran.stdout.contains(
+            "The contained tier is not built yet and changes nothing about how tool calls run."
+        ),
+        "`zaru runtime` at a tier that is not built must say so: {}",
+        ran.stdout
+    );
+    assert!(
+        !ran.stdout.contains("  membrane  local containers"),
+        "`zaru runtime` claims a membrane that nothing enforces: {}",
+        ran.stdout
+    );
+    assert!(
         ran.stdout.contains("local containers"),
-        "D1's Membrane cell for `contained`, in the record's own wording: {}",
+        "D1's Membrane cell for `contained`, in the record's own wording, as what is planned: {}",
         ran.stdout
     );
 

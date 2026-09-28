@@ -300,47 +300,59 @@ fn the_default_mode_is_ask() {
     assert_eq!(Mode::ALL.len(), 3, "ADR-0011 D3 names exactly three modes");
 }
 
-/// **ADR-0011 D2's not-a-sandbox line: once, at bare tier, and nowhere else.**
+/// **ADR-0011 D2's not-a-sandbox line: once, at every tier.**
 ///
 /// D2: "At bare tier the harness states plainly, once at session start, that
 /// it is not a sandbox." The sentence is the caller's — see
 /// [`SessionNotice`] — so this asserts the mechanism and not the wording.
 ///
-/// Two mutants: making `state_once` clone rather than take, which states it
-/// on every call; and dropping the `has_membrane` guard, which states at
-/// `contained` and `linked` a sentence that would be false there.
+/// The mutant: making `state_once` clone rather than take, which states it on
+/// every call.
 #[test]
-fn the_session_notice_is_stated_once_and_only_where_there_is_no_membrane() {
+fn the_session_notice_is_stated_once() {
     let sentence = nonce("not-a-sandbox");
 
-    let mut bare = SessionNotice::for_tier(Tier::Bare, sentence.clone())
-        .expect("bare tier has no membrane, so it owes the user the line");
-    assert!(bare.is_owed(), "the line is owed before it is stated");
+    let mut notice = SessionNotice::new(sentence.clone());
+    assert!(notice.is_owed(), "the line is owed before it is stated");
     assert_eq!(
-        bare.state_once(),
+        notice.state_once(),
         Some(sentence.clone()),
         "the sentence the caller supplied is not the sentence stated"
     );
-    assert!(!bare.is_owed(), "the line is still owed after being stated");
+    assert!(
+        !notice.is_owed(),
+        "the line is still owed after being stated"
+    );
     for again in 0..3 {
         assert_eq!(
-            bare.state_once(),
+            notice.state_once(),
             None,
             "the line was stated a second time (call {again}); D2 says once at session start"
         );
     }
+}
 
-    let membraned: Vec<&str> = Tier::ALL
-        .into_iter()
-        .filter(|tier| SessionNotice::for_tier(*tier, sentence.clone()).is_none())
-        .map(Tier::as_str)
-        .collect();
-    assert_eq!(
-        membraned,
-        vec!["contained", "linked"],
-        "ADR-0011 D2 gives `bare` no enforcement and the other two a membrane, so only `bare` \
-         owes this line; this crate withholds it from {membraned:?}"
+/// No tier is built past `bare`, so every tier gets the warning, and the two
+/// that are not built say so in one more sentence.
+///
+/// Measured on `970f60a`: at `--runtime contained` no warning was printed and
+/// a tool call ran on the machine as at bare.
+#[test]
+fn every_tier_is_warned_and_a_tier_that_is_not_built_says_so() {
+    use crate::compose::prose::{NOT_A_SANDBOX, not_a_sandbox_at};
+    assert_eq!(not_a_sandbox_at(Tier::Bare), NOT_A_SANDBOX);
+    assert!(
+        !NOT_A_SANDBOX.contains("--runtime"),
+        "the warning recommends a tier that enforces nothing: {NOT_A_SANDBOX}"
     );
+    for tier in [Tier::Contained, Tier::Linked] {
+        assert_eq!(
+            not_a_sandbox_at(tier),
+            format!(
+                "{NOT_A_SANDBOX} The {tier} tier is not built yet and changes nothing about how tool calls run."
+            )
+        );
+    }
 }
 
 /// The three tiers are ADR-0001 D1's, spelled as that record spells them.
@@ -2880,64 +2892,30 @@ fn a_prompt_without_a_terminal_is_no_confirmer_at_all() {
 /// process, which is what `--resume` did until 2026-09-05. **Reading the other
 /// line's field** decides the two lines by one rule, the shape ADR-0002's
 /// Status tracking names — and the arm that separates them is a session that
-/// has said the recommendation and never the notice, which is an ordinary
-/// session whose first process ran with a membrane.
+/// has said the recommendation and never the notice.
 ///
-/// The tier is still re-read, and the last two arms are why it must be: this
-/// sentence is false where there is a membrane, so a session started at
-/// `contained` and resumed at `bare` is owed it **for the first time** even
-/// though it has already had a turn.
+/// The tier is no longer read: every tier owes the line, so the transcript
+/// alone decides.
 #[test]
-fn the_session_notice_is_owed_once_per_session_and_the_tier_is_read_again() {
+fn the_session_notice_is_owed_once_per_session() {
     use crate::session::fixtures::already_said;
     let sentence = nonce("not-a-sandbox");
 
     assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Bare,
-            sentence.clone(),
-            &crate::session::AlreadySaid::none()
-        )
-        .is_some(),
-        "a session that has said nothing is owed D2's line at the tier where it is true",
+        SessionNotice::in_session(sentence.clone(), &crate::session::AlreadySaid::none()).is_some(),
+        "a session that has said nothing is owed D2's line",
     );
     assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Bare,
-            sentence.clone(),
-            &already_said(true, false)
-        )
-        .is_none(),
+        SessionNotice::in_session(sentence.clone(), &already_said(true, false)).is_none(),
         "this session's transcript says it already stated D2's line, and D2 says once at session \
          start",
     );
     // The arm that tells the two rules apart: the *other* line was said and
     // this one was not.
     assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Bare,
-            sentence.clone(),
-            &already_said(false, true)
-        )
-        .is_some(),
+        SessionNotice::in_session(sentence.clone(), &already_said(false, true)).is_some(),
         "a session that stated ADR-0002 D8's recommendation has not been told it is not in a \
          sandbox; deciding this line by that one's witness is two rules in one place",
-    );
-    // The tier half, which the transcript never overrides in either direction.
-    assert!(
-        SessionNotice::for_tier_in_session(
-            Tier::Contained,
-            sentence.clone(),
-            &crate::session::AlreadySaid::none()
-        )
-        .is_none(),
-        "D2's table gives `contained` a membrane, so the sentence would be false there",
-    );
-    assert!(
-        SessionNotice::for_tier_in_session(Tier::Bare, sentence, &already_said(false, false))
-            .is_some(),
-        "a session resumed at `bare` after running at `contained` has said nothing and is owed \
-         the line for the first time, however many turns it has had",
     );
 }
 
