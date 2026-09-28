@@ -21,25 +21,48 @@ use crate::tools::Tier;
 /// "Iteration failure, denied verdict. **Not an error — this is the loop
 /// working.**"
 ///
-/// It carries its statement and nothing else, and the absence is the design:
-/// there is no remedy because nothing is wrong, and a type with a field for
-/// one would invite a raising site to fill it in.
+/// It carries its statement and, where the statement quotes text that spans
+/// lines, those lines under it. It carries no remedy, and the absence is the
+/// design: nothing is wrong, and a type with a field for one would invite a
+/// raising site to fill it in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expected {
     statement: Statement,
+    detail: Vec<Statement>,
 }
 
 impl Expected {
     /// Report something the mechanism did on purpose.
     #[must_use]
     pub const fn new(statement: Statement) -> Self {
-        Self { statement }
+        Self {
+            statement,
+            detail: Vec::new(),
+        }
+    }
+
+    /// Add lines under the sentence, each escaped on its own.
+    ///
+    /// For text the harness did not write that spans lines, such as what a
+    /// validator printed. Put into the sentence itself, its newlines were
+    /// escaped with the rest and a person read them as `\n`; each line here
+    /// keeps its own row. Added 2026-09-28.
+    #[must_use]
+    pub fn showing(mut self, detail: Vec<Statement>) -> Self {
+        self.detail = detail;
+        self
     }
 
     /// What happened.
     #[must_use]
     pub const fn statement(&self) -> &Statement {
         &self.statement
+    }
+
+    /// The lines under the sentence.
+    #[must_use]
+    pub fn detail(&self) -> &[Statement] {
+        &self.detail
     }
 }
 

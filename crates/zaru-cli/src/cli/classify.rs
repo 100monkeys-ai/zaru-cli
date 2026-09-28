@@ -2126,16 +2126,33 @@ impl Surface<'_> {
         // The validators' own output, carried rather than summarised: ADR-0008
         // D4 forbids paraphrase on the path into a prompt and D5 asks the
         // harness to present "what was tried", which is the same bytes.
-        let tried = last_failure.map_or_else(
-            || " No iteration reached an evaluation.".to_owned(),
-            |failure| format!(" What the validators last said:\n{failure}"),
-        );
-        Classified::Expected(crate::failure::Expected::new(Statement::sanitised(
-            format!(
+        //
+        // **Each line of it on a row of its own, since 2026-09-28.** It was put
+        // into the sentence after a newline, and the sentence escapes every
+        // control character, so a person read "What the validators last
+        // said:\nnever:\nproduced no output" with the backslashes. Each line
+        // is escaped on its own now, so text the harness did not write still
+        // cannot forge a line or move the cursor, and a tab or a carriage
+        // return inside a line is dropped to the edges rather than shown.
+        let (tried, said) = match last_failure {
+            None => (" No iteration reached an evaluation.", Vec::new()),
+            Some(failure) => (
+                " What the validators last said:",
+                failure
+                    .lines()
+                    .map(|line| line.trim_matches(|c: char| c == '\t' || c == '\r'))
+                    .filter(|line| !line.trim().is_empty())
+                    .map(Statement::sanitised)
+                    .collect(),
+            ),
+        };
+        Classified::Expected(
+            crate::failure::Expected::new(Statement::sanitised(format!(
                 "the iteration loop ran {iterations} iteration(s) and the declared validators \
                  were never all satisfied: {why}.{tried}"
-            ),
-        )))
+            )))
+            .showing(said),
+        )
     }
 
     /// The inner loop's own port failed.
