@@ -2012,14 +2012,13 @@ impl Surface<'_> {
                 run("replace the key", &format!("providers keys add {kind}")),
             ),
             // The model is the person's to name, as it is for the other two
-            // kinds. `--model` takes an identifier and not an alias, which is
-            // how this was met on 2026-09-28: `--model cheap` asked Gemini for
-            // a model called "cheap".
+            // kinds. Met on 2026-09-28 when `--model cheap` asked Gemini for a
+            // model called "cheap"; `--model` has resolved an alias since.
             F::ModelNotFound { .. } => correctable(
                 failure,
                 act(
-                    "set `model.default` to a model Gemini serves. `--model` takes a model \
-                     identifier, not an alias; `zaru models` shows what each alias resolves to"
+                    "set `model.default`, or the alias `--model` named, to a model Gemini \
+                     serves; `zaru models` shows what each alias resolves to"
                         .to_owned(),
                 ),
             ),

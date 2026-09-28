@@ -119,15 +119,27 @@ pub fn runtime(datum: &Runtime) -> Vec<String> {
 /// [ADR-0012]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0012-provider-abstraction
 #[must_use]
 pub fn models(table: &ModelTable) -> Vec<String> {
-    let rows: Vec<(String, String, &str)> = table
+    let rows: Vec<(String, String, String)> = table
         .rows()
         .map(|(alias, resolved)| match resolved {
-            ResolvedModel::Resolved { model, supplied_by } => (
+            ResolvedModel::Resolved {
+                model,
+                supplied_by,
+                named,
+            } => (
                 alias.to_string(),
                 model.as_str().to_owned(),
-                supplied_by.label(),
+                // A `--model` value that named an alias says so, because the
+                // alias won over any model whose identifier is that name.
+                match named {
+                    Some(named) => format!(
+                        "{}, from --model {named}, which names the alias `{named}`",
+                        supplied_by.label()
+                    ),
+                    None => supplied_by.label().to_owned(),
+                },
             ),
-            ResolvedModel::Unresolved => (alias.to_string(), NOT_SET.to_owned(), ""),
+            ResolvedModel::Unresolved => (alias.to_string(), NOT_SET.to_owned(), String::new()),
         })
         .collect();
 

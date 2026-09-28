@@ -199,7 +199,7 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 
 | Flag | What it does |
 | --- | --- |
-| `--model <identifier>` | Use this model for one run. |
+| `--model <identifier>` | Use this model for one run. A model alias such as `cheap` means the model it resolves to; anything else is taken as the model's identifier. |
 | `--mode <mode>` | Use this permission mode for one run: `ask`, `allow` or `yolo`. |
 | `--runtime <tier>` | Use this runtime tier for one run. |
 | `--resume <id>` | Reopen a session. |

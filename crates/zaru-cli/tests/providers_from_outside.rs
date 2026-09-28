@@ -185,6 +185,7 @@ fn an_outside_caller_resolves_every_alias_and_is_told_which_layer_supplied_it() 
             ResolvedModel::Resolved {
                 model: got,
                 supplied_by,
+                ..
             } => {
                 assert_eq!(
                     got.as_str(),

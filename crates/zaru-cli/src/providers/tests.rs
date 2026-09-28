@@ -387,7 +387,9 @@ fn every_alias_set_in_all_five_layers_resolves_to_the_flags_value() {
         let table = ModelTable::from_configuration(&resolution).expect("every value is text");
 
         match table.row(alias) {
-            ResolvedModel::Resolved { model, supplied_by } => {
+            ResolvedModel::Resolved {
+                model, supplied_by, ..
+            } => {
                 assert_eq!(
                     model.as_str(),
                     planted(Layer::Flag, &key),
@@ -547,7 +549,9 @@ fn a_project_may_set_a_model_alias_and_may_not_set_an_endpoint() {
     .expect("ADR-0012 D4 lists project configuration among the five layers that resolve an alias");
     let table = ModelTable::from_configuration(&resolution).expect("the value is text");
     match table.row(ModelAlias::Default) {
-        ResolvedModel::Resolved { model, supplied_by } => {
+        ResolvedModel::Resolved {
+            model, supplied_by, ..
+        } => {
             assert_eq!(
                 model.as_str(),
                 "a-model-a-project-asked-for",
