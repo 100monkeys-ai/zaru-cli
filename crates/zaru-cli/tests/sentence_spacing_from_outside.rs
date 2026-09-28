@@ -60,7 +60,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use zaru_cli::failure::{
     Action, Class, Classified, DefectReport, Expected, Location, Remedy, SessionEvidence,
     Statement, Wait,
@@ -381,7 +381,7 @@ fn the_built_binary_says_no_sentence_with_a_hole_in_it() {
         (["sessions", "rm", "not-a-ulid"].as_slice(), false),
         (["providers", "keys", "add", "gemini"].as_slice(), true),
     ] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        let mut child = owned::command(env!("CARGO_BIN_EXE_zaru"))
             .args(arguments)
             .env_clear()
             .env("HOME", &home)
@@ -398,9 +398,7 @@ fn the_built_binary_says_no_sentence_with_a_hole_in_it() {
             .expect("failed to execute the built zaru binary");
         if reads_standard_input {
             child
-                .stdin
-                .take()
-                .expect("the child was given a pipe")
+                .take_stdin()
                 .write_all(b"not-a-credential\n")
                 .expect("the child reads its input");
         }
@@ -752,6 +750,8 @@ fn scratch(label: &str) -> PathBuf {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

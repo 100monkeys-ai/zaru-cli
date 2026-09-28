@@ -558,6 +558,8 @@ fn every_refusal_this_sweep_touched_carries_the_value_as_offered() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

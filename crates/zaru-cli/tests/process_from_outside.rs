@@ -979,22 +979,21 @@ fn a_command_in_flight_when_the_harness_dies_resumes_as_interrupted() {
     let transcript = directory.join(zaru_cli::session::TRANSCRIPT_FILE);
 
     println!();
-    let mut child = std::process::Command::new(
-        std::env::current_exe().expect("the test binary knows where it is"),
-    )
-    .args([
-        "--exact",
-        "the_interruption_checks_child_leaves_a_command_in_flight",
-        "--ignored",
-        "--nocapture",
-        "--test-threads=1",
-    ])
-    .env(CHILD_SESSION, &directory)
-    .env(CHILD_PROJECT, scratch.project())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .spawn()
-    .expect("could not spawn this crate's own test binary");
+    let mut child =
+        owned::command(std::env::current_exe().expect("the test binary knows where it is"))
+            .args([
+                "--exact",
+                "the_interruption_checks_child_leaves_a_command_in_flight",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD_SESSION, &directory)
+            .env(CHILD_PROJECT, scratch.project())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("could not spawn this crate's own test binary");
 
     let started = std::time::Instant::now();
     loop {
@@ -1011,8 +1010,10 @@ fn a_command_in_flight_when_the_harness_dies_resumes_as_interrupted() {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    child.kill().expect("could not kill the child");
-    let _ = child.wait();
+    // The harness and everything below it, the `sleep` in flight among them,
+    // killed at once and reaped: what the transcript says is what a kill
+    // leaves, and nothing of this check is left running after it.
+    child.kill();
 
     let restored = zaru_cli::session::resume(&directory, 32).expect("the session resumes");
     println!("  the transcript holds:");
@@ -1607,6 +1608,8 @@ async fn an_uninterrupted_round_leaves_a_matched_pair_for_both_calls() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

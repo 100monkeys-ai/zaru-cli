@@ -19,7 +19,7 @@
 //! [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 use zaru_cli::cli::Namespace;
 use zaru_cli::compose::tips::{NO_DEPOSITS, NOTHING_LEARNED};
 
@@ -66,7 +66,7 @@ struct Ran {
 
 /// Run the built binary with a scratch home and a cleared environment.
 fn zaru(home: &Home, arguments: &[&str]) -> Ran {
-    let output: Output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let output: Output = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(arguments)
         .env_clear()
         .env("HOME", home.path())
@@ -278,7 +278,7 @@ fn d8s_tips_key_is_declared_at_the_layers_that_can_carry_it() {
     );
 
     // Layer 4, which outranks it, so the two arms are not one fact twice.
-    let layer_four: Output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let layer_four: Output = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(["config", "explain", "tips"])
         .env_clear()
         .env("HOME", home.path())
@@ -324,6 +324,8 @@ fn d8s_tips_key_is_declared_at_the_layers_that_can_carry_it() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

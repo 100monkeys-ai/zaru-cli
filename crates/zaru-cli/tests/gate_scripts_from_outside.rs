@@ -39,7 +39,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// The repository root, from this crate's manifest rather than from the cwd.
 ///
@@ -126,8 +126,8 @@ const EXPORTED_BY_GIT: [&str; 6] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 ];
 
-fn git_free_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut command = Command::new(program);
+fn git_free_command(program: impl AsRef<std::ffi::OsStr>) -> owned::Owning {
+    let mut command = owned::command(program);
     for name in EXPORTED_BY_GIT {
         command.env_remove(name);
     }
@@ -415,7 +415,7 @@ fn neither_gate_script_reads_a_verdict_out_of_a_pipeline_into_grep() {
 }
 
 /// The mutant: dropping the strip from [`git_free_command`], or spawning a
-/// child with a bare `Command::new` anywhere in this file.
+/// child anywhere in this file without it.
 ///
 /// This is a check about the check, and it earns its place because the thing it
 /// prevents is damage to the repository rather than a wrong verdict. Under
@@ -426,15 +426,15 @@ fn neither_gate_script_reads_a_verdict_out_of_a_pipeline_into_grep() {
 #[test]
 fn every_child_process_is_spawned_outside_this_repository() {
     let command = git_free_command("git");
-    let removed: Vec<&str> = command
+    let removed: Vec<String> = command
         .get_envs()
         .filter(|(_, value)| value.is_none())
-        .filter_map(|(key, _)| key.to_str())
+        .filter_map(|(key, _)| key.into_string().ok())
         .collect();
 
     for name in EXPORTED_BY_GIT {
         assert!(
-            removed.contains(&name),
+            removed.iter().any(|removed| removed == name),
             "{name} is still inherited by a child process. git exports it during \
              `rebase --exec`, a hook and `bisect run`, and a child git then acts on \
              THIS repository while the check believes it is acting on a temporary \
@@ -447,18 +447,24 @@ fn every_child_process_is_spawned_outside_this_repository() {
         .expect("this check can read its own source");
     // Built at run time rather than written as one literal, so this check's own
     // source line does not carry the shape it is looking for and match itself.
-    let spawn = format!("Command{}new(", "::");
-    let permitted = format!("let mut command = {spawn}program)");
+    // Every process in `tests/` starts through `owned::command` (see
+    // `corpus_every_process_a_check_starts_is_owned`), so that is the
+    // constructor that could bypass the strip here, beside `std`'s own.
+    let spawns = [
+        format!("Command{}new(", "::"),
+        format!("owned{}command(", "::"),
+    ];
+    let permitted = format!("let mut command = {}program)", spawns[1]);
     let bare: Vec<usize> = body
         .lines()
         .enumerate()
-        .filter(|(_, line)| line.contains(&spawn))
+        .filter(|(_, line)| spawns.iter().any(|spawn| line.contains(spawn)))
         .filter(|(_, line)| !line.contains(&permitted))
         .map(|(index, _)| index + 1)
         .collect();
     assert!(
         bare.is_empty(),
-        "line(s) {bare:?} spawn a child with a bare `Command::new`, which inherits \
+        "line(s) {bare:?} spawn a child without git_free_command, so it inherits \
          GIT_DIR. Every spawn in this file goes through git_free_command."
     );
 }
@@ -558,6 +564,8 @@ fn the_licence_gate_passes_a_clean_repository_and_says_what_it_checked() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

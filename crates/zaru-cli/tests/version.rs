@@ -15,8 +15,6 @@
 //! mutant that makes them disagree is `main` printing anything other than the
 //! version it was compiled with.
 
-use std::process::Command;
-
 /// A home this check owns, removed when it ends.
 ///
 /// A bare `zaru` reads nothing from its home today, and that is exactly why
@@ -38,7 +36,7 @@ fn the_built_binary_prints_the_version_it_was_compiled_with() {
     let home =
         Scratch(std::env::temp_dir().join(format!("zaru-version-home-{}", std::process::id())));
     std::fs::create_dir_all(&home.0).expect("a scratch home");
-    let output = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let output = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .env_clear()
         .env("HOME", &home.0)
         .output()
@@ -65,6 +63,8 @@ fn the_built_binary_prints_the_version_it_was_compiled_with() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

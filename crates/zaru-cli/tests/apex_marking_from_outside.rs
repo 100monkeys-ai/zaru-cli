@@ -365,6 +365,8 @@ fn corpus_a_description_that_would_forge_a_tier_claim_cannot_reach_the_row() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

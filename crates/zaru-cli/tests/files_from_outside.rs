@@ -787,6 +787,72 @@ fn corpus_every_spawned_zaru_is_handed_a_home() {
     );
 }
 
+/// Every process a check here starts is started through `tests/support/owned.rs`,
+/// which owns it until it is gone.
+///
+/// # The defect this holds shut
+///
+/// Measured on 2026-09-28 by the `harness-orphans-and-reader-panic` arc: the
+/// machine's watchdog sent SIGTERM to eight `zaru` processes running from the
+/// `target/debug/` of a worktree deleted five hours earlier. They were left by
+/// a **passing** run of the suite started under `nohup`: each check in
+/// `terminal_from_outside.rs` reaped only the `script` it had spawned, and the
+/// `zaru` that `script` had put in a session of its own lived on with its
+/// terminal hung up and its reader thread spinning. A check that is killed
+/// rather than failed — SIGTERM or SIGKILL to the test binary alone — ran no
+/// `Drop` at all and left `script` behind as well.
+///
+/// So there is one way to start a process in `tests/`, and it is the helper:
+/// the child dies with the thread that started it, sits in a process group of
+/// its own, and is killed with everything below it and reaped when the handle
+/// goes. A spawn that bypasses it is a spawn nothing owns, and the only
+/// constructor that can bypass it is `Command::new`.
+///
+/// **The mutant is any spawn written the old way**, which this names by file
+/// and line.
+#[test]
+fn corpus_every_process_a_check_starts_is_owned() {
+    // Built at run time, so this check's own source does not carry the shape.
+    let constructor = format!("Command{}new(", "::");
+    let helper = "tests/support/owned.rs";
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut seen_in_the_helper = false;
+    let mut files = 0usize;
+    let mut offences: Vec<String> = Vec::new();
+    for (relative, text) in rust_sources_under(&manifest.join("tests")) {
+        files += 1;
+        for (number, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") || !line.contains(&constructor) {
+                continue;
+            }
+            if relative == helper {
+                seen_in_the_helper = true;
+            } else {
+                offences.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+    println!("walked {files} file(s) under tests/");
+    let mut complaints: Vec<String> = Vec::new();
+    if !seen_in_the_helper {
+        complaints.push(format!(
+            "`{constructor}` appears nowhere in {helper}, so either the helper is gone or this \
+             walk is looking for a constructor nothing uses and cannot fail"
+        ));
+    }
+    if !offences.is_empty() {
+        complaints.push(format!(
+            "{} process(es) are started in tests/ without the helper that owns them, so a check \
+             that fails, panics or is killed can leave each one running after the suite has \
+             ended:\n  {}",
+            offences.len(),
+            offences.join("\n  "),
+        ));
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
 /// Every `.rs` file under each crate's `src/` in this workspace, as its path
 /// relative to `crates/` and its text, **leaving out the files that only a
 /// check compiles**: `tests.rs`, `fixtures.rs`, and anything under a `tests/`
@@ -1021,6 +1087,8 @@ fn corpus_every_test_binary_re_runs_itself_under_a_decoy() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

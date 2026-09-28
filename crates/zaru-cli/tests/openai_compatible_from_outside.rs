@@ -270,6 +270,8 @@ async fn a_real_endpoint_accepts_this_clients_tool_declaration_and_answers_with_
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

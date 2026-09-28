@@ -47,7 +47,7 @@
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 /// The sealing key [ADR-0007] D3 reads where there is no keyring.
 ///
@@ -161,7 +161,7 @@ impl Ran {
 /// Run the built binary with a scratch home, a cleared environment, and
 /// whatever `ZARU_*` the case needs.
 fn zaru(home: &Home, variables: &[(&str, &str)], arguments: &[&str]) -> Ran {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_zaru"));
+    let mut command = owned::command(env!("CARGO_BIN_EXE_zaru"));
     command
         .args(arguments)
         .env_clear()
@@ -204,7 +204,7 @@ fn zaru(home: &Home, variables: &[(&str, &str)], arguments: &[&str]) -> Ran {
 fn store_a_key(home: &Home, kind: &str, value: &str) {
     use std::io::Write as _;
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let mut child = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(["providers", "keys", "add", kind])
         .env_clear()
         .env("HOME", home.path())
@@ -216,9 +216,7 @@ fn store_a_key(home: &Home, kind: &str, value: &str) {
         .spawn()
         .expect("failed to execute the built binary");
     child
-        .stdin
-        .as_mut()
-        .expect("the child's standard input is a pipe")
+        .stdin()
         .write_all(format!("{value}\n").as_bytes())
         .expect("the key reaches the child");
     let output = child.wait_with_output().expect("the child exits");
@@ -2323,7 +2321,7 @@ fn the_out_of_session_key_add_contract_is_unchanged_by_the_split() {
         let home = Home::new(&format!("key-add-{label}"));
         let (value, _core) = nonce(&format!("key-add-{label}"));
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+        let mut child = owned::command(env!("CARGO_BIN_EXE_zaru"))
             .args(["providers", "keys", "add", "gemini"])
             .env_clear()
             .env("HOME", home.path())
@@ -2335,9 +2333,7 @@ fn the_out_of_session_key_add_contract_is_unchanged_by_the_split() {
             .spawn()
             .expect("failed to execute the built binary");
         child
-            .stdin
-            .as_mut()
-            .expect("the child's standard input is a pipe")
+            .stdin()
             .write_all(format!("{value}{ending}").as_bytes())
             .expect("the key reaches the child");
         let output = child.wait_with_output().expect("the child exits");
@@ -2400,7 +2396,7 @@ fn a_second_line_ending_is_the_users_and_is_refused_without_being_quoted() {
     let (value, _core) = nonce("key-add-whitespace");
     let offered = format!("{value}\n");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zaru"))
+    let mut child = owned::command(env!("CARGO_BIN_EXE_zaru"))
         .args(["providers", "keys", "add", "gemini"])
         .env_clear()
         .env("HOME", home.path())
@@ -2412,9 +2408,7 @@ fn a_second_line_ending_is_the_users_and_is_refused_without_being_quoted() {
         .spawn()
         .expect("failed to execute the built binary");
     child
-        .stdin
-        .as_mut()
-        .expect("the child's standard input is a pipe")
+        .stdin()
         .write_all(format!("{offered}\n").as_bytes())
         .expect("the key reaches the child");
     let output = child.wait_with_output().expect("the child exits");
@@ -2434,6 +2428,8 @@ fn a_second_line_ending_is_the_users_and_is_refused_without_being_quoted() {
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

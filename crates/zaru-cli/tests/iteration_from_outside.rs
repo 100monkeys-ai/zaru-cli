@@ -1429,6 +1429,8 @@ fn one_emission_of_the_inner_loops_stream_reaches_the_transcript_and_a_subscribe
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

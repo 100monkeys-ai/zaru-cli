@@ -351,6 +351,8 @@ async fn a_persona_in_layer_one_is_the_same_bytes_on_every_turn_of_a_long_sessio
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it

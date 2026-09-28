@@ -363,6 +363,8 @@ fn a_project_file_carrying_a_bearer_shaped_value_is_refused_without_quoting_it()
 
 #[path = "support/decoy.rs"]
 mod decoy;
+#[path = "support/owned.rs"]
+mod owned;
 
 /// Every other check in this file, re-run under a home and an environment none
 /// of them was handed. See `tests/support/decoy.rs` for the two defects it
