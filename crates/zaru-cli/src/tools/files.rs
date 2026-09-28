@@ -499,7 +499,13 @@ fn absent(path: &Path, text: &str, old: &str) -> String {
         said.push_str(" The text to replace is only spaces and line breaks.");
         return said;
     };
-    let lines: Vec<&str> = text.split('\n').collect();
+    // A newline ends a line; it does not start one, so the empty piece after
+    // the last newline is not a line of the file.
+    let lines: Vec<&str> = text
+        .strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .collect();
     let starts: Vec<usize> = lines
         .iter()
         .enumerate()

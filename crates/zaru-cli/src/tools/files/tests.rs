@@ -404,6 +404,18 @@ fn an_edit_keeps_endings_and_the_final_newline_and_refuses_plainly() {
         missing.stderr
     );
 
+    // The nearest lines stop at the file's last line.
+    let near = scratch.at("near.py");
+    std::fs::write(&near, "def f():\n    return 1\n").expect("staging");
+    let absent = edit(&near, "def f():\n  return 1\n", "x", false);
+    assert_eq!(absent.exit_code, 1);
+    assert!(
+        absent.stderr.contains("Lines 1 to 2 of the file are:")
+            && !absent.stderr.contains("3\u{2502}"),
+        "the nearest lines went past the end of the file: {}",
+        absent.stderr
+    );
+
     let far = edit(&ended, "nothing like this", "x", false);
     assert_eq!(far.exit_code, 1);
     assert!(

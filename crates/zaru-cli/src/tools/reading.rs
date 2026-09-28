@@ -339,8 +339,10 @@ impl Scan {
             } else {
                 String::from_utf8_lossy(&self.current[..length]).into_owned()
             };
-            // Its number and mark take at most 24 bytes more.
-            let size = text.len() + 24;
+            // Its number is padded to the width of the last line shown, which
+            // is at most the last line asked for; the mark and the newline
+            // follow it.
+            let size = text.len() + self.to.to_string().len() + LINE_MARK.len() + 1;
             if !self.kept.is_empty() && self.kept_bytes + size > self.room {
                 self.stopped_for_room = true;
             } else {

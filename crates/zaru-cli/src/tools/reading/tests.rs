@@ -137,16 +137,16 @@ fn a_two_thousand_line_file_comes_back_to_the_default_and_says_where_to_go_on() 
 /// **A 50,000-line file read in three calls covers every line exactly once**,
 /// each call starting where the one before said to.
 ///
-/// The budget here is 720 KiB so that three calls cover it; at the binary's
-/// 32 KiB the same walk takes about thirty calls. What is checked is that the
-/// hint each answer gives is the right one: no line is skipped and none comes
-/// twice.
+/// The budget here is 420 KiB so that three calls cover it. At the binary's
+/// 32 KiB the same walk takes about thirty-five calls asking for many lines,
+/// and a hundred at the default count. What is checked is that the hint each
+/// answer gives is the right one: no line is skipped and none comes twice.
 #[test]
 fn a_fifty_thousand_line_file_read_in_three_calls_covers_every_line_once() {
     let scratch = Scratch::new();
     let body: String = (1..=50_000).map(|n| format!("row {n}\n")).collect();
     let path = scratch.file("fifty-thousand.txt", &body);
-    let roomy = OutputBudget::new(720 * 1024).expect("not zero");
+    let roomy = OutputBudget::new(420 * 1024).expect("not zero");
 
     let mut seen: Vec<usize> = Vec::new();
     let mut start = 1;
@@ -209,6 +209,29 @@ fn an_answer_is_sized_to_fit_the_budget_and_never_cut_in_the_middle() {
     assert!(
         !presented.stdout.as_str().contains(ELISION_PREFIX),
         "the output budget cut an fs.read answer in the middle"
+    );
+}
+
+/// Five hundred lines of ordinary source fit in one answer: the room a line
+/// takes is counted by the width its number really has.
+///
+/// Watched red on `bd5b228`, where every line was counted as 24 bytes longer
+/// than its text and the answer stopped at line 473 with 8 KB unused.
+#[test]
+fn five_hundred_ordinary_lines_fit_in_one_answer() {
+    let scratch = Scratch::new();
+    let body: String = (1..=2_000)
+        .map(|n| format!("    value_{n} = compute({n})  # line {n}\n"))
+        .collect();
+    let path = scratch.file("ordinary.py", &body);
+    let answer = read(&path, all(), budget());
+    let lines = numbered(&answer);
+    assert_eq!(
+        lines.len(),
+        DEFAULT_LINE_COUNT,
+        "an answer of {} bytes stopped at line {} where the default is {DEFAULT_LINE_COUNT}",
+        answer.stdout.len(),
+        lines.len()
     );
 }
 
