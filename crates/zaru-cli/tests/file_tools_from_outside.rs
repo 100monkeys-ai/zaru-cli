@@ -491,7 +491,7 @@ async fn a_model_writes_edits_searches_and_reads_back_on_real_files() {
 
     let searched = &run.given_to_the_model[2];
     assert!(
-        searched.contains("greeting.txt:1: goodbye UNIQUEWORD"),
+        searched.contains("src/greeting.txt\n  1: goodbye UNIQUEWORD"),
         "the search did not find what the write had just put there: {searched:?}"
     );
     let readback = &run.given_to_the_model[3];
@@ -624,7 +624,7 @@ async fn a_held_bearer_a_search_finds_is_redacted_and_the_session_keeps_it() {
     let run = drive(&scratch, script(), &held).await;
     let given = &run.given_to_the_model[0];
     assert!(
-        given.contains("secrets.rs:2:"),
+        given.contains("src/secrets.rs\n  2: "),
         "the search did not find the line at all: {given:?}"
     );
     assert!(

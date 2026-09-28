@@ -437,14 +437,27 @@ fn a_reads_summary_names_the_lines_that_came_back() {
 /// status, its size and its page's title; a listing how many entries.
 #[test]
 fn a_search_a_fetch_and_a_listing_are_one_line_each() {
-    let found = "src/a.rs:3: let retry = 1;\nsrc/a.rs:9: retry += 1;\nsrc/b.rs:1: // retry\n";
+    let found = "Searched . for \"retry\" in any case: 3 lines in 2 files.\n\nsrc/a.rs\n  3: let \
+                 retry = 1;\n  9: retry += 1;\n\nsrc/b.rs\n  1: // retry\n\nSearched 2 files.\n";
     assert_eq!(
         search(".", "retry", found).view.summary,
         "searched . for \"retry\" · 3 lines found in 2 files"
     );
+    let absent =
+        "Searched src for \"absent\" in any case: no line holds it.\n\nSearched 4 files.\n";
     assert_eq!(
-        search("src", "absent", "").view.summary,
+        search("src", "absent", absent).view.summary,
         "searched src for \"absent\" · nothing found"
+    );
+    let words = format!(
+        "Searched . for \"retry logic\" in any case: no line holds it.\n\n{} \"retry logic\":\n\
+         src/a.rs\n  4: function retry_with_backoff — pub fn retry_with_backoff() {{}}\n\n\
+         Searched 2 files.\n",
+        crate::tools::searching::DECLARATIONS_HEADING
+    );
+    assert_eq!(
+        search(".", "retry logic", &words).view.summary,
+        "searched . for \"retry logic\" · 1 declaration found"
     );
 
     let page = "web.fetch https://example.com/ — 200 — content-type: text/html\n\

@@ -698,29 +698,25 @@ pub fn list(shown: &str, answer: &str) -> Composed {
 }
 
 /// A search's view: how many lines matched, in how many files.
+///
+/// Read from the answer's first line, which counts every matching line,
+/// shown to the model or not.
 #[must_use]
 pub fn search(shown: &str, needle: &str, found: &str) -> Composed {
-    let lines = lines_of(found);
-    let mut files: Vec<&str> = lines
-        .iter()
-        .filter_map(|line| {
-            let (file, rest) = line.split_once(':')?;
-            let (number, _) = rest.split_once(':')?;
-            number.parse::<usize>().ok().map(|_| file)
-        })
-        .collect();
-    files.sort_unstable();
-    files.dedup();
-    let what = if lines.is_empty() {
-        String::from("nothing found")
-    } else if files.is_empty() {
-        format!("{} found", counted(lines.len(), "result", "results"))
-    } else {
+    let tally = crate::tools::searching::tally(found).unwrap_or_default();
+    let what = if tally.lines > 0 {
         format!(
             "{} found in {}",
-            counted(lines.len(), "line", "lines"),
-            counted(files.len(), "file", "files")
+            counted(tally.lines, "line", "lines"),
+            counted(tally.files, "file", "files")
         )
+    } else if tally.declarations > 0 {
+        format!(
+            "{} found",
+            counted(tally.declarations, "declaration", "declarations")
+        )
+    } else {
+        String::from("nothing found")
     };
     one_line(format!(
         "searched {} for \"{}\" · {what}",

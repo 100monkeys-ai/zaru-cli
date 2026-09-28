@@ -121,12 +121,15 @@ pub enum Call {
         /// `false` when the call leaves it out.
         all: bool,
     },
-    /// `fs.search`: where to look and what to look for.
+    /// `fs.search`: where to look, what to look for, and how.
     Search {
         /// The `root` field.
         root: String,
         /// The `needle` field.
         needle: String,
+        /// The optional fields: `exact_case`, `whole_word`, `file_type` and
+        /// `include_ignored`.
+        options: crate::tools::searching::Options,
     },
     /// `cmd.run`: the command line, not yet split.
     Run {
@@ -262,6 +265,12 @@ impl Call {
             SubjectKind::SearchRoot => Self::Search {
                 root: given.text("root"),
                 needle: given.text("needle"),
+                options: crate::tools::searching::Options {
+                    exact_case: given.flag("exact_case").unwrap_or(false),
+                    whole_word: given.flag("whole_word").unwrap_or(false),
+                    file_type: given.optional_text("file_type"),
+                    include_ignored: given.flag("include_ignored").unwrap_or(false),
+                },
             },
             SubjectKind::CommandLine => Self::Run {
                 command: given.text("command"),
@@ -296,6 +305,12 @@ impl Given {
             .position(|(field, _)| *field == name)
             .expect("a required text field was taken when it was declared");
         self.texts.swap_remove(at).1
+    }
+
+    /// An optional text field's value, if the call carried it.
+    fn optional_text(&mut self, name: &str) -> Option<String> {
+        let at = self.texts.iter().position(|(field, _)| *field == name)?;
+        Some(self.texts.swap_remove(at).1)
     }
 
     /// An optional flag's value, if the call carried it.
