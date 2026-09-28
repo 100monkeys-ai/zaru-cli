@@ -17,7 +17,7 @@
 //! | 3 — `./zaru.toml` | a TOML parser | **No** |
 //! | 5 — `--tier`, `--model` | argument parsing | **No** |
 //!
-//! ADR-0003 D2's table names `rmcp`, `ratatui`, `tui-textarea`, `fastembed`,
+//! ADR-0003 D2's table names `rmcp`, `ratatui`, `ratatui-textarea`, `fastembed`,
 //! `tokio`, `serde` and `reqwest`, and its Trigger clause 7 treats the table
 //! as closed in the other direction too — a dependency the harness turns out
 //! not to need is removed "by amendment rather than left standing unused". So

@@ -18,7 +18,7 @@ repository = "https://github.com/100monkeys-ai/zaru-cli"
 
 [workspace.dependencies]
 # ADR-0003 D2 names the dependencies the harness will carry -- `rmcp`,
-# `ratatui`, `tui-textarea`, `fastembed`, `tokio`, `serde`, `reqwest`. A
+# `ratatui`, `ratatui-textarea`, `fastembed`, `tokio`, `serde`, `reqwest`. A
 # version pinned before anything calls it is a version nobody chose, so a
 # dependency arrives here in the arc that has a caller, and each crate takes
 # it with `workspace = true` so two crates can never pin two versions of one.
