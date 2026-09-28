@@ -18,9 +18,12 @@
 //! `crossterm::event::EventStream` is a `futures_core::Stream` and it is
 //! **unreachable from this workspace**. It sits behind that crate's own
 //! `event-stream` feature, and crossterm is not a dependency here — it arrives
-//! as `ratatui::crossterm` through `ratatui`'s `crossterm` feature, which is
-//! what [ADR-0003] D2 blessed and what keeps a `crossterm` line out of every
-//! manifest. Measured on 2026-09-05 against `ratatui` 0.29.0's own manifest:
+//! as `ratatui_crossterm::crossterm` through `ratatui`'s backend crate, which
+//! keeps a `crossterm` line out of every manifest, and that crate's features
+//! are `crossterm_0_28`, `crossterm_0_29`, `scrolling-regions`, `serde`,
+//! `underline-color` and `unstable-backend-writer`, with no `event-stream`
+//! passthrough either (read from `ratatui-crossterm` 0.1.2's manifest on
+//! 2026-09-28). Measured on 2026-09-05 against `ratatui` 0.29.0's own manifest:
 //! its features are `all-widgets`, `crossterm`, `macros`, `palette`,
 //! `scrolling-regions`, `serde`, `termion`, `termwiz`, `underline-color`, the
 //! four `unstable` ones and `widget-calendar` — **there is no `event-stream`
@@ -473,7 +476,7 @@ impl Drop for Reader {
 /// a check does not have. Everything around it is checked: the channel, the
 /// locking, the flag and the join.
 fn read_until_stopped(sender: &UnboundedSender<Struck>, stop: &AtomicBool) {
-    use ratatui::crossterm::event::{poll, read};
+    use ratatui_crossterm::crossterm::event::{poll, read};
 
     while !stop.load(Ordering::Acquire) {
         match poll(POLL) {
@@ -516,8 +519,8 @@ fn read_until_stopped(sender: &UnboundedSender<Struck>, stop: &AtomicBool) {
 /// Everything else that is not a key or a paste (a resize, a focus change)
 /// arrives as an empty keystroke, so that the next frame is drawn at the
 /// terminal's new size, and that is unchanged.
-pub(crate) fn struck_for(event: ratatui::crossterm::event::Event) -> Option<Struck> {
-    use ratatui::crossterm::event::{Event, MouseEventKind};
+pub(crate) fn struck_for(event: ratatui_crossterm::crossterm::event::Event) -> Option<Struck> {
+    use ratatui_crossterm::crossterm::event::{Event, MouseEventKind};
     use zaru_tui::shell::Wheel;
     match event {
         Event::Key(key) => Some(Struck::Key(translate(key))),
@@ -540,11 +543,13 @@ pub(crate) fn struck_for(event: ratatui::crossterm::event::Event) -> Option<Stru
 
 /// One crossterm key event, as the backend-agnostic input the shell reads.
 ///
-/// # This translation exists because `tui-textarea` is taken on `no-backend`
+/// # This translation exists because `ratatui-textarea` is taken with no backend
 ///
-/// That feature is what keeps a terminal backend out of `zaru-tui`'s closure
-/// and out of ADR-0005 D3's fast tier, and the cost of it is that the crate
-/// ships no `From<KeyEvent>`. So the mapping is here, in the crate that has
+/// Its default `crossterm` feature is off, which is what keeps a terminal
+/// backend out of `zaru-tui`'s closure and out of ADR-0005 D3's fast tier, and
+/// the cost of it is that the crate ships no `From<KeyEvent>`. (`tui-textarea`,
+/// which it replaced on 2026-09-28, was taken on `no-backend` for the same
+/// reason.) So the mapping is here, in the crate that has
 /// crossterm, which is where the boundary puts it.
 ///
 /// **Every key the shell reads has an arm and everything else is `Key::Null`.**
@@ -552,8 +557,8 @@ pub(crate) fn struck_for(event: ratatui::crossterm::event::Event) -> Option<Stru
 /// `Esc`, `y`, `n`, `Ctrl-C` -- and the composer's text area handles the rest;
 /// a key with no arm reaches the composer as nothing rather than as something
 /// else.
-fn translate(key: ratatui::crossterm::event::KeyEvent) -> Input {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+fn translate(key: ratatui_crossterm::crossterm::event::KeyEvent) -> Input {
+    use ratatui_crossterm::crossterm::event::{KeyCode, KeyModifiers};
     use zaru_tui::shell::Key;
 
     let code = match key.code {

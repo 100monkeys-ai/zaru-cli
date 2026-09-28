@@ -98,8 +98,12 @@ impl Restore for Recording {
 impl Surface for Recording {
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()> {
         let palette = self.palette;
-        self.terminal
-            .draw(|frame| shell.render(frame, frame.area(), palette))?;
+        // `TestBackend`'s error is `Infallible` since `ratatui` 0.30, so a
+        // draw into it cannot fail and the pattern says so rather than
+        // converting an error that does not exist.
+        let Ok(_) = self
+            .terminal
+            .draw(|frame| shell.render(frame, frame.area(), palette));
         let buffer = self.terminal.backend().buffer();
         self.frames.push(
             (0..buffer.area.height)
@@ -123,7 +127,7 @@ impl Surface for Recording {
     }
 
     fn area(&self) -> std::io::Result<ratatui::layout::Rect> {
-        let size = self.terminal.size()?;
+        let Ok(size) = self.terminal.size();
         Ok(ratatui::layout::Rect::new(0, 0, size.width, size.height))
     }
 }

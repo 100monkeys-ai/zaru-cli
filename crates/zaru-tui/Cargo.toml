@@ -15,5 +15,5 @@ workspace = true
 [dependencies]
 zaru-core = { path = "../zaru-core" }
 ratatui = { workspace = true }
-tui-textarea = { workspace = true }
+ratatui-textarea = { workspace = true }
 pulldown-cmark = { workspace = true }

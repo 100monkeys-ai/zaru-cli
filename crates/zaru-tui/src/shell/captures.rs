@@ -22,7 +22,10 @@
 //! module's own**, written out variant by variant rather than through the
 //! library's `Debug`, so the text cannot change because the library's
 //! formatting did. The committed renderings under `captures/` were produced on
-//! `ratatui` 0.29.0 and `tui-textarea` 0.7.0, before the move, by this code.
+//! `ratatui` 0.29.0 and `tui-textarea` 0.7.0, before the move, by this module
+//! as it stood then; on 0.30 it reads a cell's diff option where 0.29 had a
+//! skip flag, and prints anything else a cell carries -- an underline colour,
+//! another diff option -- that an empty cell does not.
 //!
 //! A mismatch prints both renderings, the committed one and the painted one,
 //! for every capture that differs rather than the first, so one run names the
@@ -41,6 +44,7 @@ use core::fmt::Write as _;
 use core::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, TestBackend};
+use ratatui::buffer::{Cell, CellDiffOption};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
@@ -473,19 +477,36 @@ fn capture(shell: &Shell, width: u16, height: u16, palette: Palette) -> String {
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
             let cell = &buffer[(x, y)];
+            let skip = cell.diff_option == CellDiffOption::Skip;
+            // Whatever else a cell carries beyond its symbol, its two colours,
+            // its modifier and whether it is skipped -- an underline colour, a
+            // diff option other than a skip -- is found by clearing those four
+            // and comparing what is left with an empty cell, so a property a
+            // later library adds is printed rather than passed over.
+            let mut rest = cell.clone();
+            rest.set_symbol(" ");
+            rest.fg = Color::Reset;
+            rest.bg = Color::Reset;
+            rest.modifier = Modifier::empty();
+            if skip {
+                rest.set_diff_option(CellDiffOption::None);
+            }
+            let other = (rest != Cell::EMPTY).then(|| format!(" other={rest:?}"));
             let plain = cell.fg == Color::Reset
                 && cell.bg == Color::Reset
                 && cell.modifier.is_empty()
-                && !cell.skip;
+                && !skip
+                && other.is_none();
             if !plain {
                 writeln!(
                     out,
-                    "{x},{y} {:?} fg={} bg={} mod={}{}",
+                    "{x},{y} {:?} fg={} bg={} mod={}{}{}",
                     cell.symbol(),
                     colour(cell.fg),
                     colour(cell.bg),
                     modifier(cell.modifier),
-                    if cell.skip { " skip" } else { "" },
+                    if skip { " skip" } else { "" },
+                    other.unwrap_or_default(),
                 )
                 .expect("write to a String");
             }

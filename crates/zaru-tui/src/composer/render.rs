@@ -299,7 +299,7 @@ impl Composer {
     /// # The row is composed rather than handed to the text area's widget
     ///
     /// Since 2026-09-13, and [`Composer::input_row`] carries the whole of why:
-    /// a prompt may hold newlines now, the `tui-textarea` widget has no way to
+    /// a prompt may hold newlines now, the text area's widget has no way to
     /// paint one as a glyph, and with several lines in it that widget paints
     /// the cursor's line alone with nothing saying the rest exist.
     ///
@@ -347,7 +347,7 @@ mod tests {
     use crate::composer::{Composer, NEWLINE};
     use crate::shell::fixtures::StagedVocabulary;
     use core::time::Duration;
-    use tui_textarea::Key;
+    use ratatui_textarea::Key;
 
     const WIDTH: u16 = 40;
     const HEIGHT: u16 = 10;

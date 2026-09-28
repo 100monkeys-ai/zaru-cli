@@ -51,7 +51,7 @@ pub use strip::{PickerKind, StripContent, StripMode};
 use crate::shell::port::{CommandVocabulary, Extension, Namespace};
 use core::cell::Cell;
 use core::time::Duration;
-use tui_textarea::{CursorMove, Input, Key, TextArea};
+use ratatui_textarea::{CursorMove, Input, Key, TextArea};
 
 /// How many entries the strip asks the corpus for.
 ///
@@ -355,7 +355,7 @@ impl Composer {
         }
 
         let display = lines.join(NEWLINE);
-        // `tui_textarea`'s `next_scroll_top`, transcribed: left of the window
+        // `ratatui_textarea`'s `next_scroll_top`, transcribed: left of the window
         // the window follows the caret, past its right edge it tracks the
         // caret, and anywhere inside it the window does not move. See the
         // `window` field for why the state is kept rather than recomputed.
@@ -449,8 +449,8 @@ impl Composer {
     /// `Tab` replaces the word with **the vocabulary's own spelling**; where it
     /// reaches none, reaches several, or is a bare `/`, `Tab` does nothing at
     /// all. Either way the key never reaches the text area, which is what
-    /// makes "does nothing" true rather than nearly true: `tui-textarea`'s own
-    /// `Key::Tab` arm calls `insert_tab`, so a fall-through would advance the
+    /// makes "does nothing" true rather than nearly true: `ratatui-textarea`'s
+    /// own `Key::Tab` arm calls `insert_tab`, as `tui-textarea`'s did, so a fall-through would advance the
     /// caret to the next tab stop — three spaces after a bare `/`, measured on
     /// the release binary at `a8eedf7`. Outside a command line the key falls
     /// through unchanged and still inserts those spaces, which is today's
@@ -1030,7 +1030,7 @@ mod tests {
     use crate::shell::fixtures::StagedVocabulary;
     use crate::shell::port::CommandVocabulary;
     use core::time::Duration;
-    use tui_textarea::Key;
+    use ratatui_textarea::Key;
 
     /// One millisecond either side of the debounce, and the debounce itself.
     const JUST_UNDER: Duration = Duration::from_millis(249);
@@ -1492,7 +1492,7 @@ mod tests {
     /// The `Tab` rule, asserted on the composer's own bytes in five arms.
     ///
     /// Byte for byte rather than by a rendered row, because the behaviour this
-    /// replaces is **invisible in a frame**: `tui-textarea`'s `insert_tab`
+    /// replaces is **invisible in a frame**: the text area's `insert_tab`
     /// advances the caret to the next tab stop, and a terminal capture trims
     /// trailing spaces — which is how the look-and-feel survey read `Tab` as a
     /// no-op when it was inserting three of them after a bare `/`.
@@ -2103,7 +2103,7 @@ mod tests {
     #[test]
     fn tab_completes_a_unique_prefix_from_either_corpus_and_never_a_guess() {
         let trie = CountingTrie::staged();
-        let tab = || tui_textarea::Input {
+        let tab = || ratatui_textarea::Input {
             key: Key::Tab,
             ctrl: false,
             alt: false,

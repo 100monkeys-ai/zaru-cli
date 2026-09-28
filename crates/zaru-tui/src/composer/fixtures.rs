@@ -31,8 +31,8 @@ use core::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, TestBackend};
 use ratatui::layout::Position;
+use ratatui_textarea::{Input, Key};
 use std::cell::Cell;
-use tui_textarea::{Input, Key};
 
 /// A nonce that appears only in what the fast tier returns.
 pub(crate) const TRIE_NONCE: &str = "trie-9f2a";

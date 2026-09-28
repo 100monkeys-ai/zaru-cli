@@ -5399,7 +5399,8 @@ fn cells_at(
 /// does not carry — so it lives here, where `ratatui` is taken with it.
 fn written_bytes(shell: &Shell, width: u16, height: u16, palette: Palette) -> Vec<u8> {
     use ratatui::Terminal;
-    use ratatui::backend::{Backend, CrosstermBackend};
+    use ratatui::backend::Backend;
+    use ratatui_crossterm::CrosstermBackend;
 
     /// A writer the check can read back, because `CrosstermBackend`'s own is
     /// private.
@@ -5451,7 +5452,8 @@ fn written_bytes(shell: &Shell, width: u16, height: u16, palette: Palette) -> Ve
 /// other control byte as `\xNN`, so the committed file is readable text.
 fn wire_of(frames: &[Shell], width: u16, height: u16, palette: Palette) -> String {
     use ratatui::Terminal;
-    use ratatui::backend::{Backend, CrosstermBackend};
+    use ratatui::backend::Backend;
+    use ratatui_crossterm::CrosstermBackend;
 
     #[derive(Clone, Default)]
     struct Shared(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -7252,7 +7254,9 @@ fn an_admitted_skill_is_a_row_in_the_picker() {
 /// prints the event and what it became.
 #[test]
 fn a_pointer_event_that_is_not_the_wheel_is_nothing() {
-    use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui_crossterm::crossterm::event::{
+        Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     let at = |kind| {
         Event::Mouse(MouseEvent {
             kind,
@@ -7288,7 +7292,7 @@ fn a_pointer_event_that_is_not_the_wheel_is_nothing() {
 /// what a notch became.
 #[test]
 fn the_wheel_is_its_own_input_and_a_key_is_still_a_key() {
-    use ratatui::crossterm::event::{
+    use ratatui_crossterm::crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
     };
     use zaru_tui::shell::{Struck, Wheel};

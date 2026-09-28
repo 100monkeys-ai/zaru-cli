@@ -10,7 +10,7 @@ use crate::shell::port::{Answers, CommandVocabulary, Confirmation, Line, Palette
 use crate::shell::{Action, Answered, COMPOSER_ROWS, Leaving, Segment, Shell, Status, Wheel};
 use core::time::Duration;
 use ratatui::style::Color;
-use tui_textarea::{Input, Key};
+use ratatui_textarea::{Input, Key};
 
 const WIDTH: u16 = 60;
 const HEIGHT: u16 = 16;
@@ -2165,7 +2165,7 @@ fn no_cell_carries_a_colour_under_no_color() {
 ///
 /// The ruling of 2026-09-14 puts the colour on the register glyphs only, and
 /// what this check holds is that **this arc added none elsewhere**. It is
-/// deliberately not phrased as "no colour at all": `tui-textarea` 0.7 carries
+/// deliberately not phrased as "no colour at all": `ratatui-textarea` 0.8 carries
 /// its own defaults — a placeholder foreground and a selection background —
 /// which nothing here reaches today but which are that crate's values rather
 /// than this workspace's, and a check phrased over every colour would one day

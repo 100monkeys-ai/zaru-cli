@@ -121,34 +121,27 @@ boon = { workspace = true }
 # numbers, and for why a hand-written subset of that language was refused.
 ignore = { workspace = true }
 # ADR-0015 D2's in-session half needs a terminal, and this is where the
-# terminal backend arrives. `crossterm` is a FEATURE of a crate ADR-0003 D2
-# already names -- its row's role is "Terminal UI" in as many words -- and
-# `ratatui` re-exports it as `ratatui::crossterm`, so no `crossterm` line
-# appears in any manifest here. That is the shape D2 already blessed for
-# `rmcp`'s streamable-HTTP transport: "it arrives through this crate's own
-# ... feature, so it needs no new row in D2's table".
+# terminal backend arrives. Since `ratatui` 0.30 the backend is its own crate,
+# `ratatui-crossterm`, part of the `ratatui` project that ADR-0003 D2's row
+# already names -- its role is "Terminal UI" in as many words -- and it
+# re-exports crossterm as `ratatui_crossterm::crossterm`, so no `crossterm`
+# line appears in any manifest here. Until 2026-09-28 it arrived as
+# `ratatui`'s `crossterm` feature; see the `ratatui-crossterm` row in the
+# workspace manifest for why it is taken directly now, with its defaults off.
 #
-# The feature is named HERE and not on the workspace row, because this is the
-# crate that wants a backend: `zaru-tui` renders into a `Frame` and reads
-# `tui_textarea::Input`, both backend-agnostic, and its checks drive
-# `TestBackend`, which is not feature-gated in 0.29. Cargo unifies features
-# across workspace members, so `zaru-tui`'s closure gains `crossterm` either
-# way and `scripts/check-crate-boundaries.py` is what says that is allowed --
-# measured, both placements, on 2026-09-05. Naming it here is a statement of
-# where the backend is wanted rather than a mechanism.
+# It is named HERE and not by `zaru-tui`, because this is the crate that
+# wants a backend: `zaru-tui` renders into a `Frame` and reads
+# `ratatui_textarea::Input`, both backend-agnostic, and its checks drive
+# `TestBackend`. `scripts/check-crate-boundaries.py` is what says `zaru-cli`'s
+# closure may reach `mio` and `rustix` through crossterm and by no other route.
 #
-# Measured cost with `grep -c '^\[\[package\]\]' Cargo.lock`: **300 packages
-# to 314, +14**, rooted at `crossterm 0.28.1`. Measured three times against
-# three bases as peers landed, and **the delta is the number that matters**:
-# 206 -> 233 (+27) on the morning of 2026-09-05, 288 -> 302 (+14) after
-# `provider-client` landed `reqwest` and `tokio`, and 300 -> 314 (+14) after
-# `validators-remaining` landed `regex` and `boon`. The drop from 27 to 14 is
-# `reqwest` and `tokio` already bringing `mio`, `rustix`, `smallvec`,
-# `linux-raw-sys` and the `windows-sys` family, so over half of what a terminal
-# backend would have cost this workspace was paid for a different reason. What
-# is left is `crossterm` itself, `parking_lot`, `signal-hook` and the `winapi`
-# shims no Linux build compiles.
-ratatui = { workspace = true, features = ["crossterm"] }
+# Measured cost with `grep -c '^\[\[package\]\]' Cargo.lock` when the backend
+# first arrived: **300 packages to 314, +14**, rooted at `crossterm 0.28.1`,
+# over half of what a terminal backend would have cost already paid by
+# `reqwest` and `tokio`. The 0.30 move's own delta is on ADR-0003's amendment
+# for it.
+ratatui = { workspace = true }
+ratatui-crossterm = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-rust = { workspace = true }
 tree-sitter-python = { workspace = true }
