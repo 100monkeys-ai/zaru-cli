@@ -9,6 +9,7 @@
 //!
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
 
+use super::fixtures::serialised;
 use super::fixtures::{
     a_session, defect_report, every_mapped_refusal, of_class, one_of_each_class, policy, statement,
 };
@@ -25,7 +26,6 @@ use crate::failure::remedy::{Action, Remedy, Statement, StatementRefused};
 use crate::failure::wait::{Backoff, RETRY_LABEL, RetryCeiling, RetryRecord, Wait, WaitRefused};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use std::sync::{Mutex, PoisonError};
 
 /// ADR-0016 D1 names five classes. There is no sixth and there are not four.
 ///
@@ -661,24 +661,6 @@ fn a_failures_class_is_the_variant_it_was_built_as() {
 // ADR-0016 D3 — the defect boundary
 // ---------------------------------------------------------------------------
 
-/// Held for the duration of every guarded call below.
-///
-/// `panic::set_hook` is process-wide and `take_hook`/`set_hook` is not atomic,
-/// so two guards running at once could interleave. The product calls
-/// [`guard`] exactly once, from `main`; these checks are the only place two
-/// calls could overlap, and this is what stops them. Poisoning is recovered
-/// from rather than propagated: a check that panicked while holding it has
-/// already reported, and turning that into a second failure in a neighbouring
-/// check would report the wrong subject.
-static ONE_GUARD_AT_A_TIME: Mutex<()> = Mutex::new(());
-
-fn serialised<T>(body: impl FnOnce() -> T) -> T {
-    let _held = ONE_GUARD_AT_A_TIME
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    body()
-}
-
 /// ADR-0016 D3 and trigger clause 4: a panic is caught, reported as a defect,
 /// and exits 70.
 ///
@@ -693,17 +675,12 @@ fn a_panic_under_the_boundary_becomes_a_defect_that_exits_70() {
     let where_to_report = nonce("report-at");
     let said = nonce("what-the-panic-said");
 
-    let caught = serialised(|| {
-        match guard(
-            &version,
-            &where_to_report,
-            SessionEvidence::NoSessionExists,
-            || panic!("{said}"),
-        ) {
+    let caught = serialised(
+        || match guard(&version, &where_to_report, || panic!("{said}")) {
             Guarded::Defected(caught) => caught,
             Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
-        }
-    });
+        },
+    );
 
     let classified = Classified::Defect(caught.report().clone());
     assert_eq!(
@@ -755,17 +732,12 @@ fn a_panic_on_a_thread_the_harness_started_is_a_defect_when_the_body_returns() {
     let said = nonce("what-the-thread-said");
     let guarded = serialised(|| {
         let said = said.clone();
-        guard(
-            &nonce("version"),
-            &nonce("report-at"),
-            SessionEvidence::NoSessionExists,
-            move || {
-                let ended = crate::failure::thread("check", move || panic!("{said}"))
-                    .expect("a thread starts")
-                    .join();
-                u8::from(ended.is_err())
-            },
-        )
+        guard(&nonce("version"), &nonce("report-at"), move || {
+            let ended = crate::failure::thread("check", move || panic!("{said}"))
+                .expect("a thread starts")
+                .join();
+            u8::from(ended.is_err())
+        })
     });
     match guarded {
         Guarded::Defected(caught) => {
@@ -791,6 +763,84 @@ fn a_panic_on_a_thread_the_harness_started_is_a_defect_when_the_body_returns() {
     }
 }
 
+/// **A panic that is not the harness's reaches whatever hook was there before
+/// the boundary, and that hook is back once the boundary returns.**
+///
+/// Found on 2026-09-28 by a check whose failing assertion printed no sentence
+/// at all: a neighbouring check's boundary was installed at that moment, and
+/// its hook dropped every panic that was not its own, the test harness's own
+/// report of a failed assertion among them. A boundary is there to report the
+/// harness's defects, not to silence everybody else's.
+///
+/// The recording hook answers only for the thread this check names, and hands
+/// every other panic on, so a neighbour's failure is not swallowed here either.
+///
+/// **The mutants:** the foreign panic dropped rather than handed on (the first
+/// assertion), and the hook before the boundary not put back (the second).
+#[test]
+fn a_panic_that_is_not_the_harnesss_reaches_the_hook_that_was_there_before() {
+    static FORWARDED: AtomicBool = AtomicBool::new(false);
+    static AFTER: AtomicBool = AtomicBool::new(false);
+    const NAMED: &str = "not-the-harness-forwarded";
+
+    let (forwarded, after) = serialised(|| {
+        FORWARDED.store(false, Ordering::SeqCst);
+        AFTER.store(false, Ordering::SeqCst);
+        let original = std::sync::Arc::new(std::panic::take_hook());
+        let onward = std::sync::Arc::clone(&original);
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().name() == Some(NAMED) {
+                FORWARDED.store(true, Ordering::SeqCst);
+                AFTER.store(true, Ordering::SeqCst);
+            } else {
+                onward(info);
+            }
+        }));
+        let panic_on_the_named_thread = || {
+            let _ = std::thread::Builder::new()
+                .name(NAMED.to_owned())
+                .spawn(|| panic!("a panic on somebody else's thread"))
+                .expect("a thread starts")
+                .join();
+        };
+
+        let guarded = guard(&nonce("version"), &nonce("report-at"), || {
+            panic_on_the_named_thread();
+        });
+        assert!(
+            matches!(guarded, Guarded::Ran(())),
+            "a panic on a thread that is not the harness's was taken as the harness's"
+        );
+        let forwarded = FORWARDED.load(Ordering::SeqCst);
+
+        AFTER.store(false, Ordering::SeqCst);
+        panic_on_the_named_thread();
+        let after = AFTER.load(Ordering::SeqCst);
+
+        drop(std::panic::take_hook());
+        match std::sync::Arc::try_unwrap(original) {
+            Ok(original) => std::panic::set_hook(original),
+            Err(shared) => std::panic::set_hook(Box::new(move |info| shared(info))),
+        }
+        (forwarded, after)
+    });
+
+    let mut complaints: Vec<&str> = Vec::new();
+    if !forwarded {
+        complaints.push(
+            "a panic on a thread that is not the harness's never reached the hook installed \
+             before the boundary, so a neighbouring check's failure prints nothing while a \
+             boundary is up",
+        );
+    }
+    if !after {
+        complaints.push(
+            "the hook installed before the boundary was not put back when the boundary returned",
+        );
+    }
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
 /// **A panic on a thread that is not the harness's is not the harness's
 /// defect.**
 ///
@@ -805,19 +855,14 @@ fn a_panic_on_a_thread_the_harness_started_is_a_defect_when_the_body_returns() {
 #[test]
 fn a_panic_on_a_thread_that_is_not_the_harnesss_leaves_the_body_its_value() {
     let guarded = serialised(|| {
-        guard(
-            &nonce("version"),
-            &nonce("report-at"),
-            SessionEvidence::NoSessionExists,
-            || {
-                let ended = std::thread::Builder::new()
-                    .name("not-the-harness".to_owned())
-                    .spawn(|| panic!("a panic on somebody else's thread"))
-                    .expect("a thread starts")
-                    .join();
-                u8::from(ended.is_err())
-            },
-        )
+        guard(&nonce("version"), &nonce("report-at"), || {
+            let ended = std::thread::Builder::new()
+                .name("not-the-harness".to_owned())
+                .spawn(|| panic!("a panic on somebody else's thread"))
+                .expect("a thread starts")
+                .join();
+            u8::from(ended.is_err())
+        })
     });
     match guarded {
         Guarded::Ran(value) => {
@@ -846,16 +891,11 @@ fn nothing_after_a_caught_panic_runs() {
     static REACHED: AtomicBool = AtomicBool::new(false);
 
     let caught = serialised(|| {
-        let guarded = guard(
-            &nonce("version"),
-            &nonce("report-at"),
-            SessionEvidence::NoSessionExists,
-            || {
-                panic!("{}", nonce("stop here"));
-                #[allow(unreachable_code)]
-                REACHED.store(true, Ordering::SeqCst);
-            },
-        );
+        let guarded = guard(&nonce("version"), &nonce("report-at"), || {
+            panic!("{}", nonce("stop here"));
+            #[allow(unreachable_code)]
+            REACHED.store(true, Ordering::SeqCst);
+        });
         matches!(guarded, Guarded::Defected(_))
     });
 
@@ -887,17 +927,13 @@ fn nothing_after_a_caught_panic_runs() {
 #[test]
 fn the_panics_own_words_are_captured_and_never_presented() {
     let said = nonce("what-the-panic-said");
-    let caught = serialised(|| {
-        match guard(
-            &nonce("version"),
-            &nonce("report-at"),
-            SessionEvidence::NoSessionExists,
-            || panic!("{said}"),
-        ) {
-            Guarded::Defected(caught) => caught,
-            Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
-        }
-    });
+    let caught =
+        serialised(
+            || match guard(&nonce("version"), &nonce("report-at"), || panic!("{said}")) {
+                Guarded::Defected(caught) => caught,
+                Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
+            },
+        );
 
     assert_eq!(
         caught.own_words().as_str(),
@@ -933,14 +969,7 @@ fn the_panics_own_words_are_captured_and_never_presented() {
 #[test]
 fn a_body_that_does_not_panic_is_handed_back_untouched() {
     let carried = nonce("what-the-body-returned");
-    let guarded = serialised(|| {
-        guard(
-            &nonce("version"),
-            &nonce("report-at"),
-            SessionEvidence::NoSessionExists,
-            || carried.clone(),
-        )
-    });
+    let guarded = serialised(|| guard(&nonce("version"), &nonce("report-at"), || carried.clone()));
 
     match guarded {
         Guarded::Ran(value) => assert_eq!(
@@ -969,15 +998,11 @@ fn two_guarded_panics_each_report_their_own_defect() {
     let second_said = nonce("second-panic");
 
     let (first, second) = serialised(|| {
-        let take = |said: &str| match guard(
-            &nonce("version"),
-            &nonce("report-at"),
-            SessionEvidence::NoSessionExists,
-            || panic!("{said}"),
-        ) {
-            Guarded::Defected(caught) => caught,
-            Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
-        };
+        let take =
+            |said: &str| match guard(&nonce("version"), &nonce("report-at"), || panic!("{said}")) {
+                Guarded::Defected(caught) => caught,
+                Guarded::Ran(()) => panic!("the boundary did not catch a panic under it"),
+            };
         (take(&first_said), take(&second_said))
     });
 

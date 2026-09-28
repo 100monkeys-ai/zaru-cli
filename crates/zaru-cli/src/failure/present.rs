@@ -201,6 +201,10 @@ impl Presentation {
                 lines.push(Line::led("session:", id.as_str()));
                 lines.push(Line::led("transcript:", transcript.display().to_string()));
             }
+            SessionEvidence::SessionWithNoTranscript { id } => {
+                lines.push(Line::led("session:", id.as_str()));
+                lines.push(Line::plain("this session has no transcript on disk"));
+            }
             SessionEvidence::NoSessionExists => {
                 lines.push(Line::plain(
                     "there is no session and no transcript was written",

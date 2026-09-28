@@ -1772,6 +1772,10 @@ pub fn start(
     let session = session_store
         .start(id.clone())
         .map_err(|failure| surface.session(&failure))?;
+    // ADR-0016 D3: from here a session exists, so a defect names it. Its
+    // transcript is created below, and the boundary looks for it when it
+    // builds a report rather than trusting that it was.
+    session.entered();
     let evidence = session.evidence();
     let meta = Meta::new(
         tier,

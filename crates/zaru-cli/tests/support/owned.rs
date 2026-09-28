@@ -56,7 +56,13 @@
 //! check cannot reach `std`'s `spawn` through it, so the only way to start a
 //! process nothing owns is to name `std::process::Command` again, which
 //! `corpus_every_process_a_check_starts_is_owned` in `files_from_outside.rs`
-//! walks `tests/` for.
+//! walks every crate's checks for.
+//!
+//! # One file, two ways in
+//!
+//! Every test binary in `tests/` includes this file by `#[path]`, and the
+//! library's own checks include it as `crate::owned`, under `cfg(test)`, from
+//! `src/lib.rs`. It is one implementation either way.
 
 #![allow(
     dead_code,

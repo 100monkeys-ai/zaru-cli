@@ -296,10 +296,17 @@ fn a_directory_that_is_not_a_ulid_is_reported_rather_than_skipped() {
 /// ADR-0016 D3: a defect report names the session and says the transcript is
 /// on disk. `SessionEvidence::NoSessionExists` makes claiming one that was
 /// never written unrepresentable; this is the other arm, and it names the
-/// path the transcript writer actually appends to.
+/// path the transcript writer actually appends to — **once that file is
+/// there**.
 ///
-/// The mutant: returning `NoSessionExists` from `Session::evidence`, or
-/// naming a path the writer does not use.
+/// Until 2026-09-28 this check staged a session with no transcript in it and
+/// asserted that the evidence claimed one anyway, which is what the product
+/// did: a refusal raised between `start` making the directory and the
+/// transcript being created named a file that did not exist. The staging is
+/// kept and the assertion inverted, because that moment is real.
+///
+/// The mutants: returning `NoSessionExists` from `Session::evidence`, naming a
+/// path the writer does not use, and claiming the path without looking.
 #[test]
 fn a_session_hands_adr_0016_d3_the_transcript_it_will_actually_write() {
     let scratch = ScratchRoot::new();
@@ -308,6 +315,19 @@ fn a_session_hands_adr_0016_d3_the_transcript_it_will_actually_write() {
         .start(id_at(1_700_000_000_000, 5))
         .expect("could not start a session");
 
+    let before = session.evidence();
+    assert_eq!(
+        before.id().map(crate::failure::SessionId::as_str),
+        Some(session.id().as_str()),
+        "a session with no transcript yet was not named",
+    );
+    assert_eq!(
+        before.transcript(),
+        None,
+        "the defect boundary was told of a transcript that is not on disk: {before:?}",
+    );
+
+    drop(Transcript::append_to(session.transcript_path()).expect("the transcript is created"));
     let evidence = session.evidence();
     assert_eq!(
         evidence.id().map(crate::failure::SessionId::as_str),
@@ -889,7 +909,9 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
             .expect("could not start a session");
         let path = session.transcript_path();
 
-        let mut child = std::process::Command::new(
+        // Owned, so a round that fails, panics or is killed takes its child
+        // with it -- see `crate::owned`.
+        let mut child = crate::owned::command(
             std::env::current_exe().expect("the test binary knows where it is"),
         )
         .args([
@@ -904,17 +926,19 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("could not spawn this crate's own test binary");
+        let mut out = child.take_stdout();
 
         // Wait on the condition, not on a clock. See
         // `wait_until_the_transcript_holds`.
         wait_until_the_transcript_holds(&path, RECORDS_BEFORE_THE_KILL, round);
-        child.kill().expect("could not kill the child");
+        // SIGKILL to the child and its group, then reaped: it gets no chance
+        // to flush anything, which is the point.
+        child.kill();
         let mut reported = String::new();
-        if let Some(mut out) = child.stdout.take() {
+        {
             use std::io::Read as _;
             let _ = out.read_to_string(&mut reported);
         }
-        let _ = child.wait();
 
         let promised: Vec<u64> = reported
             .lines()
@@ -2537,4 +2561,252 @@ fn the_ninth_producer_round_trips_and_renders_the_records_own_line() {
         Record::Attribution(mine),
     ]));
     assert_eq!(painted[0].text, "/deploy-check (user)");
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0016 D3 inside a live session — the report names the session it is in
+// ---------------------------------------------------------------------------
+
+/// A session started the way the product starts one, under a scratch home.
+fn a_live_session(scratch: &ScratchRoot, here: &ScratchRoot) -> crate::session::Session {
+    let (session, _) = crate::compose::turn::start(
+        scratch.store_root(),
+        ResolvedTier::supplied(Tier::Bare, Layer::BuiltIn),
+        None,
+        None,
+        &here.store_root(),
+        crate::compose::ContextShape::of(
+            crate::cli::layers::context_limits(crate::cli::layers::WINDOW_WHEN_NO_PROVIDER),
+            0,
+        ),
+        None,
+        &crate::cli::Surface::new("0.0.0", "https://example.invalid"),
+    )
+    .expect("a session starts");
+    session
+}
+
+/// The known-defects row's reproduction, in process: a thread of the
+/// harness's own panics while a session is open, and the report names that
+/// session and the transcript that holds what was said in it.
+///
+/// # The defect this holds shut
+///
+/// Measured by `harness-orphans-and-reader-panic` on 2026-09-28 with a panic
+/// planted on the terminal reader's thread: the report's third line read
+/// "there is no session and no transcript was written" while the session's
+/// directory and its transcript were on disk, because `main` handed the
+/// boundary `SessionEvidence::NoSessionExists` on every path. A person told
+/// that does not look for the file that holds their work.
+///
+/// The session is opened by `compose::turn::start`, which is what opens every
+/// session the product has, and the conversation is written by the product's
+/// own transcript writer, so what is read back is what a person would find.
+/// The panic is on a thread started through `failure::thread`, as the
+/// terminal reader is, and the body returns afterwards as the pump does when
+/// the reader's channel closes.
+///
+/// **The mutant is the teller removed**: `start` not telling the boundary the
+/// session it opened, after which the report denies the session again.
+#[test]
+fn a_defect_inside_a_live_session_names_the_session_and_the_transcript_that_holds_it() {
+    use crate::session::record::{Utterance, Voice};
+
+    let scratch = ScratchRoot::new();
+    let here = ScratchRoot::new();
+    let asked = super::fixtures::nonce("what-the-person-asked");
+    let answered = super::fixtures::nonce("what-zaru-answered");
+    let mut opened: Option<crate::session::Session> = None;
+
+    let guarded = crate::failure::fixtures::serialised(|| {
+        crate::failure::guard("0.0.0", "https://example.invalid", || {
+            let session = a_live_session(&scratch, &here);
+            let mut transcript = Transcript::append_to(session.transcript_path())
+                .expect("the session's transcript opens");
+            for (voice, text) in [(Voice::User, &asked), (Voice::Zaru, &answered)] {
+                transcript
+                    .record(&Record::Conversation(Utterance {
+                        n: 1,
+                        voice,
+                        text: text.clone(),
+                    }))
+                    .expect("the conversation is recorded");
+            }
+            opened = Some(session);
+            let reader = crate::failure::thread("check-reader", || {
+                panic!("a part of the harness failed inside a live session")
+            })
+            .expect("a thread starts");
+            let _ = reader.join();
+        })
+    });
+
+    let session = opened.expect("the body ran as far as opening the session");
+    let caught = match guarded {
+        crate::failure::Guarded::Defected(caught) => caught,
+        crate::failure::Guarded::Ran(()) => {
+            panic!("a panic on a thread of the harness's own was handed back as Ran")
+        }
+    };
+    let rendered = caught.to_string();
+    let path = session.transcript_path();
+
+    let mut complaints: Vec<String> = Vec::new();
+    if rendered.contains("there is no session") {
+        complaints.push(format!(
+            "the report said there is no session while session {} was open and its transcript \
+             was on disk at {}",
+            session.id(),
+            path.display()
+        ));
+    }
+    if !rendered.contains(session.id().as_str()) {
+        complaints.push(format!("the report does not name session {}", session.id()));
+    }
+    if !rendered.contains(&path.display().to_string()) {
+        complaints.push(format!(
+            "the report does not name the transcript at {}",
+            path.display()
+        ));
+    }
+    let reading = Transcript::read(&path).expect("the transcript the report names is readable");
+    let said: Vec<String> = reading
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Conversation(utterance) => Some(utterance.text.clone()),
+            _ => None,
+        })
+        .collect();
+    if said != vec![asked.clone(), answered.clone()] || reading.fragment.is_some() {
+        complaints.push(format!(
+            "the transcript the report names does not hold the conversation so far: it holds \
+             {said:?} with a fragment of {:?}",
+            reading.fragment
+        ));
+    }
+    assert!(
+        complaints.is_empty(),
+        "{}\n-- the report --\n{rendered}",
+        complaints.join("\n")
+    );
+}
+
+/// With no session opened, the report still says there is none, and says so
+/// rather than naming a file. The accepting sibling of the check above, run
+/// the same way: the same boundary, the same kind of panic, and no session.
+///
+/// A session opened on **another** thread, which no boundary is running on,
+/// is in the same check because it is the same claim from the other side: the
+/// boundary names the session its own body is inside, not one a neighbour
+/// opened — which is what running many checks in one process at once needs,
+/// and what `main`, whose body opens every session the process has, never
+/// meets.
+///
+/// **The mutant is a boundary that names whatever session was last opened
+/// anywhere in the process**, which names the neighbour's here.
+#[test]
+fn a_defect_with_no_session_open_still_says_there_is_none() {
+    let scratch = ScratchRoot::new();
+    let here = ScratchRoot::new();
+    let neighbour = std::thread::scope(|scope| {
+        scope
+            .spawn(|| a_live_session(&scratch, &here))
+            .join()
+            .expect("the neighbour's session starts")
+    });
+
+    let guarded = crate::failure::fixtures::serialised(|| {
+        crate::failure::guard("0.0.0", "https://example.invalid", || {
+            let reader = crate::failure::thread("check-reader", || {
+                panic!("a part of the harness failed with no session open")
+            })
+            .expect("a thread starts");
+            let _ = reader.join();
+        })
+    });
+    let rendered = match guarded {
+        crate::failure::Guarded::Defected(caught) => caught.to_string(),
+        crate::failure::Guarded::Ran(()) => {
+            panic!("a panic on a thread of the harness's own was handed back as Ran")
+        }
+    };
+    let mut complaints: Vec<String> = Vec::new();
+    if !rendered.contains("there is no session and no transcript was written") {
+        complaints.push("the report with no session open does not say there is none".to_owned());
+    }
+    if rendered.contains(neighbour.id().as_str()) || rendered.contains("transcript.jsonl") {
+        complaints.push(format!(
+            "the report names session {}, which a neighbouring thread opened and this body \
+             never entered",
+            neighbour.id()
+        ));
+    }
+    assert!(
+        complaints.is_empty(),
+        "{}\n-- the report --\n{rendered}",
+        complaints.join("\n")
+    );
+}
+
+/// A session whose transcript is not on disk is named, and no transcript is
+/// claimed for it.
+///
+/// ADR-0010 D1's directory exists before its transcript does — `store.start`
+/// makes the directory and `compose::turn::start` creates the file three steps
+/// later — and a person can remove the file from a session they resume. A
+/// report that named the path would send them to a file that is not there,
+/// and one that denied the session would deny a directory they can list. So
+/// the report names the session and says it has no transcript on disk.
+///
+/// **The mutants**: the transcript claimed without looking (the path is
+/// named), and the session denied because its transcript is missing (the id
+/// is not named).
+#[test]
+fn a_defect_in_a_session_whose_transcript_is_not_on_disk_names_the_session_and_claims_no_file() {
+    let scratch = ScratchRoot::new();
+    let store = SessionStore::open(scratch.store_root()).expect("the store opens");
+    let session = store
+        .start(id_at(1_790_000_000_000, 7))
+        .expect("the session's directory is made");
+    assert!(
+        session.directory().is_dir() && !session.transcript_path().exists(),
+        "the staging: a session directory with no transcript in it"
+    );
+
+    let guarded = crate::failure::fixtures::serialised(|| {
+        crate::failure::guard("0.0.0", "https://example.invalid", || {
+            session.entered();
+            panic!("a part of the harness failed before the transcript was created")
+        })
+    });
+    let rendered = match guarded {
+        crate::failure::Guarded::Defected(caught) => caught.to_string(),
+        crate::failure::Guarded::Ran(()) => panic!("the boundary did not catch the panic"),
+    };
+    let mut complaints: Vec<String> = Vec::new();
+    if !rendered.contains(session.id().as_str()) {
+        complaints.push(format!("the report does not name session {}", session.id()));
+    }
+    if rendered.contains("transcript.jsonl") {
+        complaints.push(format!(
+            "the report names {}, which is not on disk",
+            session.transcript_path().display()
+        ));
+    }
+    if rendered.contains("there is no session") {
+        complaints.push(format!(
+            "the report denies session {} while its directory is at {}",
+            session.id(),
+            session.directory().display()
+        ));
+    }
+    if !rendered.contains("this session has no transcript on disk") {
+        complaints.push("the report does not say the session has no transcript".to_owned());
+    }
+    assert!(
+        complaints.is_empty(),
+        "{}\n-- the report --\n{rendered}",
+        complaints.join("\n")
+    );
 }

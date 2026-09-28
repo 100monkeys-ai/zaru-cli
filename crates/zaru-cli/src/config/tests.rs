@@ -1568,7 +1568,7 @@ fn summed(stdout: &str, word: &str) -> usize {
 #[test]
 fn no_check_in_this_crate_reads_a_home_or_an_environment_it_was_not_handed() {
     let binary = std::env::current_exe().expect("the test binary knows where it is");
-    let listing = std::process::Command::new(&binary)
+    let listing = crate::owned::command(&binary)
         .args(["--list", "--format", "terse"])
         .output()
         .expect("the test binary lists its checks");
@@ -1588,7 +1588,7 @@ fn no_check_in_this_crate_reads_a_home_or_an_environment_it_was_not_handed() {
         .expect("the credential canary");
     let planted = every_file_under(&decoy);
 
-    let mut rerun = std::process::Command::new(&binary);
+    let mut rerun = crate::owned::command(&binary);
     rerun.args(["--skip", DECOY_GUARD, "--exact"]);
     rerun.env("HOME", &decoy);
     let mut removed = 0usize;

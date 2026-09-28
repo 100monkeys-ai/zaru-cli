@@ -146,3 +146,20 @@ pub mod terminal;
 pub mod tools;
 pub mod validators;
 pub mod web;
+
+/// Every process one of this crate's own checks starts, owned until it is gone.
+///
+/// **The same file the integration tests include**, `tests/support/owned.rs`,
+/// and not a copy: a helper whose whole job is that nothing outlives a check
+/// cannot be allowed to drift into two. It is a module here rather than a
+/// crate, because a crate whose only reason to exist is testing is what
+/// ADR-0003 D8's amendment of 2026-09-05 declined to admit, and a `cfg(test)`
+/// module moves nothing in D8's table: no crate, no edge, no feature, and
+/// nothing in any build a person runs. Until 2026-09-28 `session::tests` and
+/// `config::tests` started their test binary with `std::process::Command`
+/// beside it; `corpus_every_process_a_check_starts_is_owned` in
+/// `tests/files_from_outside.rs` now walks every crate's checks, these
+/// included.
+#[cfg(test)]
+#[path = "../tests/support/owned.rs"]
+pub(crate) mod owned;

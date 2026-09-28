@@ -21,6 +21,28 @@ use crate::tools::Tier;
 use core::time::Duration;
 use std::path::PathBuf;
 
+/// Held for the duration of every guarded call a check makes, in any module.
+///
+/// `panic::set_hook` is process-wide and `take_hook`/`set_hook` is not atomic,
+/// so two guards running at once could interleave. The product calls
+/// [`guard`](crate::failure::guard) exactly once, from `main`; the checks are
+/// the only place two calls could overlap, and this is what stops them. It is
+/// here rather than beside the boundary's own checks because the session's
+/// and the terminal's checks guard a body too, and a lock each module kept for
+/// itself would stop nothing across them. Poisoning is recovered from rather
+/// than propagated: a check that panicked while holding it has already
+/// reported, and turning that into a second failure in a neighbouring check
+/// would report the wrong subject.
+static ONE_GUARD_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run `body` holding [`ONE_GUARD_AT_A_TIME`].
+pub(crate) fn serialised<T>(body: impl FnOnce() -> T) -> T {
+    let _held = ONE_GUARD_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    body()
+}
+
 /// A statement carrying a nonce, so a check cannot pass by matching a
 /// constant somebody hard-coded.
 pub(super) fn statement(label: &str) -> Statement {

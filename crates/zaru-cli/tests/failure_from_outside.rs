@@ -29,8 +29,8 @@
 
 use std::sync::{Mutex, PoisonError};
 use zaru_cli::failure::{
-    Action, Class, Classified, Exit, Expected, Guarded, Partial, Presentation, Remedy,
-    SessionEvidence, Statement, StepName, guard,
+    Action, Class, Classified, Exit, Expected, Guarded, Partial, Presentation, Remedy, Statement,
+    StepName, guard,
 };
 use zaru_cli::tools::Tier;
 
@@ -100,7 +100,6 @@ fn a_caller_outside_the_crate_builds_a_failure_of_every_class_and_reads_it() {
                 Class::Defect => match guard(
                     env!("CARGO_PKG_VERSION"),
                     "https://github.com/100monkeys-ai/zaru-cli",
-                    SessionEvidence::NoSessionExists,
                     || panic!("a deliberate defect, raised from outside the crate"),
                 ) {
                     Guarded::Defected(caught) => Classified::Defect(caught.report().clone()),
@@ -141,7 +140,6 @@ fn a_caller_outside_the_crate_drives_a_panic_to_a_defect_report() {
         let caught = match guard(
             env!("CARGO_PKG_VERSION"),
             "https://github.com/100monkeys-ai/zaru-cli",
-            SessionEvidence::NoSessionExists,
             || panic!("a deliberate defect, raised from outside the crate"),
         ) {
             Guarded::Defected(caught) => caught,
