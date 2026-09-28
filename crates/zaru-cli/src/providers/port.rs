@@ -25,7 +25,7 @@
 //!
 //! # Why it is a port rather than a client
 //!
-//! [ADR-0003] D2's dependency table names `rmcp`, `ratatui`, `tui-textarea`,
+//! [ADR-0003] D2's dependency table names `rmcp`, `ratatui`, `ratatui-textarea`,
 //! `fastembed`, `tokio`, `serde` and `reqwest`. Five provider clients would be
 //! five streaming implementations and five error taxonomies, which is
 //! ADR-0012's own Negative consequence. **What the two built so far show is

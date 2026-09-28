@@ -18,7 +18,7 @@ repository = "https://github.com/100monkeys-ai/zaru-cli"
 
 [workspace.dependencies]
 # ADR-0003 D2 names the dependencies the harness will carry -- `rmcp`,
-# `ratatui`, `tui-textarea`, `fastembed`, `tokio`, `serde`, `reqwest`. A
+# `ratatui`, `ratatui-textarea`, `fastembed`, `tokio`, `serde`, `reqwest`. A
 # version pinned before anything calls it is a version nobody chose, so a
 # dependency arrives here in the arc that has a caller, and each crate takes
 # it with `workspace = true` so two crates can never pin two versions of one.
@@ -52,23 +52,37 @@ tokio = { version = "1.53.1", default-features = false, features = [
     "macros",
 ] }
 
-# `ratatui` is pinned to 0.29 rather than to the newest 0.30.2, and that is a
-# constraint rather than a preference. `tui-textarea` 0.7.0 -- the newest, and
-# the composer's editing substrate under D2 -- depends on `ratatui ^0.29.0`.
-# Taking 0.30.2 puts BOTH in one tree, which `cargo tree -e normal -d` prints:
-# two `ratatui` crates means two `Buffer` types and two `Widget` traits, so the
-# text area could not be rendered into our own frame at all. 0.29.0 is the
-# newest `ratatui` the substrate can actually be used with.
+# `ratatui` is 0.30 and the composer's editing substrate is `ratatui-textarea`
+# 0.8.0, and the two moved together on 2026-09-28 because neither could move
+# alone. `ratatui` 0.29.0 required `lru ^0.12`, and `lru` 0.12.5 carries
+# RUSTSEC-2026-0002 (GHSA-rhfx-m35p-ff5j, patched in 0.16.3) and
+# RUSTSEC-2026-0253 (patched in 0.18.2); 0.30.0 is the first `ratatui` whose
+# `ratatui-core` admits a patched `lru` at all, and `ratatui-core` 0.1.1, which
+# 0.30.1 onward requires, is the first to require `lru ^0.18`. `tui-textarea`
+# 0.7.0 -- its newest release, and the substrate D2 names -- requires
+# `ratatui ^0.29.0`, so taking 0.30 beside it put two `ratatui` crates, two
+# `Buffer` types and two `Widget` traits in one tree and left `lru` 0.12.5 in
+# it. `ratatui-textarea` is `tui-textarea`'s continuation under the ratatui
+# organisation (rhysd/tui-textarea issue #125); 0.8.0 is its port to 0.30 with
+# no other change, and the 0.9 line's cursor and word-motion fixes are
+# deliberately not taken here, because this move must change nothing a person
+# sees. Measured by `crates/zaru-tui/src/shell/captures.rs` and the wire
+# capture in `zaru-cli`'s terminal checks, both committed on 0.29 first.
 #
-# Default features off on both. `ratatui`'s defaults are `crossterm` and
-# `underline-color`, and the second pulls crossterm too; `tui-textarea`'s
-# default is `crossterm` as well. With them off and `no-backend` on, no
-# terminal backend and no socket enters the tree -- which is what makes
-# ADR-0005 D3's "the fast tier never touches the network" a property of the
-# dependency graph rather than a claim about the code, enforced by
-# `scripts/check-crate-boundaries.py`. `no-backend` is also what exposes
-# `tui_textarea::{Input, Key}`, the backend-agnostic input type, so keys need
-# no crossterm either. `TestBackend` is not feature-gated in 0.29.
+# Default features off on both, and then two named on `ratatui` that 0.29 did
+# not need to name: in 0.29 the standard library and the layout cache were
+# unconditional, and 0.30 made them features, so `std` and `layout-cache` are
+# what keep this build doing what the 0.29 build did rather than a capability
+# arriving. `ratatui`'s remaining defaults are `crossterm`, `underline-color`,
+# `all-widgets` and `macros`, and none is taken -- not even `crossterm`; see
+# `ratatui-crossterm` below for why the backend is its own row.
+# `ratatui-textarea`'s default is `crossterm`, so with it off no terminal
+# backend enters through the substrate: its `Input`
+# and `Key` are the backend-agnostic input type, as `tui-textarea`'s were
+# under `no-backend`. With no backend named here, no socket enters the tree --
+# which is what makes ADR-0005 D3's "the fast tier never touches the network"
+# a property of the dependency graph rather than a claim about the code,
+# enforced by `scripts/check-crate-boundaries.py`.
 # `serde` and `serde_json` are D2's "serialisation" row. The table names
 # `serde` alone, and `serde` alone writes no bytes: it is a framework of
 # traits and derives, and every actual format lives in a separate crate. So
@@ -163,9 +177,26 @@ rmcp = { version = "3.2.0", default-features = false }
 futures = { version = "0.3.34", default-features = false, features = ["std"] }
 sse-stream = { version = "0.2.6", default-features = false }
 
-ratatui = { version = "0.29.0", default-features = false }
-tui-textarea = { version = "0.7.0", default-features = false, features = [
-    "no-backend",
+ratatui = { version = "0.30.2", default-features = false, features = [
+    "std",
+    "layout-cache",
+] }
+ratatui-textarea = { version = "0.8.0", default-features = false }
+
+# `ratatui-crossterm` is the crossterm backend `ratatui` 0.30 split out of
+# itself, taken directly and not through `ratatui`'s `crossterm` feature,
+# because that feature takes this crate WITH its defaults and one of them is
+# `underline-color`. In 0.29 `underline-color` was a `ratatui` default this
+# workspace turned off; in 0.30 it is this crate's default, reached through
+# the feature, and with it on the backend ends every frame with an extra
+# `ESC[59m` -- measured by the wire capture in `zaru-cli`'s terminal checks,
+# the one difference the move made. Default features off, and exactly
+# `crossterm_0_29`, which is the one `crossterm` in the lock. The cost is that
+# `ratatui::try_init` and `ratatui::try_restore` live behind that feature, so
+# `zaru-cli` takes the terminal and gives it back itself, in
+# `terminal::driver`.
+ratatui-crossterm = { version = "0.1.2", default-features = false, features = [
+    "crossterm_0_29",
 ] }
 
 # `aes-gcm` and `keyring` are D2's rows for ADR-0007 D3, accepted 2026-09-05

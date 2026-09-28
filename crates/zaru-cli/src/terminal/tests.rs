@@ -5399,7 +5399,8 @@ fn cells_at(
 /// does not carry — so it lives here, where `ratatui` is taken with it.
 fn written_bytes(shell: &Shell, width: u16, height: u16, palette: Palette) -> Vec<u8> {
     use ratatui::Terminal;
-    use ratatui::backend::{Backend, CrosstermBackend};
+    use ratatui::backend::Backend;
+    use ratatui_crossterm::CrosstermBackend;
 
     /// A writer the check can read back, because `CrosstermBackend`'s own is
     /// private.
@@ -5440,6 +5441,162 @@ fn written_bytes(shell: &Shell, width: u16, height: u16, palette: Palette) -> Ve
     terminal.backend_mut().flush().expect("flush");
     let written = written.0.lock().expect("the buffer");
     written.clone()
+}
+
+/// The bytes `ratatui`'s crossterm backend writes for a run of frames drawn
+/// one after another on one terminal, with every escape spelled out.
+///
+/// The first frame is a whole paint over a blank screen; each later one is
+/// the backend's diff against the frame before it, which is the path every
+/// keystroke of a live session takes. `\u{1b}` is written `\e` and every
+/// other control byte as `\xNN`, so the committed file is readable text.
+fn wire_of(frames: &[Shell], width: u16, height: u16, palette: Palette) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::Backend;
+    use ratatui_crossterm::CrosstermBackend;
+
+    #[derive(Clone, Default)]
+    struct Shared(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Shared {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("the buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // A fixed viewport, for `written_bytes`' reason above: the size is the
+    // check's and nothing reaches a real terminal.
+    let written = Shared::default();
+    let mut terminal = Terminal::with_options(
+        CrosstermBackend::new(written.clone()),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, width, height)),
+        },
+    )
+    .expect("a backend over a buffer needs no terminal");
+    let mut out = String::new();
+    for (at, shell) in frames.iter().enumerate() {
+        written.0.lock().expect("the buffer").clear();
+        terminal
+            .draw(|frame| shell.render(frame, frame.area(), palette))
+            .expect("draw");
+        terminal.backend_mut().flush().expect("flush");
+        let bytes = written.0.lock().expect("the buffer").clone();
+        let text = String::from_utf8(bytes).expect("the backend writes UTF-8");
+        out.push_str(&format!("frame {at}\n"));
+        for character in text.chars() {
+            match character {
+                '\u{1b}' => out.push_str("\\e"),
+                '\\' => out.push_str("\\\\"),
+                control if control.is_control() => {
+                    out.push_str(&format!("\\x{:02x}", u32::from(control)));
+                }
+                other => out.push(other),
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// What the terminal is sent, frame by frame, is what it was sent before the
+/// rendering library moved.
+///
+/// `zaru-tui`'s `every_surface_paints_byte_for_byte_what_it_painted_before_the_library_moved`
+/// holds the buffer; this holds the bytes the crossterm backend turns the
+/// buffer into, which is where a changed default in the backend -- a colour
+/// spelled differently, a reset added or dropped, a cursor move -- would land
+/// without moving a single cell. Three runs: every register in colour, the
+/// same under `NO_COLOR`, and a wrapped answer with its markup painted,
+/// followed by the diff a queued task makes and a question standing. The committed
+/// renderings under `captures/` were produced on `ratatui` 0.29.0 and
+/// `crossterm` 0.28.1, before the move. Every run is compared and every
+/// mismatch printed with both renderings.
+#[test]
+fn the_bytes_a_terminal_is_sent_are_the_bytes_it_was_sent_before_the_library_moved() {
+    use zaru_tui::shell::port::{Answers, Confirmation, Line};
+
+    let registers = || {
+        let mut shell = shell();
+        for register in Register::ALL {
+            shell.notice(Line::new(
+                register,
+                format!("a line in {register:?} · 1.25s"),
+            ));
+        }
+        shell
+    };
+    let answered = || {
+        let mut shell = shell();
+        shell.notice(Line::new(Register::Plain, "› explain the composer"));
+        shell.notice(Line::answer(
+            Register::Plain,
+            "zaru: ",
+            "The composer keeps **one input row** whatever the strip shows, and \
+             `Shell::render` never clips a line; *nothing here* is a second paragraph.",
+        ));
+        shell
+    };
+    let typed_into = || {
+        let mut shell = answered();
+        shell.queue(zaru_tui::shell::Queued::of("and then run the suite"));
+        shell
+    };
+    let asked = || {
+        let mut shell = answered();
+        shell.ask(Confirmation::new(
+            "Allow cmd.run cargo test --workspace?",
+            "[y/a/N]",
+            Answers::ToolCall,
+            true,
+        ));
+        shell
+    };
+
+    let runs: [(&str, &str, String); 3] = [
+        (
+            "wire-every-register-coloured",
+            include_str!("captures/wire-every-register-coloured.txt"),
+            wire_of(&[registers()], 60, 12, Palette::Coloured),
+        ),
+        (
+            "wire-every-register-monochrome",
+            include_str!("captures/wire-every-register-monochrome.txt"),
+            wire_of(&[registers()], 60, 12, Palette::Monochrome),
+        ),
+        (
+            "wire-answer-then-diffs",
+            include_str!("captures/wire-answer-then-diffs.txt"),
+            wire_of(
+                &[answered(), typed_into(), asked()],
+                40,
+                16,
+                Palette::Coloured,
+            ),
+        ),
+    ];
+    let differ: Vec<String> = runs
+        .iter()
+        .filter(|(_, committed, sent)| sent != committed)
+        .map(|(name, committed, sent)| {
+            format!(
+                "=== capture {name}: committed ===\n{committed}=== capture {name}: painted ===\n\
+                 {sent}=== end {name} ==="
+            )
+        })
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "{} of {} wire captures differ from the committed bytes:\n{}",
+        differ.len(),
+        runs.len(),
+        differ.join("\n")
+    );
 }
 
 /// The buffer a shell paints at a given size, as rows.
@@ -7097,7 +7254,9 @@ fn an_admitted_skill_is_a_row_in_the_picker() {
 /// prints the event and what it became.
 #[test]
 fn a_pointer_event_that_is_not_the_wheel_is_nothing() {
-    use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui_crossterm::crossterm::event::{
+        Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     let at = |kind| {
         Event::Mouse(MouseEvent {
             kind,
@@ -7133,7 +7292,7 @@ fn a_pointer_event_that_is_not_the_wheel_is_nothing() {
 /// what a notch became.
 #[test]
 fn the_wheel_is_its_own_input_and_a_key_is_still_a_key() {
-    use ratatui::crossterm::event::{
+    use ratatui_crossterm::crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
     };
     use zaru_tui::shell::{Struck, Wheel};

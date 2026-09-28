@@ -24,7 +24,7 @@
 use core::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use tui_textarea::{Input, Key};
+use ratatui_textarea::{Input, Key};
 use zaru_tui::composer::{
     Composer, Entries, Entry, EntryKind, KEYWORD_ONLY, PathEntry, Paths, Scope, SearchResponse,
 };

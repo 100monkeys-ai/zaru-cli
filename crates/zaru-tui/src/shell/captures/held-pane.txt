@@ -1,0 +1,20 @@
+size 60x16
+cursor 0,9
+rows
+|runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X    |
+|  line 9                                                    |
+|  line 10                                                   |
+|  line 11                                                   |
+|  line 12                                                   |
+|  line 13                                                   |
+|  line 14                                                   |
+|  line 15                                                   |
+|  … 25 more below · End                                     |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+styled cells

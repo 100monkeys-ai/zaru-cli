@@ -1,0 +1,22 @@
+size 40x16
+cursor 0,9
+rows
+|runtime.tier = bare · 1.2k/1048.5k      |
+|· fs.read crates/zaru-tui/src/shell.rs  |
+|  An answer arriving in pieces, long    |
+|  enough to take a second row at the    |
+|  narrow width.                         |
+|                                        |
+|                                        |
+|                                        |
+|  queued and then run the suite         |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+styled cells
+0,1 "·" fg=blue bg=reset mod=none
+1,1 " " fg=blue bg=reset mod=none

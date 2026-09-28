@@ -14,11 +14,14 @@
 //! terminal itself. That is [Bounded Contexts]' own sentence: "The in-session
 //! half is `zaru-tui`'s when that crate has a terminal."
 //!
-//! # The backend arrives through `ratatui`'s own feature
+//! # The backend arrives through `ratatui`'s own backend crate
 //!
-//! Everything crossterm is reached as `ratatui::crossterm`, so no `crossterm`
-//! line appears in any manifest and [ADR-0003] D2 needs no new row — the shape
-//! that record already blessed for `rmcp`'s streamable-HTTP transport. What it
+//! Everything crossterm is reached as `ratatui_crossterm::crossterm`, the
+//! backend crate `ratatui` 0.30 split out of itself, so no `crossterm` line
+//! appears in any manifest. Until 2026-09-28 it was `ratatui::crossterm`,
+//! through `ratatui`'s `crossterm` feature; that feature turns the backend's
+//! `underline-color` on, so the backend crate is taken directly with its
+//! defaults off, recorded on [ADR-0003]'s amendment for the move. What it
 //! did need was `scripts/check-crate-boundaries.py`, which refused `mio` and
 //! `rustix` in `zaru-tui`'s closure by any route and now refuses them by every
 //! route except this one.

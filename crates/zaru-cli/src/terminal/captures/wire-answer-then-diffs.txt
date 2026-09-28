@@ -1,0 +1,6 @@
+frame 0
+\e[1;1Hruntime.tier\e[1;14H=\e[1;16Hbare\e[2;3H›\e[2;5Hexplain\e[2;13Hthe\e[2;17Hcomposer\e[3;3Hzaru:\e[3;9HThe\e[3;13Hcomposer\e[3;22Hkeeps\e[3;28H\e[1mone input row\e[4;3H\e[22mwhatever\e[4;12Hthe\e[4;16Hstrip\e[4;22Hshows,\e[4;29Hand\e[5;3H\e[2mShell::render\e[5;17H\e[22mnever\e[5;23Hclips\e[5;29Ha\e[5;31Hline;\e[6;3H\e[3mnothing here\e[6;16H\e[23mis\e[6;19Ha\e[6;21Hsecond\e[6;28Hparagraph.\e[39m\e[49m\e[0m\e[?25h\e[10;1H
+frame 1
+\e[9;3Hqueued\e[9;10Hand\e[9;14Hthen\e[9;19Hrun\e[9;23Hthe\e[9;27Hsuite\e[39m\e[49m\e[0m\e[?25h\e[10;1H
+frame 2
+\e[9;3H      \e[9;10H   \e[9;14H    \e[9;19H   \e[9;23H   \e[9;27H     \e[10;1H!\e[10;3HAllow\e[10;9Hcmd.run\e[10;17Hcargo\e[10;23Htest\e[10;28H--workspace?\e[11;1H[y/a/N]\e[39m\e[49m\e[0m\e[?25l

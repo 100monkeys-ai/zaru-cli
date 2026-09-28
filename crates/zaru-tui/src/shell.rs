@@ -22,7 +22,7 @@
 //! # It holds no terminal either
 //!
 //! Everything below renders into a `ratatui::Frame` and reads
-//! `tui_textarea::Input`, both backend-agnostic. The terminal itself — raw
+//! `ratatui_textarea::Input`, both backend-agnostic. The terminal itself — raw
 //! mode, the alternate screen, the thread that reads crossterm's events, and
 //! the panic hook that restores the terminal — is `zaru-cli`'s, because it is
 //! the
@@ -77,12 +77,12 @@ use ratatui::layout::Rect;
 
 /// The backend-agnostic keystroke the shell reads, re-exported.
 ///
-/// `tui-textarea` is taken here with `no-backend` on, which is what exposes
-/// these two **without** a terminal backend — the same feature that keeps
-/// crossterm out of the composer's search tier. They are re-exported because
+/// `ratatui-textarea` is taken here with its default `crossterm` feature off,
+/// which is what exposes these two **without** a terminal backend — the same
+/// choice that keeps crossterm out of the composer's search tier. They are re-exported because
 /// the host translates real terminal events into them, and ADR-0003 D8 lets
 /// that host name this crate but not this crate's own dependencies.
-pub use tui_textarea::{Input, Key};
+pub use ratatui_textarea::{Input, Key};
 
 /// What the terminal handed over: a keystroke, or a pasted block.
 ///
@@ -1403,7 +1403,7 @@ impl Shell {
     /// `PageUp` and `PageDown` always move the pane, by a page, with or
     /// without `Shift`: the wheel is [`Struck::Wheel`] and reaches
     /// [`Self::wheel`], never this table. Nothing is taken from the composer
-    /// by that: `tui-textarea` reads them as its own viewport's
+    /// by that: `ratatui-textarea` reads them as its own viewport's
     /// scrolling, and this composer stopped painting through that widget on
     /// 2026-09-13, when [`Composer::input_row`] began composing its one row.
     ///
@@ -1827,6 +1827,9 @@ enum Standing {
     /// [`Shell::take_secret`] moves it out rather than copying it.
     Secret(SecretRequest, String),
 }
+
+#[cfg(test)]
+mod captures;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

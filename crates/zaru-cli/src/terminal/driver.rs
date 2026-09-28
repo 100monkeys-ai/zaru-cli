@@ -6,8 +6,8 @@
 //! # Everything the terminal can do is a port, so every path is checkable
 //!
 //! [`Surface`] is drawing, reading a key, and restoring. The product
-//! implementation is [`Crossterm`], reached as `ratatui::crossterm` through
-//! `ratatui`'s own feature; a check implements the same three methods over a
+//! implementation is [`Crossterm`], reached as `ratatui_crossterm::crossterm`
+//! through `ratatui`'s own backend crate; a check implements the same three methods over a
 //! recorded script and a `TestBackend`. That is what lets
 //! `the_terminal_is_restored_when_the_shell_panics` exist at all: a check
 //! cannot put a real terminal into raw mode, and the property that matters is
@@ -24,6 +24,7 @@ use crate::terminal::source::{Pace, Source, Taken};
 use crate::tools::port::Question;
 use core::time::Duration;
 use ratatui::layout::Rect;
+use ratatui_crossterm::{CrosstermBackend, crossterm};
 use zaru_core::iteration::Interruption;
 use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::Start;
@@ -3838,15 +3839,15 @@ pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
     lines
 }
 
-/// The product terminal: `ratatui` over crossterm, reached through `ratatui`'s
-/// own re-export so no manifest names crossterm.
+/// The product terminal: `ratatui` over crossterm, reached through
+/// `ratatui-crossterm`'s re-export so no manifest names crossterm.
 ///
 /// **Nothing in this workspace's checks constructs one**, because a check has
 /// no terminal to put into raw mode. What the checks hold is the pump, the
 /// guard and every adapter; what this type adds is the three system calls, and
 /// that is stated rather than implied.
 pub struct Crossterm {
-    terminal: ratatui::DefaultTerminal,
+    terminal: ratatui::Terminal<CrosstermBackend<std::io::Stdout>>,
     /// Whether this terminal paints the registers' colours.
     ///
     /// Held here because the terminal is the thing that knows: it is taken
@@ -3860,10 +3861,16 @@ impl Crossterm {
     /// Take the terminal: raw mode, the alternate screen, and the panic hook
     /// that gives both back.
     ///
-    /// `ratatui::try_init` installs that hook itself, which is why this is the
-    /// call rather than a hand-rolled sequence: a hook written here would be a
-    /// second answer to a question the library already answers, and the two
-    /// would have to be kept agreeing.
+    /// **This was `ratatui::try_init` until 2026-09-28**, which installed the
+    /// hook itself, and the harness called it rather than writing the
+    /// sequence so there was one answer to "what gives the screen back on a
+    /// panic" and not two. `ratatui` 0.30 keeps `try_init` behind its
+    /// `crossterm` feature, and that feature turns on the backend's
+    /// `underline-color`, which adds an `ESC[59m` to every frame the 0.29
+    /// build never wrote; so the feature is not taken and the sequence is
+    /// `take_the_screen`'s, in this module. There is still one answer:
+    /// `ratatui`'s hook is no longer installed by anything, and
+    /// `take_the_screen`'s is.
     ///
     /// `hold_the_mouse` is `terminal.mouse`, resolved by the caller; see
     /// [`crate::terminal::mouse`]. `palette` is `NO_COLOR`'s answer, read by
@@ -3875,14 +3882,14 @@ impl Crossterm {
     /// When the terminal cannot be put into raw mode or the alternate screen
     /// cannot be entered.
     pub fn take(hold_the_mouse: bool, palette: Palette) -> std::io::Result<Self> {
-        let terminal = ratatui::try_init()?;
+        let terminal = take_the_screen()?;
         // Armed **after** the alternate screen and disarmed before it is left,
         // in this one place, so no exit path can hand a terminal back still
         // telling every later program that a paste is bracketed. If the arm
         // itself fails the terminal is given back before the error leaves, so
         // a half-taken terminal is never returned.
         if let Err(failure) = arm(&mut std::io::stdout(), hold_the_mouse) {
-            ratatui::restore();
+            restore_the_screen_or_say_so();
             return Err(failure);
         }
         // Held here, once per terminal: the terminal is the thing that knows
@@ -3914,13 +3921,9 @@ impl Crossterm {
 /// [`crate::terminal::mouse`] for what that costs.
 pub(crate) fn arm(out: &mut impl std::io::Write, hold_the_mouse: bool) -> std::io::Result<()> {
     if hold_the_mouse {
-        ratatui::crossterm::execute!(
-            out,
-            ratatui::crossterm::event::EnableBracketedPaste,
-            AskForTheWheel,
-        )
+        crossterm::execute!(out, crossterm::event::EnableBracketedPaste, AskForTheWheel)
     } else {
-        ratatui::crossterm::execute!(out, ratatui::crossterm::event::EnableBracketedPaste)
+        crossterm::execute!(out, crossterm::event::EnableBracketedPaste)
     }
 }
 
@@ -3946,7 +3949,7 @@ pub(crate) fn arm(out: &mut impl std::io::Write, hold_the_mouse: bool) -> std::i
 /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 struct AskForTheWheel;
 
-impl ratatui::crossterm::Command for AskForTheWheel {
+impl crossterm::Command for AskForTheWheel {
     fn write_ansi(&self, f: &mut impl core::fmt::Write) -> core::fmt::Result {
         f.write_str("\x1b[?1000h\x1b[?1006h")
     }
@@ -3955,7 +3958,7 @@ impl ratatui::crossterm::Command for AskForTheWheel {
 /// Stop asking for what [`AskForTheWheel`] asked for, in the reverse order.
 struct ReleaseTheWheel;
 
-impl ratatui::crossterm::Command for ReleaseTheWheel {
+impl crossterm::Command for ReleaseTheWheel {
     fn write_ansi(&self, f: &mut impl core::fmt::Write) -> core::fmt::Result {
         f.write_str("\x1b[?1006l\x1b[?1000l")
     }
@@ -3968,12 +3971,12 @@ impl ratatui::crossterm::Command for ReleaseTheWheel {
 /// therefore from an unwind; a `Drop` that returned a result would have
 /// nowhere to return it, and a terminal that will not take this sequence is
 /// one that will not take the alternate screen's either, which
-/// `ratatui::restore` is about to try anyway.
+/// [`restore_the_screen`] is about to try anyway.
 pub(crate) fn disarm(out: &mut impl std::io::Write) {
-    let _ = ratatui::crossterm::execute!(
+    let _ = crossterm::execute!(
         out,
         ReleaseTheWheel,
-        ratatui::crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableBracketedPaste,
     );
 }
 
@@ -3994,12 +3997,13 @@ impl Restore for Crossterm {
 /// is a property of the terminal, and the sequences go to standard output.
 ///
 /// The disarm comes **before** the alternate screen is left, on both paths.
-/// `ratatui`'s own panic hook calls `ratatui::restore` and knows nothing about
-/// bracketed paste or the mouse, so this is the only thing that disarms them.
+/// The panic hook [`take_the_screen`] installs restores the screen and knows
+/// nothing about bracketed paste or the mouse, exactly as `ratatui`'s own hook
+/// did, so this is the only thing that disarms them.
 ///
 /// # A terminal that has gone away is given back to nobody, quietly
 ///
-/// `ratatui::restore` reports its own failure with `eprintln!`, and
+/// `ratatui::restore` reported its own failure with `eprintln!`, and
 /// `eprintln!` **panics** when standard error cannot be written — which is
 /// exactly the case when standard error is the terminal that has gone away.
 /// Measured on 2026-09-28: a session whose terminal hung up exited `134`, a
@@ -4007,9 +4011,55 @@ impl Restore for Crossterm {
 /// written with a write whose own failure is dropped: said wherever there is
 /// still somewhere to say it, and never a reason to abort.
 pub(crate) fn give_back() {
-    use std::io::Write as _;
     disarm(&mut std::io::stdout());
-    if let Err(failure) = ratatui::try_restore() {
+    restore_the_screen_or_say_so();
+}
+
+/// Raw mode, the alternate screen, and a panic hook that gives both back,
+/// then a `ratatui` terminal over standard output.
+///
+/// The sequence `ratatui::try_init` ran in 0.29 and runs in 0.30, in its
+/// order: the hook first, so a failure after raw mode is on still gives the
+/// screen back on a panic; raw mode; the alternate screen; the terminal. The
+/// hook wraps whatever hook was installed before it -- `failure::guard`'s --
+/// and runs it after the screen is given back, as `ratatui`'s did, so D3's
+/// report is printed on a restored terminal.
+///
+/// # Errors
+///
+/// When raw mode cannot be entered, the alternate screen cannot be entered,
+/// or the terminal's size cannot be read.
+fn take_the_screen() -> std::io::Result<ratatui::Terminal<CrosstermBackend<std::io::Stdout>>> {
+    let before = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_the_screen_or_say_so();
+        before(info);
+    }));
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    ratatui::Terminal::new(CrosstermBackend::new(std::io::stdout()))
+}
+
+/// Leave raw mode, then the alternate screen: `ratatui::try_restore`'s
+/// sequence, in its order, because leaving raw mode has more side effects than
+/// leaving the alternate screen.
+///
+/// # Errors
+///
+/// When either cannot be left.
+fn restore_the_screen() -> std::io::Result<()> {
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+    Ok(())
+}
+
+/// [`restore_the_screen`], saying so if it fails, with a write whose own
+/// failure is dropped: see [`give_back`] for why never `eprintln!`. The panic
+/// hook, the failed arm in [`Crossterm::take`] and [`give_back`] all end here,
+/// so the screen is given back one way.
+fn restore_the_screen_or_say_so() {
+    use std::io::Write as _;
+    if let Err(failure) = restore_the_screen() {
         let _ = writeln!(std::io::stderr(), "Failed to restore terminal: {failure}");
     }
 }
