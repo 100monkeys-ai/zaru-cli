@@ -1,357 +1,250 @@
 # Zaru
 
-Zaru is the companion layer of the 100monkeys platform: a personal AI that
-works alongside its user, remembers them, and shows its work. This repository
-is the local development harness — the terminal side of that companion.
+Zaru is an AI assistant that works in your terminal. You give it a task, it asks a language model, and it runs the tools the model asks for: it reads and edits files, runs commands and fetches web pages, asking your permission first. Every step is written to a plain-text transcript you can read with `cat`.
 
-Every other AI harness asks you to trust it. Zaru shows you: the execution loop
-is visible, the membrane is physics rather than promises, retrieved knowledge is
-surfaced for you to choose rather than silently injected, and the harness is
-open source. Where a design choice would make behaviour less legible in exchange
-for a smoother surface, the legible option wins. That trade is the product.
+This repository is the `zaru` command-line program. It is pre-alpha: there are no releases and no packages, you build it from source, and commands, files and settings can change without notice.
 
-## Status
+## Requirements
 
-**Pre-alpha. Nothing here is installable.** Six crates compile, CI enforces the
-rules the repository is meant to hold itself to, and as of 2026-09-05 the
-harness runs a task: `zaru <task>` starts a session, asks a model, runs the
-tools it asks for, and writes every step to a transcript you can read with
-`cat`.
+- Linux. The program is built and tested on Linux only. It uses Unix-only APIs, so it does not build on Windows. macOS is not tested.
+- Rust 1.98.1. The version is pinned in [`rust-toolchain.toml`](rust-toolchain.toml), and `rustup` installs it for you on the first build.
+- A C compiler (`cc`). Some dependencies compile C code.
+- Network access to crates.io for the first build.
+- A model to talk to: a Google Gemini API key, an [Ollama](https://ollama.com) server, or any server with an OpenAI-compatible chat completions API.
 
-`zaru` reads its arguments, resolves configuration, and prints what is already
-on this machine. `zaru --help` lists every command this build runs, walked from
-the same table the parser reads, so it cannot name one that does not run or
-miss one that does. Some of them:
+## Build and install
 
 ```sh
-zaru runtime                  # the tier, what it engages, and what changing it would alter
-zaru models                   # each model alias, what it resolved to, and which layer said so
-zaru config explain <key>     # every layer's value for one key, with the effective one marked
-zaru sessions list            # every session on this machine
-zaru sessions rm <id>         # delete a session's directory, with no tombstone
-zaru notes tokens             # the stored Nuclear Notes tokens and which is the composer's
-zaru init                     # write ADR-0009 D1's manifest here, once, if there is none
+git clone https://github.com/100monkeys-ai/zaru-cli.git
+cd zaru-cli
+cargo install --path crates/zaru-cli --locked
 ```
 
-`--runtime <tier>` and `--model <identifier>` set the two keys the flag layer
-carries for one run. `--help` lists exactly what runs and nothing else.
+This builds the `zaru` binary and copies it to `~/.cargo/bin`; `zaru --version` checks that it runs. To build without installing, run `cargo build --locked`; the binary is then `target/debug/zaru`.
 
-`--resume <id>` and `--continue` restore a session, and **what they do next
-depends on who is asking**. At a terminal they open the session: a status line
-carrying the tier, a pane showing the last stretch of the transcript, and a
-prompt that takes the same commands as the subcommands above, spelled with a
-slash. Through a pipe they print the transcript's own bytes and exit, because
-there is nobody there to be inside anything. `/exit` or `Ctrl-C` leaves, and
-both exit 0.
+## Quick start
 
-**Anything else you type at that prompt is a task, and since 2026-09-05 it
-runs.** It is the next turn of the session you are already in — the transcript
-grows, the conversation carries forward, and every step is painted into the
-pane as it happens rather than after it. A tool call that needs your permission
-asks *in the pane*, and answering is one keystroke; the harness reads no other
-terminal. The line saying this tier is not a sandbox is said once for the
-session rather than once per turn, and so is the recommendation to declare
-validators. What the session cannot do it says once, in the same words
-`zaru "<task>"` uses: no key for a provider this build can reach, no client for
-the ones you hold keys for, or a project that declared validators.
+### 1. Choose a model
 
-**Since 2026-09-05 the pane stays alive while the model thinks.** The terminal
-is read on a thread of its own, so a turn and your keyboard are two things the
-shell waits on at once: what you type during a turn appears as you type it, a
-standing tip yields on that first keystroke, and the permission prompt is
-answerable while the pane keeps painting. **Since 2026-09-06 something moves while
-it thinks**: the status line carries the turn's elapsed time and what the
-provider has reported it spent, both re-read on that tick. There is still no
-spinner — ADR-0028 D1 refuses one in as many words — so what moves is a number
-rather than a glyph, and the record that licenses it was written before the
-code was.
+Zaru has no default model. You name one in `~/.zaru/config.toml`, which you create yourself.
 
-That line also says which model is answering and which permission mode is in
-force, and it is **composed to the width of your terminal** rather than cut off
-at the right edge: fields drop in a declared order as the terminal narrows, the
-tier is never one of them, and at forty columns what is left is the tier and how
-much of the context window is used.
+**Gemini.** Store your API key. It is read from standard input: paste it, press Enter, then press Ctrl-D.
 
-**Since 2026-09-14 the pane has colour, and only where it means something.**
-Each line of the transcript opens with its register's marker, and that marker
-now carries that register's colour — one of the terminal's sixteen, never a
-truecolour value and never a theme. Nothing else is coloured: the status line,
-the composer and the hint strip are exactly as they were, and no word a
-producer wrote is tinted, because the harness chooses the marker and nothing
-else. A failing iteration gets a register of its own for the first time, which
-is what the record governing the execution narrative asked for and what
-nothing had implemented; it is deliberately not the colour a crash gets, since
-teaching you to fear the loop's own failure would undo the thing the loop is
-for. **Set `NO_COLOR` in your environment and every colour goes away**, leaving
-the markers, so a capture stays comparable with one taken before any of this
-existed; an empty `NO_COLOR=` does not count, which is the convention's own
-rule rather than ours. There is no theme and no setting for one.
-
-`Ctrl-C` during a turn leaves, exactly as it does at the prompt, and leaving
-is what interrupts the turn: whatever the turn had already written is in the
-transcript and nothing after it is, so resuming that session tells the model
-which call did not complete. **That holds while a child process is running
-too**, since 2026-09-05: a `cmd.run` or a declared validator's command is a
-future rather than a blocking wait, so the pane keeps painting and the
-keystroke is still read while a build runs — and leaving **ends the child**,
-with the same signal the wall-clock ceiling already sends, rather than leaving
-it running with nothing left to stop it.
-
-Outside a session, `zaru "<task>"` runs one turn and exits:
-
-```sh
-zaru providers keys add gemini   # reads the key from standard input, never an argument
-zaru "read src/main.rs and tell me what it does"
+```console
+$ zaru providers keys add gemini
+stored a `gemini` key under the alias `provider.gemini`.
+  the value is sealed and is not printed by any command.
 ```
 
-One such invocation is one turn. It creates `~/.zaru/sessions/<ulid>/` with three
-plain files, asks the model, runs whatever of the seven built-in tools it asks
-for — prompting you before a write or a command, unless you are not at a
-terminal, in which case a call that needed asking is refused rather than
-performed — and prints what the model answered and what the turn cost in
-tokens. At `bare` tier it says, once, that it is not a sandbox, because it is
-not.
-
-**One thing it will refuse.** Two of ADR-0012 D3's five provider kinds have
-no client, so a task against one is refused naming the three that do.
-
-**And one thing it will now do instead of refusing.** A project whose
-`zaru.toml` declares validators runs the **iteration loop**, which is the
-thing this whole harness is for: the model proposes a change, the change is
-applied through the same tools a turn uses, the declared validators are run
-against it, and their failure output — verbatim, never paraphrased — becomes
-the next attempt's prompt. It stops when the validators are satisfied, or at
-the iteration ceiling, and a ceiling reached is reported as itself rather than
-as a success or an error. `runtime.max_iterations` sets the ceiling and a
-project may only lower it; where nothing sets it, ADR-0001's per-tier default
-applies, which at `bare` is one.
-
-The outer model-and-tool loop is unlimited by default. Set a finite per-turn
-exchange limit in `zaru.toml` only when a project needs one:
+Then name the model in `~/.zaru/config.toml`:
 
 ```toml
-[runtime]
-max_tool_exchanges = 32
+[model]
+default = "gemini-3.6-flash"
 ```
 
-`runtime.max_tool_exchanges` counts model exchanges rather than individual tool
-calls; it is independent of `runtime.max_iterations`.
+Stored keys are encrypted with a key kept in your operating system's keyring. If the machine has no keyring (a server, WSL, a container), `zaru` tells you so and stops. Set `ZARU_CREDENTIAL_KEY` to 64 lower-case hexadecimal characters in your shell profile, for example the output of `openssl rand -hex 32`, and keep that value: without it, the keys you stored cannot be read again.
 
-The iteration loop and the tool-call loop are in `zaru-core`, headless,
-and **as of 2026-09-05 every port either loop needs has a product
-implementation in `zaru-cli`**. A validator's command runs as a real child
-process; a `matches` pattern is compiled by an engine that cannot backtrack,
-so a pattern from a repository you cloned cannot cost exponential time; and a
-`json_schema` validator reads its schema inside the working directory and
-resolves no `$ref` out of it.
+**Ollama.** No key is needed. Start the server, then write `~/.zaru/config.toml`:
 
-The two loops stay two loops. One provider client implements both the outer
-loop's model port and the inner loop's generator, but nothing was widened to
-do it: a candidate is whatever the one exchange returned, through the
-provider's own function-calling contract and with no prompt wording invented
-anywhere. And **a candidate cannot do what a turn cannot** — there is one tool
-surface per session and both loops hold the same one, so a candidate's write
-meets the same working-directory boundary, the same permission prompt and the
-same transcript a turn's does.
+```toml
+[model]
+default = "llama3.2"
 
-The terminal is in `zaru-tui` as of 2026-09-05, and it is what every other
-piece has been waiting on. A status line, a transcript pane and the composer,
-all headless — the shell renders into a frame and reads a backend-agnostic
-keystroke, and the terminal itself is `zaru-cli`'s, which is what keeps a
-terminal backend out of the composer's search tier. The slash grammar is a
-second grammar over one vocabulary: the twelve namespaces, their two spellings
-each and the nearest-match rule are declared once, in `zaru-cli`, and handed
-across, so a command reached with a slash runs the *same function* the
-subcommand runs. Ten of the twelve namespaces answer; the other two need
-things that do not exist and say so rather than guessing at a nearest.
+[provider.default]
+kind = "ollama"
+```
 
-The composer is in `zaru-tui` too, and its fast tier is built: a prefix trie in
-`zaru-notes` over page paths, titles and atom names, hand-written over `std`,
-answering a prefix in a descent and a copy because each node already holds the
-best matches under it. The composer reaches it through a port `zaru-cli`
-adapts, one trie per workspace so that scoping to the attached one cannot
-truncate a strip that had matches to show. A leading `/` is a command and never
-a search, decided before the strip sees a keystroke.
+Zaru connects to `http://localhost:11434`. Set `provider.ollama.endpoint` if your server is elsewhere.
 
-**It is populated from `~/.zaru/corpus.jsonl`**, which a session writes when it
-opens with a stored Nuclear Notes token: one line per instance and workspace,
-compacted at open. A machine with no token gets one honest line rather than a
-blank strip, which is the difference a user sees before they add one. Its
-second tier — the debounced server search — is a request/response pair nothing
-implements, and no request is emitted at all.
+**An OpenAI-compatible server.** Give the base URL (Zaru adds `/chat/completions` to it) and the model's context window in tokens:
 
-The credential store is in `zaru-cli`, holding named tokens on disk with the
-bearer value **sealed**: AES-256-GCM, a fresh nonce per seal, and the alias
-bound in so a sealed value moved between entries will not open. The key comes
-from the OS keyring where there is one and from `ZARU_CREDENTIAL_KEY` where
-there is not — which is the ordinary case on a headless machine, not just in
-CI. `zaru notes tokens add <alias> <host>` stores one, reading it from standard
-input and asking the instance what it grants before the value is sealed, so
-`zaru notes tokens` lists what this machine actually holds. The configuration
-hierarchy is in `zaru-cli`, resolving five layers over a schema whose keys
-arrive from the
-records that own them; **all five layers have readers as of 2026-09-05** — the
-built-in one, `~/.zaru/config.toml`, `./zaru.toml`, `ZARU_*`, and the command
-line. The two that read files are the two that waited on a TOML parser, and a
-file that does not parse is refused naming the file, the line and the column
-and never the line's contents: the parser's own message renders the offending
-source line, and a refusal that quoted it would publish whatever was on it. The local tool surface is in `zaru-cli` too: the seven built-in
-tool names, the working-directory boundary, and the permission model. **All
-seven act**: `fs.read`, `fs.list`, `fs.write`, `fs.edit` and `fs.search`
-through `std::fs` inside that boundary — the two that replace a file doing so
-whole, at the file's own mode, and the one that searches never following a
-link — and `cmd.run` as a real child process, started at the boundary's root
-with a cleared environment and a wall-clock ceiling the caller supplies. The
-child's wait and both its pipes are futures on the session's own runtime, so
-running one costs no thread and never blocks the shell. A command is not
-measured against the boundary as though it were a path — its boundary is the
-directory it starts in — and **nothing contains that child**:
-at `bare` tier the harness is not a sandbox and the decision record says so.
-Every call's arguments arrive as one JSON object, read before the permission
-decision because a path that has not been extracted is not yet a target.
-`web.fetch` was the last of the seven to act, and it takes `http` and `https`
-only, no redirect followed across a host, this machine and the cloud
-metadata range refused by name, no cookie kept and no header of the harness's
-own added — and a response larger than the ceiling its caller supplies is
-refused whole rather than cut short, because a document the harness stopped
-reading is one no complete copy could be kept of. **The permission model
-itself is now whole**: what the user pre-approved is read from
-`~/.zaru/config.toml` as a list of the exact lines the prompt shows, matched
-byte for byte and never by glob, and refused to a cloned repository; the
-destructive-command categories the record names are recognised for the two of
-the four whose shape its own words determine, with the two that name no
-program matching nothing rather than a list nobody chose; and the prompt
-**shows what it is about** — the bytes an `fs.write` would write and whether
-the path is there yet, the before and after of an `fs.edit`, a `cmd.run`'s
-argument vector as the harness split it — wrapped to the terminal rather than
-clipped, with `N` the default and a third answer, `a`, that allows that exact
-line for the rest of the session and is never written to your configuration.
-It refuses the call rather than defaulting it when there is no terminal to
-ask.
-**All of it is reachable**: `zaru "<task>"` runs the tools a model asks for
-under that model, and inside a session the same question is put in the
-transcript pane instead of on a line, through the same port and with the same
-sentence — so what you were told and what the harness believes it asked cannot
-drift apart.
+```toml
+[model]
+default = "your-model-name"
 
-The Nuclear Notes client is in `zaru-notes`: a session over MCP with the
-workspace named on every read, a bearer value the type system will not render,
-three staleness signals, and listings of a workspace's pages and atoms that
-follow their own cursor and refuse one that does not advance. It reaches a real
-instance over `rmcp`'s streamable HTTP transport, behind a port the crate
-declares rather than a client it hard-codes. Every check against it exchanges
-real protocol bytes over an in-memory pipe, so the suite needs no server.
+[provider.default]
+kind = "openai-compatible"
 
-The session lifecycle is in `zaru-cli`. A session is a directory named by a
-ULID holding plain files, because a harness that shows its work should not
-store the record of that work somewhere only it can read: an append-only
-transcript of one event per line, a checkpoint rewritten atomically beside it,
-a resume that restores and never re-executes, and bounded retention whose
-deletion is real. `zaru --resume` prints the transcript's own bytes for exactly
-that reason. `meta.toml` is written and read since 2026-09-05, atomically and at
-`0600`, and it records one thing ADR-0010 D1 does not name — the configuration
-layer the tier came from, because a tier that cannot say where it came from is
-not a record of the session's tier. **A command that only answers a question
-starts no session**: `zaru runtime` and its neighbours read what is there and
-create nothing. A task does, and so does a bare `zaru` at a terminal.
+[provider.openai_compatible]
+endpoint = "http://localhost:8080/v1"
+context_tokens = 32768
+```
 
-Cutting across three of the pieces above is one port rather than an eleventh:
-every path from captured bytes into a model prompt passes a `Redactor`, and the
-type a prompt is built from cannot be made any other way. The single
-implementation removes the bearer values the harness is itself holding in the
-credential store, by exact value and by the ASCII core an escaping formatter
-would leave intact. It matches no patterns and looks for nothing it does not
-hold, so a secret the harness never saw is out of scope and said to be. The
-transcript, the checkpoint and the preserved output of an oversized command
-keep the raw bytes: redaction is on what a model reads, not on the record.
-**Nothing this binary prints passes through it**, because nothing it prints is
-a prompt.
+If the server needs a key, store it with `zaru providers keys add openai-compatible`.
 
-The error taxonomy is in `zaru-cli`, and it is what every command exits
-through. Five classes of failure, each carrying by construction what its class
-owes the reader; a mapping from every error the workspace already raises to the
-class a decision record states for it; and a boundary around everything the
-binary does, so that a bug in the harness is reported as a bug in the harness
-rather than as a Rust panic. Every one of its exit codes is reachable from the
-real artefact and asserted there, and only the code for work that genuinely
-failed needs a provider key to reach.
+### 2. Run a task
 
-The runtime tiers are in `zaru-cli` as well, and `zaru runtime` is the first
-thing that shows one. **The tier names are ADR-0001's and this file
-deliberately does not restate them**, because they become effectively permanent
-at first publication and the record wants its review before then.
+Run `zaru` with the task in quotes, from the directory you want it to work in:
 
-The harness is pre-alpha in the load-bearing sense too: it carries no
-backward-compatibility shims and no legacy code paths, and anything that looks
-like one should be removed rather than preserved.
+```console
+$ zaru "read src/main.rs and tell me what it does"
+bare tier has no membrane. Zaru is not a sandbox here: a tool call runs with your permissions, on your machine, and a prompt is a question rather than a barrier. ...
 
-## Layout
+<the model's answer>
 
-| Crate | Holds |
-| --- | --- |
-| `zaru-core` | The agent loop, the iteration state machine, the validator contract, and the event stream. Headless. |
-| `zaru-tui` | The terminal interface and the composer. Subscribes to the event stream. |
-| `zaru-notes` | The Nuclear Notes client. |
-| `zaru-seal` | Zaru's own SEAL implementation, written against the SEAL v1 RFC. |
-| `zaru-aegis` | The AEGIS orchestrator client, over MCP and SEAL across a process boundary. |
-| `zaru-cli` | The `zaru` binary: configuration, session lifecycle, and the error taxonomy. |
+tokens: 120 prompt + 7 completion = 127
 
-The crate boundaries and the dependency edges between them are decided by
-ADR-0003 D8 and enforced by `scripts/check-crate-boundaries.py`, which fails on
-any edge the decision does not allow.
+no validators are declared, so the iteration loop cannot run · declare one in `./zaru.toml`
+```
 
-The harness runs at three levels of platform engagement. **The runtime tiers are
-named and defined by ADR-0001**, which is the authority for them; this file
-deliberately does not restate the names, because they become effectively
-permanent at first publication and the record wants its review before then.
+It prints a warning that it is not a sandbox (see [Safety](#safety)), the model's answer, the tokens the task used, and a note about validators (see [Validators](#validators-and-the-iteration-loop)).
 
-## Building
+When the model wants to write a file or run a command, Zaru asks you first. If there is no terminal to ask (for example, when `zaru` runs in a script), the call is refused and the model is told so.
+
+### 3. Read the transcript
+
+Each task creates a session: a directory under `~/.zaru/sessions/` named by a session ID.
 
 ```sh
-cargo build --workspace
-cargo test --workspace
+zaru sessions list
+cat ~/.zaru/sessions/<id>/transcript.jsonl
 ```
 
-The toolchain is pinned in `rust-toolchain.toml` and rustup will honour it. A
-build needs a registry: `Cargo.lock` resolves 357 packages, six of which are
-this workspace's own. The third-party set is twenty-four rows in
-`[workspace.dependencies]`: `rmcp` for the Nuclear Notes client with `futures`
-and `sse-stream`, the two types its own transport trait is spelled in;
-`ratatui`, its crossterm backend `ratatui-crossterm` and `ratatui-textarea` for
-the terminal and the composer; `pulldown-cmark` for the
-markdown the pane renders; `serde` and `serde_json` for the credential store;
-`aes-gcm` and `keyring` for sealing that store; `toml` for
-`~/.zaru/config.toml`, `./zaru.toml` and `meta.toml`; `tree-sitter` with its
-Rust, Python, JavaScript/TypeScript, Go and Java grammars for local code
-search; `regex` and `boon` for two of a declared validator's four `expect` kinds; `ignore` for what
-`.gitignore` says about the composer's path corpus; `reqwest` for the provider
-client **and for `web.fetch`, which share one builder** — a second caller for a
-crate already carried rather than a new dependency; and `tokio` for the
-client's channels, for polling that provider's futures, for the binary crate's
-own check that drives a session end to end, and for polling the loop's futures
-under `#[tokio::test]` — and what those twenty-four pull in. `boon` needs the URL
-and Unicode machinery `$ref` resolution asks for, and would be the largest
-single dependency here had `reqwest` not
-already brought most of it. Which dependencies the harness may carry is
-ADR-0003 D2's to decide, and `[workspace.dependencies]` is where each arrives
-once it has a caller.
+The transcript has one JSON object per line: your task, each model reply, each tool call and whether it was allowed, and the answer.
 
-## Where the knowledge is
+## Using Zaru
 
-**A repository holds code. It does not hold knowledge.** The architecture, the
-decision records, the operating principles, the testing contract, and the commit
-workflow live in the Zaru workspace at
-<https://100monkeys-ai.cortex.page/zaru/>. `CLAUDE.md` in this directory is a
-bootstrap that points there and nothing more; where it and the workspace
-disagree, the workspace wins.
+### Interactive sessions
 
-## Contributing
+Run `zaru` with no arguments in a terminal to open a session. Type a task and press Enter; each task you type continues the same conversation. Type `/help` to list commands. Type `/exit` or press Ctrl-C to leave.
 
-Contributions are accepted under the Developer Certificate of Origin — a
-`Signed-off-by` line on every commit, no copyright assignment, nothing to sign.
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+`zaru --continue` reopens the most recent session started in the current directory, and `zaru --resume <id>` reopens the session with that ID. When the output is not a terminal, both print the session's transcript and exit instead. The line at the top of the screen shows the runtime tier, the model, the permission mode, how much of the model's context window is used, and the session ID.
+
+**Selecting text.** A session takes over the mouse so that the scroll wheel scrolls the transcript. To select text, hold Shift while you drag (this works in most terminals, including Windows Terminal and VS Code). To give the mouse back to your terminal instead, set `terminal.mouse = false` in `~/.zaru/config.toml`; the scroll wheel then no longer scrolls the transcript.
+
+### Permission prompts and modes
+
+Before a tool call that needs permission, Zaru shows what the call will do (for a file write, the file and its new contents) and asks `[y/N/a · a allows this exact line for this session · esc declines]`. `y` allows the call once. `N`, Enter or Esc declines it. `a` allows the same call for the rest of the session.
+
+The permission mode decides what needs asking. Set it with `tools.mode` in `~/.zaru/config.toml`, the `ZARU_TOOLS_MODE` environment variable, or `--mode` on the command line:
+
+| Mode | What it asks about |
+| --- | --- |
+| `ask` (default) | Every file write, file edit, command and Nuclear Notes call, and anything outside the working directory. Reading, listing and searching files inside it, and fetching web pages, do not ask. |
+| `allow` | Nothing on your allowlist; everything else. |
+| `yolo` | Nothing. Every call the model makes runs. |
+
+The allowlist is `tools.allowlist` in `~/.zaru/config.toml`: a list of the exact lines the prompt shows, for example `"cmd.run cargo test"`. A project's own files cannot set the mode or the allowlist.
+
+### Configuration
+
+Zaru reads settings from these places. A later one overrides an earlier one:
+
+1. built-in defaults
+2. `~/.zaru/config.toml`, your settings
+3. `./zaru.toml`, the project's settings (only `[project]`, `[runtime]` and `[[validator]]`)
+4. environment variables: the key in upper case with `ZARU_` in front, for example `ZARU_MODEL_DEFAULT`
+5. command-line flags
+
+`zaru config explain <key>` shows the value from every place and marks the one in effect. The keys most people need:
+
+| Key | Meaning |
+| --- | --- |
+| `model.default` | The model to use. `--model` sets it for one run. |
+| `provider.default.kind` | `gemini`, `ollama` or `openai-compatible`. |
+| `provider.ollama.endpoint`, `provider.openai_compatible.endpoint` | Where the model server listens. |
+| `provider.openai_compatible.context_tokens` | The OpenAI-compatible model's context window, in tokens. Required for that kind. |
+| `tools.mode`, `tools.allowlist` | See [Permission prompts and modes](#permission-prompts-and-modes). |
+| `runtime.max_iterations` | How many attempts the validator loop makes. |
+| `runtime.max_tool_exchanges` | A limit on model replies per task. Unlimited if unset. |
+| `terminal.mouse` | `false` gives mouse selection back to the terminal. |
+
+### Validators and the iteration loop
+
+A validator is a command in `./zaru.toml` that checks the model's work, such as a build or a test run. When a project declares validators, a task runs in a loop: the model makes a change, the validators run, and if any fails, its output goes back to the model for another attempt. The loop stops when every validator passes or when it reaches `runtime.max_iterations` attempts, which is one unless you set it.
+
+`zaru init` writes an example `./zaru.toml` to edit. A small one:
+
+```toml
+[[validator]]
+name = "test"
+run = "cargo test"
+expect = "exit-zero"
+```
+
+`expect` can be `"exit-zero"`, `{ exit-code = 2 }`, `{ matches = "<regex>" }` or `{ json_schema = "<file>" }`. If the validators never all pass, `zaru` exits with code 1.
+
+### Nuclear Notes
+
+Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host>` stores an access token for it, read from standard input. When a session opens with a stored token, Zaru suggests matching page and atom names from your notes as you type. The model can call a Nuclear Notes instance's tools only if you list them under `notes.<alias>.agent_tools` in `~/.zaru/config.toml`.
+
+## Command reference
+
+`zaru "<task>"` runs one task. `zaru` with no arguments opens a session in a terminal and prints help otherwise.
+
+| Command | What it does |
+| --- | --- |
+| `zaru runtime` | Show the runtime tier and what the other tiers would change. |
+| `zaru models` | Show each model alias (`default`, `fast`, `smart`, `cheap`, `local`) and the model it resolves to. |
+| `zaru config explain <key>` | Show one setting's value at every level, marking the one in effect. |
+| `zaru init` | Write an example `./zaru.toml`, if there is none. |
+| `zaru providers keys` | List the provider keys stored on this machine. |
+| `zaru providers keys add <kind>` | Store a provider key, read from standard input. |
+| `zaru providers keys rm <kind>` | Delete a stored provider key. |
+| `zaru sessions list` | List the sessions on this machine. |
+| `zaru sessions rm <id>` | Delete a session's directory. |
+| `zaru notes tokens` | List the stored Nuclear Notes tokens. |
+| `zaru notes tokens add <alias> <host>` | Store a Nuclear Notes token, read from standard input. |
+| `zaru notes tokens describe <alias> <text>` | Add a description to a stored token. |
+| `zaru notes tokens rm <alias>` | Delete a stored token. |
+| `zaru notes use <alias>` | Choose which token the session's suggestions use. |
+| `zaru learned` | Not built yet; says there is nothing to show. |
+| `zaru inbox` | Not built yet; says there is nothing to show. |
+| `zaru help` | Print the help text. |
+
+| Flag | What it does |
+| --- | --- |
+| `--model <identifier>` | Use this model for one run. |
+| `--mode <mode>` | Use this permission mode for one run: `ask`, `allow` or `yolo`. |
+| `--runtime <tier>` | Use this runtime tier for one run. |
+| `--resume <id>` | Reopen a session. |
+| `--continue` | Reopen the most recent session started in this directory. |
+| `--help` | Print the help text. |
+| `--version` | Print the version and the libraries it is built from. |
+
+## Safety
+
+Zaru acts on your machine with your user account's permissions. It is not a sandbox.
+
+- **What the model can do.** It has seven built-in tools: `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.edit`, `cmd.run` and `web.fetch`. `cmd.run` starts a program directly, without a shell, in the working directory, with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TMPDIR` from your environment, and stops it after two minutes. Nothing limits what that program does while it runs. `web.fetch` fetches `http` and `https` URLs only, without asking, and refuses this machine's own addresses and the link-local range, which includes the cloud metadata address.
+- **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing.
+- **Validators run without asking.** The commands in `./zaru.toml` run whenever you give a task in that directory, in every mode. Read the `zaru.toml` of a project you cloned before you run `zaru` in it.
+- **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but enforce nothing yet: at every tier, tool calls run directly on your machine.
+- **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. It does not look for any other secret.
+- **What stays on your machine.** Settings, stored keys and sessions are under `~/.zaru/`. Keys and tokens are in `~/.zaru/credentials.json`, encrypted with AES-256-GCM; the encryption key is in the OS keyring or in `ZARU_CREDENTIAL_KEY`. Session files are readable only by you and are kept until you delete them with `zaru sessions rm`.
+
+### Known limitations
+
+- Only three provider kinds work: `gemini`, `ollama` and `openai-compatible`. `anthropic` and `aegis` are recognised but have no client.
+- `zaru learned` and `zaru inbox` are placeholders.
+- Unless a system prompt is read from a Nuclear Notes page (`persona.path`), none is sent, and the model receives your task with a line saying so.
+- The `contained` and `linked` tiers contain nothing (see above).
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | The command succeeded. |
+| 1 | The work failed: the validators never all passed. |
+| 2 | Something you can fix: a missing key or model, a bad setting, an unknown command. The message says what to change. |
+| 3 | A problem outside Zaru, such as the network or the provider. The message says whether to wait. |
+| 4 | The current runtime tier cannot do what was asked. |
+| 70 | A bug in Zaru. The message says how to report it. |
+| 128 + n | The session was ended by signal n. |
+
+## Development
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --locked
+scripts/check-license-headers.sh
+python3 scripts/check-crate-boundaries.py
+```
+
+These are the checks CI runs, together with `cargo doc` and a sign-off check. Unset `NO_COLOR` before you run the tests, because one test checks colour output. Every commit needs a `Signed-off-by` line (`git commit -s`); see [CONTRIBUTING.md](CONTRIBUTING.md). Contributors and coding agents start at [CLAUDE.md](CLAUDE.md).
 
 ## Licence
 
-Apache-2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE), and
-[THIRD_PARTY.md](THIRD_PARTY.md).
+Apache-2.0. See [LICENSE](LICENSE), [NOTICE](NOTICE) and [THIRD_PARTY.md](THIRD_PARTY.md).
