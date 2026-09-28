@@ -763,6 +763,150 @@ fn adr_0016_d5s_three_is_a_provider_that_could_not_be_reached() {
     absent_everywhere(&home, &ran, &value, &core, "the stored provider key");
 }
 
+/// A loopback server that records the first request it is sent and answers
+/// it with HTTP 500, so the turn ends there.
+///
+/// It is not a provider: it answers nothing a client could use. It exists so
+/// a check can read which model a request named, on the wire, for each kind.
+struct Recorder {
+    origin: String,
+    seen: std::sync::mpsc::Receiver<String>,
+}
+
+impl Recorder {
+    fn start() -> Self {
+        use std::io::{Read as _, Write as _};
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("loopback accepts a bind on port 0");
+        let origin = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("an address").port()
+        );
+        let (tell, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            while let Ok(got) = stream.read(&mut buffer) {
+                if got == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..got]);
+                let text = String::from_utf8_lossy(&request).into_owned();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end]
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())?
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            let _ = tell.send(String::from_utf8_lossy(&request).into_owned());
+        });
+        Self { origin, seen }
+    }
+
+    fn request(&self) -> String {
+        self.seen
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap_or_default()
+    }
+}
+
+/// **`--model` takes an alias or an identifier, for every kind.** A value
+/// that names an alias is sent as the model that alias resolves to; any other
+/// value is sent as given.
+///
+/// Ruled by the coordinator on 2026-09-28 under directive 58, open to
+/// Jeshua's veto, after `zaru --model cheap` asked Gemini for a model called
+/// "cheap". Watched red on `5748709`: "--model cheap sent the alias's name to
+/// gemini rather than the model `cheap` resolves to".
+#[test]
+fn model_takes_an_alias_or_an_identifier_and_sends_the_model_for_every_kind() {
+    for (kind, segment) in [
+        ("gemini", "gemini"),
+        ("ollama", "ollama"),
+        ("openai-compatible", "openai_compatible"),
+    ] {
+        for (asked, expected, not_expected) in [
+            ("cheap", "scripted-cheap-model", "\"cheap\""),
+            ("not-an-alias-7", "not-an-alias-7", "scripted-cheap-model"),
+        ] {
+            let home = Home::new("model-flag");
+            std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+            let recorder = Recorder::start();
+            std::fs::write(
+                home.path().join(".zaru").join("config.toml"),
+                format!(
+                    "[model]\ndefault = \"scripted-default-model\"\ncheap = \"scripted-cheap-model\"\n\n\
+                     [provider.default]\nkind = \"{kind}\"\n\n\
+                     [provider.{segment}]\nendpoint = \"{}\"\ncontext_tokens = 32768\n",
+                    recorder.origin
+                ),
+            )
+            .expect("a scratch user file");
+            if kind == "gemini" {
+                store_a_key(&home, "gemini", &nonce("model-flag").0);
+            }
+
+            let ran = zaru(&home, &[], &["--model", asked, "say", "hello"]);
+            let request = recorder.request();
+            let line = request.lines().next().unwrap_or_default().to_owned();
+            let named = if kind == "gemini" {
+                line.contains(&format!("/models/{expected}:"))
+            } else {
+                request.contains(&format!("\"model\":\"{expected}\""))
+            };
+            assert!(
+                named,
+                "--model {asked} sent the alias's name to {kind} rather than the model `{asked}` \
+                 resolves to, or did not send the identifier as given: {line} {}",
+                ran.everything()
+            );
+            assert!(
+                !request.contains(not_expected) || kind == "gemini" && !line.contains(not_expected),
+                "--model {asked} sent {not_expected} to {kind}: {line}"
+            );
+        }
+    }
+}
+
+/// `zaru models` says when `--model` named an alias.
+#[test]
+fn models_says_when_the_model_flag_named_an_alias() {
+    let home = Home::new("models-flag");
+    std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+    std::fs::write(
+        home.path().join(".zaru").join("config.toml"),
+        "[model]\ndefault = \"scripted-default-model\"\ncheap = \"scripted-cheap-model\"\n",
+    )
+    .expect("a scratch user file");
+    let ran = zaru(&home, &[], &["--model", "cheap", "models"]);
+    let default = ran
+        .stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("default"))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        default.contains("scripted-cheap-model") && default.contains("--model cheap"),
+        "zaru models does not say that --model named the alias cheap: {}",
+        ran.everything()
+    );
+}
+
 /// [ADR-0010] D1's directory, its three files, and the first `meta.toml` a
 /// product path ever wrote.
 ///

@@ -184,6 +184,12 @@ pub enum ResolvedModel {
         /// The highest layer that **set** the key, read straight off
         /// ADR-0014 D3's own explanation.
         supplied_by: Layer,
+        /// The alias a `--model` value named, when it named one.
+        ///
+        /// `--model cheap` sets `model.default` to the model `cheap` resolves
+        /// to, and this says so, so `zaru models` can show why `default` holds
+        /// that model. `None` for every value that is not an alias's name.
+        named: Option<ModelAlias>,
     },
     /// No layer set it.
     ///
@@ -397,19 +403,60 @@ impl ModelTable {
     /// # Errors
     ///
     /// [`TableRefused`], naming the alias.
+    ///
+    /// # `--model` takes an alias or an identifier
+    ///
+    /// `--model` sets `model.default` at the flag layer. When its value is the
+    /// name of another alias that some layer resolves, `default` resolves to
+    /// that alias's model; any other value is taken as an identifier, as
+    /// before. So `--model cheap` sends the model `cheap` resolves to, and a
+    /// provider model whose identifier is an alias's name cannot be reached
+    /// through `--model`: the alias wins, and `zaru models` says so. Only the
+    /// flag reads a value this way; `model.default = "cheap"` in a file is
+    /// still the identifier "cheap". Ruled by the coordinator on 2026-09-28
+    /// under Jeshua's directive 58, open to his veto, after `--model cheap`
+    /// asked Gemini for a model called "cheap".
     pub fn from_configuration(resolution: &Resolution) -> Result<Self, TableRefused> {
         let mut rows = Vec::with_capacity(ModelAlias::ALL.len());
+        let mut texts = Vec::with_capacity(ModelAlias::ALL.len());
         for alias in ModelAlias::ALL {
             let key = alias.key();
-            let row = match supplied(resolution, alias, &key)? {
+            let supplied = supplied(resolution, alias, &key)?;
+            texts.push((alias, supplied.clone()));
+            let row = match supplied {
                 None => ResolvedModel::Unresolved,
                 Some((text, supplied_by)) => ResolvedModel::Resolved {
                     model: ModelId::new(&text)
                         .map_err(|refusal| TableRefused::UnusableModelId { alias, refusal })?,
                     supplied_by,
+                    named: None,
                 },
             };
             rows.push((alias, row));
+        }
+
+        let flagged = texts.iter().find_map(|(alias, supplied)| match supplied {
+            Some((text, Layer::Flag)) if *alias == ModelAlias::Default => Some(text.clone()),
+            _ => None,
+        });
+        if let Some(text) = flagged
+            && let Some(named) = ModelAlias::ALL
+                .into_iter()
+                .find(|alias| *alias != ModelAlias::Default && alias.as_str() == text)
+            && let Some((_, ResolvedModel::Resolved { model, .. })) =
+                rows.iter().find(|(alias, _)| *alias == named)
+        {
+            let model = model.clone();
+            if let Some((_, row)) = rows
+                .iter_mut()
+                .find(|(alias, _)| *alias == ModelAlias::Default)
+            {
+                *row = ResolvedModel::Resolved {
+                    model,
+                    supplied_by: Layer::Flag,
+                    named: Some(named),
+                };
+            }
         }
         Ok(Self { rows })
     }
