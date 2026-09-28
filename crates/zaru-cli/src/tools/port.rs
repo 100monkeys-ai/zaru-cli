@@ -168,6 +168,56 @@ pub struct Question {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     pub answers: crate::tools::prompt::Answers,
+    /// The statement in two parts, for a renderer that must fit it to a
+    /// narrow terminal: see [`About`].
+    ///
+    /// `None` for a question whose statement is a sentence rather than a
+    /// call, which is shown whole.
+    pub about: Option<About>,
+}
+
+/// What a question about a call is about, beside its statement.
+///
+/// The statement is `Allow {lead} {subject}?`, one string. A terminal too
+/// narrow for it must shorten it, and the part a plain cut loses first is the
+/// part a person needs: a path's file name, a command's program, a URL's host.
+/// Measured on `e5b9240` at 80 by 24, 60 by 20 and 120 by 40: a write of 200
+/// lines to a deep path showed the content's last lines, and the line naming
+/// the file was not on the screen. So a question about a call carries its
+/// lead and its subject apart, the subject in a shape that says how it may be
+/// shortened, and the pane fits them to its width and keeps them first.
+///
+/// Composed once, by [`Decision::question`](crate::tools::Decision::question),
+/// from the same entry the statement is composed from, so the two cannot
+/// describe different calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct About {
+    /// `Allow`, the tool, and any marking: everything before the subject.
+    pub lead: String,
+    /// What the question is about.
+    pub subject: Shown,
+}
+
+/// The subject of a question, in the shape a narrow terminal may shorten it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shown {
+    /// A resolved path: shortened in the middle, so its start and the file's
+    /// name both show.
+    Path(String),
+    /// A command's words, the program first, each as the command line renders
+    /// it: shortened after the last argument that fits, saying how many are
+    /// not shown.
+    Command(Vec<String>),
+    /// A URL: its scheme and host, then the rest, shortened in the middle of
+    /// the rest so the host and the path's end both show.
+    Url {
+        /// The scheme and the host, with a port if it has one.
+        origin: String,
+        /// The path, query and fragment.
+        rest: String,
+    },
+    /// Anything else: shortened at its end.
+    Text(String),
 }
 
 /// Why an ask did not reach the user.
@@ -241,14 +291,48 @@ impl std::error::Error for ConfirmFailure {}
 /// crate owns, over a terminal, and it is the first implementation of this
 /// trait anywhere outside a check.
 pub trait Confirm {
-    /// Ask the user, having stated what is about to happen.
+    /// Ask the user, having stated what is about to happen, and wait here for
+    /// the answer.
+    ///
+    /// For a caller that cannot wait any other way: the credential store's
+    /// gate is synchronous, and so is a check that answers at once.
     ///
     /// # Errors
     ///
     /// [`ConfirmFailure`] when the question did not reach the user at all.
     /// **Never** for an answer of no, which is `Ok(Answer::No)`.
     fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure>;
+
+    /// Ask the user, and let the program go on running while they decide.
+    ///
+    /// # Why a turn asks this way
+    ///
+    /// A turn runs on one thread. Until 2026-09-28 the pane's question was
+    /// answered inside [`Self::confirm`], which waited on that thread, so
+    /// while a question stood nothing else on it ran: not `Ctrl-C`, not the
+    /// signal listener, not the watch that notices a terminal has gone. A
+    /// person could not stop the turn, and a closed terminal left `zaru`
+    /// running at a full core for as long as nobody killed it. Measured on
+    /// `e5b9240`: ten seconds after the terminal closed at a question the
+    /// process was still there, reading nothing and holding the transcript.
+    ///
+    /// A question asked this way is a future the turn awaits. Whoever drives
+    /// the turn can then stop it while the question stands, and the question
+    /// goes with it, unanswered.
+    ///
+    /// The default answers at once with [`Self::confirm`], which is right for
+    /// every confirmer that does not need the thread while it waits.
+    fn ask<'a>(&'a self, question: &'a Question) -> Asking<'a> {
+        Box::pin(core::future::ready(self.confirm(question)))
+    }
 }
+
+/// A question being asked, as [`Confirm::ask`] hands it back.
+///
+/// `Send` because a tool executor's future is, and boxed so that the port
+/// can still be used as `dyn Confirm`.
+pub type Asking<'a> =
+    core::pin::Pin<Box<dyn Future<Output = Result<Answer, ConfirmFailure>> + Send + 'a>>;
 
 /// What a person answered a [`Question`] with.
 ///

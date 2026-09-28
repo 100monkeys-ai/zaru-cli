@@ -74,7 +74,7 @@ pub use open::{
     Opening, Populating, Refresh, refresh_from, resolve, restored_context, shell_for, take_over,
 };
 pub use paths::{NOTHING_TO_OFFER, ProjectPaths, WALK_CEILING};
-pub use source::{Beat, POLL, Pace, Source, TICK, Taken};
+pub use source::{Beat, Ending, POLL, Pace, Source, TICK, Taken};
 pub use trie::{FROM_CACHE, LOOKING, NOTHING_CACHED, NotesTrie, UNREACHABLE};
 pub use vocabulary::{Transcript, Vocabulary};
 

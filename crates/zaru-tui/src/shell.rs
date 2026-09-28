@@ -60,6 +60,7 @@
 //! [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 
 pub mod command;
+pub mod fit;
 pub mod markdown;
 pub mod port;
 pub mod render;
@@ -67,8 +68,8 @@ pub mod wrap;
 
 pub use command::{Command, LEAVE, Refused, Typed};
 pub use port::{
-    Answered, Answers, CommandVocabulary, Confirmation, Extension, Line, Namespace, Palette, Prose,
-    Register, Row, SecretAnswer, SecretRequest, TranscriptSource,
+    About, Answered, Answers, CommandVocabulary, Confirmation, Extension, Line, Namespace, Palette,
+    Prose, Register, Row, SecretAnswer, SecretRequest, Shown, TranscriptSource,
 };
 
 use crate::composer::{Composer, Entries, Paths};
@@ -1457,6 +1458,19 @@ impl Shell {
         self.answered = None;
     }
 
+    /// Take a standing confirmation off the shell without answering it.
+    ///
+    /// For a host whose turn was stopped while the question stood: the
+    /// question went with the turn, and one left standing would take every key
+    /// the composer should get next. [`Self::answer`] stays `None`, because
+    /// nobody answered. A secret question is not touched: it is never asked
+    /// inside a turn.
+    pub fn withdraw_question(&mut self) {
+        if matches!(self.standing, Some(Standing::Confirm(_))) {
+            self.standing = None;
+        }
+    }
+
     /// The confirmation standing, if one is.
     #[must_use]
     pub const fn asking(&self) -> Option<&Confirmation> {
@@ -1553,14 +1567,11 @@ impl Shell {
     /// # A secret question takes every key too, and its table is not this one
     ///
     /// [ADR-0011] D3's 2026-09-14 amendment gives the shell a second question
-    /// kind, and its keys are: `Enter` completes, `Esc` **and `Ctrl-C`**
-    /// decline, `Backspace` removes one character, a printable character is
-    /// taken, and everything else leaves the question standing. **`Ctrl-C`
-    /// declining is the one deliberate divergence from the table below**,
-    /// where it is ignored: everywhere else in this shell `ctrl` plus `c`
-    /// means *stop*, and a person who changes their mind halfway through
-    /// typing an API key should not lose the session for it. Declining a
-    /// question is what stopping one is, so no third meaning is invented.
+    /// kind, and its keys are: `Enter` completes, `Esc` and `Ctrl-C` decline,
+    /// `Backspace` removes one character, a printable character is taken, and
+    /// everything else leaves the question standing. A person who changes
+    /// their mind halfway through typing an API key should not lose the
+    /// session for it.
     ///
     /// # The default is decline, and only `y` is not
     ///
@@ -1571,6 +1582,19 @@ impl Shell {
     /// on something the user did not mean, and the safe direction is to keep
     /// asking. [ADR-0011] D6 gives the harness no veto and this gives it no
     /// accidental one either.
+    ///
+    /// # `Ctrl-C` means stop, and what stops is the host's to say
+    ///
+    /// Everywhere in this shell `ctrl` plus `c` means *stop*. **While a turn
+    /// is running, the host stops the turn before the key reaches this
+    /// table**: [`leaves`] is the one rule, and the host's race reads it
+    /// first, so the question goes with the turn, unanswered. Only where no
+    /// turn is running does the key arrive here — at [ADR-0015] D4's door, or
+    /// a question put between turns — and there the only thing to stop is the
+    /// question, so it declines, as it does at the secret question. It was
+    /// ignored at a confirmation until 2026-09-28, which left a person who
+    /// wanted to stop a turn saying no to every call the model asked for
+    /// next.
     ///
     /// # `a` only where the question offers it, and the door is where it does
     /// not
@@ -1647,6 +1671,8 @@ impl Shell {
                     self.resolve(Answered::ForThisHost);
                 }
                 Key::Char('n' | 'N') | Key::Esc | Key::Enter => self.resolve(Answered::No),
+                // Stop, where there is no turn to stop: see the section above.
+                Key::Char('c' | 'C') if input.ctrl => self.resolve(Answered::No),
                 // A printable character this question does not take is not an
                 // answer, so it goes where the person was typing. The question
                 // stands either way.

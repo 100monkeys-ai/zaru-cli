@@ -160,6 +160,16 @@ pub enum Exit {
     Succeeded,
     /// The run did not, and this is what kind of not.
     Failed(Classified),
+    /// A signal ended the run, and this is its number. [`signalled`] is the
+    /// status: `128 + n`, what a shell reports for a process that signal
+    /// ended. Not a failure of the run, so it has no class.
+    ///
+    /// A session ends this way when its terminal goes away or a signal
+    /// arrives, once what it was running has been stopped and the session
+    /// written down. Added 2026-09-28: until then the signal listener exited
+    /// the process where it stood, and a command a turn was running outlived
+    /// it.
+    Signalled(u8),
 }
 
 impl Exit {
@@ -175,6 +185,7 @@ impl Exit {
         match self {
             Self::Succeeded => SUCCESS,
             Self::Failed(classified) => classified.class().exit_code(),
+            Self::Signalled(number) => signalled(*number),
         }
     }
 
@@ -182,7 +193,7 @@ impl Exit {
     #[must_use]
     pub fn class(&self) -> Option<Class> {
         match self {
-            Self::Succeeded => None,
+            Self::Succeeded | Self::Signalled(_) => None,
             Self::Failed(classified) => Some(classified.class()),
         }
     }

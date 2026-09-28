@@ -510,6 +510,7 @@ fn a_question_is_answered_in_the_pane_and_only_y_is_a_yes() {
                 detail: Vec::new(),
                 prominent: true,
                 answers: crate::tools::prompt::Answers::ToolCall,
+                about: None,
             })
             .expect("the pane answered");
         assert_eq!(
@@ -541,6 +542,7 @@ fn a_pane_that_runs_out_of_keys_refuses_rather_than_declining() {
         detail: Vec::new(),
         prominent: false,
         answers: crate::tools::prompt::Answers::ToolCall,
+        about: None,
     });
     let failure = outcome.expect_err("a pane with no answer must not answer");
     assert!(
@@ -570,6 +572,7 @@ fn the_question_reaches_the_painted_frame_before_a_key_is_read() {
                 detail: Vec::new(),
                 prominent: true,
                 answers: crate::tools::prompt::Answers::ToolCall,
+                about: None,
             })
             .expect("the pane answered");
     }
@@ -1788,6 +1791,7 @@ fn a_question_crosses_to_the_shell_with_its_statement_unchanged() {
             detail: vec!["runs, as split:".to_owned(), "  rm".to_owned()],
             prominent,
             answers: crate::tools::prompt::Answers::ToolCall,
+            about: None,
         };
         let crossed = question_for_the_shell(&question);
         assert_eq!(crossed.statement, question.statement);
@@ -1814,6 +1818,7 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         detail: Vec::new(),
         prominent: true,
         answers: crate::tools::prompt::Answers::ToolCall,
+        about: None,
     }));
     let scratch = crate::credentials::fixtures::ScratchRoot::new();
     let home = crate::config::Home::at(scratch.store_root());
@@ -1850,8 +1855,15 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         !vocabulary.is_empty(),
         "the plain prompt's answers are empty, so the assertion below is `contains(\"\")`"
     );
+    // The line is longer than one row of this frame, so the rows are read
+    // as the words they wrap: the pane breaks at spaces and at nothing else.
+    let read = first
+        .iter()
+        .map(|row| row.trim_end())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        first.iter().any(|row| row.contains(vocabulary)),
+        read.contains(vocabulary),
         "the plain prompt's answers line is not in the pane's first frame: {first:#?}"
     );
     assert!(
@@ -1911,6 +1923,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         detail: Vec::new(),
         prominent: false,
         answers: crate::tools::prompt::Answers::ToolCall,
+        about: None,
     }));
     let _ = accepting.key(
         press(Key::Char('y')),
@@ -1932,6 +1945,7 @@ fn the_pane_and_the_plain_prompt_agree_on_what_a_yes_is() {
         detail: Vec::new(),
         prominent: false,
         answers: crate::tools::prompt::Answers::ToolCall,
+        about: None,
     }));
     let _ = declining.key(
         press(Key::Enter),
@@ -2503,6 +2517,7 @@ fn a_standing_question_paints_on_every_beat_it_waits() {
                     detail: Vec::new(),
                     prominent: false,
                     answers: crate::tools::prompt::Answers::ToolCall,
+                    about: None,
                 })
             },
         ));
@@ -4392,6 +4407,7 @@ async fn a_question_raised_inside_a_race_is_answered_by_a_real_key() {
                         detail: Vec::new(),
                         prominent: false,
                         answers: crate::tools::prompt::Answers::ToolCall,
+                        about: None,
                     })
                     .map_err(|failure| format!("{failure}")),
             )
@@ -5518,6 +5534,7 @@ fn a_paste_while_a_question_stands_is_absorbed_and_the_answer_after_it_is_read()
                 detail: Vec::new(),
                 prominent: false,
                 answers: crate::tools::prompt::Answers::ToolCall,
+                about: None,
             })
             .expect("the terminal answered")
     };
@@ -6622,8 +6639,12 @@ fn a_project_that_offers_commands_is_asked_about_once_at_the_door() {
         "and it names what the project offers: {painted}"
     );
     assert!(
-        painted.contains("[y/N · esc declines]"),
+        painted.contains(crate::tools::prompt::ADMISSION_SUFFIX.trim()),
         "with the answers an admission takes, and never `a`: {painted}"
+    );
+    assert!(
+        !painted.contains(" a allows "),
+        "an admission never offers `a`: {painted}"
     );
     let entries = admissions.entries().expect("the file parses");
     assert_eq!(entries.len(), 1, "one admission, written once");
@@ -7245,4 +7266,311 @@ fn a_task_on_the_sessions_runtime_that_panics_ends_the_session_as_a_defect() {
         ),
     }
     assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+// ------------------------------------------ a signal ends the terminal's source
+
+/// A signal ends the source before any key still waiting in it is read, says
+/// which signal it was, and keeps the first of two.
+///
+/// A key typed before the terminal went away is not a task to start after it,
+/// so the ending is read first. The second signal of a session winding down
+/// does not change what it exits with.
+#[test]
+fn a_signal_ends_the_source_before_the_keys_waiting_in_it() {
+    let source = Source::scripted(typed("a task typed just before"));
+    let ender = source.ender();
+    assert_eq!(
+        source.ended_by(),
+        None,
+        "a source nothing ended says it was ended"
+    );
+
+    ender.end(1);
+    ender.end(15);
+
+    assert_eq!(
+        source.ended_by(),
+        Some(1),
+        "the first signal is not the one kept"
+    );
+    assert_eq!(
+        source.try_next(),
+        Taken::Ended,
+        "a key still waiting was handed over after a signal ended the source"
+    );
+    assert_eq!(
+        futures_lite_block_on(source.next()),
+        None,
+        "the waiting reader was handed a key after a signal ended the source"
+    );
+    assert_eq!(
+        source.delivered(),
+        0,
+        "a key left the source after it ended"
+    );
+}
+
+/// A session its source was ended for by a signal exits with that signal's
+/// status, `128 + n`, and has no class: a signal is not a failure of the run.
+#[test]
+fn a_session_a_signal_ended_exits_with_its_status_and_no_class() {
+    for (number, status) in [(1_u8, 129_u8), (2, 130), (15, 143)] {
+        let exit = Exit::Signalled(number);
+        assert_eq!(
+            exit.code(),
+            status,
+            "signal {number} does not exit {status}"
+        );
+        assert_eq!(
+            exit.class(),
+            None,
+            "signal {number} was given a failure class"
+        );
+    }
+}
+
+// ------------------------------------------ a question shows what it is about
+
+/// A deep path of the kind a scratch or a monorepo gives, ending in a file
+/// whose name must be on the screen.
+const DEEP_PATH: &str = "/home/person/projects/monorepo/services/billing/src/level00_directory_name/\
+                         level01_directory_name/level02_directory_name/level03_directory_name/\
+                         the_file_being_written.txt";
+
+/// A write question as the executor composes one: the product's own heading
+/// and indentation for a new file, and the tool call's own answers line.
+fn a_write_question(path: &str, lines: usize) -> Question {
+    let mut detail = vec![crate::tools::preview::CREATES.to_owned()];
+    detail.extend((0..lines).map(|at| format!("  content line {at:03}")));
+    Question {
+        statement: format!("Allow fs.write {path}?"),
+        detail,
+        prominent: false,
+        answers: crate::tools::prompt::Answers::ToolCall,
+        about: Some(crate::tools::About {
+            lead: "Allow fs.write".to_owned(),
+            subject: crate::tools::Shown::Path(path.to_owned()),
+        }),
+    }
+}
+
+/// The rows a shell paints at `width` by `height`, with a question standing.
+fn painted_question(question: &Question, width: u16, height: u16) -> String {
+    let mut shell = shell();
+    shell.notice(zaru_tui::shell::port::Line::new(
+        Register::Plain,
+        "user: write the file",
+    ));
+    shell.notice(zaru_tui::shell::port::Line::new(
+        Register::Call,
+        "exchange 1, call 1: fs.write",
+    ));
+    shell.ask(question_for_the_shell(question));
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("a test terminal");
+    let Ok(_) = terminal.draw(|frame| shell.render(frame, frame.area(), Palette::Monochrome));
+    let buffer = terminal.backend().buffer();
+    let mut painted = String::new();
+    for y in 0..buffer.area.height {
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        painted.push_str(row.trim_end());
+        painted.push('\n');
+    }
+    painted
+}
+
+/// **A question shows what it is about first, at every size, whatever follows
+/// it.** Nine renderings, committed: a long path, long content, and both, at
+/// 80 by 24, 60 by 20 and 120 by 40.
+///
+/// Measured on `e5b9240` from the binary, before this: a write of 200 lines to
+/// a deep path showed the content's last lines and the answers at all three
+/// sizes, and the line naming the file was not on the screen.
+///
+/// Each rendering is held three ways: it matches the committed file; the
+/// question's lead and the file's name are on the screen; and where the
+/// content did not fit, a row says how many of its lines are not shown. A
+/// change that alters what a person sees reddens the first by design:
+/// regenerate the named file from the "painted" block the failure prints, and
+/// say in the commit what changed and why a person should see it.
+///
+/// **The mutant:** the rows cut from the top when they do not fit, which is
+/// the layout this replaced; it prints that the file's name is not on the
+/// screen.
+#[test]
+fn a_question_shows_what_it_is_about_at_every_size() {
+    let cases: [(&str, &str, usize); 3] = [
+        ("long-path", DEEP_PATH, 3),
+        ("long-content", "/home/person/project/notes.txt", 200),
+        ("both", DEEP_PATH, 200),
+    ];
+    let sizes: [(u16, u16); 3] = [(80, 24), (60, 20), (120, 40)];
+    let committed: [(&str, &str); 9] = [
+        (
+            "long-path-80x24",
+            include_str!("captures/question-long-path-80x24.txt"),
+        ),
+        (
+            "long-path-60x20",
+            include_str!("captures/question-long-path-60x20.txt"),
+        ),
+        (
+            "long-path-120x40",
+            include_str!("captures/question-long-path-120x40.txt"),
+        ),
+        (
+            "long-content-80x24",
+            include_str!("captures/question-long-content-80x24.txt"),
+        ),
+        (
+            "long-content-60x20",
+            include_str!("captures/question-long-content-60x20.txt"),
+        ),
+        (
+            "long-content-120x40",
+            include_str!("captures/question-long-content-120x40.txt"),
+        ),
+        (
+            "both-80x24",
+            include_str!("captures/question-both-80x24.txt"),
+        ),
+        (
+            "both-60x20",
+            include_str!("captures/question-both-60x20.txt"),
+        ),
+        (
+            "both-120x40",
+            include_str!("captures/question-both-120x40.txt"),
+        ),
+    ];
+    let mut differ = Vec::new();
+    let mut lost = Vec::new();
+    for (case, path, lines) in cases {
+        let name = path.rsplit('/').next().expect("a file name");
+        for (width, height) in sizes {
+            let label = format!("{case}-{width}x{height}");
+            let painted = painted_question(&a_write_question(path, lines), width, height);
+            let read = painted.lines().collect::<Vec<_>>().join(" ");
+            if !painted.contains("Allow fs.write") || !painted.contains(name) {
+                lost.push(format!("{label}: the question's lead or the file's name is not on the screen:\n{painted}"));
+            }
+            if !read.contains("ctrl-c stops the turn") {
+                lost.push(format!(
+                    "{label}: the answers are not on the screen:\n{painted}"
+                ));
+            }
+            if lines > 10 && !painted.contains("more lines not shown") {
+                lost.push(format!(
+                    "{label}: nothing says how many lines are not shown:\n{painted}"
+                ));
+            }
+            let held = committed
+                .iter()
+                .find(|(named, _)| *named == label)
+                .map_or("", |(_, text)| *text);
+            if held != painted {
+                differ.push(format!(
+                    "=== capture question-{label}: committed ===\n{held}=== capture \
+                     question-{label}: painted ===\n{painted}=== end question-{label} ==="
+                ));
+            }
+        }
+    }
+    assert!(lost.is_empty(), "{}", lost.join("\n"));
+    assert!(
+        differ.is_empty(),
+        "{} of 9 question captures differ from the committed renderings:\n{}",
+        differ.len(),
+        differ.join("\n")
+    );
+}
+
+/// A command and a URL are fitted too: the program and as many arguments as
+/// fit, with the count of those not shown; the host and the path's end.
+#[test]
+fn a_command_and_a_url_keep_their_program_and_their_host() {
+    let command = Question {
+        statement: "Allow cmd.run python3 -m pytest …?".to_owned(),
+        detail: Vec::new(),
+        prominent: false,
+        answers: crate::tools::prompt::Answers::ToolCall,
+        about: Some(crate::tools::About {
+            lead: "Allow cmd.run".to_owned(),
+            subject: crate::tools::Shown::Command(
+                ["python3", "-m", "pytest"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .chain((0..30).map(|at| format!("tests/test_module_{at:02}.py")))
+                    .collect(),
+            ),
+        }),
+    };
+    let painted = painted_question(&command, 60, 20);
+    assert!(
+        painted.contains("python3 -m pytest") && painted.contains("more arguments"),
+        "the command's program, its first arguments and the count not shown are not all on \
+         the screen:\n{painted}"
+    );
+
+    let url = Question {
+        statement: "Allow web.fetch https://docs.example.com/…?".to_owned(),
+        detail: Vec::new(),
+        prominent: false,
+        answers: crate::tools::prompt::Answers::Fetch,
+        about: Some(crate::tools::About {
+            lead: "Allow web.fetch".to_owned(),
+            subject: crate::tools::Shown::Url {
+                origin: "https://docs.example.com".to_owned(),
+                rest: format!(
+                    "/{}/the-page-you-asked-for.html",
+                    (0..12)
+                        .map(|at| format!("section{at:02}"))
+                        .collect::<Vec<_>>()
+                        .join("/")
+                ),
+            },
+        }),
+    };
+    let painted = painted_question(&url, 60, 20);
+    assert!(
+        painted.contains("https://docs.example.com…") && painted.contains("asked-for.html?"),
+        "the URL's host and its path's end are not both on the screen:\n{painted}"
+    );
+}
+
+/// The question a decision composes carries its statement in two parts that
+/// read, word for word, as the statement.
+#[test]
+fn a_decisions_question_says_the_same_thing_in_two_parts() {
+    use crate::tools::decision::{Assessment, Decision, Invocation};
+
+    let line = crate::process::CommandLine::split("cargo test --workspace").expect("splits");
+    let decision = Decision::reach(
+        crate::tools::Mode::Ask,
+        &Invocation::running(&line),
+        Assessment::default(),
+    );
+    let question = decision
+        .question()
+        .expect("a command is asked about in ask mode");
+    let about = question.about.expect("a call's question carries its parts");
+    assert_eq!(
+        about.subject,
+        crate::tools::Shown::Command(vec![
+            "cargo".to_owned(),
+            "test".to_owned(),
+            "--workspace".to_owned()
+        ])
+    );
+    let crate::tools::Shown::Command(words) = &about.subject else {
+        unreachable!("asserted above")
+    };
+    assert_eq!(
+        format!("{} {}?", about.lead, words.join(" ")),
+        question.statement,
+        "the two parts do not read as the statement"
+    );
 }

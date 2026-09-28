@@ -48,7 +48,9 @@ use crate::process::line::CommandLine;
 use crate::tools::grants::SessionGrants;
 use crate::tools::mode::Mode;
 use crate::tools::name::{Called, ToolName};
-use crate::tools::port::{Allowlist, Answer, Confirm, DestructiveMatch, Question};
+use crate::tools::port::{
+    About, Allowlist, Answer, Confirm, ConfirmFailure, DestructiveMatch, Question, Shown,
+};
 use crate::tools::tree::{Placement, Target};
 use crate::web::url::RequestedUrl;
 use core::fmt;
@@ -364,6 +366,35 @@ impl<'a> Invocation<'a> {
             Subject::Remote { arguments } => arguments.to_owned(),
         }
     }
+
+    /// The subject as a question shows it, in the shape a narrow terminal
+    /// may shorten it.
+    ///
+    /// Written out whole it is [`Self::subject_text`], so the statement and
+    /// what the pane fits to its width are the same words.
+    #[must_use]
+    pub fn shown(&self) -> Shown {
+        match self.subject {
+            Subject::Path(target)
+            | Subject::Write { target, .. }
+            | Subject::Edit { target, .. } => Shown::Path(target.resolved().display().to_string()),
+            Subject::Command(line) => Shown::Command(line.words()),
+            Subject::Url(url) => {
+                let whole = url.as_str();
+                // The origin ends at the first `/`, `?` or `#` after the
+                // scheme's `://`; a URL this surface retrieves always has one.
+                let after_scheme = whole.find("://").map_or(0, |at| at + 3);
+                let split = whole[after_scheme..]
+                    .find(['/', '?', '#'])
+                    .map_or(whole.len(), |at| after_scheme + at);
+                Shown::Url {
+                    origin: whole[..split].to_owned(),
+                    rest: whole[split..].to_owned(),
+                }
+            }
+            Subject::Search { .. } | Subject::Remote { .. } => Shown::Text(self.subject_text()),
+        }
+    }
 }
 
 /// What the ports said about a call.
@@ -475,6 +506,16 @@ impl TranscriptEntry {
     /// function.
     #[must_use]
     pub fn render(&self) -> String {
+        let mut line = self.lead();
+        line.push(' ');
+        line.push_str(&self.subject);
+        line
+    }
+
+    /// Everything [`Self::render`] puts before the subject: the tool and its
+    /// markings.
+    #[must_use]
+    pub fn lead(&self) -> String {
         let mut line = format!("{}", self.tool);
         // **D4's class goes before the subject, since 2026-09-14.** It was
         // appended after the resolved absolute path from the day the tool
@@ -513,8 +554,6 @@ impl TranscriptEntry {
             line.push_str(DESTRUCTIVE_MARKING);
             line.push(']');
         }
-        line.push(' ');
-        line.push_str(&self.subject);
         line
     }
 }
@@ -622,6 +661,8 @@ pub struct Decision {
     /// pure over the mode, the call and what the ports already said — which
     /// is what lets D3's prompting rule be checked with no port at all.
     detail: Vec<String>,
+    /// The subject as the question shows it. See [`Invocation::shown`].
+    shown: Shown,
 }
 
 impl Decision {
@@ -682,6 +723,7 @@ impl Decision {
             },
             prominent: assessment.destructive,
             detail: Vec::new(),
+            shown: invocation.shown(),
         }
     }
 
@@ -742,6 +784,12 @@ impl Decision {
                 } else {
                     crate::tools::prompt::Answers::ToolCall
                 },
+                // The same entry, in two parts: `Allow {lead} {subject}?` is
+                // the statement above, word for word.
+                about: Some(About {
+                    lead: format!("Allow {}", self.entry.lead()),
+                    subject: self.shown.clone(),
+                }),
             }),
         }
     }
@@ -766,7 +814,32 @@ impl Decision {
         let Some(question) = self.question() else {
             return Permission::Granted;
         };
-        match confirmer.map(|confirmer| confirmer.confirm(&question)) {
+        Self::permission_from(confirmer.map(|confirmer| confirmer.confirm(&question)))
+    }
+
+    /// [`Self::permit`], asking through [`Confirm::ask`] so that the program
+    /// goes on running while the person decides.
+    ///
+    /// This is what a turn calls. **If the turn is stopped while the question
+    /// stands, this future is dropped with it and nothing is decided**: the
+    /// call did not run, and it is closed in the conversation as every call
+    /// a stopped turn leaves behind is. See [`Confirm::ask`] for why a turn
+    /// cannot wait on [`Self::permit`].
+    pub async fn permit_asking(&self, confirmer: Option<&(dyn Confirm + Sync)>) -> Permission {
+        let Some(question) = self.question() else {
+            return Permission::Granted;
+        };
+        let answered = match confirmer {
+            Some(confirmer) => Some(confirmer.ask(&question).await),
+            None => None,
+        };
+        Self::permission_from(answered)
+    }
+
+    /// The one mapping from what a confirmer said to what the call may do, so
+    /// the two ways of asking cannot come to disagree.
+    fn permission_from(answered: Option<Result<Answer, ConfirmFailure>>) -> Permission {
+        match answered {
             None | Some(Err(_)) => Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
             Some(Ok(Answer::Once)) => Permission::Granted,
             Some(Ok(Answer::ForThisSession)) => Permission::GrantedForTheSession,

@@ -3620,9 +3620,9 @@ fn taking_a_secret_clears_it_so_a_second_take_is_none() {
 
 /// `Esc` and `Ctrl-C` decline, and a declined question yields nothing.
 ///
-/// **The divergence from the confirmation's key table is asserted here**, not
-/// only recorded: at a confirmation `Ctrl-C` is ignored, and at this question
-/// it declines. Both arms are checked so that changing either is visible.
+/// A secret question is never asked inside a turn, so `Ctrl-C` here has only
+/// the question to stop, and stopping it is declining it -- as at a
+/// confirmation the shell reads, since 2026-09-28.
 #[test]
 fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
     for (label, input) in [
@@ -3674,35 +3674,57 @@ fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
     }
 }
 
-/// A confirmation still ignores `Ctrl-C`, which is the arm above's other half.
+/// `Ctrl-C` at a confirmation the shell reads says no, at every kind of
+/// question, and does not leave.
+///
+/// The key means *stop*. While a turn runs the host stops the turn before the
+/// key reaches this table; a question that reaches it stands where no turn is
+/// running -- the door, a question between turns -- and there the only thing
+/// to stop is the question. It was ignored until 2026-09-28, which is the arm
+/// this replaced.
 #[test]
-fn a_confirmation_still_ignores_ctrl_c() {
-    let mut shell = shell();
-    shell.ask(Confirmation::new(
-        "about to write",
-        STAGED_ANSWERS,
+fn ctrl_c_at_a_confirmation_the_shell_reads_says_no_and_does_not_leave() {
+    for answers in [
         Answers::ToolCall,
-        false,
-    ));
-    let acted = shell.key(
-        Input {
-            key: Key::Char('c'),
-            ctrl: true,
-            alt: false,
-            shift: false,
-        },
-        pane(),
-        NOW,
-        &TrieOf::new(0),
-        &StagedVocabulary,
-        &NoPaths,
-    );
-    assert_eq!(acted, Action::Idle);
-    assert!(
-        shell.asking().is_some(),
-        "ctrl-c answered a confirmation, which is not this table's rule"
-    );
-    assert_eq!(shell.answer(), None);
+        Answers::Fetch,
+        Answers::Admission,
+        Answers::Validators,
+    ] {
+        let mut shell = shell();
+        shell.ask(Confirmation::new(
+            "about to write",
+            STAGED_ANSWERS,
+            answers,
+            false,
+        ));
+        let acted = shell.key(
+            Input {
+                key: Key::Char('c'),
+                ctrl: true,
+                alt: false,
+                shift: false,
+            },
+            pane(),
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary,
+            &NoPaths,
+        );
+        assert_eq!(
+            acted,
+            Action::Idle,
+            "ctrl-c at a {answers:?} question left the session"
+        );
+        assert!(
+            shell.asking().is_none(),
+            "ctrl-c at a {answers:?} question the shell reads left the question standing"
+        );
+        assert_eq!(
+            shell.answer(),
+            Some(Answered::No),
+            "ctrl-c at a {answers:?} question the shell reads did not say no"
+        );
+    }
 }
 
 /// ADR-0005 D2 one layer out, at a secret question: the input row does not
@@ -4559,4 +4581,99 @@ fn an_elided_row_never_exceeds_its_budget_or_splits_a_wide_character() {
         "\u{2026}",
         "a budget of one is the marker alone"
     );
+}
+
+// ---------------------------------------- fitting a question's subject to a width
+
+/// A path too long for the width keeps its start and its file's name, with
+/// the middle left out, and fits exactly.
+#[test]
+fn a_long_path_keeps_its_start_and_its_file_name() {
+    use crate::shell::fit::fitted;
+    use crate::shell::port::Shown;
+    use crate::shell::wrap::columns;
+
+    let path = "/home/person/projects/monorepo/services/billing/src/deep/deeper/deepest/report.txt";
+    for width in [20, 40, 60] {
+        let shown = fitted(&Shown::Path(path.to_owned()), width);
+        assert!(columns(&shown) <= width, "{shown:?} is wider than {width}");
+        assert!(
+            shown.ends_with("/report.txt"),
+            "the file's name was lost at {width}: {shown:?}"
+        );
+        assert!(
+            shown.starts_with("/home"),
+            "the path's start was lost at {width}: {shown:?}"
+        );
+        assert!(
+            shown.contains('…'),
+            "nothing says the middle is left out: {shown:?}"
+        );
+    }
+    assert_eq!(
+        fitted(&Shown::Path(path.to_owned()), 200),
+        path,
+        "a path that fits is shown in full"
+    );
+}
+
+/// A command too long for the width keeps its program and as many arguments
+/// as fit, and says how many it does not show.
+#[test]
+fn a_long_command_keeps_its_program_and_counts_what_it_leaves_out() {
+    use crate::shell::fit::fitted;
+    use crate::shell::port::Shown;
+    use crate::shell::wrap::columns;
+
+    let words: Vec<String> = ["cargo", "test", "--workspace"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain((0..20).map(|at| format!("--exclude=crate-{at}")))
+        .collect();
+    let shown = fitted(&Shown::Command(words.clone()), 60);
+    assert!(columns(&shown) <= 60, "{shown:?} is wider than 60");
+    assert!(shown.starts_with("cargo test --workspace"), "{shown:?}");
+    let kept = shown
+        .split(' ')
+        .filter(|word| word.starts_with("--exclude"))
+        .count();
+    assert!(
+        shown.ends_with(&format!("and {} more arguments", 20 - kept)),
+        "the count of arguments not shown is wrong: {shown:?}"
+    );
+    assert_eq!(
+        fitted(&Shown::Command(words[..3].to_vec()), 60),
+        "cargo test --workspace"
+    );
+}
+
+/// A URL too long for the width keeps its host and its path's end.
+#[test]
+fn a_long_url_keeps_its_host_and_its_paths_end() {
+    use crate::shell::fit::fitted;
+    use crate::shell::port::Shown;
+    use crate::shell::wrap::columns;
+
+    let shown = fitted(
+        &Shown::Url {
+            origin: "https://docs.example.com".to_owned(),
+            rest: "/a/b/c/d/e/f/g/h/i/j/k/l/m/the-page.html".to_owned(),
+        },
+        40,
+    );
+    assert!(columns(&shown) <= 40, "{shown:?} is wider than 40");
+    assert!(shown.starts_with("https://docs.example.com…"), "{shown:?}");
+    assert!(shown.ends_with("the-page.html"), "{shown:?}");
+}
+
+/// The words that say something was left out count it, in the singular for
+/// one.
+#[test]
+fn what_is_left_out_is_counted_in_words() {
+    use crate::shell::fit::{more_arguments, not_shown};
+
+    assert_eq!(not_shown(1), "… 1 more line not shown");
+    assert_eq!(not_shown(190), "… 190 more lines not shown");
+    assert_eq!(more_arguments(1), "… and 1 more argument");
+    assert_eq!(more_arguments(28), "… and 28 more arguments");
 }

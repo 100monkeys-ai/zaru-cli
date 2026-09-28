@@ -1,0 +1,24 @@
+runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X
+  user: write the file
+· exchange 1, call 1: fs.write
+
+
+
+
+
+
+Allow fs.write /home/person/project/notes.txt?
+creates it, with:
+  content line 000
+  content line 001
+  content line 002
+  content line 003
+  content line 004
+  content line 005
+  content line 006
+  content line 007
+  content line 008
+  content line 009
+… 190 more lines not shown
+[y/N/a · a allows this exact line for this session · esc says no to this call ·
+ctrl-c stops the turn]

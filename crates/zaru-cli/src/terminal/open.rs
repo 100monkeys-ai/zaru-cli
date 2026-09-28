@@ -1296,16 +1296,22 @@ pub fn open(
     let crossterm = Crossterm::take(hold_the_mouse, palette_of(variables))
         .map_err(|_| Box::new(Exit::Succeeded))?;
     let mut guard = Guard::new(crossterm);
-    // Polled whenever the pump is, which is whenever a session is open: every
-    // session runs inside `runtime.block_on`, and the pump awaits between
-    // beats. Dropped with the runtime when this function returns.
-    runtime.spawn(signals.give_the_terminal_back());
 
     // The terminal's own reader, on a thread of its own, and one for every
     // session: a second reader would race the first for the same keystrokes.
     // It stops within `terminal::POLL` of being dropped, which is before the
     // guard gives the terminal back.
     let source = Source::over_the_terminal();
+
+    // Polled whenever the pump is, which is whenever a session is open: every
+    // session runs inside `runtime.block_on`, and the pump awaits between
+    // beats. Dropped with the runtime when this function returns. A signal
+    // ends the source, and the session winds down from there; see `Signals`.
+    runtime.spawn(signals.end_the_session(source.ender()));
+    // Beside the runtime rather than on it, so it sees a terminal that has
+    // gone, and holds the session to its deadline, even while something on
+    // the runtime is not yielding. See `Watch`.
+    let _watch = Watch::over(source.ender());
 
     // What the last switch asked this loop to say on the shell it opens.
     let mut saying: Vec<zaru_tui::shell::Line> = Vec::new();
@@ -1342,8 +1348,8 @@ pub fn open(
     Ok(exit)
 }
 
-/// The three signals that can end a session and still give the terminal back,
-/// and the terminal going away without one.
+/// The three signals that can end a session, and what a session does when
+/// one arrives.
 ///
 /// # Why a session takes signals at all
 ///
@@ -1364,46 +1370,28 @@ pub fn open(
 /// by any process**, so a `kill -9` still leaves the terminal as it was, and
 /// `reset` is the person's remedy.
 ///
-/// # What happens, in order
+/// # What happens, in order, since 2026-09-28
 ///
-/// The terminal is given back ([`crate::terminal::driver::give_back`], the
-/// function [`Guard`] reaches too), and then the process exits with
-/// [`crate::failure::signalled`]: `128 + n`, the status a shell already
-/// reported for a process that signal ended. Nothing else is flushed or
-/// finalised, and nothing needs to be. [ADR-0010] D2's transcript is written a
-/// record at a time precisely so that a killed process loses at most the event
-/// in flight, and this is a killed process that tidied the terminal first.
+/// The signal ends the terminal's [`Source`], through its
+/// [`Ending`](crate::terminal::source::Ending). Everything that waits on the
+/// person waits on that source, so the session winds down the way it does
+/// when its keys run out: a turn that was running is dropped, which stops the
+/// command it was running and leaves a question it stood at unanswered; the
+/// session's conversation is rebuilt from its transcript and written down, so
+/// it can be resumed; the terminal is given back by [`Guard`]; and the process
+/// exits with [`crate::failure::signalled`], `128 + n`, the status a shell
+/// already reported for a process that signal ended.
 ///
-/// # A terminal that goes away is a hang-up, whoever says so
+/// **Until then the listener gave the terminal back and exited on the spot.**
+/// A command a turn was running outlived `zaru`: measured on `e5b9240` with a
+/// shell leading the terminal, `SIGTERM` or `SIGHUP` while `cmd.run sleep 300`
+/// ran left the `sleep` running. And while a permission question stood the
+/// listener never ran at all, so a closed terminal left `zaru` spinning a core
+/// for as long as nobody killed it.
 ///
-/// `SIGHUP` reaches `zaru` only because the shell leading its terminal's
-/// session ends on its own hang-up and the kernel then hangs up the
-/// foreground. A shell that ignores the signal — everything under `nohup` —
-/// does not end, so nothing is sent, and until 2026-09-28 the session then
-/// never ended at all: measured by the `harness-orphans-and-reader-panic` arc,
-/// eight such processes lived five hours on `/dev/pts/N (deleted)`, each with
-/// its terminal reader spinning a core, because crossterm's `poll` reads a
-/// hung-up terminal's end of file as "nothing yet" and loops inside itself, so
-/// the reader never looks at its stop flag again and cannot be joined.
-///
-/// So the listener also watches the terminal itself, once a
-/// [`TICK`](crate::terminal::source::TICK): standard output stops being a
-/// terminal the moment it is hung up, because the terminal answers every
-/// question after that with `EIO`. That is taken as the hang-up it is, with
-/// the same restore and the same `129`; the spinning reader ends with the
-/// process, which is the only thing that can end it.
-///
-/// # When it runs
-///
-/// The listener is a task on the session's current-thread runtime, so it
-/// runs when the pump yields, which it does between beats. Between the end of
-/// the last session and the process exiting, a signal is taken and not acted
-/// on, because tokio never returns a caught signal to its default action. That
-/// window is the terminal already having been given back and `main` writing
-/// its outcome.
-///
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-struct Signals {
+/// [`Watch`] holds the session to a deadline, so a session that does not wind
+/// down still ends.
+pub(crate) struct Signals {
     terminate: tokio::signal::unix::Signal,
     interrupt: tokio::signal::unix::Signal,
     hang_up: tokio::signal::unix::Signal,
@@ -1411,7 +1399,7 @@ struct Signals {
 
 impl Signals {
     /// Register the three, on the runtime the caller has entered.
-    fn take() -> std::io::Result<Self> {
+    pub(crate) fn take() -> std::io::Result<Self> {
         use tokio::signal::unix::{SignalKind, signal};
         Ok(Self {
             terminate: signal(SignalKind::terminate())?,
@@ -1420,29 +1408,127 @@ impl Signals {
         })
     }
 
-    /// Wait for the first of the three, or for the terminal to go away, give
-    /// the terminal back, and exit.
-    async fn give_the_terminal_back(mut self) {
+    /// The number of the first of the three to arrive.
+    pub(crate) async fn first(&mut self) -> u8 {
         // The numbers are POSIX's, and the same on every Unix: `SIGHUP` 1,
         // `SIGINT` 2, `SIGTERM` 15.
-        let number: u8 = tokio::select! {
+        tokio::select! {
             _ = self.terminate.recv() => 15,
             _ = self.interrupt.recv() => 2,
             _ = self.hang_up.recv() => 1,
-            () = the_terminal_goes_away() => 1,
-        };
-        crate::terminal::driver::give_back();
-        std::process::exit(i32::from(crate::failure::signalled(number)));
+        }
+    }
+
+    /// Wait for the first of the three and end the session with it.
+    async fn end_the_session(mut self, ender: std::sync::Arc<crate::terminal::source::Ending>) {
+        ender.end(self.first().await);
     }
 }
 
-/// Resolves once standard output has stopped being a terminal: the session's
-/// terminal has gone away. See [`Signals`].
-async fn the_terminal_goes_away() {
-    loop {
-        tokio::time::sleep(crate::terminal::source::TICK).await;
-        if !a_person_is_watching() {
+/// How long a session has to wind down once a signal or a lost terminal has
+/// ended it, before the process leaves regardless.
+///
+/// **Drafted under a delegated coordinator ruling of 2026-09-28, open to
+/// Jeshua's veto.** The ruling asks that the process exit within two seconds
+/// of the terminal going away. Winding down is dropping a turn, rebuilding the
+/// conversation from a file already on disk and writing one checkpoint, which
+/// takes milliseconds; one second leaves room for a slow disk and keeps the
+/// whole inside the two seconds with the watch's own beat.
+pub const WIND_DOWN: core::time::Duration = core::time::Duration::from_secs(1);
+
+/// A thread beside the session that notices a terminal that has gone, and
+/// ends the process if a session that was told to end has not.
+///
+/// # Why a thread and not a task on the session's runtime
+///
+/// A task runs only when the runtime is not busy. One question is still put
+/// synchronously -- [ADR-0007] D8's question about a Nuclear Notes token with
+/// no instance limit, inside the credential store -- and while it stands the
+/// runtime runs nothing else. A watch on the runtime would not see the
+/// terminal go then, and the question's own reader cannot: crossterm's `poll`
+/// reads a hung-up terminal's end of file as "nothing yet" and loops inside
+/// itself. On a thread of its own the watch sees it within a
+/// [`TICK`](crate::terminal::source::TICK), ends the source, and the question
+/// reads that the terminal stopped answering.
+///
+/// # A terminal that goes away is a hang-up, whoever says so
+///
+/// `SIGHUP` reaches `zaru` only because the shell leading its terminal's
+/// session ends on its own hang-up and the kernel then hangs up the
+/// foreground. A shell that ignores the signal -- everything under `nohup` --
+/// does not end, so nothing is sent: measured by the
+/// `harness-orphans-and-reader-panic` arc, eight such processes lived five
+/// hours on `/dev/pts/N (deleted)`. Standard output stops being a terminal the
+/// moment it is hung up, because the terminal answers every question after
+/// that with `EIO`. That is taken as the hang-up it is: the source is ended
+/// with `SIGHUP`'s number.
+///
+/// # The deadline
+///
+/// Once the session has been ended, by a signal or by this watch, it has
+/// [`WIND_DOWN`] to leave. If it has not, the watch gives the terminal back
+/// and exits with `128 + n` itself. What the session had already written
+/// stays written: every transcript record is synced as it is made.
+///
+/// **It stops when the session does, unless the session was ended**: dropping
+/// this value sets its flag and the thread returns within a beat. A session a
+/// signal or a lost terminal ended keeps its watch until the process exits,
+/// so the deadline still holds for what runs after the session: the runtime
+/// being dropped, the outcome being written. One run in about fifty on
+/// 2026-09-28, a session closed at a question on a machine busy with a build,
+/// was still running four seconds later with only its reader thread busy,
+/// after the session had let go of its transcript; it was not reproduced in
+/// the forty-five runs after, and this deadline is what now bounds it.
+///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
+struct Watch {
+    ended: std::sync::Arc<crate::terminal::source::Ending>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Watch {
+    fn over(ender: std::sync::Arc<crate::terminal::source::Ending>) -> Self {
+        use std::sync::atomic::Ordering;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = std::sync::Arc::clone(&stop);
+        let ended = std::sync::Arc::clone(&ender);
+        let thread = crate::failure::thread("terminal-watch", move || {
+            let mut ended_at: Option<std::time::Instant> = None;
+            while !stopped.load(Ordering::Acquire) {
+                std::thread::sleep(crate::terminal::source::TICK);
+                if !a_person_is_watching() {
+                    ender.end(1);
+                }
+                let Some(number) = ender.signal() else {
+                    continue;
+                };
+                let since = *ended_at.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() >= WIND_DOWN && !stopped.load(Ordering::Acquire) {
+                    crate::terminal::driver::give_back();
+                    std::process::exit(i32::from(crate::failure::signalled(number)));
+                }
+            }
+        })
+        .ok();
+        Self {
+            ended,
+            stop,
+            thread,
+        }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if self.ended.signal().is_some() {
+            // Left running: see the type's documentation.
+            drop(self.thread.take());
             return;
+        }
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            drop(thread.join());
         }
     }
 }

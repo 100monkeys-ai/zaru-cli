@@ -117,6 +117,17 @@ impl InATerminal {
         prelude: &str,
         setup: impl FnOnce(&std::path::Path, &std::path::Path),
     ) -> Self {
+        Self::running(environment, prelude, "", setup)
+    }
+
+    /// As [`Self::started_in`], with `arguments` after `zaru` on its command
+    /// line, each already quoted for the shell.
+    fn running(
+        environment: &[(&str, &str)],
+        prelude: &str,
+        arguments: &str,
+        setup: impl FnOnce(&std::path::Path, &std::path::Path),
+    ) -> Self {
         let home = Scratch::new("home");
         let work = Scratch::new("work");
         setup(&home.0, &work.0);
@@ -129,8 +140,8 @@ impl InATerminal {
         // The status is written to a file as well, because a terminal that
         // has gone away is not somewhere anyone can read it from.
         let inner = format!(
-            "{prelude}stty rows 30 cols 100; sh -c 'echo {PID}$$; exec \"$0\"' '{zaru}'; \
-             ended=$?; echo $ended > {STATUS_FILE}; echo {STATUS}$ended; stty -a"
+            "{prelude}stty rows 30 cols 100; sh -c 'echo {PID}$$; exec \"$0\" \"$@\"' '{zaru}' \
+             {arguments}; ended=$?; echo $ended > {STATUS_FILE}; echo {STATUS}$ended; stty -a"
         );
         let mut child = owned::command("script")
             .args(["-q", "-f", "-e", "-c", &inner, "/dev/null"])
@@ -831,6 +842,273 @@ fn a_session_asks_before_a_projects_validators_run_and_a_no_stops_the_turn() {
         !painted.contains("providercouldnotbereached"),
         "the turn went on to the provider after a no: {painted:?}"
     );
+}
+
+// --------------------------------- a session ended while a question stands
+
+/// The time the ruling of 2026-09-28 gives a session to be gone once its
+/// terminal has gone away or a signal has arrived.
+const GONE_WITHIN_A_PROMPT: Duration = Duration::from_secs(2);
+
+/// Wait until `zaru` is gone, for at most [`GONE_WITHIN_A_PROMPT`].
+fn gone_within_two_seconds(zaru: &owned::Identity) -> Result<(), String> {
+    let deadline = Instant::now() + GONE_WITHIN_A_PROMPT;
+    loop {
+        if !zaru.is_still_running() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("zaru (pid {})", zaru.pid));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A session in a project that declares a validator, standing at the
+/// question that asks whether it may run: the one question a session asks
+/// before any model is reached, so it needs no provider. The provider is a
+/// closed port on this machine, so nothing leaves it.
+fn at_the_validators_question(prelude: &str) -> InATerminal {
+    let mut session = with_a_validator(prelude, "");
+    session.until(b"\x1b[?25h", "the session's first frame");
+    session.type_in("build it\r");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !glyphs(&session.bytes()).contains("plant:touchVALIDATOR-RAN") {
+        assert!(
+            Instant::now() < deadline,
+            "the session never asked about the project's validators; it painted {:?}",
+            glyphs(&session.bytes())
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    session
+}
+
+/// `zaru` with `arguments`, in a project that declares a validator, with a
+/// stored key and a provider on a closed port.
+fn with_a_validator(prelude: &str, arguments: &str) -> InATerminal {
+    InATerminal::running(
+        &[
+            ("ZARU_CREDENTIAL_KEY", SEALING_KEY),
+            ("ZARU_PROVIDER_GEMINI_ENDPOINT", "http://127.0.0.1:1"),
+            ("ZARU_MODEL_DEFAULT", "gemini-3.6-flash"),
+        ],
+        prelude,
+        arguments,
+        |home, work| {
+            use std::io::Write as _;
+            let mut child = owned::command(env!("CARGO_BIN_EXE_zaru"))
+                .args(["providers", "keys", "add", "gemini"])
+                .env_clear()
+                .env("HOME", home)
+                .env("ZARU_CREDENTIAL_KEY", SEALING_KEY)
+                .current_dir(work)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the built binary runs");
+            child
+                .stdin()
+                .write_all(b"nonce-terminal-ended-at-a-question\n")
+                .expect("the key reaches the child");
+            assert!(
+                child.wait().expect("it exits").success(),
+                "the key was not stored"
+            );
+            std::fs::write(
+                work.join("zaru.toml"),
+                "[[validator]]\nname = \"plant\"\nrun = \"touch VALIDATOR-RAN\"\nexpect = \
+                 \"exit-zero\"\n",
+            )
+            .expect("the manifest is written");
+        },
+    )
+}
+
+/// The one session the check's home holds, read back by the built binary as
+/// a person's `--resume` through a pipe reads it: the transcript, and exit 0.
+///
+/// The task itself is not on it: a turn records the person's words after the
+/// validators are approved, so a turn stopped at that question has said only
+/// the session's notice. What is asserted is that what was written reads back.
+fn resumes(session: &InATerminal) -> String {
+    let sessions = session._home.0.join(".zaru").join("sessions");
+    let ids: Vec<String> = std::fs::read_dir(&sessions)
+        .expect("the home holds a sessions directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(ids.len(), 1, "one session was opened: {ids:?}");
+    let output = owned::command(env!("CARGO_BIN_EXE_zaru"))
+        .args(["--resume", &ids[0]])
+        .env_clear()
+        .env("HOME", &session._home.0)
+        .env("ZARU_CREDENTIAL_KEY", SEALING_KEY)
+        .current_dir(&session.work.0)
+        .output()
+        .expect("the built binary runs");
+    let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "the session did not resume: {:?}, {printed}, {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        printed.contains("record(s) in the transcript"),
+        "the resumed session printed no transcript: {printed}"
+    );
+    printed
+}
+
+/// The status the wrapping shell wrote once `zaru` ended.
+fn written_status(session: &InATerminal) -> String {
+    let status = session.work.0.join(STATUS_FILE);
+    let deadline = Instant::now() + GONE_WITHIN;
+    loop {
+        let written = std::fs::read_to_string(&status).unwrap_or_default();
+        if !written.trim().is_empty() {
+            return written.trim().to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "zaru ended and its shell never wrote the status it ended with"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// **A session whose terminal goes away while a question stands ends within
+/// two seconds, as a hang-up ends it, and can be resumed.**
+///
+/// Measured on `e5b9240`: with the terminal closed at a permission question,
+/// `zaru` was still running ten seconds later at a full core, holding the
+/// session's transcript and its deleted terminal, because the question was
+/// answered on the session's only thread and nothing else on it ran while it
+/// stood. Under a shell that ignores `SIGHUP`, so only the lost terminal says
+/// anything.
+#[test]
+fn a_session_whose_terminal_goes_away_at_a_question_ends_within_two_seconds() {
+    let mut session = at_the_validators_question("trap '' HUP; ");
+    let pid: u32 = session.pid().parse().expect("zaru's pid is a number");
+    let zaru = owned::Identity::of(pid).expect("zaru is running at the question");
+
+    session.child.kill_the_child_alone();
+
+    if let Err(running) = gone_within_two_seconds(&zaru) {
+        panic!(
+            "{running} still running {GONE_WITHIN_A_PROMPT:?} after its terminal went away while it asked a question"
+        );
+    }
+    assert_eq!(
+        written_status(&session),
+        "129",
+        "a session whose terminal went away should end with 129, the status a hang-up gives it"
+    );
+    assert!(
+        !session.work.0.join("VALIDATOR-RAN").exists(),
+        "the validator ran although nobody answered the question"
+    );
+    resumes(&session);
+}
+
+/// **The same, when the terminal's hang-up reaches `zaru` as `SIGHUP`.**
+#[test]
+fn a_session_hung_up_at_a_question_ends_within_two_seconds() {
+    let mut session = at_the_validators_question("");
+    let pid: u32 = session.pid().parse().expect("zaru's pid is a number");
+    let zaru = owned::Identity::of(pid).expect("zaru is running at the question");
+
+    session.child.kill_the_child_alone();
+
+    if let Err(running) = gone_within_two_seconds(&zaru) {
+        panic!(
+            "{running} still running {GONE_WITHIN_A_PROMPT:?} after its terminal hung up while it asked a question"
+        );
+    }
+    assert!(
+        !session.work.0.join("VALIDATOR-RAN").exists(),
+        "the validator ran although nobody answered the question"
+    );
+    resumes(&session);
+}
+
+/// **A session sent `SIGTERM` while a question stands ends within two
+/// seconds with `143`, gives the terminal back, and can be resumed.**
+///
+/// Measured on `e5b9240`: still running ten seconds after the signal.
+#[test]
+fn a_session_sent_sigterm_at_a_question_ends_within_two_seconds() {
+    let session = at_the_validators_question("");
+    let pid = session.pid();
+    let zaru = owned::Identity::of(pid.parse().expect("zaru's pid is a number"))
+        .expect("zaru is running at the question");
+
+    let killed = owned::command("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .expect("`kill` runs");
+    assert!(killed.success(), "`kill -TERM {pid}` failed");
+
+    if let Err(running) = gone_within_two_seconds(&zaru) {
+        panic!("{running} still running {GONE_WITHIN_A_PROMPT:?} after SIGTERM at a question");
+    }
+    assert_eq!(
+        written_status(&session),
+        "143",
+        "SIGTERM should end the session with 143, the status a shell reports for it"
+    );
+    session.until(b"columns", "`stty -a` to report the line discipline");
+    let status_at = session.until(STATUS.as_bytes(), "the shell to report");
+    let flags = discipline(&String::from_utf8_lossy(&session.bytes()[status_at..]));
+    assert_eq!(
+        flags,
+        ["isig", "icanon", "echo"],
+        "the terminal was not given back after SIGTERM at a question"
+    );
+    assert!(
+        !session.work.0.join("VALIDATOR-RAN").exists(),
+        "the validator ran although nobody answered the question"
+    );
+    resumes(&session);
+}
+
+/// **`zaru "<task>"` sent `SIGTERM` while its question stands ends within two
+/// seconds with `143`, and can be resumed.**
+///
+/// The task's question is read on a thread of its own since 2026-09-28, so
+/// the turn goes on being polled while a person reads it and a signal stops
+/// the turn. This holds that a reader left waiting on standard input does not
+/// keep the process alive. On `e5b9240` the signal's default action ended the
+/// process, so this passes there too; it pins the status and the resume.
+#[test]
+fn a_task_sent_sigterm_at_its_question_ends_within_two_seconds() {
+    let session = with_a_validator("", "'build it'");
+    let pid = session.pid();
+    let zaru =
+        owned::Identity::of(pid.parse().expect("zaru's pid is a number")).expect("zaru is running");
+    session.until(b"Allow these commands", "the task's question");
+
+    let killed = owned::command("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .expect("`kill` runs");
+    assert!(killed.success(), "`kill -TERM {pid}` failed");
+
+    if let Err(running) = gone_within_two_seconds(&zaru) {
+        panic!("{running} still running {GONE_WITHIN_A_PROMPT:?} after SIGTERM at its question");
+    }
+    assert_eq!(
+        written_status(&session),
+        "143",
+        "SIGTERM should end the task with 143, the status a shell reports for it"
+    );
+    assert!(
+        !session.work.0.join("VALIDATOR-RAN").exists(),
+        "the validator ran although nobody answered the question"
+    );
+    resumes(&session);
 }
 
 // --------------------------------- a home and an environment nobody handed

@@ -1158,3 +1158,139 @@ fn the_sessions_own_runtime_can_run_a_child() {
         "the runtime every turn is polled on could not run a child"
     );
 }
+
+/// A terminal a check owns and never reads: the race below needs somewhere to
+/// paint, and what it paints is not this check's subject.
+struct Unwatched;
+
+impl crate::terminal::driver::Restore for Unwatched {
+    fn restore(&mut self) {}
+}
+
+impl crate::terminal::driver::Surface for Unwatched {
+    fn draw(&mut self, _shell: &zaru_tui::shell::Shell) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn area(&self) -> std::io::Result<ratatui::layout::Rect> {
+        Ok(ratatui::layout::Rect::new(0, 0, 80, 24))
+    }
+}
+
+/// A beat that reads no clock.
+struct Yielding;
+
+impl crate::terminal::source::Pace for Yielding {
+    fn wait(&self) {}
+
+    fn elapse(&self) -> impl Future<Output = ()> + Send {
+        tokio::task::yield_now()
+    }
+}
+
+/// A signal that ends the session while a command runs stops the command.
+///
+/// The session's signal listener and the watch for a lost terminal end the
+/// terminal's source; the race a turn runs in reads that as the terminal
+/// having stopped answering and drops the turn, and the command the turn was
+/// running goes with it. Until 2026-09-28 the listener exited the process on
+/// the spot instead, and a command the turn was running outlived `zaru`:
+/// measured on `e5b9240` with a shell leading the terminal, `SIGTERM` while
+/// `cmd.run sleep 300` ran left the `sleep` running.
+///
+/// The command here reports its own pid and waits on a gate nobody opens; the
+/// signal arrives once the pid is known. **Its accepting sibling** is
+/// `an_interrupt_during_a_child_ends_the_child`'s second arm, where the same
+/// kind of child left alone reports its outcome.
+///
+/// **The mutant:** `Source::next` not reading the ending, which leaves the race
+/// running and prints that the race did not end.
+#[tokio::test]
+async fn a_signal_that_ends_the_session_during_a_child_ends_the_child() {
+    use crate::terminal::driver::{Pane, Raced, race};
+    use crate::terminal::source::Source;
+
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("the project resolves");
+    let never = tree.project().join(awkward_nonce("gate-that-never-opens"));
+    let pidfile = tree.project().join(awkward_nonce("pid"));
+    let body = format!("echo $$ > '{}'\n{}", pidfile.display(), waits_for(&never));
+    let line = scripted(&tree, "reports-its-pid.sh", &body);
+    let spawn = Spawn::new(
+        &working,
+        Environment::inherited_minimum(&a_childs_variables()).expect("the five"),
+        generous(),
+    );
+
+    // A terminal that sends nothing, until the check says the session ends.
+    let source = Source::over(|_keys, stop| {
+        while !stop.load(core::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(crate::terminal::source::POLL);
+        }
+    });
+    let ender = source.ender();
+    let mut shell = zaru_tui::shell::Shell::open(zaru_tui::shell::Status::new("bare", "session"));
+    let mut surface = Unwatched;
+    let clock = zaru_core::iteration::SystemClock::started_now();
+    let trie = crate::terminal::NotesTrie::nothing_cached("zaru");
+    let paths = crate::terminal::ProjectPaths::under(None);
+    let mut now = Duration::ZERO;
+
+    let pane = std::sync::Mutex::new(Pane::during(&mut shell, &mut surface, &clock));
+    let raced = race(
+        &pane,
+        &source,
+        &Yielding,
+        &trie,
+        &crate::terminal::Vocabulary,
+        &paths,
+        &mut now,
+        None,
+        None,
+        spawn.execute(&line),
+    );
+    let signal = async {
+        let mut polls = 0_usize;
+        let pid = loop {
+            if let Ok(held) = std::fs::read_to_string(&pidfile)
+                && let Ok(pid) = held.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            polls += 1;
+            assert!(
+                polls < POLL_BUDGET,
+                "the child never wrote its process id, so ending the session would say nothing"
+            );
+            tokio::task::yield_now().await;
+        };
+        assert!(
+            in_the_process_table(pid),
+            "the staging is wrong: the child is already gone"
+        );
+        ender.end(15);
+        pid
+    };
+    let (raced, pid) = tokio::join!(raced, signal);
+
+    assert!(
+        matches!(raced, Raced::SourceEnded),
+        "a signal ended the session and the race did not end as a terminal that stopped \
+         answering: {raced:?}"
+    );
+    assert_eq!(
+        source.ended_by(),
+        Some(15),
+        "the source does not say which signal ended it"
+    );
+    let mut polls = 0_usize;
+    while in_the_process_table(pid) {
+        polls += 1;
+        assert!(
+            polls < POLL_BUDGET,
+            "the child {pid} is still in the process table after a signal ended the session, so \
+             the command outlives the harness that ran it"
+        );
+        tokio::task::yield_now().await;
+    }
+}

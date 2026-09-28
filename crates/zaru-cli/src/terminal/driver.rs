@@ -147,7 +147,7 @@ impl<R: Restore> Drop for Guard<R> {
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[must_use]
 pub fn question_for_the_shell(question: &Question) -> Confirmation {
-    Confirmation::new(
+    let asked = Confirmation::new(
         question.statement.clone(),
         question.answers.line().trim(),
         answers_for_the_shell(question.answers),
@@ -161,7 +161,27 @@ pub fn question_for_the_shell(question: &Question) -> Confirmation {
     // reworded, re-ordered or truncated it would be the drift D3's port
     // exists to prevent, and truncation in particular is what the pane's own
     // wrapping is there to make unnecessary.
-    .showing(question.detail.clone())
+    .showing(question.detail.clone());
+    // What the question is about, in two parts, so the pane can fit it to a
+    // narrow terminal and keep it first. A mirror for the boundary reason the
+    // answers have one.
+    match &question.about {
+        Some(about) => asked.about(zaru_tui::shell::About {
+            lead: about.lead.clone(),
+            subject: match &about.subject {
+                crate::tools::port::Shown::Path(path) => zaru_tui::shell::Shown::Path(path.clone()),
+                crate::tools::port::Shown::Command(words) => {
+                    zaru_tui::shell::Shown::Command(words.clone())
+                }
+                crate::tools::port::Shown::Url { origin, rest } => zaru_tui::shell::Shown::Url {
+                    origin: origin.clone(),
+                    rest: rest.clone(),
+                },
+                crate::tools::port::Shown::Text(text) => zaru_tui::shell::Shown::Text(text.clone()),
+            },
+        }),
+        None => asked,
+    }
 }
 
 /// The same answer set, as the shell's own mirror of it.
@@ -174,6 +194,7 @@ const fn answers_for_the_shell(answers: crate::tools::prompt::Answers) -> zaru_t
     match answers {
         crate::tools::prompt::Answers::ToolCall => zaru_tui::shell::Answers::ToolCall,
         crate::tools::prompt::Answers::Admission => zaru_tui::shell::Answers::Admission,
+        crate::tools::prompt::Answers::Validators => zaru_tui::shell::Answers::Validators,
         crate::tools::prompt::Answers::Fetch => zaru_tui::shell::Answers::Fetch,
     }
 }
@@ -408,6 +429,13 @@ pub struct Pane<'a, S: Surface + Send> {
     ///
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     said_generating: bool,
+    /// The question waiting for its answer, if one is.
+    ///
+    /// [`PaneConfirm`]'s asking future leaves its waker here while the
+    /// question stands, and the race that reads the terminal wakes it after
+    /// each key it hands to the question. Nothing else is shared between the
+    /// two, and neither holds the lock while it waits.
+    answer_awaited: Option<core::task::Waker>,
 }
 
 impl<S: Surface + Send> core::fmt::Debug for Pane<'_, S> {
@@ -438,6 +466,7 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
             meter_started: None,
             generating_since: None,
             said_generating: false,
+            answer_awaited: None,
         }
     }
 
@@ -598,6 +627,12 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
 impl<S: Surface + Send> Drop for Pane<'_, S> {
     fn drop(&mut self) {
         self.shell.clear_streaming();
+        // **A question the turn was stopped at goes with the turn.** A turn
+        // stopped while a question stood never answered it, and a question
+        // left standing would take every key the composer should get next.
+        // Here for the streamed line's reason: the end of this borrow is the
+        // end of the turn, on every path, so nothing has to remember it.
+        self.shell.withdraw_question();
     }
 }
 
@@ -814,11 +849,26 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
 /// the same `Question`". Nothing here reads a terminal's standard input and
 /// nothing here composes a sentence.
 ///
-/// **`confirm` is synchronous, and that is what makes this work with no
-/// channel and no second thread.** The whole turn is polled on one thread by
-/// [`crate::compose::turn`]'s current-thread runtime, so this paints the
-/// question, pumps the terminal into [`Shell::key`] until the shell has an
-/// answer, and returns it — inside the call the executor is waiting on.
+/// # In a turn it asks, and the turn's race reads the keys
+///
+/// A turn asks through [`Confirm::ask`](crate::tools::port::Confirm::ask).
+/// That stands the question on the pane and waits for the shell to hold an
+/// answer, **without holding the thread**: [`race`] keeps reading the
+/// terminal and hands each key to the standing question, so `Ctrl-C` stops
+/// the turn from here exactly as it does while the model is thinking, and the
+/// signal listener and the watch for a terminal that has gone keep running.
+/// Until 2026-09-28 the question was answered inside `confirm`, which read
+/// the keys itself and slept between them on the turn's only thread; `Ctrl-C`
+/// was ignored and a closed terminal left the process running at a full
+/// core.
+///
+/// # Between turns it confirms, and reads the keys itself
+///
+/// [`Confirm::confirm`](crate::tools::port::Confirm::confirm) is kept for the
+/// one caller that cannot await: [ADR-0007] D8's gate inside the credential
+/// store, reached through this type's second port. It paints the question,
+/// pumps the terminal into [`Shell::key`] until the shell has an answer, and
+/// returns it. No turn is running then, so `Ctrl-C` there declines.
 ///
 /// # Running out of keys is not an answer
 ///
@@ -827,6 +877,7 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
 /// answer would be the silent default D3 forbids, and answering `false` would
 /// put "the user declined" in the transcript of a question nobody saw.
 ///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub struct PaneConfirm<'m, 'a, S: Surface + Send, P: Pace + Sync> {
     pane: &'m std::sync::Mutex<Pane<'a, S>>,
@@ -851,7 +902,64 @@ impl<'m, 'a, S: Surface + Send, P: Pace + Sync> PaneConfirm<'m, 'a, S, P> {
     }
 }
 
+/// The one mapping from the shell's answer to the permission port's.
+///
+/// `zaru-tui` mirrors this crate's answer without naming its type -- the
+/// boundary that keeps the shell independent of the permission model -- so the
+/// translation lives here, is exhaustive, and cannot silently gain a fifth
+/// meaning.
+const fn answer_of(answered: zaru_tui::shell::Answered) -> crate::tools::port::Answer {
+    match answered {
+        zaru_tui::shell::Answered::No => crate::tools::port::Answer::No,
+        zaru_tui::shell::Answered::Once => crate::tools::port::Answer::Once,
+        zaru_tui::shell::Answered::ForThisSession => crate::tools::port::Answer::ForThisSession,
+        zaru_tui::shell::Answered::ForThisHost => crate::tools::port::Answer::ForThisHost,
+    }
+}
+
 impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConfirm<'_, '_, S, P> {
+    /// Stand the question and wait for the shell to hold an answer, leaving
+    /// the thread to [`race`], which reads the keys.
+    ///
+    /// The lock is taken for one poll at a time and never held while this
+    /// waits, so the race, the sink and the narrator can all reach the pane
+    /// while the question stands. If the turn is stopped meanwhile, this
+    /// future is dropped with it and the question is taken off the pane by
+    /// [`Pane`]'s owner; nothing is answered.
+    fn ask<'q>(&'q self, question: &'q Question) -> crate::tools::port::Asking<'q> {
+        Box::pin(async move {
+            {
+                let mut pane = self.pane.try_lock().map_err(|_| {
+                    crate::tools::port::ConfirmFailure::new(
+                        "the pane was already in use when the question was raised".to_owned(),
+                    )
+                })?;
+                pane.shell.ask(question_for_the_shell(question));
+                pane.paint();
+            }
+            core::future::poll_fn(|context| {
+                let Ok(mut pane) = self.pane.try_lock() else {
+                    // Only the race's own branches take this lock, and they
+                    // do not hold it across a suspension, so this is the one
+                    // poll in which one of them is mid-paint. Ask again.
+                    context.waker().wake_by_ref();
+                    return core::task::Poll::Pending;
+                };
+                match pane.shell.answer() {
+                    Some(answered) => {
+                        pane.answer_awaited = None;
+                        core::task::Poll::Ready(Ok(answer_of(answered)))
+                    }
+                    None => {
+                        pane.answer_awaited = Some(context.waker().clone());
+                        core::task::Poll::Pending
+                    }
+                }
+            })
+            .await
+        })
+    }
+
     fn confirm(
         &self,
         question: &Question,
@@ -870,21 +978,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
         let mut now = Duration::ZERO;
         loop {
             if let Some(answer) = pane.shell.answer() {
-                // The two enums are one mapping in one place. `zaru-tui`
-                // mirrors this crate's three-valued answer without naming its
-                // type -- the boundary that keeps the shell independent of the
-                // permission model -- so the translation lives here, is
-                // exhaustive, and cannot silently gain a fourth meaning.
-                return Ok(match answer {
-                    zaru_tui::shell::Answered::No => crate::tools::port::Answer::No,
-                    zaru_tui::shell::Answered::Once => crate::tools::port::Answer::Once,
-                    zaru_tui::shell::Answered::ForThisSession => {
-                        crate::tools::port::Answer::ForThisSession
-                    }
-                    zaru_tui::shell::Answered::ForThisHost => {
-                        crate::tools::port::Answer::ForThisHost
-                    }
-                });
+                return Ok(answer_of(answer));
             }
             let input = match self.source.try_next() {
                 Taken::Struck(Struck::Key(input)) => input,
@@ -1011,6 +1105,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::credentials::port::Confirm
             // what it means everywhere else on this port, so the answers are
             // the ordinary ones.
             answers: crate::tools::prompt::Answers::ToolCall,
+            about: None,
         };
         crate::tools::port::Confirm::confirm(self, &question)
             .map(crate::tools::port::Answer::permits)
@@ -1161,6 +1256,14 @@ pub fn after(
     session: &crate::session::Session,
     queued: &mut Option<Queued>,
 ) -> AfterTurn {
+    let mut written_down = || {
+        crate::compose::boundary::rebuilt_from_the_transcript(context, session)
+            .map_err(|failure| failure.to_string())
+            .and_then(|()| {
+                crate::compose::boundary::checkpointed(context, session)
+                    .map_err(|failure| failure.to_string())
+            })
+    };
     match turned {
         Turned::Ran(lines) => AfterTurn::Carries(lines),
         Turned::Interrupted(_) => {
@@ -1171,22 +1274,33 @@ pub fn after(
             // lose, because it was never a record: nothing was written for it
             // and [ADR-0010] D2's producers are untouched.
             *queued = None;
-            let kept = crate::compose::boundary::rebuilt_from_the_transcript(context, session)
-                .map_err(|failure| failure.to_string())
-                .and_then(|()| {
-                    crate::compose::boundary::checkpointed(context, session)
-                        .map_err(|failure| failure.to_string())
-                });
-            AfterTurn::Carries(match kept {
+            AfterTurn::Carries(match written_down() {
                 Ok(()) => Vec::new(),
                 Err(failure) => vec![Line::new(zaru_tui::shell::port::Register::Failed, failure)],
             })
         }
-        // The terminal stopped answering mid-turn. A product terminal does
-        // not; a script does, and this is what stops a pump that never left
-        // from hanging a check.
-        Turned::SourceEnded => AfterTurn::Stops(Exit::Succeeded),
+        // The terminal stopped answering mid-turn: its keys ran out, or a
+        // signal or a lost terminal ended the source. **The session is written
+        // down first, exactly as for a `Ctrl-C`**, so it resumes with the turn
+        // it was in closed: a call it stood at or was running is closed as one
+        // that did not finish. Then the session stops. A failure to write it
+        // down cannot be shown -- there is no pane left to show it on -- and
+        // the transcript, which is written a record at a time, still holds
+        // everything the next open rebuilds from.
+        Turned::SourceEnded => {
+            let _ = written_down();
+            AfterTurn::Stops(Exit::Succeeded)
+        }
     }
+}
+
+/// What a session exits with once its source has ended.
+///
+/// [`Exit::Signalled`] when a signal or a lost terminal ended it, so a shell
+/// reads `128 + n` as it would have for a process that signal killed; the
+/// ending the caller had otherwise.
+fn when_the_source_ended(source: &Source, otherwise: Exit) -> Exit {
+    source.ended_by().map_or(otherwise, Exit::Signalled)
 }
 
 /// Run one turn of this session for `task`, painting it as it happens.
@@ -1826,6 +1940,27 @@ fn read_while_busy<S: Surface + Send>(
     let Ok(mut pane) = pane.try_lock() else {
         return;
     };
+    // **A standing question takes what arrives**, through the shell's own
+    // table, and the question's asker is woken to read the answer. `Ctrl-C`
+    // never reaches here: `race` read it first and stopped the turn. A wheel
+    // notch is not an answer and moving the window under a question is a
+    // change nobody has ruled, so it is absorbed, as it was when the question
+    // read its own keys.
+    if pane.shell.asking().is_some() {
+        if !matches!(struck, Struck::Wheel(_)) {
+            let region = pane
+                .surface
+                .area()
+                .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
+            pane.shell
+                .struck(struck, region, now, &NoEntries, &NoVocabulary, &NoPaths);
+        }
+        pane.paint();
+        if let Some(asker) = pane.answer_awaited.take() {
+            asker.wake();
+        }
+        return;
+    }
     // The same re-ask the outer loop makes, so a corpus that lands while the
     // model is thinking reaches the strip the person is typing into rather
     // than waiting for the turn to end. Above the match rather than inside one
@@ -2170,6 +2305,7 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                 .collect(),
             prominent: true,
             answers: crate::tools::prompt::Answers::Admission,
+            about: None,
         };
         let admitted = ask_at_the_door(shell, surface, source, &question).await?;
         // **Composed before the reload**, which empties what the question was
@@ -2371,7 +2507,10 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                                 // nothing is claimed either way.
                                 surface.draw(shell)?;
                                 return Ok(Pump {
-                                    outcome: Pumped::Left(Exit::Succeeded),
+                                    outcome: Pumped::Left(when_the_source_ended(
+                                        source,
+                                        Exit::Succeeded,
+                                    )),
                                 });
                             };
                             if reopen {
@@ -2426,7 +2565,10 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                         Asked::Ended => {
                             surface.draw(shell)?;
                             return Ok(Pump {
-                                outcome: Pumped::Left(Exit::Succeeded),
+                                outcome: Pumped::Left(when_the_source_ended(
+                                    source,
+                                    Exit::Succeeded,
+                                )),
                             });
                         }
                     }
@@ -2605,7 +2747,7 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                             AfterTurn::Carries(lines) => lines,
                             AfterTurn::Stops(exit) => {
                                 return Ok(Pump {
-                                    outcome: Pumped::Left(exit),
+                                    outcome: Pumped::Left(when_the_source_ended(source, exit)),
                                 });
                             }
                         }
@@ -2624,11 +2766,12 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
         surface.draw(shell)?;
     }
 
-    // The event source ran out without the user leaving. A product terminal
-    // does not do this -- crossterm blocks -- and a check does, which is what
-    // stops a pump that never returns from hanging one.
+    // The event source ran out without the user leaving. A check's does, which
+    // is what stops a pump that never returns from hanging one; a product
+    // terminal's does when a signal or a lost terminal ended it, and then the
+    // session exits with that signal's status.
     Ok(Pump {
-        outcome: Pumped::Left(Exit::Succeeded),
+        outcome: Pumped::Left(when_the_source_ended(source, Exit::Succeeded)),
     })
 }
 
@@ -3706,7 +3849,8 @@ pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
 /// guard and every adapter; what this type adds is the three system calls, and
 /// that is stated rather than implied.
 pub struct Crossterm {
-    terminal: ratatui::Terminal<CrosstermBackend<std::io::Stdout>>,
+    /// `None` only while this value is being dropped. See its `Drop`.
+    terminal: Option<ratatui::Terminal<CrosstermBackend<std::io::Stdout>>>,
     /// Whether this terminal paints the registers' colours.
     ///
     /// Held here because the terminal is the thing that knows: it is taken
@@ -3753,7 +3897,36 @@ impl Crossterm {
         }
         // Held here, once per terminal: the terminal is the thing that knows
         // whether it paints colour.
-        Ok(Self { terminal, palette })
+        Ok(Self {
+            terminal: Some(terminal),
+            palette,
+        })
+    }
+}
+
+impl Drop for Crossterm {
+    /// Let `ratatui`'s terminal go without its own goodbye when the terminal
+    /// has gone away.
+    ///
+    /// `ratatui`'s `Terminal` shows the cursor when it is dropped and, if it
+    /// cannot, says so with `eprintln!`, which **panics** when standard error
+    /// cannot be written -- and standard error is the terminal that went away.
+    /// Measured on 2026-09-28: once a lost terminal ended a session through
+    /// its source rather than by exiting on the spot, a session whose terminal
+    /// closed at a permission question (where the cursor is hidden) exited
+    /// `101`, a panic, instead of the hang-up's `129`. A terminal that is
+    /// still there is dropped as before, cursor and all.
+    fn drop(&mut self) {
+        if let Some(terminal) = self.terminal.take() {
+            if crate::terminal::open::a_person_is_watching() {
+                drop(terminal);
+            } else {
+                // The process is about to exit; there is nothing to give the
+                // memory back to, and nothing on the other end to show a
+                // cursor to.
+                core::mem::forget(terminal);
+            }
+        }
     }
 }
 
@@ -3850,10 +4023,12 @@ impl Restore for Crossterm {
 ///
 /// **One function with two callers**, because there are two ways a session
 /// ends that can restore. [`Guard`] calls it through [`Restore`] on an ordinary
-/// exit, an early return and an unwind. `terminal::open`'s signal listener
-/// calls it directly when a signal ends the session, because a process ending
-/// on a signal runs no `Drop`. Neither needs the [`Crossterm`] value: raw mode
-/// is a property of the terminal, and the sequences go to standard output.
+/// exit, an early return, an unwind, and a session a signal or a lost terminal
+/// ended, which winds down through its source since 2026-09-28. The watch in
+/// `terminal::open` calls it directly when such a session has not wound down
+/// by its deadline and the process leaves regardless, running no `Drop`.
+/// Neither needs the [`Crossterm`] value: raw mode is a property of the
+/// terminal, and the sequences go to standard output.
 ///
 /// The disarm comes **before** the alternate screen is left, on both paths.
 /// The panic hook [`take_the_screen`] installs restores the screen and knows
@@ -3926,13 +4101,17 @@ fn restore_the_screen_or_say_so() {
 impl Surface for Crossterm {
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()> {
         let palette = self.palette;
-        self.terminal
-            .draw(|frame| shell.render(frame, frame.area(), palette))?;
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.draw(|frame| shell.render(frame, frame.area(), palette))?;
+        }
         Ok(())
     }
 
     fn area(&self) -> std::io::Result<Rect> {
-        let size = self.terminal.size()?;
+        let Some(terminal) = self.terminal.as_ref() else {
+            return Ok(Rect::new(0, 0, 0, 0));
+        };
+        let size = terminal.size()?;
         Ok(Rect::new(0, 0, size.width, size.height))
     }
 }
