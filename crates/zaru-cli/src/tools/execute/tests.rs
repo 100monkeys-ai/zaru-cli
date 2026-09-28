@@ -151,6 +151,16 @@ impl Drop for Scratch {
     }
 }
 
+/// Every event an iterating turn's `Telling` handed on, in order.
+#[derive(Debug, Default)]
+struct Heard(Vec<zaru_core::tool_call::Event>);
+
+impl zaru_core::tool_call::EventSink for Heard {
+    fn emit(&mut self, event: &zaru_core::tool_call::Event) {
+        self.0.push(event.clone());
+    }
+}
+
 /// Build an executor over a scratch tree and a scratch session.
 macro_rules! executor {
     ($working:expr, $mode:expr, $allow:expr, $destructive:expr, $confirmer:expr,
@@ -1243,10 +1253,12 @@ async fn a_candidate_applied_whole_reports_zero_and_carries_what_the_tools_produ
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(
-        &cell,
-        crate::tools::descriptor_set(),
-    ));
+    let nothing_held = HeldSecrets::none();
+    let telling = crate::compose::Telling::to(Vec::new(), None, &nothing_held);
+    let applying = crate::compose::Applying::through(
+        crate::compose::Shared::over(&cell, crate::tools::descriptor_set()),
+        &telling,
+    );
 
     let candidate = candidate(&[("fs.read", &["inside/file"]), ("fs.list", &["inside"])]).await;
     let outcome = applying.execute(&candidate).await.expect("no port failed");
@@ -1329,11 +1341,43 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(
-        &cell,
-        crate::tools::descriptor_set(),
-    ));
+    let nothing_held = HeldSecrets::none();
+    let heard = std::sync::Mutex::new(Heard::default());
+    let telling = crate::compose::Telling::to(vec![&heard], None, &nothing_held);
+    let applying = crate::compose::Applying::through(
+        crate::compose::Shared::over(&cell, crate::tools::descriptor_set()),
+        &telling,
+    );
     let outcome = applying.execute(&candidate).await.expect("no port failed");
+
+    // Both calls are answered in the conversation the next turn is sent: the
+    // refused one with its refusal, and the one after it with the sentence
+    // that says it was not applied. A call left with no result is a
+    // conversation a provider refuses.
+    let results: Vec<String> = heard
+        .into_inner()
+        .expect("heard poisoned")
+        .0
+        .iter()
+        .filter_map(|event| match event {
+            zaru_core::tool_call::Event::Message(zaru_core::conversation::Message::Tool {
+                content,
+                ..
+            }) => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results.len(),
+        2,
+        "each call of the candidate is answered in the conversation, and {} were: {results:#?}",
+        results.len()
+    );
+    assert_eq!(
+        results[1],
+        crate::compose::NOT_APPLIED,
+        "the call after the refusal is not answered with the sentence that says it did not run"
+    );
 
     assert!(
         !second.exists(),
@@ -1382,10 +1426,12 @@ async fn a_refused_call_stops_the_candidate_and_the_call_after_it_is_not_applied
         &no_grants
     );
     let cell = tokio::sync::Mutex::new(executor);
-    let applying = crate::compose::Applying::through(crate::compose::Shared::over(
-        &cell,
-        crate::tools::descriptor_set(),
-    ));
+    let nothing_held = HeldSecrets::none();
+    let telling = crate::compose::Telling::to(Vec::new(), None, &nothing_held);
+    let applying = crate::compose::Applying::through(
+        crate::compose::Shared::over(&cell, crate::tools::descriptor_set()),
+        &telling,
+    );
     let accepted = applying.execute(&candidate).await.expect("no port failed");
     assert_eq!(
         accepted.exit_code, 0,
@@ -1456,11 +1502,14 @@ async fn candidate(calls: &[(&str, &[&str])]) -> crate::compose::Candidate {
         .map(|(name, values)| request(name, values))
         .collect();
     let model = StagedCalls(std::sync::Mutex::new(Some(staged)));
-    crate::compose::Generating::over(&model)
-        .generate(&staged_prompt())
-        .await
-        .expect("the staged model answered")
-        .candidate
+    crate::compose::Generating::over(
+        &model,
+        &crate::compose::Telling::to(Vec::new(), None, &crate::redaction::HeldSecrets::none()),
+    )
+    .generate(&staged_prompt())
+    .await
+    .expect("the staged model answered")
+    .candidate
 }
 
 /// A model that answers once with the calls it was staged with.

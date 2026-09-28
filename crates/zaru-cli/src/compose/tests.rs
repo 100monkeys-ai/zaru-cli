@@ -440,7 +440,9 @@ async fn the_generator_asks_with_the_same_tools_a_turn_offers() {
         text: "nothing to apply".to_owned(),
         tokens: usage(),
     });
-    let generating = crate::compose::Generating::over(&model);
+    let nothing_held = crate::redaction::HeldSecrets::none();
+    let telling = crate::compose::Telling::to(Vec::new(), None, &nothing_held);
+    let generating = crate::compose::Generating::over(&model, &telling);
     generating
         .generate(&prompt("do the work"))
         .await
@@ -493,7 +495,9 @@ async fn a_candidates_text_is_the_calls_it_asked_for_and_no_sentence_of_ours() {
         }],
         tokens: usage(),
     });
-    let generating = crate::compose::Generating::over(&model);
+    let nothing_held = crate::redaction::HeldSecrets::none();
+    let telling = crate::compose::Telling::to(Vec::new(), None, &nothing_held);
+    let generating = crate::compose::Generating::over(&model, &telling);
     let generated = generating
         .generate(&prompt("write the file"))
         .await
@@ -537,7 +541,9 @@ async fn a_prose_answer_is_a_candidate_with_nothing_to_apply() {
         text: said.to_owned(),
         tokens: usage(),
     });
-    let generating = crate::compose::Generating::over(&model);
+    let nothing_held = crate::redaction::HeldSecrets::none();
+    let telling = crate::compose::Telling::to(Vec::new(), None, &nothing_held);
+    let generating = crate::compose::Generating::over(&model, &telling);
     let generated = generating
         .generate(&prompt("write the file"))
         .await

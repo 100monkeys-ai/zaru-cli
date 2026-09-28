@@ -171,7 +171,7 @@ When a session opens, Zaru asks the provider how large the model's context windo
 
 ### Validators and the iteration loop
 
-A validator is a command in `./zaru.toml` that checks the model's work, such as a build or a test run. When a project declares validators, a task runs in a loop: the model makes a change, the validators run, and if any fails, its output goes back to the model for another attempt. The loop stops when every validator passes or when it reaches `runtime.max_iterations` attempts, which is one at the `bare` tier unless you set it.
+A validator is a command in `./zaru.toml` that checks the model's work, such as a build or a test run. When a project declares validators, a task runs in a loop: the model makes a change, the validators run, and if any fails, its output goes back to the model for another attempt. The loop stops when every validator passes or when it reaches `runtime.max_iterations` attempts, which is one at the `bare` tier unless you set it. The screen shows each attempt's tool calls and what they did, as it does for any task. The next task you type is sent each attempt's tool calls and their results, as it is sent a task's; the harness's requests for another attempt are not sent again.
 
 `zaru init` writes an example `./zaru.toml` to edit. A small one:
 

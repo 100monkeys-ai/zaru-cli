@@ -794,6 +794,23 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
         }
     }
 
+    /// A candidate's call, as a turn's call is painted: through
+    /// `vocabulary::turn_lines`, so an iterating turn's calls read as a
+    /// turn's do. A message paints nothing.
+    fn told(&self, event: &zaru_core::tool_call::Event) {
+        let lines = crate::terminal::vocabulary::turn_lines(event);
+        if lines.is_empty() {
+            return;
+        }
+        match self.pane.try_lock() {
+            Ok(mut pane) => pane.note_event(event, lines),
+            Err(_) => {
+                self.contended
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
     /// The one line an interrupt-and-stay paints.
     ///
     /// [`Register::Announced`], and not [`Register::Failed`], for the reason
