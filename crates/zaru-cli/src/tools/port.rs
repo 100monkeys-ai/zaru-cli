@@ -241,14 +241,48 @@ impl std::error::Error for ConfirmFailure {}
 /// crate owns, over a terminal, and it is the first implementation of this
 /// trait anywhere outside a check.
 pub trait Confirm {
-    /// Ask the user, having stated what is about to happen.
+    /// Ask the user, having stated what is about to happen, and wait here for
+    /// the answer.
+    ///
+    /// For a caller that cannot wait any other way: the credential store's
+    /// gate is synchronous, and so is a check that answers at once.
     ///
     /// # Errors
     ///
     /// [`ConfirmFailure`] when the question did not reach the user at all.
     /// **Never** for an answer of no, which is `Ok(Answer::No)`.
     fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure>;
+
+    /// Ask the user, and let the program go on running while they decide.
+    ///
+    /// # Why a turn asks this way
+    ///
+    /// A turn runs on one thread. Until 2026-09-28 the pane's question was
+    /// answered inside [`Self::confirm`], which waited on that thread, so
+    /// while a question stood nothing else on it ran: not `Ctrl-C`, not the
+    /// signal listener, not the watch that notices a terminal has gone. A
+    /// person could not stop the turn, and a closed terminal left `zaru`
+    /// running at a full core for as long as nobody killed it. Measured on
+    /// `e5b9240`: ten seconds after the terminal closed at a question the
+    /// process was still there, reading nothing and holding the transcript.
+    ///
+    /// A question asked this way is a future the turn awaits. Whoever drives
+    /// the turn can then stop it while the question stands, and the question
+    /// goes with it, unanswered.
+    ///
+    /// The default answers at once with [`Self::confirm`], which is right for
+    /// every confirmer that does not need the thread while it waits.
+    fn ask<'a>(&'a self, question: &'a Question) -> Asking<'a> {
+        Box::pin(core::future::ready(self.confirm(question)))
+    }
 }
+
+/// A question being asked, as [`Confirm::ask`] hands it back.
+///
+/// `Send` because a tool executor's future is, and boxed so that the port
+/// can still be used as `dyn Confirm`.
+pub type Asking<'a> =
+    core::pin::Pin<Box<dyn Future<Output = Result<Answer, ConfirmFailure>> + Send + 'a>>;
 
 /// What a person answered a [`Question`] with.
 ///

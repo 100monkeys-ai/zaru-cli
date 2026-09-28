@@ -1438,13 +1438,15 @@ async fn ran(
     // permission mode is not consulted, so `yolo` does not skip this.
     if !prepared.declared.is_empty() {
         let approvals = crate::validators::approval::Approvals::under(&prepared.store_root);
-        if let Err(refusal) = crate::validators::approval::gate(
+        if let Err(refusal) = crate::validators::approval::gate_in_a_turn(
             &approvals,
             prepared.here.root(),
             &prepared.declared,
-            confirmer.map(|confirmer| confirmer as &dyn crate::tools::Confirm),
+            confirmer,
             &crate::commands::date::today(),
-        ) {
+        )
+        .await
+        {
             return Ran::refused_having_said(lines, Surface::validators_not_approved(&refusal));
         }
     }

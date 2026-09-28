@@ -1850,8 +1850,15 @@ fn a_confirmation_renders_its_default_through_the_pump() {
         !vocabulary.is_empty(),
         "the plain prompt's answers are empty, so the assertion below is `contains(\"\")`"
     );
+    // The line is longer than one row of this frame, so the rows are read
+    // as the words they wrap: the pane breaks at spaces and at nothing else.
+    let read = first
+        .iter()
+        .map(|row| row.trim_end())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        first.iter().any(|row| row.contains(vocabulary)),
+        read.contains(vocabulary),
         "the plain prompt's answers line is not in the pane's first frame: {first:#?}"
     );
     assert!(
@@ -6622,8 +6629,12 @@ fn a_project_that_offers_commands_is_asked_about_once_at_the_door() {
         "and it names what the project offers: {painted}"
     );
     assert!(
-        painted.contains("[y/N · esc declines]"),
+        painted.contains(crate::tools::prompt::ADMISSION_SUFFIX.trim()),
         "with the answers an admission takes, and never `a`: {painted}"
+    );
+    assert!(
+        !painted.contains(" a allows "),
+        "an admission never offers `a`: {painted}"
     );
     let entries = admissions.entries().expect("the file parses");
     assert_eq!(entries.len(), 1, "one admission, written once");

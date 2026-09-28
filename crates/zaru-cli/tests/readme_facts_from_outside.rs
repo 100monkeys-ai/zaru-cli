@@ -229,6 +229,18 @@ fn the_warning_the_quick_start_shows_is_the_one_the_program_prints() {
     );
 }
 
+/// The keys the README says a permission prompt takes are the ones the
+/// prompt's own line names, word for word.
+#[test]
+fn the_permission_prompt_the_readme_quotes_is_the_one_the_program_shows() {
+    let text = section(&readme(), "### Permission prompts and modes");
+    let line = zaru_cli::tools::prompt::SUFFIX.trim();
+    assert!(
+        text.contains(line),
+        "the README quotes a permission prompt the program does not show; it shows {line:?}"
+    );
+}
+
 /// The Safety section says that `yolo` asks nothing, and so lets a model
 /// change which validators are approved.
 #[test]

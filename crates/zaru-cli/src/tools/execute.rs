@@ -569,22 +569,18 @@ where
                 // then the permission decision.
                 let refused = match self.verdicts.verdict(&hop) {
                     Verdict::Denied { code, reason } => Some(format!("{code} — {reason}")),
-                    Verdict::Allowed => {
-                        match decision
-                            .permit(self.confirmer.map(|confirmer| confirmer as &dyn Confirm))
-                        {
-                            Permission::Refused(because) => Some(because.to_string()),
-                            Permission::GrantedForTheSession => {
-                                self.session_grants.allow(&hop);
-                                None
-                            }
-                            Permission::GrantedForTheHost => {
-                                self.session_grants.allow_host(&hop);
-                                None
-                            }
-                            Permission::Granted => None,
+                    Verdict::Allowed => match decision.permit_asking(self.confirmer).await {
+                        Permission::Refused(because) => Some(because.to_string()),
+                        Permission::GrantedForTheSession => {
+                            self.session_grants.allow(&hop);
+                            None
                         }
-                    }
+                        Permission::GrantedForTheHost => {
+                            self.session_grants.allow_host(&hop);
+                            None
+                        }
+                        Permission::Granted => None,
+                    },
                 };
                 (decision.entry().clone(), refused)
             };
@@ -759,7 +755,18 @@ where
             .question()
             .map_or_else(|| entry.render(), |question| question.statement);
 
-        let permission = decision.permit(self.confirmer.map(|confirmer| confirmer as &dyn Confirm));
+        // **A call that is asked about is recorded as started before the
+        // question is put**, so a turn stopped while the question stands --
+        // `Ctrl-C`, or the terminal going away -- leaves a `Started` with
+        // nothing closing it, which is how ADR-0010 D4 reads a call that did
+        // not finish. It is the same record a call stopped while it ran
+        // leaves, and the conversation closes both the same way. A call that
+        // is refused after the question gets its `Refused` below, as before.
+        let asked = decision.question().is_some();
+        if asked {
+            self.record(&Record::ToolCall(ToolCall::started(&entry)))?;
+        }
+        let permission = decision.permit_asking(self.confirmer).await;
 
         // The grant is remembered **before** the act, so a call that fails or
         // is interrupted mid-act does not lose the answer a person gave about
@@ -778,6 +785,12 @@ where
         };
 
         match permission {
+            Permission::Refused(because) if asked => self.refused_having_started(
+                request,
+                &entry,
+                statement,
+                RefusedBecause::to_string(&because),
+            ),
             Permission::Refused(because) => self.refuse(
                 request,
                 &entry,
@@ -789,8 +802,11 @@ where
             | Permission::GrantedForTheHost => {
                 // The record is written *before* the act, so a process killed
                 // inside the act leaves a `Started` with nothing closing it —
-                // which is what ADR-0010 D4's `Interrupted` is derived from.
-                self.record(&Record::ToolCall(ToolCall::started(&entry)))?;
+                // which is what ADR-0010 D4's `Interrupted` is derived from. A
+                // call that was asked about has had its `Started` already.
+                if !asked {
+                    self.record(&Record::ToolCall(ToolCall::started(&entry)))?;
+                }
                 let captured = self.act(&invocation, &call).await?;
                 let presented = captured
                     .present(self.budget, self.redactor, Some(&mut *self.overflow))
@@ -835,6 +851,18 @@ impl<C, F, P> Executor<'_, C, F, P> {
         because: String,
     ) -> Result<ToolOutcome, PortFailure> {
         self.record(&Record::ToolCall(ToolCall::started(entry)))?;
+        self.refused_having_started(request, entry, statement, because)
+    }
+
+    /// Record the `Refused` that closes a call already recorded as started,
+    /// and report it.
+    fn refused_having_started(
+        &mut self,
+        request: &ToolRequest,
+        entry: &TranscriptEntry,
+        statement: String,
+        because: String,
+    ) -> Result<ToolOutcome, PortFailure> {
         self.record(&Record::ToolCall(ToolCall::refused(entry)))?;
         Ok(ToolOutcome::Refused {
             decision: ToolDecision {

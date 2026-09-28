@@ -107,7 +107,7 @@ The transcript has one JSON object per line: your task, each model reply with th
 
 ### Interactive sessions
 
-Run `zaru` with no arguments in a terminal to open a session. Type a task and press Enter; each task you type continues the same conversation, and the model is sent every earlier task, reply, tool call and tool result in it. Type `/help` to list commands. Type `/exit` or press Ctrl-C to leave.
+Run `zaru` with no arguments in a terminal to open a session. Type a task and press Enter; each task you type continues the same conversation, and the model is sent every earlier task, reply, tool call and tool result in it. Type `/help` to list commands. Type `/exit`, or press Ctrl-C when nothing is running and the prompt is empty, to leave. Ctrl-C while a task runs, or at a permission prompt, stops the task and keeps the session open.
 
 `zaru --continue` reopens the most recent session started in the current directory, and `zaru --resume <id>` reopens the session with that ID. The conversation is rebuilt from the transcript, so the model is sent the same conversation it had before. A session recorded before tool results were kept reopens with your tasks and the answers, and says once that the earlier tool results were not recorded. When the output is not a terminal, both print the session's transcript and exit instead. The line at the top of the screen shows the runtime tier, the model, the permission mode, how much of the model's context window is used, and the session ID.
 
@@ -115,7 +115,7 @@ Run `zaru` with no arguments in a terminal to open a session. Type a task and pr
 
 ### Permission prompts and modes
 
-Before a tool call that needs permission, Zaru shows what the call will do (for a file write, the file and its new contents) and asks `[y/N/a · a allows this exact line for this session · esc declines]`. `y` allows the call once. `N`, Enter or Esc declines it. `a` allows the same call for the rest of the session. Before fetching a web page, Zaru shows the whole URL and also offers `h`, which allows every URL on that host for the rest of the session.
+Before a tool call that needs permission, Zaru shows what the call will do (for a file write, the file and its new contents) and asks `[y/N/a · a allows this exact line for this session · esc says no to this call · ctrl-c stops the turn]`. `y` allows the call once. `a` allows the same call for the rest of the session. `N`, Enter or Esc says no to this call: the model is told you said no, and the task goes on. Ctrl-C stops the whole task: the call does not run, no other call runs, and the session stays open for your next task. Before fetching a web page, Zaru shows the whole URL and also offers `h`, which allows every URL on that host for the rest of the session.
 
 The permission mode decides what needs asking. Set it with `tools.mode` in `~/.zaru/config.toml`, the `ZARU_TOOLS_MODE` environment variable, or `--mode` on the command line:
 

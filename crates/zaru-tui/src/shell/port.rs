@@ -756,8 +756,8 @@ impl Confirmation {
 /// field rather than a rule inside [`Shell::key`](crate::shell::Shell::key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answers {
-    /// [ADR-0011] D3's tool call: `y`, `a`, `n`, `Esc` and `Enter`, and every
-    /// other key ignored with the question standing.
+    /// [ADR-0011] D3's tool call: `y`, `a`, `n`, `Esc`, `Enter` and `Ctrl-C`,
+    /// and every other key ignored with the question standing.
     ///
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     ToolCall,
@@ -768,6 +768,10 @@ pub enum Answers {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Admission,
+    /// A project's validators, asked at the start of a turn: `y`, `n`, `Esc`
+    /// and `Enter`, **not** `a`, and every other key ignored with the
+    /// question standing, as at a tool call. Added 2026-09-28.
+    Validators,
     /// A `web.fetch`: the tool call's keys and `h`, which allows every URL on
     /// the asked host for the rest of the session. Added 2026-09-28.
     Fetch,
@@ -816,7 +820,8 @@ impl Answers {
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answered {
-    /// The user declined: `n`, `Esc` or `Enter`.
+    /// The user declined: `n`, `Esc` or `Enter`, or `Ctrl-C` where no turn is
+    /// running.
     No,
     /// The user permitted this call and said nothing about any other: `y`.
     Once,

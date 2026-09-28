@@ -48,7 +48,7 @@ use crate::process::line::CommandLine;
 use crate::tools::grants::SessionGrants;
 use crate::tools::mode::Mode;
 use crate::tools::name::{Called, ToolName};
-use crate::tools::port::{Allowlist, Answer, Confirm, DestructiveMatch, Question};
+use crate::tools::port::{Allowlist, Answer, Confirm, ConfirmFailure, DestructiveMatch, Question};
 use crate::tools::tree::{Placement, Target};
 use crate::web::url::RequestedUrl;
 use core::fmt;
@@ -766,7 +766,32 @@ impl Decision {
         let Some(question) = self.question() else {
             return Permission::Granted;
         };
-        match confirmer.map(|confirmer| confirmer.confirm(&question)) {
+        Self::permission_from(confirmer.map(|confirmer| confirmer.confirm(&question)))
+    }
+
+    /// [`Self::permit`], asking through [`Confirm::ask`] so that the program
+    /// goes on running while the person decides.
+    ///
+    /// This is what a turn calls. **If the turn is stopped while the question
+    /// stands, this future is dropped with it and nothing is decided**: the
+    /// call did not run, and it is closed in the conversation as every call
+    /// a stopped turn leaves behind is. See [`Confirm::ask`] for why a turn
+    /// cannot wait on [`Self::permit`].
+    pub async fn permit_asking(&self, confirmer: Option<&(dyn Confirm + Sync)>) -> Permission {
+        let Some(question) = self.question() else {
+            return Permission::Granted;
+        };
+        let answered = match confirmer {
+            Some(confirmer) => Some(confirmer.ask(&question).await),
+            None => None,
+        };
+        Self::permission_from(answered)
+    }
+
+    /// The one mapping from what a confirmer said to what the call may do, so
+    /// the two ways of asking cannot come to disagree.
+    fn permission_from(answered: Option<Result<Answer, ConfirmFailure>>) -> Permission {
+        match answered {
             None | Some(Err(_)) => Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
             Some(Ok(Answer::Once)) => Permission::Granted,
             Some(Ok(Answer::ForThisSession)) => Permission::GrantedForTheSession,

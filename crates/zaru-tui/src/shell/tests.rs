@@ -3620,9 +3620,9 @@ fn taking_a_secret_clears_it_so_a_second_take_is_none() {
 
 /// `Esc` and `Ctrl-C` decline, and a declined question yields nothing.
 ///
-/// **The divergence from the confirmation's key table is asserted here**, not
-/// only recorded: at a confirmation `Ctrl-C` is ignored, and at this question
-/// it declines. Both arms are checked so that changing either is visible.
+/// A secret question is never asked inside a turn, so `Ctrl-C` here has only
+/// the question to stop, and stopping it is declining it -- as at a
+/// confirmation the shell reads, since 2026-09-28.
 #[test]
 fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
     for (label, input) in [
@@ -3674,35 +3674,57 @@ fn esc_and_ctrl_c_both_decline_a_secret_and_store_nothing() {
     }
 }
 
-/// A confirmation still ignores `Ctrl-C`, which is the arm above's other half.
+/// `Ctrl-C` at a confirmation the shell reads says no, at every kind of
+/// question, and does not leave.
+///
+/// The key means *stop*. While a turn runs the host stops the turn before the
+/// key reaches this table; a question that reaches it stands where no turn is
+/// running -- the door, a question between turns -- and there the only thing
+/// to stop is the question. It was ignored until 2026-09-28, which is the arm
+/// this replaced.
 #[test]
-fn a_confirmation_still_ignores_ctrl_c() {
-    let mut shell = shell();
-    shell.ask(Confirmation::new(
-        "about to write",
-        STAGED_ANSWERS,
+fn ctrl_c_at_a_confirmation_the_shell_reads_says_no_and_does_not_leave() {
+    for answers in [
         Answers::ToolCall,
-        false,
-    ));
-    let acted = shell.key(
-        Input {
-            key: Key::Char('c'),
-            ctrl: true,
-            alt: false,
-            shift: false,
-        },
-        pane(),
-        NOW,
-        &TrieOf::new(0),
-        &StagedVocabulary,
-        &NoPaths,
-    );
-    assert_eq!(acted, Action::Idle);
-    assert!(
-        shell.asking().is_some(),
-        "ctrl-c answered a confirmation, which is not this table's rule"
-    );
-    assert_eq!(shell.answer(), None);
+        Answers::Fetch,
+        Answers::Admission,
+        Answers::Validators,
+    ] {
+        let mut shell = shell();
+        shell.ask(Confirmation::new(
+            "about to write",
+            STAGED_ANSWERS,
+            answers,
+            false,
+        ));
+        let acted = shell.key(
+            Input {
+                key: Key::Char('c'),
+                ctrl: true,
+                alt: false,
+                shift: false,
+            },
+            pane(),
+            NOW,
+            &TrieOf::new(0),
+            &StagedVocabulary,
+            &NoPaths,
+        );
+        assert_eq!(
+            acted,
+            Action::Idle,
+            "ctrl-c at a {answers:?} question left the session"
+        );
+        assert!(
+            shell.asking().is_none(),
+            "ctrl-c at a {answers:?} question the shell reads left the question standing"
+        );
+        assert_eq!(
+            shell.answer(),
+            Some(Answered::No),
+            "ctrl-c at a {answers:?} question the shell reads did not say no"
+        );
+    }
 }
 
 /// ADR-0005 D2 one layer out, at a secret question: the input row does not

@@ -456,17 +456,72 @@ pub fn gate(
     confirmer: Option<&dyn Confirm>,
     today: &str,
 ) -> Result<bool, NotApproved> {
+    let Some(standing) = standing_unapproved(approvals, directory, declared)? else {
+        return Ok(false);
+    };
+    let answered = confirmer.map(|confirmer| confirmer.confirm(&question(declared, &standing)));
+    answer_the_gate(approvals, directory, declared, &standing, answered, today)
+}
+
+/// [`gate`], asked at the start of a turn, where `Ctrl-C` stops the turn.
+///
+/// The question is asked through [`Confirm::ask`], so the program goes on
+/// running while the person reads the commands, and its answers line says
+/// what `Esc` and `Ctrl-C` do there:
+/// [`Answers::Validators`](crate::tools::prompt::Answers::Validators). A turn
+/// stopped while it stands drops this future and approves nothing.
+///
+/// # Errors
+///
+/// [`NotApproved`] when the validators may not run.
+pub async fn gate_in_a_turn(
+    approvals: &Approvals,
+    directory: &Path,
+    declared: &[Declared],
+    confirmer: Option<&(dyn Confirm + Sync)>,
+    today: &str,
+) -> Result<bool, NotApproved> {
+    let Some(standing) = standing_unapproved(approvals, directory, declared)? else {
+        return Ok(false);
+    };
+    let asked = Question {
+        answers: crate::tools::prompt::Answers::Validators,
+        ..question(declared, &standing)
+    };
+    let answered = match confirmer {
+        Some(confirmer) => Some(confirmer.ask(&asked).await),
+        None => None,
+    };
+    answer_the_gate(approvals, directory, declared, &standing, answered, today)
+}
+
+/// Where the gate stands, or `None` when this exact set is approved already.
+fn standing_unapproved(
+    approvals: &Approvals,
+    directory: &Path,
+    declared: &[Declared],
+) -> Result<Option<Standing>, NotApproved> {
     let standing = approvals
         .standing(directory, declared)
         .map_err(NotApproved::File)?;
-    if matches!(standing, Standing::Approved { .. }) {
-        return Ok(false);
-    }
+    Ok((!matches!(standing, Standing::Approved { .. })).then_some(standing))
+}
+
+/// What the gate does with what the person answered: the one mapping both
+/// ways of asking share.
+fn answer_the_gate(
+    approvals: &Approvals,
+    directory: &Path,
+    declared: &[Declared],
+    standing: &Standing,
+    answered: Option<Result<Answer, crate::tools::port::ConfirmFailure>>,
+    today: &str,
+) -> Result<bool, NotApproved> {
     let changed = matches!(standing, Standing::Changed { .. });
-    let Some(confirmer) = confirmer else {
+    let Some(answered) = answered else {
         return Err(NotApproved::NobodyToAsk { changed });
     };
-    match confirmer.confirm(&question(declared, &standing)) {
+    match answered {
         Err(_) => Err(NotApproved::NobodyToAsk { changed }),
         // `h` is not offered at this question, so it cannot arrive; if it
         // did, it is not a yes.

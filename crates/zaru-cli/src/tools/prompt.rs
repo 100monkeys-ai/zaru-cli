@@ -80,21 +80,30 @@ use std::sync::Mutex;
 /// confirmation since 2026-09-04 without the line ever saying so — which is
 /// why the look-and-feel survey recorded that "`Esc` is not offered" of a
 /// build where it worked. **A key that answers and is not named is not
-/// offered**, whatever the code does. `Ctrl-C` is deliberately absent because
-/// it is deliberately *ignored* at a confirmation, which is the divergence
-/// `keys-in-session` recorded against the masked question's table.
+/// offered**, whatever the code does.
 ///
 /// `a` is spelled out rather than left to be guessed. A one-letter answer
 /// whose meaning a person has to infer is how a session-long grant gets given
 /// by accident, and this is the one answer here that outlives the call.
 ///
-/// **Drafted under a delegated coordinator ruling of 2026-09-15 00:13:45Z,
-/// open to Jeshua's veto**, and recorded on [ADR-0011's amendments volume 3].
+/// # It says what `Esc` and `Ctrl-C` do, since 2026-09-28
+///
+/// `Esc` says no to this one call and the turn goes on, with the model told
+/// the person said no. `Ctrl-C` stops the whole turn: this call does not run,
+/// no other call runs, and the session stays open. Until then `Ctrl-C` was
+/// ignored at this question, so a person who wanted to stop had to say no to
+/// every call the model asked for next. `n`, `N` and `Enter` still say no.
+///
+/// **Drafted under delegated coordinator rulings of 2026-09-15 00:13:45Z and
+/// 2026-09-28, open to Jeshua's veto**, and recorded on [ADR-0011's amendments
+/// volume 3].
 ///
 /// [ADR-0011's amendments volume 3]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface-updates-3
-pub const SUFFIX: &str = " [y/N/a · a allows this exact line for this session · esc declines] ";
+pub const SUFFIX: &str = " [y/N/a · a allows this exact line for this session · esc says no to \
+                          this call · ctrl-c stops the turn] ";
 
-/// The answers [ADR-0015] D4's admission takes.
+/// The answers [ADR-0015] D4's admission takes, and the validators question
+/// outside a turn.
 ///
 /// **`a` is absent, and that is the whole difference.** `a` allows one exact
 /// line for the rest of the session; an admission is recorded on disk and
@@ -103,12 +112,25 @@ pub const SUFFIX: &str = " [y/N/a · a allows this exact line for this session �
 /// for the reason it is the default there: D4's gate is the answer to the
 /// supply-chain problem, and a gate whose default is yes is not one.
 ///
+/// **No turn is running when this is asked**, so there is nothing for
+/// `Ctrl-C` to stop but the question: here it says no, as `Esc` does.
+///
 /// **Drafted under a delegated coordinator ruling of 2026-09-15, open to
 /// Jeshua's veto**, and recorded on [ADR-0015's amendments volume 2].
 ///
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 /// [ADR-0015's amendments volume 2]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility-updates-2
-pub const ADMISSION_SUFFIX: &str = " [y/N · esc declines] ";
+pub const ADMISSION_SUFFIX: &str = " [y/N · esc or ctrl-c says no] ";
+
+/// What follows the question about a project's validators, asked at the start
+/// of a turn.
+///
+/// `y` or `N`, as at the door: an approval is kept on disk, so there is no
+/// "for this session" answer. `Esc` says no, and then the task does not run,
+/// because validators that were not approved cannot check its work. `Ctrl-C`
+/// stops the turn. Added 2026-09-28 under a coordinator ruling open to
+/// Jeshua's veto.
+pub const VALIDATORS_SUFFIX: &str = " [y/N · esc says no · ctrl-c stops the turn] ";
 
 /// What follows a `web.fetch` question.
 ///
@@ -117,7 +139,8 @@ pub const ADMISSION_SUFFIX: &str = " [y/N · esc declines] ";
 /// asked about each page of it. Added 2026-09-28 with `web.fetch` asking in
 /// `ask` mode, under a coordinator ruling open to Jeshua's veto.
 pub const FETCH_SUFFIX: &str = " [y/N/a/h · a allows this exact URL for this session · h allows \
-                                every URL on this host for this session · esc declines] ";
+                                every URL on this host for this session · esc says no to this \
+                                call · ctrl-c stops the turn] ";
 
 /// Which answers a question takes, and therefore which line it shows.
 ///
@@ -147,9 +170,13 @@ pub enum Answers {
     /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
     ToolCall,
     /// [ADR-0015] D4's admission: `y`, `n`, `Esc` and `Enter`, and **not** `a`.
+    /// Also the validators question when no turn is running.
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Admission,
+    /// A project's validators, asked at the start of a turn: `y`, `n`, `Esc`
+    /// and `Enter`, and not `a`, and `Ctrl-C` stops the turn.
+    Validators,
     /// A `web.fetch`: the tool call's answers, and `h` for every URL on the
     /// asked host for the rest of the session.
     Fetch,
@@ -162,6 +189,7 @@ impl Answers {
         match self {
             Self::ToolCall => SUFFIX,
             Self::Admission => ADMISSION_SUFFIX,
+            Self::Validators => VALIDATORS_SUFFIX,
             Self::Fetch => FETCH_SUFFIX,
         }
     }

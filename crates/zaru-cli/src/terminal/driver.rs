@@ -174,6 +174,7 @@ const fn answers_for_the_shell(answers: crate::tools::prompt::Answers) -> zaru_t
     match answers {
         crate::tools::prompt::Answers::ToolCall => zaru_tui::shell::Answers::ToolCall,
         crate::tools::prompt::Answers::Admission => zaru_tui::shell::Answers::Admission,
+        crate::tools::prompt::Answers::Validators => zaru_tui::shell::Answers::Validators,
         crate::tools::prompt::Answers::Fetch => zaru_tui::shell::Answers::Fetch,
     }
 }
@@ -408,6 +409,13 @@ pub struct Pane<'a, S: Surface + Send> {
     ///
     /// [ADR-0028]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0028-execution-narrative
     said_generating: bool,
+    /// The question waiting for its answer, if one is.
+    ///
+    /// [`PaneConfirm`]'s asking future leaves its waker here while the
+    /// question stands, and the race that reads the terminal wakes it after
+    /// each key it hands to the question. Nothing else is shared between the
+    /// two, and neither holds the lock while it waits.
+    answer_awaited: Option<core::task::Waker>,
 }
 
 impl<S: Surface + Send> core::fmt::Debug for Pane<'_, S> {
@@ -438,6 +446,7 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
             meter_started: None,
             generating_since: None,
             said_generating: false,
+            answer_awaited: None,
         }
     }
 
@@ -598,6 +607,12 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
 impl<S: Surface + Send> Drop for Pane<'_, S> {
     fn drop(&mut self) {
         self.shell.clear_streaming();
+        // **A question the turn was stopped at goes with the turn.** A turn
+        // stopped while a question stood never answered it, and a question
+        // left standing would take every key the composer should get next.
+        // Here for the streamed line's reason: the end of this borrow is the
+        // end of the turn, on every path, so nothing has to remember it.
+        self.shell.withdraw_question();
     }
 }
 
@@ -814,11 +829,26 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
 /// the same `Question`". Nothing here reads a terminal's standard input and
 /// nothing here composes a sentence.
 ///
-/// **`confirm` is synchronous, and that is what makes this work with no
-/// channel and no second thread.** The whole turn is polled on one thread by
-/// [`crate::compose::turn`]'s current-thread runtime, so this paints the
-/// question, pumps the terminal into [`Shell::key`] until the shell has an
-/// answer, and returns it — inside the call the executor is waiting on.
+/// # In a turn it asks, and the turn's race reads the keys
+///
+/// A turn asks through [`Confirm::ask`](crate::tools::port::Confirm::ask).
+/// That stands the question on the pane and waits for the shell to hold an
+/// answer, **without holding the thread**: [`race`] keeps reading the
+/// terminal and hands each key to the standing question, so `Ctrl-C` stops
+/// the turn from here exactly as it does while the model is thinking, and the
+/// signal listener and the watch for a terminal that has gone keep running.
+/// Until 2026-09-28 the question was answered inside `confirm`, which read
+/// the keys itself and slept between them on the turn's only thread; `Ctrl-C`
+/// was ignored and a closed terminal left the process running at a full
+/// core.
+///
+/// # Between turns it confirms, and reads the keys itself
+///
+/// [`Confirm::confirm`](crate::tools::port::Confirm::confirm) is kept for the
+/// one caller that cannot await: [ADR-0007] D8's gate inside the credential
+/// store, reached through this type's second port. It paints the question,
+/// pumps the terminal into [`Shell::key`] until the shell has an answer, and
+/// returns it. No turn is running then, so `Ctrl-C` there declines.
 ///
 /// # Running out of keys is not an answer
 ///
@@ -827,6 +857,7 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
 /// answer would be the silent default D3 forbids, and answering `false` would
 /// put "the user declined" in the transcript of a question nobody saw.
 ///
+/// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub struct PaneConfirm<'m, 'a, S: Surface + Send, P: Pace + Sync> {
     pane: &'m std::sync::Mutex<Pane<'a, S>>,
@@ -851,7 +882,64 @@ impl<'m, 'a, S: Surface + Send, P: Pace + Sync> PaneConfirm<'m, 'a, S, P> {
     }
 }
 
+/// The one mapping from the shell's answer to the permission port's.
+///
+/// `zaru-tui` mirrors this crate's answer without naming its type -- the
+/// boundary that keeps the shell independent of the permission model -- so the
+/// translation lives here, is exhaustive, and cannot silently gain a fifth
+/// meaning.
+const fn answer_of(answered: zaru_tui::shell::Answered) -> crate::tools::port::Answer {
+    match answered {
+        zaru_tui::shell::Answered::No => crate::tools::port::Answer::No,
+        zaru_tui::shell::Answered::Once => crate::tools::port::Answer::Once,
+        zaru_tui::shell::Answered::ForThisSession => crate::tools::port::Answer::ForThisSession,
+        zaru_tui::shell::Answered::ForThisHost => crate::tools::port::Answer::ForThisHost,
+    }
+}
+
 impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConfirm<'_, '_, S, P> {
+    /// Stand the question and wait for the shell to hold an answer, leaving
+    /// the thread to [`race`], which reads the keys.
+    ///
+    /// The lock is taken for one poll at a time and never held while this
+    /// waits, so the race, the sink and the narrator can all reach the pane
+    /// while the question stands. If the turn is stopped meanwhile, this
+    /// future is dropped with it and the question is taken off the pane by
+    /// [`Pane`]'s owner; nothing is answered.
+    fn ask<'q>(&'q self, question: &'q Question) -> crate::tools::port::Asking<'q> {
+        Box::pin(async move {
+            {
+                let mut pane = self.pane.try_lock().map_err(|_| {
+                    crate::tools::port::ConfirmFailure::new(
+                        "the pane was already in use when the question was raised".to_owned(),
+                    )
+                })?;
+                pane.shell.ask(question_for_the_shell(question));
+                pane.paint();
+            }
+            core::future::poll_fn(|context| {
+                let Ok(mut pane) = self.pane.try_lock() else {
+                    // Only the race's own branches take this lock, and they
+                    // do not hold it across a suspension, so this is the one
+                    // poll in which one of them is mid-paint. Ask again.
+                    context.waker().wake_by_ref();
+                    return core::task::Poll::Pending;
+                };
+                match pane.shell.answer() {
+                    Some(answered) => {
+                        pane.answer_awaited = None;
+                        core::task::Poll::Ready(Ok(answer_of(answered)))
+                    }
+                    None => {
+                        pane.answer_awaited = Some(context.waker().clone());
+                        core::task::Poll::Pending
+                    }
+                }
+            })
+            .await
+        })
+    }
+
     fn confirm(
         &self,
         question: &Question,
@@ -870,21 +958,7 @@ impl<S: Surface + Send, P: Pace + Sync> crate::tools::port::Confirm for PaneConf
         let mut now = Duration::ZERO;
         loop {
             if let Some(answer) = pane.shell.answer() {
-                // The two enums are one mapping in one place. `zaru-tui`
-                // mirrors this crate's three-valued answer without naming its
-                // type -- the boundary that keeps the shell independent of the
-                // permission model -- so the translation lives here, is
-                // exhaustive, and cannot silently gain a fourth meaning.
-                return Ok(match answer {
-                    zaru_tui::shell::Answered::No => crate::tools::port::Answer::No,
-                    zaru_tui::shell::Answered::Once => crate::tools::port::Answer::Once,
-                    zaru_tui::shell::Answered::ForThisSession => {
-                        crate::tools::port::Answer::ForThisSession
-                    }
-                    zaru_tui::shell::Answered::ForThisHost => {
-                        crate::tools::port::Answer::ForThisHost
-                    }
-                });
+                return Ok(answer_of(answer));
             }
             let input = match self.source.try_next() {
                 Taken::Struck(Struck::Key(input)) => input,
@@ -1826,6 +1900,27 @@ fn read_while_busy<S: Surface + Send>(
     let Ok(mut pane) = pane.try_lock() else {
         return;
     };
+    // **A standing question takes what arrives**, through the shell's own
+    // table, and the question's asker is woken to read the answer. `Ctrl-C`
+    // never reaches here: `race` read it first and stopped the turn. A wheel
+    // notch is not an answer and moving the window under a question is a
+    // change nobody has ruled, so it is absorbed, as it was when the question
+    // read its own keys.
+    if pane.shell.asking().is_some() {
+        if !matches!(struck, Struck::Wheel(_)) {
+            let region = pane
+                .surface
+                .area()
+                .map_or_else(|_| Rect::new(0, 0, 0, 0), |area| Shell::regions(area)[1]);
+            pane.shell
+                .struck(struck, region, now, &NoEntries, &NoVocabulary, &NoPaths);
+        }
+        pane.paint();
+        if let Some(asker) = pane.answer_awaited.take() {
+            asker.wake();
+        }
+        return;
+    }
     // The same re-ask the outer loop makes, so a corpus that lands while the
     // model is thinking reaches the strip the person is typing into rather
     // than waiting for the turn to end. Above the match rather than inside one
