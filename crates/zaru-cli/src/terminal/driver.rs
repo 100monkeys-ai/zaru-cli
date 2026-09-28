@@ -3996,9 +3996,22 @@ impl Restore for Crossterm {
 /// The disarm comes **before** the alternate screen is left, on both paths.
 /// `ratatui`'s own panic hook calls `ratatui::restore` and knows nothing about
 /// bracketed paste or the mouse, so this is the only thing that disarms them.
+///
+/// # A terminal that has gone away is given back to nobody, quietly
+///
+/// `ratatui::restore` reports its own failure with `eprintln!`, and
+/// `eprintln!` **panics** when standard error cannot be written — which is
+/// exactly the case when standard error is the terminal that has gone away.
+/// Measured on 2026-09-28: a session whose terminal hung up exited `134`, a
+/// panic while panicking, instead of the hang-up's `129`. So the failure is
+/// written with a write whose own failure is dropped: said wherever there is
+/// still somewhere to say it, and never a reason to abort.
 pub(crate) fn give_back() {
+    use std::io::Write as _;
     disarm(&mut std::io::stdout());
-    ratatui::restore();
+    if let Err(failure) = ratatui::try_restore() {
+        let _ = writeln!(std::io::stderr(), "Failed to restore terminal: {failure}");
+    }
 }
 
 impl Surface for Crossterm {

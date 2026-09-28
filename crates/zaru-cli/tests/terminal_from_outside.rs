@@ -70,7 +70,7 @@ struct InATerminal {
     child: owned::Owned,
     seen: Arc<Mutex<Vec<u8>>>,
     _home: Scratch,
-    _work: Scratch,
+    work: Scratch,
 }
 
 /// What the wrapping shell prints once `zaru` has ended, so the check can read
@@ -153,7 +153,7 @@ impl InATerminal {
             child,
             seen,
             _home: home,
-            _work: work,
+            work,
         }
     }
 
@@ -566,6 +566,62 @@ fn a_session_the_check_is_done_with_leaves_no_process_behind() {
              with it, under a shell that ignores SIGHUP as everything under `nohup` does"
         );
     }
+}
+
+/// **A session whose terminal goes away ends, as a hang-up ends it, even when
+/// no hang-up arrives.**
+///
+/// The terminal went away and nothing told `zaru`: the shell leading its
+/// session ignored `SIGHUP`, as everything under `nohup` does, so it did not
+/// end and the kernel sent the foreground nothing. Measured on 2026-09-28
+/// before this check: eight such `zaru` processes lived for five hours, each
+/// with standard streams on `/dev/pts/N (deleted)`, and each with its terminal
+/// reader spinning a core — crossterm's `poll` reads a hung-up terminal's
+/// end of file as "nothing yet" and loops inside itself, so the reader never
+/// looks at its stop flag again.
+///
+/// So the session ends when its terminal is gone, whoever says so: the
+/// terminal is given back — to nobody, harmlessly — and the process exits
+/// `129`, the status a hang-up already gives it.
+///
+/// **The mutant:** the session not watching for its terminal going away,
+/// which prints that `zaru` is still running.
+#[test]
+fn a_session_whose_terminal_goes_away_ends_as_a_hang_up_ends_it() {
+    let mut session = InATerminal::open_ignoring_hangups();
+    let pid: u32 = session.pid().parse().expect("zaru's pid is a number");
+    session.until(b"\x1b[?25h", "the session's first frame");
+    let zaru = owned::Identity::of(pid).expect("zaru is running once it has painted a frame");
+
+    // `script` alone, so the terminal's other end closes and nothing else is
+    // touched: the shell and `zaru` are left to find out for themselves.
+    session.child.kill_the_child_alone();
+
+    if let Err(running) = until_gone(&[("zaru", zaru)]) {
+        panic!(
+            "{running} still running {GONE_WITHIN:?} after its terminal went away with no \
+             SIGHUP to tell it: a harness that outlives its terminal is a harness nobody can \
+             close, and it spins a core while it waits"
+        );
+    }
+    let status = session.work.0.join(STATUS_FILE);
+    let deadline = Instant::now() + GONE_WITHIN;
+    let ended = loop {
+        let written = std::fs::read_to_string(&status).unwrap_or_default();
+        if !written.trim().is_empty() {
+            break written.trim().to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "zaru ended and its shell never wrote the status it ended with to {}",
+            status.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        ended, "129",
+        "a session whose terminal went away should end with 129, the status a hang-up gives it"
+    );
 }
 
 /// What the child check below is told, so that it holds a session open only

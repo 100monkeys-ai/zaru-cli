@@ -457,6 +457,13 @@ impl Drop for Reader {
 
 /// The thread body: poll, read, send, until the flag is set.
 ///
+/// **On a terminal that has gone away this thread never ends.** crossterm
+/// 0.28's `poll` reads a hung-up terminal's end of file as "nothing yet" and
+/// loops inside itself, so the flag is never looked at again and
+/// [`Reader`]'s join would wait for ever. The session does not wait: the
+/// signal listener in `terminal::open` sees the terminal gone within a beat
+/// and exits the process, which ends this thread with it.
+///
 /// **Nothing in this workspace's checks runs this function**, for the reason
 /// the module documentation gives — it is `poll` and `read` against a terminal
 /// a check does not have. Everything around it is checked: the channel, the
