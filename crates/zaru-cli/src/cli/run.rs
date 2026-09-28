@@ -186,7 +186,22 @@ impl Run<'_> {
                 self.configured(
                     &line.overrides,
                     |resolution| match ModelTable::from_configuration(resolution) {
-                        Ok(table) => Outcome::printed(render::models(&table)),
+                        Ok(table) => {
+                            let mut lines = render::models(&table);
+                            // The window a session would use, and where it
+                            // came from. Only where a provider can be
+                            // prepared: with none, no window is used.
+                            if let Ok(prepared) = crate::compose::turn::prepare(
+                                self.home,
+                                self.variables,
+                                self.version,
+                                self.report_at,
+                                resolution,
+                            ) {
+                                lines.push(render::window(prepared.window()));
+                            }
+                            Outcome::printed(lines)
+                        }
                         Err(refusal) => Outcome::failed(Classified::from(refusal)),
                     },
                 )

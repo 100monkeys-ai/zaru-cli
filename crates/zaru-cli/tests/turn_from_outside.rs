@@ -768,6 +768,11 @@ fn adr_0016_d5s_three_is_a_provider_that_could_not_be_reached() {
 ///
 /// It is not a provider: it answers nothing a client could use. It exists so
 /// a check can read which model a request named, on the wire, for each kind.
+///
+/// **It takes up to four requests**, one connection each, and answers every
+/// one with 500. Since 2026-09-28 a session asks the provider for the
+/// model's window before its first exchange, so the chat request is not the
+/// first one to arrive; [`Recorder::request`] returns the first chat request.
 struct Recorder {
     origin: String,
     seen: std::sync::mpsc::Receiver<String>,
@@ -784,44 +789,52 @@ impl Recorder {
         );
         let (tell, seen) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            while let Ok(got) = stream.read(&mut buffer) {
-                if got == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..got]);
-                let text = String::from_utf8_lossy(&request).into_owned();
-                if let Some(end) = text.find("\r\n\r\n") {
-                    let length = text[..end]
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().ok())?
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= end + 4 + length {
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 8192];
+                while let Ok(got) = stream.read(&mut buffer) {
+                    if got == 0 {
                         break;
                     }
+                    request.extend_from_slice(&buffer[..got]);
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
                 }
-            }
-            let _ = stream.write_all(
+                let _ = stream.write_all(
                 b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             );
-            let _ = tell.send(String::from_utf8_lossy(&request).into_owned());
+                let _ = tell.send(String::from_utf8_lossy(&request).into_owned());
+            }
         });
         Self { origin, seen }
     }
 
+    /// The first chat request: the one that carries the conversation, not
+    /// the question about the model's window.
     fn request(&self) -> String {
-        self.seen
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .unwrap_or_default()
+        while let Ok(request) = self.seen.recv_timeout(std::time::Duration::from_secs(30)) {
+            let line = request.lines().next().unwrap_or_default();
+            if line.contains("/chat") || line.contains(":streamGenerateContent") {
+                return request;
+            }
+        }
+        String::new()
     }
 }
 
@@ -880,6 +893,46 @@ fn model_takes_an_alias_or_an_identifier_and_sends_the_model_for_every_kind() {
                 "--model {asked} sent {not_expected} to {kind}: {line}"
             );
         }
+    }
+}
+
+/// `zaru models` says where the context window comes from: the provider, the
+/// reader's configuration, or this build's default.
+///
+/// The `ollama` server here is a port nothing listens on, so the provider
+/// is asked and does not answer; the window is then the default, or the
+/// reader's setting where there is one, and the line says which.
+///
+/// Red on `254e2b6`, where `zaru models` printed the aliases and no window:
+/// "zaru models does not say where the window comes from".
+#[test]
+fn models_says_where_the_context_window_comes_from() {
+    for (setting, expected) in [
+        ("", "context window: 4096 tokens, this build's default"),
+        (
+            "context_tokens = 8000\n",
+            "context window: 8000 tokens, from your configuration",
+        ),
+    ] {
+        let home = Home::new("models-window");
+        std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+        std::fs::write(
+            home.path().join(".zaru").join("config.toml"),
+            format!(
+                "[model]\ndefault = \"scripted-model\"\n\n[provider.default]\nkind = \"ollama\"\n\n\
+                 [provider.ollama]\nendpoint = \"{CLOSED_LOOPBACK}\"\n{setting}"
+            ),
+        )
+        .expect("a scratch user file");
+        let ran = zaru(&home, &[], &["models"]);
+        assert!(
+            ran.stdout.contains(expected)
+                && ran
+                    .stdout
+                    .contains("(the provider was asked and did not say)"),
+            "zaru models does not say where the window comes from; wanted {expected:?}: {}",
+            ran.everything()
+        );
     }
 }
 

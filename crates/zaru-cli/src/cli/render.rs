@@ -163,6 +163,14 @@ pub fn models(table: &ModelTable) -> Vec<String> {
         .collect()
 }
 
+/// The context window a session would use, and which of the three places
+/// it came from: the provider, the reader's configuration, or this build's
+/// default. See [`crate::providers::window`].
+#[must_use]
+pub fn window(window: crate::providers::window::Window) -> String {
+    format!("  context window: {window}")
+}
+
 /// Every session on this machine, as lines.
 ///
 /// The id and nothing else. [ADR-0010] D1 makes a ULID sort lexically by

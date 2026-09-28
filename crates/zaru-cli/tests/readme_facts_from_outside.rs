@@ -318,6 +318,37 @@ fn the_lines_fs_read_returns_at_a_time_are_this_builds() {
     );
 }
 
+/// The ratio and the shares the README states are the ones the estimate uses.
+#[test]
+fn the_estimates_starting_ratio_and_shares_are_this_builds() {
+    let text = readme();
+    let starting = zaru_cli::providers::capacity::STARTING_BYTES_PER_TOKEN;
+    let sentence = sentence_with(&text, "bytes a token and, after each answer");
+    assert!(
+        sentence.contains(&format!("It starts at {starting} bytes a token")),
+        "the README states a starting ratio other than the {starting} bytes a token the \
+         estimate starts at: {sentence:?}"
+    );
+    let eighths = zaru_cli::providers::capacity::ANSWER_SHARE_DIVISOR;
+    assert_eq!(
+        eighths, 8,
+        "the README says the last eighth is kept for the answer"
+    );
+    let window = zaru_cli::providers::capacity::answer_room(4_096);
+    assert_eq!(window, 512);
+    let line = line_with(&text, "is kept for the model's answer");
+    assert!(
+        line.contains("At three quarters of the window") && line.contains("The last eighth"),
+        "the README does not state the two shares: {line:?}"
+    );
+    let limits = zaru_cli::cli::layers::context_limits(4_096);
+    assert_eq!(
+        limits.threshold().get(),
+        3_072,
+        "the README says compaction starts at three quarters of the window"
+    );
+}
+
 /// The mode table lists exactly the permission modes, and marks the default.
 #[test]
 fn the_mode_table_is_this_builds_modes() {

@@ -57,7 +57,7 @@ kind = "ollama"
 
 Zaru connects to `http://localhost:11434`. Set `provider.ollama.endpoint` if your server is elsewhere.
 
-**An OpenAI-compatible server.** Give the base URL (Zaru adds `/chat/completions` to it) and the model's context window in tokens:
+**An OpenAI-compatible server.** Give the base URL (Zaru adds `/chat/completions` to it). If the server's `/models` list does not give the model's context window, give it in tokens too:
 
 ```toml
 [model]
@@ -146,11 +146,15 @@ Zaru reads settings from these places. A later one overrides an earlier one:
 | `model.default` | The model to use. `--model` sets it for one run. |
 | `provider.default.kind` | `gemini`, `ollama` or `openai-compatible`. |
 | `provider.ollama.endpoint`, `provider.openai_compatible.endpoint` | Where the model server listens. |
-| `provider.openai_compatible.context_tokens` | The OpenAI-compatible model's context window, in tokens. Required for that kind. |
+| `provider.<kind>.context_tokens` | The model's context window, in tokens. See [Context window](#context-window). |
 | `tools.mode`, `tools.allowlist` | See [Permission prompts and modes](#permission-prompts-and-modes). |
 | `runtime.max_iterations` | How many attempts the validator loop makes. |
 | `runtime.max_tool_exchanges` | A limit on model replies per task. Unlimited if unset. |
 | `terminal.mouse` | `false` gives mouse selection back to the terminal. |
+
+### Context window
+
+When a session opens, Zaru asks the provider how large the model's context window is: Gemini's model description, Ollama's `show`, or the `/models` list of an OpenAI-compatible server. If the provider does not say, Zaru uses `provider.<kind>.context_tokens` from your configuration, and if that is not set, its own default: 1,048,576 for Gemini and 4,096 for Ollama. An OpenAI-compatible server has no default, so if it does not say, you must set the key. Your setting can lower what the provider says and never raises it. For Ollama the model's own figure only lowers the window, because Ollama serves the window Zaru asks for (`num_ctx`), and asking for the model's full length can take gigabytes of memory; set `provider.ollama.context_tokens` to use more. `zaru models` shows the window and which of the three it came from.
 
 ### Validators and the iteration loop
 
@@ -180,7 +184,7 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 | Command | What it does |
 | --- | --- |
 | `zaru runtime` | Show the runtime tier and what the other tiers would change. |
-| `zaru models` | Show each model alias (`default`, `fast`, `smart`, `cheap`, `local`) and the model it resolves to. |
+| `zaru models` | Show each model alias (`default`, `fast`, `smart`, `cheap`, `local`) and the model it resolves to, and the context window a session would use and where it comes from. |
 | `zaru config explain <key>` | Show one setting's value at every level, marking the one in effect. |
 | `zaru init` | Write an example `./zaru.toml`, if there is none. |
 | `zaru providers keys` | List the provider keys stored on this machine. |
