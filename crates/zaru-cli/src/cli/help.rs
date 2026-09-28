@@ -130,6 +130,16 @@ pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static s
         // and the command's own answer describes the build.
         Namespace::Inbox => &[("inbox", "print the deposits waiting to be read")],
         Namespace::Learned => &[("learned", "print what this session wrote to craft memory")],
+        Namespace::Validators => &[
+            (
+                "validators approve",
+                "show the commands this project's zaru.toml declares and ask to approve them",
+            ),
+            (
+                "validators list",
+                "print every project whose validators are approved, and their commands",
+            ),
+        ],
         Namespace::Stack | Namespace::Memory => &[],
     }
 }

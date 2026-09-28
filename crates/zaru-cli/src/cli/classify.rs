@@ -779,6 +779,73 @@ impl<'a> Surface<'a> {
         )
     }
 
+    /// A project's validators were not approved, so the task did not run.
+    ///
+    /// User-correctable: the person approves them, or does not.
+    #[must_use]
+    pub fn validators_not_approved(
+        refusal: &crate::validators::approval::NotApproved,
+    ) -> Classified {
+        use crate::validators::approval::{APPROVE_COMMAND, NotApproved};
+        let approve = || {
+            run(
+                "to see the commands and approve them, run this in the project's directory:",
+                APPROVE_COMMAND,
+            )
+        };
+        match refusal {
+            NotApproved::NobodyToAsk { changed: false } => Classified::UserCorrectable {
+                statement: Statement::sanitised(
+                    "this project's zaru.toml declares validators, which are commands Zaru runs \
+                     on your machine, and you have not approved them. There was no terminal to \
+                     ask you on, so the task did not run"
+                        .to_owned(),
+                ),
+                remedy: approve(),
+            },
+            NotApproved::NobodyToAsk { changed: true } => Classified::UserCorrectable {
+                statement: Statement::sanitised(
+                    "the validators in this project's zaru.toml changed since you approved them. \
+                     There was no terminal to ask you on, so the task did not run"
+                        .to_owned(),
+                ),
+                remedy: approve(),
+            },
+            NotApproved::Declined => Classified::UserCorrectable {
+                statement: Statement::sanitised(
+                    "you did not approve the validators in this project's zaru.toml, so the task \
+                     did not run"
+                        .to_owned(),
+                ),
+                remedy: approve(),
+            },
+            NotApproved::File(failure) => correctable(
+                failure,
+                act(format!(
+                    "fix or remove {} and approve the validators again; removing it forgets \
+                     every approval",
+                    crate::validators::approval::APPROVALS_FILE
+                )),
+            ),
+        }
+    }
+
+    /// `zaru validators approve` was run where it cannot ask.
+    #[must_use]
+    pub fn approval_needs_a_terminal() -> Classified {
+        Classified::UserCorrectable {
+            statement: Statement::sanitised(
+                "`zaru validators approve` asks you a question, and standard input is not a \
+                 terminal, so nothing was approved"
+                    .to_owned(),
+            ),
+            remedy: act(
+                "run `zaru validators approve` in a terminal, in the project's directory"
+                    .to_owned(),
+            ),
+        }
+    }
+
     /// A session id that is not a ULID.
     #[must_use]
     pub fn session_id(&self, refusal: &SessionIdRefused) -> Classified {

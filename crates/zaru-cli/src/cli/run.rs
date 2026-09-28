@@ -203,6 +203,8 @@ impl Run<'_> {
                 Outcome::printed(vec![crate::compose::tips::NOTHING_LEARNED.to_owned()])
             }
             Request::Init => self.init(),
+            Request::ValidatorsApprove => self.validators_approve(),
+            Request::ValidatorsList => self.validators_list(),
             Request::SessionsList => self.sessions_list(),
             Request::SessionsRemove { id } => self.sessions_remove(id),
             Request::Resume { id } => self.resume(id),
@@ -242,6 +244,137 @@ impl Run<'_> {
         match crate::manifest::init::write(&file) {
             Ok(path) => Outcome::printed(render::initialised(&path)),
             Err(refusal) => Outcome::failed(Surface::init(&refusal)),
+        }
+    }
+
+    /// `zaru validators approve`: show this directory's validators and ask.
+    ///
+    /// The question is put on standard input and standard output, and only
+    /// when standard input is a terminal. A pipe is refused rather than read,
+    /// because an answer nobody typed is not an approval.
+    fn validators_approve(&self) -> Outcome {
+        self.validators_approve_with(
+            crate::tools::prompt::Prompt::from_process()
+                .as_ref()
+                .map(|prompt| prompt as &dyn crate::tools::Confirm),
+        )
+    }
+
+    /// [`Self::validators_approve`], with the question put through
+    /// `confirmer`, so a check can answer it.
+    pub(crate) fn validators_approve_with(
+        &self,
+        confirmer: Option<&dyn crate::tools::Confirm>,
+    ) -> Outcome {
+        use crate::validators::approval::{self, Approvals, NotApproved, Standing};
+        let surface = Surface::new(self.version, self.report_at);
+        let root = match CredentialStore::root_in(self.home) {
+            Ok(root) => root,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        let here = match crate::tools::WorkingDirectory::of_this_process() {
+            Ok(here) => here,
+            Err(failure) => return Outcome::failed(Surface::working_directory(&failure)),
+        };
+        let file =
+            crate::manifest::ManifestFile::in_directory(here.clone(), layers::file_ceiling());
+        let declared = match file.parse() {
+            Ok(manifest) => manifest.map(|manifest| manifest.validators().to_vec()),
+            Err(refusal) => return Outcome::failed(Surface::manifest(&refusal)),
+        }
+        .unwrap_or_default();
+        if declared.is_empty() {
+            return Outcome::printed(vec![
+                "This directory has no zaru.toml that declares validators, so there is nothing \
+                 to approve."
+                    .to_owned(),
+            ]);
+        }
+        // The same checks a task makes on the file, so nothing is approved
+        // that a task would then refuse.
+        if let Err(refusal) = zaru_core::iteration::validator::Plan::from_declared(declared.clone())
+        {
+            return Outcome::failed(Surface::validator_plan(&refusal));
+        }
+        let approvals = Approvals::under(&root);
+        match approvals.standing(here.root(), &declared) {
+            Ok(Standing::Approved { on }) => {
+                let mut lines = vec![format!(
+                    "The validators in this project's zaru.toml were approved on {on}:"
+                )];
+                lines.extend(approval::shown(&declared).iter().map(approval::Shown::row));
+                return Outcome::printed(lines);
+            }
+            Ok(Standing::NeverApproved | Standing::Changed { .. }) => {}
+            Err(failure) => {
+                return Outcome::failed(Surface::validators_not_approved(&NotApproved::File(
+                    failure,
+                )));
+            }
+        }
+        let Some(confirmer) = confirmer else {
+            let mut lines = vec!["This project's zaru.toml declares these validators:".to_owned()];
+            lines.extend(approval::shown(&declared).iter().map(approval::Shown::row));
+            return Outcome {
+                lines,
+                exit: Exit::Failed(Surface::approval_needs_a_terminal()),
+            };
+        };
+        if let Err(failure) = crate::config::home::ensure(&root) {
+            let (path, source) = failure.into_parts();
+            return Outcome::failed(Surface::validators_not_approved(&NotApproved::File(
+                approval::ApprovalError::Io {
+                    action: "create the directory for the approved validators",
+                    path,
+                    source,
+                },
+            )));
+        }
+        match approval::gate(
+            &approvals,
+            here.root(),
+            &declared,
+            Some(confirmer),
+            &crate::commands::date::today(),
+        ) {
+            Ok(_) => Outcome::printed(vec![
+                "Approved. Zaru will run these commands in this project until its zaru.toml \
+                 changes them."
+                    .to_owned(),
+            ]),
+            Err(NotApproved::Declined) => {
+                Outcome::printed(vec!["Nothing was approved.".to_owned()])
+            }
+            Err(NotApproved::NobodyToAsk { .. }) => {
+                Outcome::failed(Surface::approval_needs_a_terminal())
+            }
+            Err(refusal @ NotApproved::File(_)) => {
+                Outcome::failed(Surface::validators_not_approved(&refusal))
+            }
+        }
+    }
+
+    /// `zaru validators list`: every project whose validators are approved.
+    fn validators_list(&self) -> Outcome {
+        use crate::validators::approval::{Approvals, NotApproved, listing};
+        let surface = Surface::new(self.version, self.report_at);
+        let root = match CredentialStore::root_in(self.home) {
+            Ok(root) => root,
+            Err(failure) => {
+                return Outcome::failed(
+                    surface.credential_store(&failure, SessionEvidence::NoSessionExists),
+                );
+            }
+        };
+        match Approvals::under(&root).latest() {
+            Ok(latest) => Outcome::printed(listing(&latest)),
+            Err(failure) => Outcome::failed(Surface::validators_not_approved(&NotApproved::File(
+                failure,
+            ))),
         }
     }
 

@@ -165,6 +165,8 @@ expect = "exit-zero"
 
 `expect` can be `"exit-zero"`, `{ exit-code = 2 }`, `{ matches = "<regex>" }` or `{ json_schema = "<file>" }`. If the validators never all pass, `zaru` exits with code 1.
 
+Validators are commands, so none runs until you approve them. Before the first one runs in a project, Zaru shows every validator's name and command and asks. Your answer is kept in `~/.zaru/approved-validators.jsonl`, for that directory and that exact set of commands. If `zaru.toml` changes them, Zaru asks again and shows what changed. When there is no terminal to ask on, the task is refused: run `zaru validators approve` in the project's directory to see the commands and approve them, and `zaru validators list` to see what you have approved. The permission mode does not change this, `yolo` included.
+
 ### Nuclear Notes
 
 Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host>` stores an access token for it, read from standard input. When a session opens with a stored token, Zaru suggests matching page and atom names from your notes as you type. The model can call a Nuclear Notes instance's tools only if you list them under `notes.<alias>.agent_tools` in `~/.zaru/config.toml`.
@@ -182,6 +184,8 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 | `zaru providers keys` | List the provider keys stored on this machine. |
 | `zaru providers keys add <kind>` | Store a provider key, read from standard input. |
 | `zaru providers keys rm <kind>` | Delete a stored provider key. |
+| `zaru validators approve` | Show the validators in `./zaru.toml` and ask to approve them. |
+| `zaru validators list` | List every project whose validators you approved, and their commands. |
 | `zaru sessions list` | List the sessions on this machine. |
 | `zaru sessions rm <id>` | Delete a session's directory. |
 | `zaru notes tokens` | List the stored Nuclear Notes tokens. |
@@ -209,7 +213,7 @@ Zaru acts on your machine with your user account's permissions. It is not a sand
 
 - **What the model can do.** It has seven built-in tools: `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.edit`, `cmd.run` and `web.fetch`. `cmd.run` starts a program directly, without a shell, in the working directory, with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TMPDIR` from your environment, and stops it after two minutes. Nothing limits what that program does while it runs. `web.fetch` fetches `http` and `https` URLs only, without asking, and refuses this machine's own addresses and the link-local range, which includes the cloud metadata address.
 - **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing.
-- **Validators run without asking.** The commands in `./zaru.toml` run whenever you give a task in that directory, in every mode. Read the `zaru.toml` of a project you cloned before you run `zaru` in it.
+- **Validators run only after you approve them.** The commands in a project's `./zaru.toml` are shown to you and run only once you say yes, and you are asked again when they change. The approval is kept under `~/.zaru/`, never in the project, and the permission mode does not skip it.
 - **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but enforce nothing yet: at every tier, tool calls run directly on your machine.
 - **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. It does not look for any other secret.
 - **What stays on your machine.** Settings, stored keys and sessions are under `~/.zaru/`. Keys and tokens are in `~/.zaru/credentials.json`, encrypted with AES-256-GCM; the encryption key is in the OS keyring or in `ZARU_CREDENTIAL_KEY`. Session files are readable only by you and are kept until you delete them with `zaru sessions rm`.

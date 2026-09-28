@@ -1,0 +1,24 @@
+size 40x20
+cursor 0,0
+rows
+|runtime.tier = bare                     |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|! This project's zaru.toml declares     |
+|validators. They are commands Zaru runs |
+|on your machine to check the model's    |
+|work. Allow these commands to run in    |
+|this project?                           |
+|  build: cargo build --locked           |
+|  test: cargo test --all                |
+|[y/N · esc declines]                    |
+styled cells

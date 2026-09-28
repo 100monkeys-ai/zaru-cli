@@ -1384,6 +1384,26 @@ async fn ran(
         }
     }
 
+    // --- A project's validators run only once the person has approved them --
+    //
+    // They are commands a project's author wrote, so before any of them can
+    // run the person is shown every name and command and asked, once per
+    // project and per exact set. With nobody to ask, or a no, the task stops
+    // here: before the model is called and before any validator runs. The
+    // permission mode is not consulted, so `yolo` does not skip this.
+    if !prepared.declared.is_empty() {
+        let approvals = crate::validators::approval::Approvals::under(&prepared.store_root);
+        if let Err(refusal) = crate::validators::approval::gate(
+            &approvals,
+            prepared.here.root(),
+            &prepared.declared,
+            confirmer.map(|confirmer| confirmer as &dyn crate::tools::Confirm),
+            &crate::commands::date::today(),
+        ) {
+            return Ran::refused_having_said(lines, Surface::validators_not_approved(&refusal));
+        }
+    }
+
     // --- ADR-0013 D2's turn boundary, before this turn assembles -----------
     //
     // This is the one place a compaction may happen, and it is reached once

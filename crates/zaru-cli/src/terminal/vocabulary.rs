@@ -783,15 +783,15 @@ mod tests {
     /// eleven. Only a check in this crate can say what D2's table actually
     /// puts in front of a person.
     ///
-    /// The overflow count is the arm that ties the two together: **seven** is
-    /// twelve namespaces less the five rows that fit, and it is the number the
-    /// record quotes, so a thirteenth namespace reddens here as well as in
-    /// every exhaustive match on `Namespace`.
+    /// The overflow count is the arm that ties the two together: **eight** is
+    /// thirteen namespaces less the five rows that fit. It was seven until
+    /// `/validators` arrived on 2026-09-28, so a fourteenth namespace reddens
+    /// here as well as in every exhaustive match on `Namespace`.
     ///
     /// [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer-updates
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     #[test]
-    fn a_bare_slash_offers_this_harnesss_own_twelve_namespaces() {
+    fn a_bare_slash_offers_this_harnesss_own_thirteen_namespaces() {
         assert_eq!(
             Vocabulary.namespaces().len(),
             Namespace::ALL.len(),
@@ -810,9 +810,9 @@ mod tests {
                 "/notes    Nuclear Notes tokens, workspace, search".to_owned(),
                 "/config   configuration and explanation".to_owned(),
                 "/memory   relationship memory".to_owned(),
-                "… 7 more · type to narrow".to_owned(),
+                "… 8 more · type to narrow".to_owned(),
             ],
-            "a bare `/` should paint D2's first five namespaces and the line naming the seven \
+            "a bare `/` should paint D2's first five namespaces and the line naming the eight \
              that do not fit; it painted {lines:?}"
         );
     }

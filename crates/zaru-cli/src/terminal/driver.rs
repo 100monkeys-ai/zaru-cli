@@ -3823,6 +3823,7 @@ pub(crate) fn request_for(command: &Command) -> Option<Request> {
                 _ => None,
             }
         }
+        ("/validators", Some("list")) if command.words.is_empty() => Some(Request::ValidatorsList),
         ("/session", Some("list")) => Some(Request::SessionsList),
         ("/session", Some("rm")) => command
             .words

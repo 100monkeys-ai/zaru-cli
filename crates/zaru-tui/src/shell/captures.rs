@@ -197,6 +197,26 @@ fn confirmation_prominent() -> Shell {
     shell
 }
 
+/// A project's validators, asked about before the first one runs: every name
+/// and command under the question, and `y` or `N` as the answers.
+fn validators_approval() -> Shell {
+    let mut shell = shell();
+    shell.ask(
+        Confirmation::new(
+            "This project's zaru.toml declares validators. They are commands Zaru runs on your \
+             machine to check the model's work. Allow these commands to run in this project?",
+            "[y/N · esc declines]",
+            Answers::Admission,
+            true,
+        )
+        .showing(vec![
+            "  build: cargo build --locked".to_owned(),
+            "  test: cargo test --all".to_owned(),
+        ]),
+    );
+    shell
+}
+
 fn secret() -> Shell {
     let mut shell = shell();
     shell.ask_secret(SecretRequest::new(
@@ -373,6 +393,22 @@ const CAPTURES: &[(&str, &str, Staging, u16, u16, Palette)] = &[
         confirmation_prominent,
         60,
         12,
+        Palette::Coloured,
+    ),
+    (
+        "validators-approval-at-72",
+        include_str!("captures/validators-approval-at-72.txt"),
+        validators_approval,
+        72,
+        16,
+        Palette::Coloured,
+    ),
+    (
+        "validators-approval-at-40",
+        include_str!("captures/validators-approval-at-40.txt"),
+        validators_approval,
+        40,
+        20,
         Palette::Coloured,
     ),
     (
