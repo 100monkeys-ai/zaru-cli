@@ -787,8 +787,8 @@ fn corpus_every_spawned_zaru_is_handed_a_home() {
     );
 }
 
-/// Every process a check here starts is started through `tests/support/owned.rs`,
-/// which owns it until it is gone.
+/// Every process a check anywhere in the workspace starts is started through
+/// `tests/support/owned.rs`, which owns it until it is gone.
 ///
 /// # The defect this holds shut
 ///
@@ -802,55 +802,448 @@ fn corpus_every_spawned_zaru_is_handed_a_home() {
 /// rather than failed — SIGTERM or SIGKILL to the test binary alone — ran no
 /// `Drop` at all and left `script` behind as well.
 ///
-/// So there is one way to start a process in `tests/`, and it is the helper:
+/// So there is one way for a check to start a process, and it is the helper:
 /// the child dies with the thread that started it, sits in a process group of
 /// its own, and is killed with everything below it and reaped when the handle
-/// goes. A spawn that bypasses it is a spawn nothing owns, and the only
-/// constructor that can bypass it is `Command::new`.
+/// goes. The integration tests include it by `#[path]`; the library's own
+/// checks include **the same file** as `crate::owned`, under `cfg(test)`, so
+/// there is one implementation and two ways in.
 ///
-/// **The mutant is any spawn written the old way**, which this names by file
-/// and line.
+/// # Where this looks, and how it tells a check from the product
+///
+/// Until 2026-09-28 this walked `tests/` alone, and two of the library's own
+/// checks started their test binary with `std::process::Command` beside it —
+/// `session::tests`' killed writer and `config::tests`' decoy re-run — with no
+/// parent-death signal, no process group and no tree kill. It now walks every
+/// crate's `src/` and `tests/`, and **what a check compiles** is:
+///
+/// - every file under a crate's `tests/`;
+/// - every file a `#[cfg(test)]` (or `cfg(any(test, ...))`) `mod name;`
+///   declares, with everything under that module's directory, and every
+///   `tests.rs` and `fixtures.rs`;
+/// - in any other file, the item a `#[cfg(test)]` attribute stands on, to its
+///   closing brace.
+///
+/// Everything else is the product, and the product's own process runner,
+/// `process/spawn.rs`, is not test code and is not this walk's to police:
+/// seeing it on the product side is this check's control that the classifier
+/// has not called everything a check. Comments and the insides of string and
+/// character literals are blanked before anything is matched or counted, so a
+/// sentence about a spawn is not a spawn and a brace in a string is not one.
+///
+/// # What counts as starting a process
+///
+/// In a check, outside the helper: any `process::Command`, `process::*` or
+/// `tokio::process`; a `process::{…}` group naming `Command`; and a bare
+/// `Command::new(`, unless the file imports a `Command` from a path that is
+/// not `process` (the harness's own slash-command type, in
+/// `commands/tests.rs`), which is printed rather than silently passed.
+///
+/// **The mutant is any spawn written the old way**, in any crate's checks,
+/// which this names by file and line.
 #[test]
 fn corpus_every_process_a_check_starts_is_owned() {
-    // Built at run time, so this check's own source does not carry the shape.
-    let constructor = format!("Command{}new(", "::");
-    let helper = "tests/support/owned.rs";
+    // Built at run time, so this check's own source does not carry them.
+    let qualified = [
+        format!("process{}Command", "::"),
+        format!("process{}*", "::"),
+        format!("tokio{}process", "::"),
+    ];
+    let group = format!("process{}{{", "::");
+    let bare = format!("Command{}new(", "::");
+    let helper = "zaru-cli/tests/support/owned.rs";
+    let runner = "zaru-cli/src/process/spawn.rs";
 
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut seen_in_the_helper = false;
-    let mut files = 0usize;
-    let mut offences: Vec<String> = Vec::new();
-    for (relative, text) in rust_sources_under(&manifest.join("tests")) {
-        files += 1;
-        for (number, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with("//") || !line.contains(&constructor) {
-                continue;
-            }
-            if relative == helper {
-                seen_in_the_helper = true;
-            } else {
-                offences.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+    let sources = workspace_sources();
+    let crates = crates_directory();
+    let mut test_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut declared = 0usize;
+    for (relative, text) in &sources {
+        let code = code_only(text);
+        if relative.split('/').nth(1) == Some("tests")
+            || relative.ends_with("/tests.rs")
+            || relative.ends_with("/fixtures.rs")
+        {
+            test_files.insert(relative.clone());
+        }
+        for (range, _) in cfg_test_items(&code) {
+            for module in declared_modules(&code[range.clone()]) {
+                declared += 1;
+                let base = module_directory(&crates.join(relative));
+                for candidate in [
+                    base.join(format!("{module}.rs")),
+                    base.join(&module).join("mod.rs"),
+                ] {
+                    if candidate.is_file()
+                        && let Ok(found) = candidate.strip_prefix(&crates)
+                    {
+                        test_files.insert(found.to_string_lossy().into_owned());
+                    }
+                }
+                let below = base.join(&module);
+                for (other, _) in &sources {
+                    if crates.join(other).starts_with(&below) {
+                        test_files.insert(other.clone());
+                    }
+                }
             }
         }
     }
-    println!("walked {files} file(s) under tests/");
+
+    let mut offences: Vec<String> = Vec::new();
+    let mut other_commands: Vec<String> = Vec::new();
+    let mut seen_in_the_helper = false;
+    let mut seen_in_the_runner = false;
+    let mut inline_items = 0usize;
+    for (relative, text) in &sources {
+        let code = code_only(text);
+        let whole = test_files.contains(relative);
+        let items: Vec<core::ops::Range<usize>> = if whole {
+            core::iter::once(0..code.len()).collect()
+        } else {
+            cfg_test_items(&code)
+                .into_iter()
+                .map(|(range, _)| range)
+                .collect()
+        };
+        if !whole {
+            inline_items += items.len();
+        }
+        let another_command = code.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("use ") && line.contains("Command") && !line.contains("process")
+        });
+        let mut offset = 0usize;
+        for (number, line) in code.split('\n').enumerate() {
+            let at = offset;
+            offset += line.len() + 1;
+            let starts = qualified.iter().any(|shape| names(line, shape))
+                || names(line, &bare)
+                || (names(line, &group) && {
+                    let from = at + line.find(&group).unwrap_or(0);
+                    let close = code[from..].find('}').map_or(code.len(), |end| from + end);
+                    code[from..close]
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .any(|word| word == "Command")
+                });
+            if !starts {
+                continue;
+            }
+            let in_a_check = items.iter().any(|range| range.contains(&at));
+            if relative == helper {
+                seen_in_the_helper = true;
+                continue;
+            }
+            if !in_a_check {
+                if relative == runner {
+                    seen_in_the_runner = true;
+                }
+                continue;
+            }
+            let only_bare =
+                !qualified.iter().any(|shape| names(line, shape)) && !names(line, &group);
+            if only_bare && another_command {
+                other_commands.push(format!("{relative}:{}", number + 1));
+                continue;
+            }
+            offences.push(format!(
+                "{relative}:{}: {}",
+                number + 1,
+                text.split('\n').nth(number).unwrap_or_default().trim()
+            ));
+        }
+    }
+    println!(
+        "walked {} file(s) under {}: {} wholly a check's, {} `cfg(test)` module(s) \
+         declared, {} `cfg(test)` item(s) inside product files",
+        sources.len(),
+        crates.display(),
+        test_files.len(),
+        declared,
+        inline_items,
+    );
+    println!(
+        "`{bare}` of a type that is not a process, by the file's own import: {other_commands:?}"
+    );
+
     let mut complaints: Vec<String> = Vec::new();
     if !seen_in_the_helper {
         complaints.push(format!(
-            "`{constructor}` appears nowhere in {helper}, so either the helper is gone or this \
-             walk is looking for a constructor nothing uses and cannot fail"
+            "no process is started in {helper}, so either the helper is gone or this walk is \
+             looking for a constructor nothing uses and cannot fail"
+        ));
+    }
+    if !seen_in_the_runner {
+        complaints.push(format!(
+            "the product's own process runner, {runner}, was not seen on the product side, so \
+             the walk either did not reach it or called it a check"
+        ));
+    }
+    if declared == 0 || inline_items == 0 {
+        complaints.push(format!(
+            "the walk found {declared} `cfg(test)` module declaration(s) and {inline_items} \
+             inline `cfg(test)` item(s), so it cannot be telling a check from the product"
         ));
     }
     if !offences.is_empty() {
         complaints.push(format!(
-            "{} process(es) are started in tests/ without the helper that owns them, so a check \
-             that fails, panics or is killed can leave each one running after the suite has \
-             ended:\n  {}",
+            "{} process(es) are started by a check without the helper that owns them, so a \
+             check that fails, panics or is killed can leave each one running after the suite \
+             has ended:\n  {}",
             offences.len(),
             offences.join("\n  "),
         ));
     }
     assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+/// Whether `line` holds `shape` as a whole path rather than inside a longer
+/// name: `process::CommandLine` is the harness's own type and not a spawn, and
+/// `SlashCommand::new(` is not `Command::new(`.
+fn names(line: &str, shape: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    line.match_indices(shape).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + shape.len()..].chars().next();
+        !(shape.starts_with(word) && before.is_some_and(word))
+            && !(shape.ends_with(word) && after.is_some_and(word))
+    })
+}
+
+/// `crates/`, which every crate of this workspace sits in.
+fn crates_directory() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("this crate sits in `crates/`")
+        .to_path_buf()
+}
+
+/// Every `.rs` file under every crate's `src/` and `tests/`, by its path
+/// relative to `crates/`, with its text.
+fn workspace_sources() -> Vec<(String, String)> {
+    let crates = crates_directory();
+    let mut found = Vec::new();
+    for member in std::fs::read_dir(&crates).expect("the crates directory") {
+        let member = member.expect("an entry").path();
+        for root in ["src", "tests"] {
+            let mut stack = vec![member.join(root)];
+            while let Some(directory) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&directory) else {
+                    continue;
+                };
+                for entry in entries {
+                    let path = entry.expect("an entry").path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().and_then(|extension| extension.to_str())
+                        == Some("rs")
+                    {
+                        let text = std::fs::read_to_string(&path).expect("a readable source file");
+                        let relative = path
+                            .strip_prefix(&crates)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned();
+                        found.push((relative, text));
+                    }
+                }
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The directory a module file's own `mod name;` declarations resolve in.
+fn module_directory(file: &Path) -> std::path::PathBuf {
+    let parent = file.parent().expect("a source file sits in a directory");
+    match file.file_name().and_then(|name| name.to_str()) {
+        Some("lib.rs" | "main.rs" | "mod.rs") => parent.to_path_buf(),
+        _ => parent.join(file.file_stem().expect("a source file has a stem")),
+    }
+}
+
+/// `text` with every comment and the inside of every string and character
+/// literal replaced by spaces, newlines kept, so a byte offset in one is the
+/// same place in the other.
+fn code_only(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            let mut depth = 0usize;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out.extend([' ', ' ']);
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out.extend([' ', ' ']);
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // A raw string: `r"…"`, `r#"…"#`, `br#"…"#`.
+        let raw_at = if c == 'r' {
+            Some(i + 1)
+        } else if c == 'b' && next == Some('r') {
+            Some(i + 2)
+        } else {
+            None
+        };
+        let word_before = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+        if let Some(mut j) = raw_at.filter(|_| !word_before) {
+            let mut hashes = 0usize;
+            while chars.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                out.extend(chars[i..=j].iter().copied());
+                i = j + 1;
+                loop {
+                    if i >= chars.len() {
+                        break;
+                    }
+                    if chars[i] == '"' && (0..hashes).all(|k| chars.get(i + 1 + k) == Some(&'#')) {
+                        out.push('"');
+                        out.extend(core::iter::repeat_n('#', hashes));
+                        i += 1 + hashes;
+                        break;
+                    }
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        if c == '"' {
+            out.push('"');
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    out.push(' ');
+                    i += 1;
+                }
+                if i < chars.len() {
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+            }
+            out.push('"');
+            i += 1;
+            continue;
+        }
+        if c == '\'' {
+            // A character literal is `'x'` or `'\…'`; anything else is a
+            // lifetime or a label, and is code.
+            let end = if next == Some('\\') {
+                (i + 3..chars.len().min(i + 12)).find(|&k| chars[k] == '\'')
+            } else if chars.get(i + 2) == Some(&'\'') {
+                Some(i + 2)
+            } else {
+                None
+            };
+            if let Some(end) = end {
+                out.push('\'');
+                out.extend(core::iter::repeat_n(' ', end - i - 1));
+                out.push('\'');
+                i = end + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// Every item a `#[cfg(test)]` or `#[cfg(any(test, …))]` attribute stands on in
+/// `code` (already through [`code_only`]), as the byte range from the
+/// attribute to the item's end, with the attribute's own text.
+fn cfg_test_items(code: &str) -> Vec<(core::ops::Range<usize>, String)> {
+    let bytes = code.as_bytes();
+    let mut found = Vec::new();
+    let mut from = 0usize;
+    while let Some(start) = code[from..].find("#[cfg(").map(|at| from + at) {
+        let close = matching(bytes, start + 1, b'[', b']').unwrap_or(code.len() - 1);
+        let attribute: String = code[start..=close]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        from = close + 1;
+        if attribute != "#[cfg(test)]" && !attribute.starts_with("#[cfg(any(test") {
+            continue;
+        }
+        // Past any further attributes, to the item, and to its end: the first
+        // `;` at this depth for a declaration, or the brace that closes the
+        // first `{`.
+        let mut at = close + 1;
+        let end = loop {
+            match bytes.get(at) {
+                None => break code.len(),
+                Some(b'#') if bytes.get(at + 1) == Some(&b'[') => {
+                    at = matching(bytes, at + 1, b'[', b']').map_or(code.len(), |end| end + 1);
+                }
+                Some(b';') => break at + 1,
+                Some(b'{') => {
+                    break matching(bytes, at, b'{', b'}').map_or(code.len(), |end| end + 1);
+                }
+                Some(_) => at += 1,
+            }
+        };
+        found.push((start..end, attribute));
+        from = end.max(from);
+    }
+    found
+}
+
+/// The index of the byte that closes the `open` at `at`.
+fn matching(bytes: &[u8], at: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, byte) in bytes.iter().enumerate().skip(at) {
+        if *byte == open {
+            depth += 1;
+        } else if *byte == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+/// The modules a `cfg(test)` item declares as files: `mod name;`.
+fn declared_modules(item: &str) -> Vec<String> {
+    let words: Vec<&str> = item
+        .split(|c: char| c.is_whitespace())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words
+        .windows(2)
+        .filter(|pair| pair[0] == "mod" && pair[1].ends_with(';'))
+        .map(|pair| pair[1].trim_end_matches(';').to_owned())
+        .collect()
 }
 
 /// Every thread the harness starts is started through

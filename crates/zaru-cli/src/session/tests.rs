@@ -909,7 +909,9 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
             .expect("could not start a session");
         let path = session.transcript_path();
 
-        let mut child = std::process::Command::new(
+        // Owned, so a round that fails, panics or is killed takes its child
+        // with it -- see `crate::owned`.
+        let mut child = crate::owned::command(
             std::env::current_exe().expect("the test binary knows where it is"),
         )
         .args([
@@ -924,17 +926,19 @@ fn a_killed_process_loses_at_most_the_event_in_flight() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("could not spawn this crate's own test binary");
+        let mut out = child.take_stdout();
 
         // Wait on the condition, not on a clock. See
         // `wait_until_the_transcript_holds`.
         wait_until_the_transcript_holds(&path, RECORDS_BEFORE_THE_KILL, round);
-        child.kill().expect("could not kill the child");
+        // SIGKILL to the child and its group, then reaped: it gets no chance
+        // to flush anything, which is the point.
+        child.kill();
         let mut reported = String::new();
-        if let Some(mut out) = child.stdout.take() {
+        {
             use std::io::Read as _;
             let _ = out.read_to_string(&mut reported);
         }
-        let _ = child.wait();
 
         let promised: Vec<u64> = reported
             .lines()
