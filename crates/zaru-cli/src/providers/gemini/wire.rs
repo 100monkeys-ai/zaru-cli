@@ -60,6 +60,12 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
+    /// The system text: the harness's own instructions, or the persona.
+    ///
+    /// Google's own place for instructions that are not the person's. Absent
+    /// when there is no system text, rather than empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_instruction: Option<Content>,
     /// The conversation so far, oldest first.
     pub contents: Vec<Content>,
     /// The tools the model may ask for. Omitted entirely when there are none,
@@ -79,7 +85,7 @@ pub struct Content {
     /// does not, and the documented shape puts a `functionResponse` part in a
     /// `"user"` turn. [`ROLE_USER`] is the constant, so the two call sites
     /// that need it cannot drift.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub role: String,
     /// The turn's parts, in order.
     #[serde(default)]
@@ -231,12 +237,9 @@ pub struct FunctionResponse {
     /// produced a request the API accepted with HTTP 200 and the model read
     /// as a result from something it had never called: measured 2026-09-05,
     /// the model asked for the same tool again in six runs of eight. That is
-    /// the whole of the `gemini-read-loop` defect, and it is why
-    /// [`super::map::Answered`] exists — the loop's [`ToolResult`] carries no
-    /// name, so the name has to come from the call this client itself
-    /// received.
-    ///
-    /// [`ToolResult`]: zaru_core::tool_call::ToolResult
+    /// the whole of the `gemini-read-loop` defect, and it is why a result the
+    /// loop hands this client carries the tool's name beside the call's id:
+    /// see [`zaru_core::conversation::Message::Tool`].
     pub name: String,
     /// What it produced.
     ///

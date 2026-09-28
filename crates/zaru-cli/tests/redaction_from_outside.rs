@@ -203,12 +203,15 @@ impl Model for Provider {
     }
 
     async fn respond(&self, request: &ModelRequest<'_>) -> Result<ModelResponse, PortFailure> {
-        for result in request.results {
-            println!("  model was given: {:?}", result.content.as_str());
+        for message in request.turn {
+            let zaru_core::conversation::Message::Tool { content, .. } = message else {
+                continue;
+            };
+            println!("  model was given: {content:?}");
             self.seen
                 .lock()
                 .expect("seen poisoned")
-                .push(result.content.as_str().to_owned());
+                .push(content.clone());
         }
         self.script
             .lock()
@@ -230,15 +233,12 @@ impl ContextPolicy for Policy<'_> {
         let rendered = match turn {
             Turn::Initial { task } => format!("[initial] {task}"),
             Turn::Refinement { refinement } => format!("[refinement] {}", refinement.as_str()),
-            Turn::Resumed { interrupted } => {
-                format!("[resumed] this did not complete: {}", interrupted.call())
-            }
         };
         let prompt = Prompt::new(Redacted::by(self.redactor, &rendered));
         self.prompts
             .lock()
             .expect("prompts poisoned")
-            .push(prompt.as_str().to_owned());
+            .push(prompt.rendered());
         Ok(prompt)
     }
 }
@@ -335,6 +335,8 @@ async fn read_a_file_carrying(
 
     let model = Provider::new(vec![
         ModelResponse::Calls {
+            text: String::new(),
+            echo: None,
             calls: vec![ToolRequest {
                 id: String::from("c1"),
                 name: String::from("fs.read"),
@@ -343,6 +345,7 @@ async fn read_a_file_carrying(
             tokens: TokenUsage::default(),
         },
         ModelResponse::Text {
+            echo: None,
             text: String::from("read"),
             tokens: TokenUsage::default(),
         },
@@ -589,7 +592,7 @@ impl zaru_core::iteration::Generator for Recording {
         self.prompts
             .lock()
             .expect("prompts poisoned")
-            .push(prompt.as_str().to_owned());
+            .push(prompt.rendered());
         Ok(zaru_core::iteration::Generated {
             candidate: String::from("a candidate"),
             tokens: 1,

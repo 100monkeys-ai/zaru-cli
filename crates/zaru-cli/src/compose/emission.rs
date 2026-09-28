@@ -71,15 +71,10 @@
 //!   refuses in its own words.
 //! - **Everything said to a model.** [`prose::SUMMARISE_SPAN`] and
 //!   [`prose::ITERATION_IS_ONE_EXCHANGE`] are read by a model and never by a
-//!   person, and each says so where it is defined. **[`prose::NO_PERSONA`] is
-//!   the third and it was a member until the artefact said otherwise**: its
-//!   own documentation says the line is there "so that a reader of the
-//!   transcript sees the absence rather than inferring it", and the transcript
-//!   does not carry it. `compose::context::prefix_for` puts it in
-//!   [ADR-0013] D1's layer 1, which is assembled into the prompt and persisted
-//!   nowhere — measured 2026-09-15 on a real session, whose `context.json`
-//!   holds only `exchanges`. So it reaches a model and no person, and it is
-//!   exempt rather than enumerated.
+//!   person, and each says so where it is defined; so is
+//!   [`prose::CALL_DID_NOT_COMPLETE`]. The line that stood for an absent
+//!   persona, `NO_PERSONA`, was the fourth until 2026-09-28, when the harness
+//!   began sending a system prompt of its own in its place.
 //! - **Everything a person asked for.** A failure's statement and its remedy,
 //!   `--help`'s table, a data projection, a permission question, the two
 //!   retrieval commands' lines and the hint strip's typing-mode rows are the
@@ -90,7 +85,7 @@
 //! [ADR-0002's amendments page]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output-updates
 //! [ADR-0005]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0005-the-composer
 //! [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-//! [`prose::NO_PERSONA`]: crate::compose::prose::NO_PERSONA
+//! [`prose::CALL_DID_NOT_COMPLETE`]: crate::compose::prose::CALL_DID_NOT_COMPLETE
 //! [`prose::SUMMARISE_SPAN`]: crate::compose::prose::SUMMARISE_SPAN
 //! [`prose::ITERATION_IS_ONE_EXCHANGE`]: crate::compose::prose::ITERATION_IS_ONE_EXCHANGE
 
@@ -751,7 +746,7 @@ pub const UNPROMPTED_HOMES: [&str; 4] = [
 /// fails the check as loudly as one that appears without a member.
 ///
 /// [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
-pub const EXEMPT: [(&str, &str); 7] = [
+pub const EXEMPT: [(&str, &str); 8] = [
     (
         "SUMMARISE_SPAN",
         "read by a model and never by a person; the constant says so where it is defined",
@@ -769,10 +764,12 @@ pub const EXEMPT: [(&str, &str); 7] = [
         "the answer `/learned` and `zaru learned` give, so a person asked for it",
     ),
     (
-        "NO_PERSONA",
-        "assembled into ADR-0013 D1's layer 1 and nowhere else, so it is read by a model and \
-         never by a person — measured on the artefact of 2026-09-15, where `context.json` holds \
-         only `exchanges` and the transcript holds no prefix",
+        "CALL_DID_NOT_COMPLETE",
+        "read by a model and never by a person; the constant says so where it is defined",
+    ),
+    (
+        "EARLIER_RESULTS_NOT_RECORDED",
+        "said when a person resumes a session, so the person's own act of resuming caused it",
     ),
     (
         "TIPS_FILE",

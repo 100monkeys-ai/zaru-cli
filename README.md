@@ -101,15 +101,15 @@ zaru sessions list
 cat ~/.zaru/sessions/<id>/transcript.jsonl
 ```
 
-The transcript has one JSON object per line: your task, each model reply, each tool call and whether it was allowed, and the answer.
+The transcript has one JSON object per line: your task, each model reply with the tool calls it asked for and their arguments, each tool call and whether it was allowed, what each call returned exactly as the model was given it, and the answer. Stored keys and tokens are replaced with a marker before a model reply or a tool result is written.
 
 ## Using Zaru
 
 ### Interactive sessions
 
-Run `zaru` with no arguments in a terminal to open a session. Type a task and press Enter; each task you type continues the same conversation. Type `/help` to list commands. Type `/exit` or press Ctrl-C to leave.
+Run `zaru` with no arguments in a terminal to open a session. Type a task and press Enter; each task you type continues the same conversation, and the model is sent every earlier task, reply, tool call and tool result in it. Type `/help` to list commands. Type `/exit` or press Ctrl-C to leave.
 
-`zaru --continue` reopens the most recent session started in the current directory, and `zaru --resume <id>` reopens the session with that ID. When the output is not a terminal, both print the session's transcript and exit instead. The line at the top of the screen shows the runtime tier, the model, the permission mode, how much of the model's context window is used, and the session ID.
+`zaru --continue` reopens the most recent session started in the current directory, and `zaru --resume <id>` reopens the session with that ID. The conversation is rebuilt from the transcript, so the model is sent the same conversation it had before. A session recorded before tool results were kept reopens with your tasks and the answers, and says once that the earlier tool results were not recorded. When the output is not a terminal, both print the session's transcript and exit instead. The line at the top of the screen shows the runtime tier, the model, the permission mode, how much of the model's context window is used, and the session ID.
 
 **Selecting text.** A session takes over the mouse so that the scroll wheel scrolls the transcript. To select text, hold Shift while you drag (this works in most terminals, including Windows Terminal and VS Code). To give the mouse back to your terminal instead, set `terminal.mouse = false` in `~/.zaru/config.toml`; the scroll wheel then no longer scrolls the transcript.
 
@@ -215,14 +215,13 @@ Zaru acts on your machine with your user account's permissions. It is not a sand
 - **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing, so a model can also change which validators are approved; use `yolo` only for a directory and a task you trust entirely.
 - **Validators run only after you approve them.** The commands in a project's `./zaru.toml` are shown to you and run only once you say yes, and you are asked again when they change. The approval is kept under `~/.zaru/`, never in the project, and the permission mode does not skip it.
 - **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but are not built yet: at every tier, tool calls run directly on your machine. Zaru prints the not-a-sandbox warning at every tier, and at `contained` and `linked` it adds that the tier is not built yet and changes nothing about how tool calls run. `zaru runtime` says the same.
-- **What the model provider receives.** Your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. Zaru removes the values of the keys and tokens it has stored from this. When it cannot read them (no keyring and no `ZARU_CREDENTIAL_KEY`) and the task needs none of them, it says so and goes on without removing them. It does not look for any other secret.
+- **What the model provider receives.** A short system prompt, your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. The system prompt states the working directory, the operating system, the date, the tool names and the permission mode; if a system prompt is read from a Nuclear Notes page (`persona.path`), that page is sent instead. Zaru removes the values of the keys and tokens it has stored from this. When it cannot read them (no keyring and no `ZARU_CREDENTIAL_KEY`) and the task needs none of them, it says so and goes on without removing them. It does not look for any other secret.
 - **What stays on your machine.** Settings, stored keys and sessions are under `~/.zaru/`. Keys and tokens are in `~/.zaru/credentials.json`, encrypted with AES-256-GCM; the encryption key is in the OS keyring or in `ZARU_CREDENTIAL_KEY`. Session files are readable only by you and are kept until you delete them with `zaru sessions rm`.
 
 ### Known limitations
 
 - Only three provider kinds work: `gemini`, `ollama` and `openai-compatible`. `anthropic` and `aegis` are recognised but have no client.
 - `zaru learned` and `zaru inbox` are placeholders.
-- Unless a system prompt is read from a Nuclear Notes page (`persona.path`), none is sent, and the model receives your task with a line saying so.
 - The `contained` and `linked` tiers contain nothing (see above).
 
 ## Exit codes

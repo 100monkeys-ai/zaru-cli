@@ -56,7 +56,7 @@ pub use limits::{Ceiling, ConfigurationError, Limits, TruncationBudget};
 pub use machine::{Outcome, State, run};
 pub use port::{
     Clock, ContextPolicy, ContextRefusal, ExecutionOutcome, Executor, Generated, Generator,
-    Interruption, PortFailure, Ports, Prompt, SystemClock, Turn, ValidatorReport, Validators,
+    PortFailure, Ports, Prompt, SystemClock, Turn, ValidatorReport, Validators,
 };
 pub use refinement::{RefinementInput, RefinementPrompt};
 

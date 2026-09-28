@@ -24,14 +24,11 @@
 //! # Absence is exactly what it was, and that is the load-bearing half
 //!
 //! No page, no token, no pin, no path, an unreadable cache, or a refusal all
-//! leave [`prose::NO_PERSONA`](crate::compose::prose::NO_PERSONA) in layer 1,
-//! **byte for byte as before this module existed**, and nothing is authored to
-//! say so to a person. That constant is therefore **kept**. ADR-0027's Update
-//! of 2026-09-05 says "the day D1's fetch exists, that constant is deleted
-//! rather than edited"; that sentence assumed a fetch that always succeeds,
-//! and deleting the constant would silently change what a model receives on
-//! every machine with no Nuclear Notes token — which is every machine today. A
-//! dated correction stands beside it on the record.
+//! leave layer 1 exactly what it is on a machine with no persona at all: the
+//! harness's own system prompt, built by
+//! [`crate::compose::context::system_prompt`]. Until 2026-09-28 that was a
+//! line saying no persona had been reached; it told a model nothing it could
+//! use, and the facts it now carries are ones a model cannot find for itself.
 //!
 //! # The beat is **not** the corpus's, and the reason is a satisfied clause
 //!
@@ -712,8 +709,8 @@ impl Refreshing {
 ///
 /// `body` is `None` on every machine that has no pin, no token, no readable
 /// cache and no reachable page — which is every machine today — and that is
-/// **not** a failure: it is [ADR-0027]'s absence, and the prefix says so in
-/// [`prose::NO_PERSONA`](crate::compose::prose::NO_PERSONA).
+/// **not** a failure: it is [ADR-0027]'s absence, and layer 1 is then the
+/// harness's own system prompt.
 ///
 /// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 #[derive(Debug)]

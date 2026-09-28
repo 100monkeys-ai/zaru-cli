@@ -167,7 +167,7 @@ async fn one_real_exchange_against_a_real_openai_compatible_endpoint() {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &[],
-        results: &[],
+        turn: &[],
     };
 
     let response = Model::respond(&client, &request)
@@ -235,14 +235,14 @@ async fn a_real_endpoint_accepts_this_clients_tool_declaration_and_answers_with_
     let request = ModelRequest {
         prompt: &prompt,
         tools: &tools,
-        results: &[],
+        turn: &[],
     };
 
     let response = Model::respond(&client, &request)
         .await
         .expect("the exchange completes");
 
-    let ModelResponse::Calls { calls, tokens } = &response else {
+    let ModelResponse::Calls { calls, tokens, .. } = &response else {
         panic!("the endpoint answered {response:?} rather than a tool call");
     };
     assert_eq!(calls.len(), 1, "one call: {calls:?}");

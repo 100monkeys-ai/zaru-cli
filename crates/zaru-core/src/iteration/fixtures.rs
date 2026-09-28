@@ -180,7 +180,7 @@ impl Generator for StagedGenerator {
         self.prompts
             .lock()
             .expect("prompts poisoned")
-            .push(prompt.as_str().to_owned());
+            .push(prompt.rendered());
         let n = {
             let mut calls = self.calls.lock().expect("calls poisoned");
             *calls += 1;
@@ -427,10 +427,6 @@ impl ContextPolicy for PassThroughContext {
         let text = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
-            Turn::Resumed { interrupted } => format!(
-                "the previous session was interrupted and this call never completed: {}",
-                interrupted.call()
-            ),
         };
         let n = {
             let mut calls = self.calls.lock().expect("calls poisoned");

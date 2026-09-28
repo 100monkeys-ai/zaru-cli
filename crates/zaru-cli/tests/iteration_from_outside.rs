@@ -158,7 +158,7 @@ impl Model for Provider {
         self.prompts
             .lock()
             .expect("poisoned")
-            .push(request.prompt.as_str().to_owned());
+            .push(request.prompt.rendered());
         self.script
             .lock()
             .expect("script poisoned")
@@ -177,7 +177,6 @@ impl ContextPolicy for Policy {
         let rendered = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
-            Turn::Resumed { interrupted } => interrupted.call().to_owned(),
         };
         Ok(Prompt::new(Redacted::by(&HeldSecrets::none(), &rendered)))
     }
@@ -266,6 +265,8 @@ fn writes(path: &str, contents: &str) -> ModelResponse {
 /// One answer proposing several writes, in order.
 fn writes_all(pairs: &[(&str, &str)]) -> ModelResponse {
     ModelResponse::Calls {
+        text: String::new(),
+        echo: None,
         calls: pairs
             .iter()
             .enumerate()
@@ -1175,7 +1176,7 @@ fn the_iteration_instruction_reaches_the_model_on_the_first_exchange_and_on_ever
     let held = HeldSecrets::none();
     let accepting = Declining::nothing();
     let context = zaru_core::context::Context::opened(
-        zaru_cli::compose::prefix_for(None),
+        zaru_cli::compose::prefix_for(None, &facts()),
         zaru_cli::cli::layers::context_limits(zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS),
         0,
     );
@@ -1219,7 +1220,7 @@ fn the_iteration_instruction_reaches_the_model_on_the_first_exchange_and_on_ever
 /// Without it the check above would pass over an implementation that put the
 /// sentence into [ADR-0013] D1's layer 1 unconditionally — and there it would
 /// be a **falsehood**: the outer tool-call loop hands a call's result back
-/// inside the same turn, on `ModelRequest.results`, so a model told its output
+/// inside the same turn, on `ModelRequest.turn`, so a model told its output
 /// "does not come back to you inside this exchange" would have been lied to on
 /// every `bare`-tier turn that declares nothing.
 ///
@@ -1234,13 +1235,14 @@ fn a_turn_with_no_declared_validators_is_not_told_an_iteration_is_one_exchange()
     let plan = Plan::from_declared(Vec::new()).expect("a project may declare nothing");
     // One answer with nothing to execute, so the outer loop ends the turn.
     let provider = Provider::scripted([ModelResponse::Text {
+        echo: None,
         text: "there is nothing to do".to_owned(),
         tokens: usage(),
     }]);
     let held = HeldSecrets::none();
     let accepting = Declining::nothing();
     let context = zaru_core::context::Context::opened(
-        zaru_cli::compose::prefix_for(None),
+        zaru_cli::compose::prefix_for(None, &facts()),
         zaru_cli::cli::layers::context_limits(zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS),
         0,
     );
@@ -1430,6 +1432,18 @@ fn one_emission_of_the_inner_loops_stream_reaches_the_transcript_and_a_subscribe
 }
 
 // --------------------------------- a home and an environment nobody handed
+
+/// The facts a check's layer 1 is built from: fixed, so a prompt a check
+/// compares is the same on every machine and every day.
+fn facts() -> zaru_cli::compose::Facts {
+    zaru_cli::compose::Facts {
+        directory: Some("/work".to_owned()),
+        system: "linux".to_owned(),
+        date: "2026-09-28".to_owned(),
+        tools: vec!["fs.read".to_owned()],
+        mode: None,
+    }
+}
 
 #[path = "support/decoy.rs"]
 mod decoy;

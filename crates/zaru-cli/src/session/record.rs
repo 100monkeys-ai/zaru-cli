@@ -316,11 +316,10 @@ impl Voice {
     /// How a rendering names this voice.
     ///
     /// **One spelling, two callers, and neither of them invented it.**
-    /// [`crate::compose::boundary::exchange_of_turn`] has composed a turn's
-    /// two halves as `user: <task>` and `zaru: <answer>` since layer 6 gained
-    /// its shape, and those are the product's existing words for exactly this
-    /// distinction — so the pane reads them from here rather than a second
-    /// pair being chosen for the screen. The alternative was a glyph, which
+    /// Layer 6 composed a turn's two halves as `user: <task>` and
+    /// `zaru: <answer>` until 2026-09-28, and those are the product's existing
+    /// words for exactly this distinction — so the pane reads them from here
+    /// rather than a second pair being chosen for the screen. The alternative was a glyph, which
     /// would have been authored: [`Register`](zaru_tui::shell::port::Register)
     /// gives plain narration the absence of a marker, and three of its six
     /// glyphs are already drafted proposals because no record names one.

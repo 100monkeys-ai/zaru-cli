@@ -70,7 +70,9 @@ pub(super) fn staged_text(label: &str, words: usize) -> String {
 
 /// Exchange `n`, costing exactly `words` tokens under [`WordCounter`].
 pub(super) fn staged_exchange(n: u32, words: usize) -> Exchange {
-    Exchange::verbatim(staged_text(&format!("exchange-{n}"), words))
+    Exchange::of_turn(vec![crate::conversation::Message::User {
+        text: staged_text(&format!("exchange-{n}"), words),
+    }])
 }
 
 /// An attachment the user chose, costing exactly `words` tokens.
@@ -200,13 +202,9 @@ impl ContextPolicy for PolicyOver<'_> {
         let tail = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
-            Turn::Resumed { interrupted } => format!(
-                "the previous session was interrupted and this call never completed: {}",
-                interrupted.call()
-            ),
         };
         let assembled = self.context.assemble(self.counter, self.redactor, &tail)?;
-        Ok(Prompt::new(assembled.into_redacted()))
+        Ok(assembled.into_prompt())
     }
 }
 
@@ -255,7 +253,7 @@ impl Generator for InertGenerator {
         self.prompts
             .lock()
             .expect("prompts poisoned")
-            .push(prompt.as_str().to_owned());
+            .push(prompt.rendered());
         Ok(Generated {
             candidate: format!("{NONCE}-candidate"),
             tokens: 1,

@@ -107,15 +107,15 @@ pub mod summarise;
 pub mod tips;
 pub mod turn;
 
-pub use boundary::{ContextShape, SessionContext};
-pub use context::{TurnContext, prefix_for};
+pub use boundary::{ContextShape, Rebuilt, SessionContext, conversation_of};
+pub use context::{Facts, TurnContext, prefix_for, system_prompt};
 pub use count::ByteCounter;
 pub use emission::{Cause, Door, Subject, Unprompted, Wording};
 pub use iterate::{Applying, Candidate, Generating, Inner, Iterations, Kept, Narrated, Narrator};
 pub use model::Classifying;
 pub use persona::{CachedPersona, Fetched, PersonaCache};
 pub use shared::Shared;
-pub use sink::{Records, ToolLines};
+pub use sink::Records;
 pub use summarise::ModelSummariser;
 pub use tips::{Conditions, Tip, Tips};
 pub use turn::{KINDS_WITH_A_CLIENT, Owed, Prepared, Ran};

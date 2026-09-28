@@ -168,6 +168,16 @@ pub enum Event {
         /// Time it took to reach that, measured in the caller's clock.
         elapsed: Duration,
     },
+    /// A message joined this turn's conversation: the person's task, one of
+    /// the model's messages, or the result of one call.
+    ///
+    /// **This is the one event that carries content**, and it carries only
+    /// what the model is, or was, given: every text in it has passed the
+    /// redactor. The transcript records it, and a later turn's history is
+    /// rebuilt from those records, so the model is sent next turn exactly
+    /// what it was sent this turn. Nothing paints it: what a person sees of a
+    /// call is the lines the other events already give.
+    Message(crate::conversation::Message),
     /// The turn ended.
     TurnEnded {
         /// Which turn.

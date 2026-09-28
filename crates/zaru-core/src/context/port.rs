@@ -32,7 +32,7 @@
 //! ADR-0012's, it crosses a network, and its port is asynchronous for the
 //! same reason the loop's are.
 
-use crate::context::exchange::Exchange;
+use crate::context::exchange::{Exchange, ExchangeKind};
 use crate::iteration::port::PortFailure;
 use core::future::Future;
 use serde::{Deserialize, Serialize};
@@ -50,21 +50,58 @@ pub trait TokenCounter {
 /// to the transcript. **Writing it is ADR-0010's**, whose D2 makes the
 /// transcript append-only and whose D3 keeps it apart from the checkpoint;
 /// this crate produces the datum and persists nothing.
+///
+/// # Each exchange is kept as its text
+///
+/// A span is read by two things: a summariser, which is sent text, and a
+/// person reading the transcript. The messages themselves are already on the
+/// transcript, one record each, written as the turn happened; the span keeps
+/// each exchange as the one text a summariser is asked about, in the same
+/// `{text, kind}` shape a span has had since it was first written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
-    exchanges: Vec<Exchange>,
+    exchanges: Vec<SpanEntry>,
+}
+
+/// One exchange of a [`Span`], as text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpanEntry {
+    text: String,
+    kind: ExchangeKind,
+}
+
+impl SpanEntry {
+    /// The exchange's text: every message of it, rendered.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Whether it was what happened or an earlier summary.
+    #[must_use]
+    pub const fn kind(&self) -> ExchangeKind {
+        self.kind
+    }
 }
 
 impl Span {
-    /// Take a span.
+    /// Take a span of whole exchanges.
     #[must_use]
-    pub const fn new(exchanges: Vec<Exchange>) -> Self {
-        Self { exchanges }
+    pub fn of(exchanges: &[Exchange]) -> Self {
+        Self {
+            exchanges: exchanges
+                .iter()
+                .map(|exchange| SpanEntry {
+                    text: exchange.rendered(),
+                    kind: exchange.kind(),
+                })
+                .collect(),
+        }
     }
 
-    /// The exchanges the span replaced, oldest first, exactly as they were.
+    /// The exchanges the span replaced, oldest first, as text.
     #[must_use]
-    pub fn exchanges(&self) -> &[Exchange] {
+    pub fn exchanges(&self) -> &[SpanEntry] {
         &self.exchanges
     }
 

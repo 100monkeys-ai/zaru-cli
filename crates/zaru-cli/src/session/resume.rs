@@ -35,22 +35,16 @@
 //! the two framings open; the reader's end is the only one a killed process
 //! can honour.
 //!
-//! # Telling the model, which now has a carrier
+//! # Telling the model
 //!
-//! D4's second half is "the model is told it did not complete". The model is
-//! reached through [`ContextPolicy::assemble`], which takes a
-//! [`Turn`](zaru_core::iteration::Turn) — and when this module was written
-//! that type had two variants, `Initial` and `Refinement`, neither of which
-//! could carry an interruption. It has three now:
-//! [`Turn::Resumed`](zaru_core::iteration::Turn::Resumed), added by the
-//! tool-call loop, carrying a
-//! [`Interruption`](zaru_core::iteration::Interruption) built from this
-//! module's own [`Interrupted::call`]'s rendered line.
+//! D4's second half is "the model is told it did not complete". Since
+//! 2026-09-28 that is the conversation's own doing: a resumed session is
+//! rebuilt from its transcript by `crate::compose::conversation_of`, and a
+//! call with no result is closed there with a result saying it did not
+//! complete, in the shape every provider defines for a result.
 //!
-//! **This module still tells nobody anything.** It produces the datum, as it
-//! always did; the conversion and the turn are the caller's, and
-//! `crates/zaru-cli/tests/tool_execution_from_outside.rs` drives it end to
-//! end. The open question ADR-0008's Status tracking raised is answered.
+//! **This module still tells nobody anything.** It reads the records and
+//! derives [`Interrupted`] for a person reading the session back.
 //!
 //! [`ContextPolicy::assemble`]: zaru_core::iteration::ContextPolicy::assemble
 //!
@@ -62,7 +56,6 @@ use crate::session::store::{CHECKPOINT_FILE, TRANSCRIPT_FILE};
 use crate::session::transcript::{Transcript, TranscriptError};
 use core::fmt;
 use std::path::Path;
-use zaru_core::redaction::{Redacted, Redactor};
 
 /// A tool call that was in flight when the process died.
 ///
@@ -72,30 +65,6 @@ use zaru_core::redaction::{Redacted, Redactor};
 pub struct Interrupted {
     /// The call, as ADR-0011 D4 rendered it into the transcript.
     pub call: ToolCall,
-}
-
-impl Interrupted {
-    /// The datum the model is told, as `zaru-core` carries it.
-    ///
-    /// ADR-0010 D4's second half. The line and nothing else, because
-    /// ADR-0011 D4 calls `render()`'s output "the line a transcript shows"
-    /// and D2's replayability claim is that re-rendering it reproduces what
-    /// the user saw — so handing the model anything else would be a second
-    /// description of one call.
-    ///
-    /// It passes ADR-0008 clause 6's port, which was a coordinator ruling of
-    /// 2026-09-05 rather than one of the three paths that decision names: a
-    /// rendered `cmd.run` line **is** a command line, and that is where a
-    /// `--token=` argument lives. **`self.call.line` is untouched**, so the
-    /// transcript this was read out of still carries the raw line, which is
-    /// ADR-0010's rule and is asserted.
-    #[must_use]
-    pub fn for_the_model<R: Redactor + ?Sized>(
-        &self,
-        redactor: &R,
-    ) -> zaru_core::iteration::Interruption {
-        zaru_core::iteration::Interruption::of(Redacted::by(redactor, &self.call.line))
-    }
 }
 
 /// Which once-ever lines this session has already said.
@@ -225,7 +194,17 @@ pub struct Resumed {
     /// module carries the rest.
     pub said: AlreadySaid,
     /// A call that was in flight when the process died, if one was.
+    ///
+    /// Said to a person reading the session back. The model is told through
+    /// the conversation itself: the call is given a result saying it did not
+    /// complete, by `crate::compose::conversation_of`.
     pub interrupted: Option<Interrupted>,
+    /// Every record the transcript holds, whatever `tail` asked for.
+    ///
+    /// What a resumed session's conversation is rebuilt from, by
+    /// `crate::compose::conversation_of`: the transcript is the source of
+    /// what the model is sent, so a rebuild reads all of it.
+    pub records: Vec<Record>,
     /// How many bytes of a partial line the transcript ends with, if any.
     ///
     /// D2's "at most the event in flight", surfaced rather than hidden: a
@@ -269,6 +248,7 @@ pub fn resume(directory: &Path, tail: usize) -> Result<Resumed, ResumeFailure> {
         said: said_so_far(&reading.records),
         interrupted: unfinished_call(&reading.records),
         tail: reading.tail(tail).to_vec(),
+        records: reading.records.clone(),
         tail_lines: reading.tail_lines(tail).to_vec(),
         fragment: reading.fragment,
         checkpoint,
@@ -337,11 +317,10 @@ fn turns_so_far(records: &[Record]) -> u32 {
 /// that reading, and it is the **only** derivation: the two decisions below
 /// it read this and nothing else.
 ///
-/// **Not the checkpoint, which would work today and is the wrong store.** Both
-/// sentences already reach [ADR-0010] D3's `context.json`, because they are
-/// part of the turn's answer and `compose::boundary::exchange_of_turn` puts
-/// that in [ADR-0013] D1's layer 6. Reading them back from there would put a
-/// permanent counter inside the one structure whose whole job is to discard —
+/// **Not the checkpoint, which is the wrong store.** Both sentences reached
+/// [ADR-0010] D3's `context.json` while layer 6 held a turn's printed lines,
+/// until 2026-09-28. Reading them back from there would have put a permanent
+/// counter inside the one structure whose whole job is to discard —
 /// D2 of this record calls the transcript history and the checkpoint a
 /// checkpoint, and `compose::boundary` says the checkpoint holds "layer 6 and
 /// nothing else".

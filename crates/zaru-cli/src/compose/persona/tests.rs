@@ -14,7 +14,6 @@
 use super::{
     CachedPersona, DEFAULT_PATH, Fetched, PERSONA_FILE, PersonaCache, fetched_from, key, path_in,
 };
-use crate::compose::prose;
 use crate::credentials::ReachFailure;
 use crate::redaction::HeldSecrets;
 use std::path::PathBuf;
@@ -261,31 +260,28 @@ fn the_cache_stands_on_silence_and_is_evicted_on_a_refusal() {
     );
 }
 
-/// A served body becomes layer 1, and an absence is byte-identical to what it
-/// was.
+/// A served body becomes layer 1, and an absence is the harness's own system
+/// prompt, whichever way it arose.
 #[test]
-fn a_served_body_is_layer_one_and_an_absence_is_exactly_what_it_was() {
+fn a_served_body_is_layer_one_and_an_absence_is_the_harness_system_prompt() {
+    let facts = crate::compose::context::fixtures::facts();
     let served = "Ω ✦ you are Zaru, and you are direct";
-    let with = crate::compose::prefix_for(Some(served));
-    assert!(
-        with.as_str().starts_with(served),
-        "the served persona did not reach layer 1: {}",
+    let with = crate::compose::prefix_for(Some(served), &facts);
+    assert_eq!(
+        with.as_str(),
+        served,
+        "the served persona is not layer 1, alone: {}",
         with.as_str()
     );
-    assert!(
-        !with.as_str().contains(prose::NO_PERSONA),
-        "a session with a persona still carried the absence line"
-    );
 
-    // The absence, in all three of its spellings, byte-identical to each other
-    // and to what the prefix was before this module existed.
-    let none = crate::compose::prefix_for(None);
-    let empty = crate::compose::prefix_for(Some(""));
+    // The absence, in both of its spellings, byte-identical to each other and
+    // to the harness's system prompt.
+    let none = crate::compose::prefix_for(None, &facts);
+    let empty = crate::compose::prefix_for(Some(""), &facts);
     assert_eq!(
         none.as_str(),
-        prose::NO_PERSONA,
-        "the absent prefix is not the absence line, so a reader could not tell a harness with no \
-         persona from one whose page was empty"
+        crate::compose::system_prompt(&facts),
+        "the absent prefix is not the harness's system prompt"
     );
     assert_eq!(
         empty.as_str(),

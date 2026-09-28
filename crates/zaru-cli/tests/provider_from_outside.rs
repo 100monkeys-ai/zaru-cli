@@ -197,7 +197,7 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
     let request = ModelRequest {
         prompt: &prompt,
         tools: &[],
-        results: &[],
+        turn: &[],
     };
 
     let response = Model::respond(&client, &request)

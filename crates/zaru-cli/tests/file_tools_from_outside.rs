@@ -154,7 +154,7 @@ struct Provider {
     script: Mutex<std::collections::VecDeque<ModelResponse>>,
     /// One entry per tool call, keyed by the provider's own id.
     ///
-    /// `ModelRequest::results` is CUMULATIVE across a turn's rounds, so
+    /// `ModelRequest::turn` is CUMULATIVE across a turn's rounds, so
     /// appending it whole would count the first call four times in a
     /// four-call turn -- which is how the first version of this file read six
     /// results from four calls. Keying on the id the request carries is what
@@ -184,12 +184,15 @@ impl Model for Provider {
             );
         }
         let mut seen = self.seen.lock().expect("seen poisoned");
-        for result in request.results {
-            if seen.iter().any(|(id, _)| id == &result.id) {
+        for message in request.turn {
+            let zaru_core::conversation::Message::Tool { id, content, .. } = message else {
+                continue;
+            };
+            if seen.iter().any(|(seen_id, _)| seen_id == id) {
                 continue;
             }
-            println!("  model was given: {:?}", result.content.as_str());
-            seen.push((result.id.clone(), result.content.as_str().to_owned()));
+            println!("  model was given: {content:?}");
+            seen.push((id.clone(), content.clone()));
         }
         drop(seen);
         self.script
@@ -209,9 +212,6 @@ impl ContextPolicy for Policy<'_> {
         let rendered = match turn {
             Turn::Initial { task } => format!("[initial] {task}"),
             Turn::Refinement { refinement } => format!("[refinement] {}", refinement.as_str()),
-            Turn::Resumed { interrupted } => {
-                format!("[resumed] this did not complete: {}", interrupted.call())
-            }
         };
         Ok(Prompt::new(Redacted::by(self.redactor, &rendered)))
     }
@@ -275,6 +275,8 @@ impl InnerLoop for NeverIterates {
 /// One tool call, as the model asks for it.
 fn call(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
     ModelResponse::Calls {
+        text: String::new(),
+        echo: None,
         calls: vec![ToolRequest {
             id: id.to_owned(),
             name: name.to_owned(),
@@ -318,6 +320,7 @@ async fn drive(
     // forgetting it at one call site is a hang rather than a failure.
     let mut script = script;
     script.push(ModelResponse::Text {
+        echo: None,
         text: String::from("done"),
         tokens: TokenUsage::default(),
     });

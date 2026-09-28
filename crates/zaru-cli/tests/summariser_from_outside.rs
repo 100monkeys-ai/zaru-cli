@@ -58,7 +58,8 @@ use zaru_cli::providers::ProviderKind;
 use zaru_cli::providers::gemini::{Endpoint, GeminiClient};
 use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction};
 use zaru_cli::session::{Record, Transcript};
-use zaru_core::context::{ContextLimits, ContextWindow, Exchange, PressureThreshold};
+use zaru_core::context::{ContextLimits, ContextWindow, PressureThreshold};
+use zaru_core::conversation::Message;
 use zaru_core::iteration::PortFailure;
 use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse, TokenUsage};
@@ -174,12 +175,13 @@ impl Model for Recording {
         self.seen
             .lock()
             .expect("no panic holds this")
-            .push(request.prompt.as_str().to_owned());
+            .push(request.prompt.rendered());
         self.tools
             .lock()
             .expect("no panic holds this")
             .push(request.tools.len());
         Ok(ModelResponse::Text {
+            echo: None,
             text: "they agreed on four spaces".to_owned(),
             tokens: TokenUsage {
                 prompt: 900,
@@ -198,25 +200,90 @@ fn tight() -> ContextLimits {
     .expect("the threshold is below the window")
 }
 
-/// Stage enough layer 6 to cross the threshold, with `planted` inside it.
-fn session_carrying(planted: &str) -> SessionContext {
-    let mut session = SessionContext::opened(
-        prefix_for(None),
-        zaru_cli::compose::ContextShape::of(tight(), 0),
-    );
-    session.record(Exchange::of_turn(
-        "read the deploy notes",
-        // A tool result is where a captured secret actually arrives, which is
-        // the whole reason layer 6 is a redaction path at all.
-        &[format!("fs.read notes.txt -- the token is {planted}")],
-        "the notes name a token",
-    ));
-    for nth in 0..6 {
-        session.record(Exchange::verbatim(format!(
-            "exchange {nth}: {}",
-            "detail ".repeat(30)
+/// One turn's records, as the transcript holds them: what the person asked
+/// and the loop's messages.
+fn turn_records(n: u32, messages: Vec<Message>) -> Vec<Record> {
+    let mut records = Vec::with_capacity(1 + messages.len());
+    if let Some(Message::User { text }) = messages.first() {
+        records.push(Record::Conversation(zaru_cli::session::Utterance {
+            n,
+            voice: zaru_cli::session::Voice::User,
+            text: text.clone(),
+        }));
+    }
+    for message in messages {
+        records.push(Record::TurnLoop(zaru_core::tool_call::Event::Message(
+            message,
         )));
     }
+    records
+}
+
+/// A turn that read a file and answered.
+fn a_read(n: u32, task: &str, result: &str, said: &str) -> Vec<Record> {
+    turn_records(
+        n,
+        vec![
+            Message::User {
+                text: task.to_owned(),
+            },
+            Message::Assistant {
+                text: String::new(),
+                calls: vec![zaru_core::tool_call::ToolRequest {
+                    id: format!("call_{n}"),
+                    name: "fs.read".to_owned(),
+                    arguments: r#"{"path":"notes.txt"}"#.to_owned(),
+                }],
+                echo: None,
+            },
+            // A tool result is where a captured secret actually arrives, which
+            // is the whole reason layer 6 is a redaction path at all.
+            Message::Tool {
+                id: format!("call_{n}"),
+                name: "fs.read".to_owned(),
+                content: result.to_owned(),
+                failed: false,
+            },
+            Message::Assistant {
+                text: said.to_owned(),
+                calls: Vec::new(),
+                echo: None,
+            },
+        ],
+    )
+}
+
+/// A turn that is one message from the person.
+fn said(n: u32, text: String) -> Vec<Record> {
+    turn_records(n, vec![Message::User { text }])
+}
+
+/// The records of enough layer 6 to cross the threshold, with `planted`
+/// inside it.
+fn carrying_records(planted: &str) -> Vec<Record> {
+    let mut records = a_read(
+        0,
+        "read the deploy notes",
+        &format!("the token is {planted}"),
+        "the notes name a token",
+    );
+    for nth in 0..6 {
+        records.extend(said(
+            nth + 1,
+            format!("exchange {nth}: {}", "detail ".repeat(30)),
+        ));
+    }
+    records
+}
+
+/// Stage enough layer 6 to cross the threshold, with `planted` inside it,
+/// rebuilt from records as a session's is.
+fn session_carrying(planted: &str) -> SessionContext {
+    let mut session = SessionContext::opened(
+        prefix_for(None, &facts()),
+        zaru_cli::compose::ContextShape::of(tight(), 0),
+    );
+    session.rebuild_from(&carrying_records(planted));
     session
 }
 
@@ -266,7 +333,7 @@ async fn a_held_secret_in_the_compacted_span_is_absent_from_the_summarisation_re
     );
     let sent = prompts.first().expect("the summariser sent one request");
     assert!(
-        sent.contains("fs.read notes.txt"),
+        sent.contains(r#"fs.read {"path":"notes.txt"}"#),
         "the span really did reach the request, so the absence below is about redaction rather \
          than about the span being empty: {sent:?}"
     );
@@ -461,7 +528,7 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
     let held = held_secrets_for_redaction(&store, &keys).expect("the store reopens what it sealed");
 
     let mut session = SessionContext::opened(
-        prefix_for(None),
+        prefix_for(None, &facts()),
         zaru_cli::compose::ContextShape::of(tight(), 0),
     );
     let staged = [
@@ -469,12 +536,11 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
         "the deploy script is `just ship`, and it refuses on a dirty tree",
         "the rehearsal number is 4173",
     ];
-    for line in staged {
-        session.record(Exchange::verbatim(format!(
-            "{line}. {}",
-            "detail ".repeat(30)
-        )));
+    let mut records = Vec::new();
+    for (n, line) in (0_u32..).zip(staged) {
+        records.extend(said(n, format!("{line}. {}", "detail ".repeat(30))));
     }
+    session.rebuild_from(&records);
 
     let summariser = ModelSummariser::over(&client, &held);
     let compaction = session
@@ -486,7 +552,7 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
         .raw
         .as_ref()
         .expect("the staging crossed the threshold");
-    let summary = session.exchanges()[0].as_str().to_owned();
+    let summary = session.exchanges()[0].rendered();
     assert!(
         !summary.trim().is_empty(),
         "the provider returned an empty summary"
@@ -513,7 +579,7 @@ async fn one_real_summarisation_and_the_key_is_in_none_of_it() {
     free_of_key(&format!("{compaction:?}"), &key, "the compaction's Debug");
     free_of_key(&format!("{summariser:?}"), &key, "the summariser's Debug");
     for exchange in session.exchanges() {
-        free_of_key(exchange.as_str(), &key, "layer 6 after the compaction");
+        free_of_key(&exchange.rendered(), &key, "layer 6 after the compaction");
     }
 
     println!(
@@ -580,45 +646,34 @@ fn model_id(name: &str) -> zaru_cli::providers::ModelId {
 // ADR-0013 clause 5 — the number on the status row, from outside both crates
 // ---------------------------------------------------------------------------
 
-/// A restored session's row carries what the checkpoint held.
+/// A resumed session's row carries what its rebuilt layer 6 holds.
 ///
-/// **A seam check, and the seam is where it stops.** [ADR-0010] D3's
-/// checkpoint round-trips through `SessionContext::checkpoint` and
-/// `SessionContext::restored`, and this asserts the restored context reports
-/// the count the stored one did and that the count reaches a painted row.
+/// A resumed session's layer 6 is rebuilt from its transcript's records by
+/// `SessionContext::rebuilt`, the same rebuild every turn boundary does, and
+/// this asserts the rebuilt context reports the count the live one did and
+/// that the count reaches a painted row.
 ///
-/// **It is not a claim about `zaru --resume`.** `terminal::open` opens a
-/// *fresh* `SessionContext` and `SessionContext::restored` has no product
-/// caller, so on a real machine a resumed session's layer 6 is empty and its
-/// row shows the prefix alone. That gap is named on [ADR-0010] and
-/// [ADR-0013] rather than papered over here, and nothing below is quoted as
-/// evidence against the binary.
-///
-/// The mutant: `restored` ignoring the stored exchanges, which is exactly the
-/// failure that record's own documentation says would "look exactly like a
-/// session that had none".
+/// The mutant: `rebuilt` ignoring the records, which would look exactly like
+/// a session that had said nothing.
 #[test]
-fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
+fn a_rebuilt_context_puts_the_count_the_live_one_had_on_the_row() {
     use zaru_cli::terminal::driver::refresh_status;
     use zaru_tui::shell::{Shell, Status};
 
     let held = HeldSecrets::none();
     let saved = session_carrying("nothing-here");
-    let stored = saved.checkpoint();
     let expected = saved.usage(&held).used();
 
-    let restored = SessionContext::restored(
-        prefix_for(None),
+    let (restored, _) = SessionContext::rebuilt(
+        prefix_for(None, &facts()),
         zaru_cli::compose::ContextShape::of(tight(), 0),
-        &stored,
-    )
-    .expect("the checkpoint this type wrote is one it can read");
+        &carrying_records("nothing-here"),
+    );
 
     assert_eq!(
         restored.usage(&held).used(),
         expected,
-        "ADR-0010 D3's checkpoint is what the model needs to continue, so a restored context must \
-         cost what the saved one cost"
+        "a rebuilt context must cost what the live one cost"
     );
     assert!(
         expected > 0,
@@ -643,24 +698,17 @@ fn a_restored_context_puts_the_count_it_was_saved_with_back_on_the_row() {
         "the restored count must reach the row in both spellings; the segment was {segment:?}"
     );
 
-    // The empty case, so the check above cannot be satisfied by a `restored`
-    // that returns whatever it likes: a checkpoint with no exchanges must
-    // report the prefix alone, and that is a smaller number than the one above.
-    let empty = SessionContext::opened(
-        prefix_for(None),
+    // The empty case, so the check above cannot be satisfied by a `rebuilt`
+    // that returns whatever it likes: no records must report the prefix
+    // alone, and that is a smaller number than the one above.
+    let (empty, _) = SessionContext::rebuilt(
+        prefix_for(None, &facts()),
         zaru_cli::compose::ContextShape::of(tight(), 0),
+        &[],
     );
     assert!(
-        SessionContext::restored(
-            prefix_for(None),
-            zaru_cli::compose::ContextShape::of(tight(), 0),
-            &empty.checkpoint()
-        )
-        .expect("an empty checkpoint is legal")
-        .usage(&held)
-        .used()
-            < expected,
-        "a checkpoint holding no exchanges must restore to less than one holding seven"
+        empty.usage(&held).used() < expected,
+        "no records must rebuild to less than seven turns"
     );
 }
 
@@ -704,11 +752,14 @@ fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
     let planted = planted_bearer("row");
     let held = holding(&scratch, &planted);
     let mut context = session_carrying(&planted);
-    context.record(Exchange::of_turn(
+    let mut records = carrying_records(&planted);
+    records.extend(a_read(
+        7,
         "read it again",
-        &[format!("fs.read notes.txt -- still {planted}")],
+        &format!("still {planted}"),
         "the notes still name it",
     ));
+    context.rebuild_from(&records);
     let context = context;
 
     // The staging reaches both ends, which is what the two mutants above are
@@ -720,9 +771,9 @@ fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
     ];
     for end in ends {
         assert!(
-            end.as_str().contains(&planted),
+            end.rendered().contains(&planted),
             "the staging must put the bearer at both ends of layer 6, or a renderer showing one              of them is invisible to this check; that end was {:?}",
-            end.as_str()
+            end.rendered()
         );
     }
 
@@ -760,6 +811,18 @@ fn a_held_secret_in_layer_six_is_absent_from_the_status_row_that_measures_it() {
 }
 
 // --------------------------------- a home and an environment nobody handed
+
+/// The facts a check's layer 1 is built from: fixed, so a prompt a check
+/// compares is the same on every machine and every day.
+fn facts() -> zaru_cli::compose::Facts {
+    zaru_cli::compose::Facts {
+        directory: Some("/work".to_owned()),
+        system: "linux".to_owned(),
+        date: "2026-09-28".to_owned(),
+        tools: vec!["fs.read".to_owned()],
+        mode: None,
+    }
+}
 
 #[path = "support/decoy.rs"]
 mod decoy;

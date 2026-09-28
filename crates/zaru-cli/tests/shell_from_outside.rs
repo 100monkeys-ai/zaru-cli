@@ -641,6 +641,40 @@ fn a_turn_that_stops_between_two_calls(
                     phase,
                 })
             };
+            // What the loop records as the turn's conversation, in the order
+            // it records it: the task, the model's two calls, each result.
+            let said = |message| Record::TurnLoop(zaru_core::tool_call::Event::Message(message));
+            let result = |id: &str, name: &str| {
+                said(zaru_core::conversation::Message::Tool {
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                    content: format!("what {name} returned"),
+                    failed: false,
+                })
+            };
+            transcript
+                .record(&said(zaru_core::conversation::Message::User {
+                    text: "check the notes and run the tests".to_owned(),
+                }))
+                .expect("a record");
+            transcript
+                .record(&said(zaru_core::conversation::Message::Assistant {
+                    text: String::new(),
+                    calls: vec![
+                        zaru_core::tool_call::ToolRequest {
+                            id: "a".to_owned(),
+                            name: "fs.read".to_owned(),
+                            arguments: r#"{"path":"notes/one.md"}"#.to_owned(),
+                        },
+                        zaru_core::tool_call::ToolRequest {
+                            id: "b".to_owned(),
+                            name: "cmd.run".to_owned(),
+                            arguments: r#"{"command":"just test"}"#.to_owned(),
+                        },
+                    ],
+                    echo: None,
+                }))
+                .expect("a record");
             transcript
                 .record(&call("fs.read `notes/one.md`", Phase::Started))
                 .expect("a record");
@@ -648,11 +682,17 @@ fn a_turn_that_stops_between_two_calls(
                 .record(&call("fs.read `notes/one.md`", Phase::Completed))
                 .expect("a record");
             transcript
+                .record(&result("a", "fs.read"))
+                .expect("a record");
+            transcript
                 .record(&call("cmd.run `just test`", Phase::Started))
                 .expect("a record");
             if finish_the_second {
                 transcript
                     .record(&call("cmd.run `just test`", Phase::Completed))
+                    .expect("a record");
+                transcript
+                    .record(&result("b", "cmd.run"))
                     .expect("a record");
                 return std::task::Poll::Ready("the turn finished");
             }
@@ -740,9 +780,10 @@ fn corpus_an_interrupt_between_two_tool_calls_leaves_at_most_the_event_in_flight
     let after = resumed(&directory);
     assert_eq!(
         after.tail.len(),
-        before + 3,
-        "the transcript gained {} record(s) rather than the three the turn wrote before it was \
-         interrupted",
+        before + 6,
+        "the transcript gained {} record(s) rather than the six the turn wrote before it was \
+         interrupted: the task, the model's two calls, the first call's pair and its result, and \
+         the second call's start",
         after.tail.len() - before
     );
     let interrupted = after
@@ -812,7 +853,9 @@ fn an_uninterrupted_turn_leaves_a_matched_pair_for_every_call() {
     );
 
     let after = resumed(&directory);
-    assert_eq!(after.tail.len(), before + 4);
+    // The six records of the interrupted staging, the second call's close
+    // and its result.
+    assert_eq!(after.tail.len(), before + 8);
     assert!(
         after.interrupted.is_none(),
         "resume reported an interruption for a turn that finished: {:?}",
@@ -902,197 +945,6 @@ fn a_standing_tip_yields_on_the_first_keystroke_during_a_turn() {
     );
 }
 
-/// [ADR-0010] D4: a resume "restores `context.json`", and what comes back is
-/// [ADR-0013] D1's layer 6 as the last process left it.
-///
-/// # The mutant this is written against
-///
-/// `terminal::open` opened a **fresh** `SessionContext` and threw the
-/// checkpoint away, so a resumed session answered its first typed line from a
-/// context that had never heard of the session it was sitting in. Restoring
-/// nothing and restoring correctly both produce a shell that opens, which is
-/// why this reads the exchanges rather than the pane.
-///
-/// # Three sessions, and the third is what makes the first two mean anything
-///
-/// A session whose checkpoint holds two exchanges comes back holding both, in
-/// order. A session whose checkpoint holds a **summary** and whose transcript
-/// holds the `Compacted` record carrying the span it replaced comes back
-/// holding the summary and **not** the span — D2 says "only the model's view
-/// is compacted", so rebuilding layer 6 from the transcript would restore the
-/// raw span, and that mutant is the one the second arm catches. And a session
-/// that never checkpointed comes back empty, which is the accepting sibling:
-/// without it, a restorer that invented exchanges would pass the first two.
-///
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-/// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
-#[test]
-fn a_resumed_session_restores_layer_six_from_the_checkpoint_and_not_the_transcript() {
-    use zaru_cli::compose::SessionContext;
-
-    let scratch = Scratch::new("restore-layer-six");
-    let directory = scratch
-        .path()
-        .join(".zaru")
-        .join("sessions")
-        .join(scratch.id.to_string());
-
-    let limits =
-        zaru_cli::cli::layers::context_limits(zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS);
-    let held = zaru_cli::redaction::HeldSecrets::none();
-
-    // A session that said two things, checkpointed through the product's own
-    // writer rather than by writing JSON here.
-    let mut said = SessionContext::opened(
-        zaru_cli::compose::prefix_for(None),
-        zaru_cli::compose::ContextShape::of(limits, 0),
-    );
-    said.record(zaru_core::context::Exchange::of_turn(
-        "user: remember the word saffron",
-        &[],
-        "zaru: ok",
-    ));
-    said.record(zaru_core::context::Exchange::of_turn(
-        "user: and the number nine",
-        &[format!("fs.read `notes/{NONCE}.md`")],
-        "zaru: noted",
-    ));
-    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
-        .write(&said.checkpoint())
-        .expect("the checkpoint is written");
-
-    let reopened = resumed(&directory);
-    assert!(
-        reopened.checkpoint.is_some(),
-        "the session checkpointed, so a resume carries one and the staging holds"
-    );
-    // **Through the product's own door**, which is what `terminal::open` calls
-    // before it takes the terminal — not `SessionContext::restored` directly.
-    // A check that called the constructor would prove the mechanism and say
-    // nothing about whether anything reaches it
-    // (library verification-lessons §25).
-    let restored = zaru_cli::terminal::open::restored_context(
-        &reopened,
-        &classifier(),
-        evidence(),
-        zaru_cli::compose::ContextShape::of(
-            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-            0,
-        ),
-        None,
-    )
-    .expect("a checkpoint this harness wrote reads back");
-    let held_texts: Vec<&str> = restored
-        .exchanges()
-        .iter()
-        .map(zaru_core::context::Exchange::as_str)
-        .collect();
-    assert_eq!(
-        held_texts.len(),
-        2,
-        "a resumed session restores what it said; it restored {:?}",
-        held_texts
-    );
-    assert!(
-        held_texts[0].contains("saffron") && held_texts[1].contains("nine"),
-        "layer 6 came back out of order or incomplete: {held_texts:?}"
-    );
-
-    // A compacted session: the checkpoint holds the summary, the transcript
-    // holds the span it replaced. Restoring the transcript's records instead
-    // would bring the span back.
-    let span = format!("user: the raw span {NONCE} nobody should restore");
-    let mut compacted = SessionContext::opened(
-        zaru_cli::compose::prefix_for(None),
-        zaru_cli::compose::ContextShape::of(limits, 0),
-    );
-    compacted.record(zaru_core::context::Exchange::summary(
-        "a summary standing for earlier turns",
-    ));
-    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
-        .write(&compacted.checkpoint())
-        .expect("the checkpoint is written");
-    let mut transcript =
-        Transcript::append_to(directory.join("transcript.jsonl")).expect("a transcript");
-    transcript
-        .record(&Record::Compacted(zaru_core::context::Compaction {
-            announcements: Vec::new(),
-            raw: Some(zaru_core::context::Span::new(vec![
-                zaru_core::context::Exchange::verbatim(span.clone()),
-            ])),
-        }))
-        .expect("the compaction is recorded");
-
-    let reopened = resumed(&directory);
-    let restored = zaru_cli::terminal::open::restored_context(
-        &reopened,
-        &classifier(),
-        evidence(),
-        zaru_cli::compose::ContextShape::of(
-            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-            0,
-        ),
-        None,
-    )
-    .expect("the compacted checkpoint reads back");
-    let rendered: String = restored
-        .exchanges()
-        .iter()
-        .map(zaru_core::context::Exchange::as_str)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        rendered.contains("a summary standing for earlier turns"),
-        "D2 replaces the span with the summary, and the summary is not what came back: {rendered}"
-    );
-    assert!(
-        !rendered.contains(&span),
-        "the raw span was restored into layer 6. D2 says only the model's view is compacted, so \
-         the span belongs in the transcript and nowhere else: {rendered}"
-    );
-    // The staging is asserted, so a transcript that never held the span could
-    // not satisfy the arm above by there being nothing to find.
-    let on_disk =
-        std::fs::read_to_string(directory.join("transcript.jsonl")).expect("the transcript reads");
-    assert!(
-        on_disk.contains(&span),
-        "the span is not in the transcript either, so this check asserted nothing"
-    );
-    let _ = held;
-
-    // The accepting sibling: a session that never checkpointed.
-    let store = SessionStore::open(scratch.path().join(".zaru")).expect("the store");
-    let untried = store
-        .start(SessionId::mint(&zaru_cli::session::SystemWallClock).expect("a ULID"))
-        .expect("a session directory");
-    let reopened = resumed(untried.directory());
-    assert!(
-        reopened.checkpoint.is_none(),
-        "a session with no turns has written no checkpoint, which `Checkpoint::read` calls not \
-         an error",
-    );
-    assert_eq!(
-        reopened.turns, 0,
-        "and it has had no turns, so its next turn is turn one",
-    );
-    let restored = zaru_cli::terminal::open::restored_context(
-        &reopened,
-        &classifier(),
-        evidence(),
-        zaru_cli::compose::ContextShape::of(
-            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-            0,
-        ),
-        None,
-    )
-    .expect("an absent checkpoint is not a failure");
-    assert!(
-        restored.exchanges().is_empty(),
-        "a session that never checkpointed opens with an empty layer 6, and this one did not",
-    );
-    let _ = limits;
-}
-
 /// The classifier the binary builds, so a check reads the same class it does.
 fn classifier() -> zaru_cli::cli::classify::Surface<'static> {
     zaru_cli::cli::classify::Surface::new(env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY"))
@@ -1103,49 +955,41 @@ fn evidence() -> zaru_cli::failure::SessionEvidence {
     zaru_cli::failure::SessionEvidence::NoSessionExists
 }
 
-/// A checkpoint this harness did not write is refused, and its contents reach
-/// nothing a person or a log can read.
+/// A transcript line this harness did not write is refused, and its contents
+/// reach nothing a person or a log can read.
 ///
 /// # Two properties, and the second is why this is a corpus case
 ///
-/// [ADR-0010] D3's accepted Update: "A document this type did not write is
-/// **refused** rather than read as an empty conversation, which would drop a
-/// session's history and look exactly like a session that had none." That is
-/// the first arm.
+/// A resumed session's conversation is rebuilt from its transcript, so a line
+/// that parses as JSON and is not a record this harness writes is refused,
+/// rather than skipped: skipping it would drop part of what the model is sent
+/// and look exactly like a session that had said less. That is the first arm.
 ///
-/// The second is that the refusal carries **nothing of the document**. A
-/// `serde_json::Error`'s own message quotes the value it tripped on, and this
-/// file holds a session's whole conversation — so a hand-edited or corrupted
-/// `context.json` is exactly the shape that puts a session's text into a
-/// defect report. [ADR-0016] D3's Update already decided the same question for
-/// a panic's message, and `Classify::checkpoint_contents` carries no field of
-/// the error at all.
+/// The second is that the refusal carries **nothing of the line**. A
+/// `serde_json::Error`'s own message quotes the value it tripped on, and a
+/// transcript holds a session's whole conversation and every tool result — so
+/// a hand-edited or corrupted `transcript.jsonl` is exactly the shape that
+/// puts a session's text into a defect report.
+///
+/// This case replaced one about a foreign `context.json` on 2026-09-28, when
+/// the transcript became what a resume reads and `context.json` stopped being
+/// read at all: the hostile input moved with the reader.
 ///
 /// Asserted by **value and by ASCII core**, because a `Debug` rendering
 /// escapes a combining mark and an absence assertion written against the value
 /// as typed is blind to a rendering that published every byte of it
 /// (library verification-lessons §50 and §63).
-///
-/// The accepting sibling is the same document made well-formed, which
-/// restores — so this cannot pass against a reader that refuses everything.
-///
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-/// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[test]
-fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its_contents() {
-    use zaru_cli::compose::SessionContext;
-
-    let scratch = Scratch::new("foreign-checkpoint");
+fn corpus_a_transcript_line_this_harness_did_not_write_is_refused_without_quoting_its_contents() {
+    let scratch = Scratch::new("foreign-transcript");
     let directory = scratch
         .path()
         .join(".zaru")
         .join("sessions")
         .join(scratch.id.to_string());
-    let limits =
-        zaru_cli::cli::layers::context_limits(zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS);
 
-    // A secret in the position a session's own text occupies. The combining
-    // mark is what makes the ASCII-core arm necessary rather than decorative.
+    // A secret in the position a tool result occupies. The combining mark is
+    // what makes the ASCII-core arm necessary rather than decorative.
     let secret = format!("nn_mcp_{NONCE}e\u{301}\u{1f701}");
     let core = secret
         .split(|c: char| !c.is_ascii())
@@ -1157,72 +1001,31 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
         "the ASCII core has to be long enough that finding it is finding the value: {core}"
     );
 
-    // Valid JSON, wrong shape: `exchanges` is a string where the type writes
-    // an array. `serde_json` accepts the document and `SessionContext` does
-    // not, which is the case a checkpoint that will not parse at all cannot
-    // reach.
-    let foreign = serde_json::json!({ "exchanges": secret });
-    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
-        .write(&foreign)
-        .expect("the document is written");
+    // Valid JSON, wrong shape: a result whose `failed` is the secret where the
+    // record carries a boolean.
+    let line = serde_json::json!({
+        "turn_loop": { "message": {
+            "role": "tool", "id": "a", "name": "fs.read", "content": "x", "failed": secret,
+        }}
+    });
+    std::fs::write(directory.join("transcript.jsonl"), format!("{line}\n"))
+        .expect("the line is written");
 
-    let reopened = resumed(&directory);
-    let error = SessionContext::restored(
-        zaru_cli::compose::prefix_for(None),
-        zaru_cli::compose::ContextShape::of(limits, 0),
-        reopened
-            .checkpoint
-            .as_ref()
-            .expect("a checkpoint is on disk"),
-    )
-    .expect_err("a document this type did not write is refused, not read as an empty session");
-    // And the door refuses it too, rather than only the constructor.
-    let refused = zaru_cli::terminal::open::restored_context(
-        &reopened,
-        &classifier(),
-        evidence(),
-        zaru_cli::compose::ContextShape::of(
-            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-            0,
-        ),
-        None,
-    )
-    .expect_err("the shell refuses to open over a checkpoint it cannot read");
+    let failure = zaru_cli::session::resume(&directory, usize::MAX)
+        .expect_err("a line this harness did not write is refused, not read as a shorter session");
+    let quoted = format!("{failure}\n{failure:?}");
+    assert!(
+        quoted.contains(&core),
+        "the error does not quote the line, so this check is guarding against nothing and the \
+         classifier below could carry anything: {quoted}"
+    );
 
-    let classified = match *refused {
-        zaru_cli::failure::Exit::Failed(classified) => classified,
-        zaru_cli::failure::Exit::Succeeded => {
-            panic!("the shell opened over a checkpoint it could not read")
-        }
-    };
+    let classified = classifier().resume(&failure, evidence());
     assert!(
         matches!(classified, zaru_cli::failure::Classified::Defect(_)),
         "ADR-0016 D1 makes a file only this harness writes and cannot read back a defect, and \
          this was classified as something else",
     );
-    assert_eq!(
-        zaru_cli::failure::Exit::Failed(classified.clone()).code(),
-        70,
-        "D5's defect code",
-    );
-
-    // **The instrument is shown to work on the thing it is guarding against,
-    // and that thing is the reason this classifier exists.** A
-    // `serde_json::Error` quotes the value it tripped on, in its `Display` and
-    // in its `Debug` alike — measured here rather than asserted, so the
-    // absences below are a finding rather than a search of an empty string
-    // (library verification-lessons §26). This is precisely what
-    // `Classify::checkpoint_contents` must not pass on: the value it quotes is
-    // a line of the user's conversation.
-    let quoted = format!("{error}\n{error:?}");
-    assert!(
-        quoted.contains(&core),
-        "the error does not quote the document, so this check is guarding against nothing \
-         and the classifier below could carry anything: {quoted}"
-    );
-
-    // Everything the harness renders about this failure: what the surface
-    // prints, and the `Debug` that would reach a panic message or a log.
     let readable = format!(
         "{}\n{:?}",
         zaru_cli::failure::Presentation::of(&classified),
@@ -1231,36 +1034,23 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
     for (what, needle) in [("the value", secret.as_str()), ("its ASCII core", &core)] {
         assert!(
             !readable.contains(needle),
-            "{what} from a corrupt checkpoint reached what a person reads. The file holds a \
+            "{what} from a corrupt transcript reached what a person reads. The file holds a \
              session's whole conversation, so nothing of it may travel with the refusal:\n{readable}"
         );
     }
 
-    // The accepting sibling: the same document, well-formed.
-    let mut said = SessionContext::opened(
-        zaru_cli::compose::prefix_for(None),
-        zaru_cli::compose::ContextShape::of(limits, 0),
-    );
-    said.record(zaru_core::context::Exchange::verbatim(secret.clone()));
-    zaru_cli::session::Checkpoint::at(directory.join("context.json"))
-        .write(&said.checkpoint())
-        .expect("the document is written");
-    let reopened = resumed(&directory);
-    let restored = zaru_cli::terminal::open::restored_context(
-        &reopened,
-        &classifier(),
-        evidence(),
-        zaru_cli::compose::ContextShape::of(
-            zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER),
-            0,
-        ),
-        None,
-    )
-    .expect("a checkpoint this harness wrote reads back");
+    // The accepting sibling: the same line, well-formed, resumes.
+    let line = serde_json::json!({
+        "turn_loop": { "message": {
+            "role": "tool", "id": "a", "name": "fs.read", "content": "x", "failed": false,
+        }}
+    });
+    std::fs::write(directory.join("transcript.jsonl"), format!("{line}\n"))
+        .expect("the line is written");
     assert_eq!(
-        restored.exchanges().len(),
+        resumed(&directory).records.len(),
         1,
-        "the sibling must restore, or the refusal above is a reader that refuses everything",
+        "the sibling must resume, or the refusal above is a reader that refuses everything",
     );
 }
 
@@ -1291,11 +1081,29 @@ fn corpus_a_checkpoint_this_harness_did_not_write_is_refused_without_quoting_its
 /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
 #[test]
 fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
-    use zaru_cli::terminal::driver::{Pending, Turned};
+    use zaru_cli::terminal::driver::Turned;
     use zaru_cli::terminal::{AfterTurn, after};
+    use zaru_core::conversation::Message;
     use zaru_tui::shell::port::{Line, Register};
 
-    let redactor = zaru_cli::redaction::HeldSecrets::none();
+    let context = || {
+        zaru_cli::compose::SessionContext::opened(
+            zaru_cli::compose::prefix_for(None, &facts()),
+            zaru_cli::terminal::open::context_shape_of(None),
+        )
+    };
+    // The results a turn's conversation holds for the call that was running.
+    let closed_as_incomplete = |context: &zaru_cli::compose::SessionContext| {
+        context
+            .exchanges()
+            .iter()
+            .flat_map(|exchange| exchange.messages().iter())
+            .filter(|message| {
+                matches!(message, Message::Tool { content, failed: true, .. }
+                    if content == zaru_cli::compose::prose::CALL_DID_NOT_COMPLETE)
+            })
+            .count()
+    };
 
     // Two real sessions: one whose turn was interrupted between two calls, and
     // one whose every call closed.
@@ -1357,11 +1165,11 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
     let (interrupted_session, whole_session) = (&sessions[0], &sessions[1]);
 
     // **Over the *interrupted* session on purpose.** A turn that ran to
-    // completion owes the model nothing whatever is on disk beside it, so an
-    // `after` that re-derived on every ending would report something owed
-    // here — and against a session with no interruption it would not, which
-    // is how that mutation survives a check staged the obvious way round.
-    let mut owed = Pending::none();
+    // completion has already been rebuilt by the turn itself, so an `after`
+    // that rebuilt on every ending would change nothing visible here — and
+    // against a session with no interruption it would not either, which is
+    // how that mutation survives a check staged the obvious way round.
+    let mut owed = context();
     // A task is queued across all four arms, so what each does with it is
     // asserted rather than assumed: only the interrupted one discards.
     let mut queued = Some(Queued::of("the next thing"));
@@ -1369,7 +1177,6 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         Turned::Ran(vec![Line::new(Register::Plain, "an answer")]),
         &mut owed,
         interrupted_session,
-        &redactor,
         &mut queued,
     );
     let AfterTurn::Carries(lines) = ran else {
@@ -1381,9 +1188,9 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         "a turn that ran must hand its own lines to the pane"
     );
     assert!(
-        !owed.is_owed(),
-        "a turn that ran to completion left the next one owing the model something, so the \
-         re-derivation fires on every ending rather than on an interruption"
+        owed.exchanges().is_empty(),
+        "a turn that ran is rebuilt by the turn itself, and `after` rebuilt it a second time, so \
+         the rebuild fires on every ending rather than on an interruption"
     );
     assert_eq!(
         queued.as_ref().map(|task| task.task.as_str()),
@@ -1411,13 +1218,12 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         let narrator = zaru_cli::terminal::driver::PaneNarrator::over(&pane);
         zaru_cli::compose::Narrator::interrupted(&narrator)
     };
-    let mut owed = Pending::none();
+    let mut owed = context();
     let mut queued = Some(Queued::of("the next thing"));
     let interrupted = after(
         Turned::Interrupted(narrated),
         &mut owed,
         interrupted_session,
-        &redactor,
         &mut queued,
     );
     let AfterTurn::Carries(lines) = interrupted else {
@@ -1431,10 +1237,11 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         "an interrupt adds no line here: the narrator has already painted the one there is, and a \
          second would be two statements of one event"
     );
-    assert!(
-        owed.is_owed(),
-        "the interrupt left a `Started` with no `Completed` on disk and the next turn owes the \
-         model nothing about it, so ADR-0010 D4's carrier was not re-derived in this process"
+    assert_eq!(
+        closed_as_incomplete(&owed),
+        1,
+        "the interrupt left a call with no result on disk, and the next turn's conversation does \
+         not tell the model it did not complete, so layer 6 was not rebuilt in this process"
     );
     assert_eq!(
         queued, None,
@@ -1445,7 +1252,7 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
     // The accepting sibling, through the same arm: a session whose every call
     // closed owes nothing, so the assertion above cannot pass against an
     // `after` that reports an interruption for every turn.
-    let mut owed = Pending::none();
+    let mut owed = context();
     let mut shell = Shell::open(Status::new("bare", "01ARZ3NDEKTSV4RRFFQ69G5FAV"));
     let mut surface = Recorded::wide();
     let narrated = {
@@ -1461,27 +1268,20 @@ fn corpus_an_interrupted_turn_is_the_one_ending_the_pump_carries_on_from() {
         Turned::Interrupted(narrated),
         &mut owed,
         whole_session,
-        &redactor,
         &mut None,
     );
     assert!(
-        !owed.is_owed(),
-        "a session whose every call closed owes the model nothing, and this reported an \
-         interruption for a session that had none"
+        !owed.exchanges().is_empty() && closed_as_incomplete(&owed) == 0,
+        "a session whose every call closed tells the model of no call that did not complete, and \
+         this closed one for a session that had none"
     );
 
     // The arm that discriminates in the other direction. A mapping that
     // carried on from everything would leave a check's pump hanging on a
     // source that has stopped answering.
-    let mut owed = Pending::none();
+    let mut owed = context();
     let mut queued = Some(Queued::of("the next thing"));
-    let ended = after(
-        Turned::SourceEnded,
-        &mut owed,
-        whole_session,
-        &redactor,
-        &mut queued,
-    );
+    let ended = after(Turned::SourceEnded, &mut owed, whole_session, &mut queued);
     assert!(
         matches!(ended, AfterTurn::Stops(_)),
         "a terminal that stopped answering must end the pump: {ended:?}"
@@ -2573,7 +2373,7 @@ fn the_context_figure_is_on_the_row_of_a_session_that_resolved_no_provider() {
     let limits =
         zaru_cli::cli::layers::context_limits(zaru_cli::cli::layers::WINDOW_WHEN_NO_PROVIDER);
     let context = SessionContext::opened(
-        zaru_cli::compose::prefix_for(None),
+        zaru_cli::compose::prefix_for(None, &facts()),
         zaru_cli::compose::ContextShape::of(limits, 0),
     );
     let held = zaru_cli::redaction::HeldSecrets::none();
@@ -2706,6 +2506,18 @@ fn the_sessions_once_ever_notice_is_painted_above_the_turns_own_lines() {
 }
 
 // --------------------------------- a home and an environment nobody handed
+
+/// The facts a check's layer 1 is built from: fixed, so a prompt a check
+/// compares is the same on every machine and every day.
+fn facts() -> zaru_cli::compose::Facts {
+    zaru_cli::compose::Facts {
+        directory: Some("/work".to_owned()),
+        system: "linux".to_owned(),
+        date: "2026-09-28".to_owned(),
+        tools: vec!["fs.read".to_owned()],
+        mode: None,
+    }
+}
 
 #[path = "support/decoy.rs"]
 mod decoy;

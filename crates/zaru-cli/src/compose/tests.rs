@@ -99,30 +99,44 @@ fn a_turn_fetches_through_the_real_client_with_the_binary_s_own_bounds() {
     );
 }
 
-/// The prefix carries the absence line in layer 1 and nothing in the other
-/// three.
+/// Where no persona is served, layer 1 is the harness's own system prompt,
+/// and the other three layers are empty.
 ///
-/// ADR-0027's decision of 2026-09-05 is that the harness assembles no layer-1
-/// identity text and says so; this holds both halves, because a prefix that
-/// carried a persona *and* the line would satisfy the first alone.
+/// The prompt states facts a model needs and cannot find out: the working
+/// directory, the operating system, the date, the tools, that `cmd.run` has
+/// no shell. It is kept under two hundred words, and it has no personality.
 ///
-/// Watched red by leaving layer 1 empty, which printed *"ADR-0027's decision
-/// is that the absence is visible rather than inferred, and the assembled
-/// prefix does not say so"*.
+/// Watched red by leaving layer 1 empty, which printed *"layer 1 is not the
+/// harness's system prompt where no persona was served"*.
 #[test]
-fn the_stable_prefix_says_that_no_persona_was_supplied() {
+fn the_stable_prefix_is_the_harness_system_prompt_where_no_persona_is_served() {
     use zaru_core::context::Layer;
 
-    let prefix = context::prefix_for(None);
-    assert!(
-        prefix.as_str().contains(prose::NO_PERSONA),
-        "ADR-0027's decision is that the absence is visible rather than inferred, and the \
-         assembled prefix does not say so: {:?}",
-        prefix.as_str()
-    );
+    let facts = crate::compose::context::fixtures::facts();
+    let prefix = context::prefix_for(None, &facts);
+    let expected = context::system_prompt(&facts);
     assert_eq!(
         prefix.layer(Layer::SystemPromptAndPersona),
-        Some(prose::NO_PERSONA)
+        Some(expected.as_str()),
+        "layer 1 is not the harness's system prompt where no persona was served: {:?}",
+        prefix.as_str()
+    );
+    for fact in [
+        "Working directory: /work",
+        "Operating system: linux",
+        "Today's date: 2026-09-28",
+        "Tools: fs.read",
+        "no shell",
+    ] {
+        assert!(
+            expected.contains(fact),
+            "the system prompt does not state {fact:?}: {expected}"
+        );
+    }
+    let words = expected.split_whitespace().count();
+    assert!(
+        words < 200,
+        "the system prompt is {words} words, over the two hundred it is held to: {expected}"
     );
     for empty in [
         Layer::Grounding,
@@ -135,9 +149,6 @@ fn the_stable_prefix_says_that_no_persona_was_supplied() {
             "layer {empty:?} carries something this composition did not put there"
         );
     }
-    // No sentence of persona is invented: the line is about the harness, and
-    // the record's own name for what is missing is in it.
-    assert!(prose::NO_PERSONA.contains("no persona"));
 }
 
 /// A context that will not fit refuses with both numbers, and does not
@@ -170,7 +181,11 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
         PressureThreshold::new(256).expect("not zero"),
     )
     .expect("the threshold is below the window");
-    let context = Context::opened(context::prefix_for(None), limits, 0);
+    let context = Context::opened(
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
+        limits,
+        0,
+    );
     let held = HeldSecrets::none();
     let policy = TurnContext::over(&context, &held, false);
 
@@ -188,10 +203,15 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
             // not hold the prefix on its own would make every implementation
             // refuse, and this check would be about nothing.
             assert!(
-                (context::prefix_for(None).as_str().len() as u64) < window,
+                (context::prefix_for(None, &crate::compose::context::fixtures::facts())
+                    .as_str()
+                    .len() as u64)
+                    < window,
                 "the prefix alone does not fit this window, so the refusal says nothing about the \
                  tail: {} against {window}",
-                context::prefix_for(None).as_str().len()
+                context::prefix_for(None, &crate::compose::context::fixtures::facts())
+                    .as_str()
+                    .len()
             );
             assert!(
                 needed > window,
@@ -206,14 +226,15 @@ fn a_turn_past_the_window_refuses_with_both_numbers() {
     }
 }
 
-/// A task that fits reaches the model with the absence line in front of it.
+/// A task that fits reaches the model with the system prompt beside it, in
+/// the system text, and the task as the turn's own message.
 ///
 /// The accepting sibling of the refusal above: without it, an implementation
 /// that refused every assembly would pass that check.
 #[test]
 fn a_turn_that_fits_carries_the_prefix_and_then_the_task() {
     let context = Context::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::cli::layers::context_limits(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
         0,
     );
@@ -225,16 +246,13 @@ fn a_turn_that_fits_carries_the_prefix_and_then_the_task() {
     }))
     .expect("a short task fits a megabyte window");
 
-    assert!(
-        prompt.as_str().starts_with(prose::NO_PERSONA),
-        "ADR-0013 D1 puts the prefix first, so a cache has something stable to match: {:?}",
-        prompt.as_str()
+    assert_eq!(
+        prompt.system(),
+        Some(context::system_prompt(&crate::compose::context::fixtures::facts()).as_str()),
+        "ADR-0013 D1's prefix is the system text, sent in the provider's system role: {prompt:?}"
     );
-    assert!(
-        prompt
-            .as_str()
-            .ends_with("read src/lib.rs and say what it is")
-    );
+    assert!(prompt.history().is_empty());
+    assert_eq!(prompt.task(), "read src/lib.rs and say what it is");
 }
 
 /// The sink writes one transcript line per event, as a `TurnLoop` record.
@@ -415,6 +433,7 @@ async fn the_generator_asks_with_the_same_tools_a_turn_offers() {
     use zaru_core::iteration::Generator as _;
 
     let model = Staged::answering(zaru_core::tool_call::ModelResponse::Text {
+        echo: None,
         text: "nothing to apply".to_owned(),
         tokens: usage(),
     });
@@ -462,6 +481,8 @@ async fn a_candidates_text_is_the_calls_it_asked_for_and_no_sentence_of_ours() {
 
     let arguments = r#"{"path":"notes.txt","contents":"rehearsal 4173"}"#;
     let model = Staged::answering(zaru_core::tool_call::ModelResponse::Calls {
+        text: String::new(),
+        echo: None,
         calls: vec![zaru_core::tool_call::ToolRequest {
             id: "call-1".to_owned(),
             name: "fs.write".to_owned(),
@@ -509,6 +530,7 @@ async fn a_prose_answer_is_a_candidate_with_nothing_to_apply() {
 
     let said = "I would rather not — 日本語 — nonce-4173";
     let model = Staged::answering(zaru_core::tool_call::ModelResponse::Text {
+        echo: None,
         text: said.to_owned(),
         tokens: usage(),
     });
@@ -551,6 +573,7 @@ impl StagedModel {
 
     fn text(text: &str) -> Self {
         Self::answering(zaru_core::tool_call::ModelResponse::Text {
+            echo: None,
             text: text.to_owned(),
             tokens: zaru_core::tool_call::TokenUsage {
                 prompt: 700,
@@ -576,7 +599,7 @@ impl zaru_core::tool_call::Model for StagedModel {
         self.asked
             .lock()
             .expect("no panic holds this")
-            .push(request.prompt.as_str().to_owned());
+            .push(request.prompt.rendered());
         self.tools_offered
             .lock()
             .expect("no panic holds this")
@@ -587,11 +610,17 @@ impl zaru_core::tool_call::Model for StagedModel {
 
 /// A span of layer 6, oldest first.
 fn span_of(exchanges: &[&str]) -> zaru_core::context::Span {
-    zaru_core::context::Span::new(
-        exchanges
+    zaru_core::context::Span::of(
+        &exchanges
             .iter()
-            .map(|text| zaru_core::context::Exchange::verbatim(*text))
-            .collect(),
+            .map(|text| {
+                zaru_core::context::Exchange::of_turn(vec![
+                    zaru_core::conversation::Message::User {
+                        text: (*text).to_owned(),
+                    },
+                ])
+            })
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -691,6 +720,8 @@ async fn a_model_that_stops_or_asks_for_a_tool_has_not_summarised_anything() {
     );
 
     let calling = StagedModel::answering(zaru_core::tool_call::ModelResponse::Calls {
+        text: String::new(),
+        echo: None,
         calls: vec![zaru_core::tool_call::ToolRequest {
             id: "call-1".to_owned(),
             name: "fs.read".to_owned(),
@@ -768,6 +799,35 @@ fn tight_limits(window: u64, threshold: u64) -> zaru_core::context::ContextLimit
     .expect("the threshold is below the window")
 }
 
+/// A session's transcript, as the records a check stages into it.
+///
+/// Layer 6 is rebuilt from a transcript's records, so a check stages a
+/// conversation the way a session does: by writing records, and rebuilding.
+#[derive(Default)]
+struct Transcribed(Vec<Record>);
+
+impl Transcribed {
+    /// One turn: the person's message, as both of its records keep it.
+    fn said(&mut self, session: &mut crate::compose::SessionContext, text: impl Into<String>) {
+        let text = text.into();
+        let n = u32::try_from(self.0.len()).unwrap_or(u32::MAX);
+        self.0.push(Record::Conversation(crate::session::Utterance {
+            n,
+            voice: crate::session::Voice::User,
+            text: text.clone(),
+        }));
+        self.0.push(Record::TurnLoop(Event::Message(
+            zaru_core::conversation::Message::User { text },
+        )));
+        session.rebuild_from(&self.0);
+    }
+
+    /// A compaction, recorded where the boundary that made it records it.
+    fn compacted(&mut self, compaction: zaru_core::context::Compaction) {
+        self.0.push(Record::Compacted(compaction));
+    }
+}
+
 /// A summariser that answers a fixed sentence and counts how often it is asked.
 struct Counting {
     answer: String,
@@ -827,10 +887,11 @@ impl zaru_core::context::Summariser for Failing {
 fn a_turn_boundary_under_the_threshold_spends_nothing() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(tight_limits(100_000, 75_000), 0),
     );
-    session.record(zaru_core::context::Exchange::verbatim("a short exchange"));
+    let mut transcribed = Transcribed::default();
+    transcribed.said(&mut session, "a short exchange");
     let summariser = Counting::answering("never asked");
 
     let compaction = futures_lite_block_on(session.at_turn_boundary(&summariser, &held))
@@ -856,19 +917,20 @@ fn a_turn_boundary_under_the_threshold_spends_nothing() {
 fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
     );
+    let mut transcribed = Transcribed::default();
     for nth in 0..8 {
-        session.record(zaru_core::context::Exchange::verbatim(format!(
-            "exchange {nth}: {}",
-            "detail ".repeat(30)
-        )));
+        transcribed.said(
+            &mut session,
+            format!("exchange {nth}: {}", "detail ".repeat(30)),
+        );
     }
     let before: Vec<String> = session
         .exchanges()
         .iter()
-        .map(|exchange| exchange.as_str().to_owned())
+        .map(zaru_core::context::Exchange::rendered)
         .collect();
     let summariser = Counting::answering("they settled on eight spaces");
 
@@ -900,7 +962,7 @@ fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() 
         "the summariser is handed exactly the span that was removed, once"
     );
     assert_eq!(
-        session.exchanges()[0].as_str(),
+        session.exchanges()[0].rendered(),
         "they settled on eight spaces",
         "the summary replaces the span at the front of layer 6"
     );
@@ -944,19 +1006,20 @@ fn crossing_the_threshold_replaces_the_oldest_span_and_hands_the_raw_one_back() 
 fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
     );
+    let mut transcribed = Transcribed::default();
     for nth in 0..8 {
-        session.record(zaru_core::context::Exchange::verbatim(format!(
-            "exchange {nth}: {}",
-            "detail ".repeat(30)
-        )));
+        transcribed.said(
+            &mut session,
+            format!("exchange {nth}: {}", "detail ".repeat(30)),
+        );
     }
     let before: Vec<String> = session
         .exchanges()
         .iter()
-        .map(|exchange| exchange.as_str().to_owned())
+        .map(zaru_core::context::Exchange::rendered)
         .collect();
 
     let failure = futures_lite_block_on(session.at_turn_boundary(&Failing, &held))
@@ -966,7 +1029,7 @@ fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
     let after: Vec<String> = session
         .exchanges()
         .iter()
-        .map(|exchange| exchange.as_str().to_owned())
+        .map(zaru_core::context::Exchange::rendered)
         .collect();
     assert_eq!(
         after, before,
@@ -989,18 +1052,23 @@ fn a_failing_summariser_leaves_layer_six_exactly_as_it_was() {
 fn a_summary_is_compacted_again_like_any_other_exchange() {
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(tight_limits(8_000, 900), 0),
     );
+    let mut transcribed = Transcribed::default();
     for nth in 0..8 {
-        session.record(zaru_core::context::Exchange::verbatim(format!(
-            "exchange {nth}: {}",
-            "detail ".repeat(30)
-        )));
+        transcribed.said(
+            &mut session,
+            format!("exchange {nth}: {}", "detail ".repeat(30)),
+        );
     }
 
     let first = Counting::answering("the first summary, which is itself layer 6");
-    futures_lite_block_on(session.at_turn_boundary(&first, &held)).expect("the first compaction");
+    let compaction = futures_lite_block_on(session.at_turn_boundary(&first, &held))
+        .expect("the first compaction");
+    // Written where the boundary writes it, so the rebuild after the next
+    // turns carries the summary as the live session does.
+    transcribed.compacted(compaction);
     assert!(
         session
             .exchanges()
@@ -1011,10 +1079,10 @@ fn a_summary_is_compacted_again_like_any_other_exchange() {
 
     // More pressure, so a second compaction has to reach past the summary.
     for nth in 8..16 {
-        session.record(zaru_core::context::Exchange::verbatim(format!(
-            "exchange {nth}: {}",
-            "detail ".repeat(30)
-        )));
+        transcribed.said(
+            &mut session,
+            format!("exchange {nth}: {}", "detail ".repeat(30)),
+        );
     }
     let second = Counting::answering("the second summary");
     futures_lite_block_on(session.at_turn_boundary(&second, &held)).expect("the second compaction");
@@ -1030,101 +1098,35 @@ fn a_summary_is_compacted_again_like_any_other_exchange() {
 }
 
 /// ADR-0010 D3's checkpoint holds "what the model needs to continue — the
-/// compacted conversation, per ADR-0013", and a resumed session reads it back.
+/// compacted conversation, per ADR-0013": layer 6, as the messages it is.
 ///
 /// The prefix is deliberately not in it: D1 forbids rewriting layers 1 to 4
 /// mid-session, and a resumed session builds its own from its own
 /// configuration.
-///
-/// The mutant: writing the rendered text instead of the exchanges, which
-/// reddens the restore.
 #[test]
-fn the_checkpoint_carries_layer_six_and_a_resumed_session_reads_it_back() {
+fn the_checkpoint_carries_layer_six_as_messages_and_no_prefix() {
     let limits = tight_limits(100_000, 75_000);
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(limits, 0),
     );
-    session.record(zaru_core::context::Exchange::of_turn(
+    let mut transcribed = Transcribed::default();
+    transcribed.said(
+        &mut session,
         "read notes.txt and tell me the rehearsal number",
-        &["fs.read notes.txt -- 82 bytes".to_owned()],
-        "the rehearsal number is 4173",
-    ));
-    session.record(zaru_core::context::Exchange::summary("an older stretch"));
+    );
 
-    let stored = session.checkpoint();
-    let restored = crate::compose::SessionContext::restored(
-        context::prefix_for(None),
-        crate::compose::ContextShape::of(limits, 0),
-        &stored,
-    )
-    .expect("what this type wrote, it reads");
-
-    let there: Vec<&str> = session
-        .exchanges()
-        .iter()
-        .map(zaru_core::context::Exchange::as_str)
-        .collect();
-    let back: Vec<&str> = restored
-        .exchanges()
-        .iter()
-        .map(zaru_core::context::Exchange::as_str)
-        .collect();
-    assert_eq!(there, back, "layer 6 comes back as what it was");
-    assert_eq!(
-        restored.exchanges()[1].kind(),
-        zaru_core::context::ExchangeKind::Summary,
-        "a summary comes back marked as one, or a re-compaction would treat it as fresh \
-         conversation"
+    let stored = session.checkpoint().to_string();
+    assert!(
+        stored.contains("read notes.txt and tell me the rehearsal number")
+            && stored.contains("\"role\":\"user\""),
+        "the checkpoint does not hold layer 6 as its messages: {stored}"
     );
     assert!(
-        !stored.to_string().contains(prose::NO_PERSONA),
+        !stored.contains("Working directory"),
         "the stable prefix is not in the checkpoint: D1 forbids rewriting layers 1 to 4 \
          mid-session, and a stored prefix would outlive the session that read it"
     );
-
-    // A document this type did not write is refused rather than read as an
-    // empty conversation, which would drop a session's history and look
-    // exactly like a session that had none.
-    crate::compose::SessionContext::restored(
-        context::prefix_for(None),
-        crate::compose::ContextShape::of(limits, 0),
-        &serde_json::json!({ "exchanges": "not a list" }),
-    )
-    .expect_err("a checkpoint this type did not write is refused");
-}
-
-/// ADR-0013 D1's layer 6 is "conversation **and tool results**", so a turn is
-/// all three parts.
-///
-/// The mutant: dropping the tool results from `of_turn`, which reddens the
-/// middle assertion — and the middle is where a coding session's facts are.
-#[test]
-fn one_turn_in_layer_six_carries_the_task_the_tool_results_and_the_answer() {
-    let exchange = zaru_core::context::Exchange::of_turn(
-        "read notes.txt",
-        &[
-            "fs.read notes.txt -- 82 bytes".to_owned(),
-            "cmd.run cargo test -- exit 0".to_owned(),
-        ],
-        "the rehearsal number is 4173",
-    );
-    let text = exchange.as_str();
-    for part in [
-        "read notes.txt",
-        "fs.read notes.txt -- 82 bytes",
-        "cmd.run cargo test -- exit 0",
-        "the rehearsal number is 4173",
-    ] {
-        assert!(
-            text.contains(part),
-            "layer 6 is conversation and tool results, and {part:?} is missing from {text:?}"
-        );
-    }
-    // An empty part contributes nothing rather than a blank stretch: a turn
-    // with no tool calls is the ordinary case.
-    let quiet = zaru_core::context::Exchange::of_turn("a question", &[], "an answer");
-    assert_eq!(quiet.as_str(), "a question\n\nan answer");
 }
 
 /// D7, one layer out: **a turn in progress cannot compact.**
@@ -1141,7 +1143,7 @@ fn one_turn_in_layer_six_carries_the_task_the_tool_results_and_the_answer() {
 #[test]
 fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     // let held = HeldSecrets::none();
-    // let mut session = SessionContext::opened(context::prefix_for(None), limits);
+    // let mut session = SessionContext::opened(context::prefix_for(None, &crate::compose::context::fixtures::facts()), limits);
     // let policy = session.policy(&held, false);
     // futures_lite_block_on(session.at_turn_boundary(&Failing, &held));  // E0502
     // drop(policy);
@@ -1151,7 +1153,7 @@ fn a_policy_in_hand_is_a_turn_in_progress_and_cannot_reach_the_boundary() {
     // possible at all rather than a context nobody can ever compact.
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(tight_limits(8_000, 1_200), 0),
     );
     {
@@ -1316,7 +1318,7 @@ fn adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers() {
         .expect("the scratch directory takes a mode");
 
     let context = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(crate::providers::gemini::CONTEXT_WINDOW_TOKENS),
             0,
@@ -1366,10 +1368,11 @@ fn adr_0010_d2s_failure_record_is_written_by_one_function_for_both_callers() {
     );
     let called = source.matches("record_the_failure(").count();
     assert_eq!(
-        called, 3,
+        called, 4,
         "`record_the_failure` appears {called} time(s) in `compose::turn`: its definition, \
-         `run_one`'s wrapper for a turn that was refused, and `task`'s tail for a checkpoint \
-         that would not write. A run can fail in both places and both owe the reader a record"
+         `run_one`'s wrapper for a turn that was refused, and `task`'s tail for a transcript \
+         that would not read back and for a checkpoint that would not write. A run can fail in \
+         each place and each owes the reader a record"
     );
 }
 
@@ -1587,7 +1590,7 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
 
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(
             crate::cli::layers::context_limits(
                 crate::providers::ollama::endpoint::DEFAULT_CONTEXT_TOKENS,
@@ -1595,8 +1598,9 @@ fn the_counted_context_carries_the_tool_surface_and_is_not_below_the_providers_o
             reserved,
         ),
     );
+    let mut transcribed = Transcribed::default();
     // The measured 231 bytes of message content, as one exchange.
-    session.record(zaru_core::context::Exchange::verbatim("m".repeat(231)));
+    transcribed.said(&mut session, "m".repeat(231));
 
     let reported = Reporting {
         endpoint: crate::providers::ProviderEndpoint::new("http://127.0.0.1:11434")
@@ -1704,18 +1708,22 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
 
     let held = HeldSecrets::none();
     let mut session = crate::compose::SessionContext::opened(
-        context::prefix_for(None),
+        context::prefix_for(None, &crate::compose::context::fixtures::facts()),
         crate::compose::ContextShape::of(limits, reserved),
     );
+    let mut transcribed = Transcribed::default();
 
     // Ordinary turns, each the size of a short answer, until the threshold is
     // behind us. Asserted rather than assumed: a session that felt no
     // pressure would satisfy every assertion below by standing still.
     for nth in 0..6 {
-        session.record(zaru_core::context::Exchange::verbatim(format!(
-            "user: what did we decide about item {nth}?\n\nzaru: {}",
-            "we settled it. ".repeat(4)
-        )));
+        transcribed.said(
+            &mut session,
+            format!(
+                "user: what did we decide about item {nth}?\n\nzaru: {}",
+                "we settled it. ".repeat(4)
+            ),
+        );
     }
     let used = session.usage(&held).used();
     assert!(
@@ -1728,7 +1736,7 @@ fn a_small_configured_window_is_crossed_by_a_session_and_announced_with_real_cou
     let before: Vec<String> = session
         .exchanges()
         .iter()
-        .map(|exchange| exchange.as_str().to_owned())
+        .map(zaru_core::context::Exchange::rendered)
         .collect();
     let summariser = Counting::answering("they went through six items and settled each");
 

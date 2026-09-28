@@ -35,12 +35,12 @@
 //!
 //! | Layer | This composition |
 //! | --- | --- |
-//! | 1 system prompt and persona | [ADR-0027]'s served page where one was read, [`prose::NO_PERSONA`] where none was — see below |
+//! | 1 system prompt and persona | [ADR-0027]'s served page where one was read, the harness's own [`system_prompt`] where none was — see below |
 //! | 2 grounding, session-start | empty: [ADR-0006]'s client reaches no network, so nothing is read at session start |
 //! | 3 relationship memory | empty, and **for a new reason since 2026-09-15**: [ADR-0031] D3 delivers it *inside* the served prompt and forbids a second fetch path, so now that layer 1 has a page it rides that page — see below |
 //! | 4 project manifest summary | empty: no record says what a manifest summary is, and inventing a shape would settle it |
 //! | 5 user attachments | empty: [ADR-0005] D5's attachments are not built and the trie is `zaru-notes`' |
-//! | 6 conversation and tool results | empty on the first turn; the turn's own results ride on `ModelRequest.results` rather than here, which is [ADR-0013] D7 as `tool_call::run` reads it, and a finished turn joins it through [`Exchange::of_turn`](zaru_core::context::Exchange::of_turn) at the boundary |
+//! | 6 conversation and tool results | empty on the first turn; every earlier turn as the messages it was, rebuilt from the transcript at each turn boundary by [`crate::compose::boundary`]; the turn's own messages ride on `ModelRequest.turn` rather than here, which is [ADR-0013] D7 as `tool_call::run` reads it |
 //! | 7 iteration history | empty: an iteration's memory is [ADR-0008]'s refinement prompt, which arrives as the turn's own tail rather than as a layer |
 //!
 //! **Six of the seven are empty and the prefix says so about the one that
@@ -97,7 +97,6 @@
 //! [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 //! [ADR-0031]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0031-relationship-memory
 //! [`Context`]: zaru_core::context::Context
-//! [`prose::NO_PERSONA`]: crate::compose::prose::NO_PERSONA
 
 use crate::compose::count::ByteCounter;
 use crate::compose::prose;
@@ -105,21 +104,138 @@ use zaru_core::context::{Context, PrefixParts, StablePrefix};
 use zaru_core::iteration::{ContextPolicy, ContextRefusal, Prompt, Turn};
 use zaru_core::redaction::Redactor;
 
+/// What a model is told about the session it works in, and cannot find out
+/// for itself.
+///
+/// Every field is a fact the harness holds and the model does not: where the
+/// tools run, on what system, on what day, with which tools, under which
+/// permission mode. [`system_prompt`] turns them into layer 1's text when no
+/// persona is served.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Facts {
+    /// The working directory every tool call is resolved against, where it
+    /// resolved.
+    pub directory: Option<String>,
+    /// The operating system, as Rust names it (`linux`).
+    pub system: String,
+    /// Today's date, `YYYY-MM-DD`, read once when the session's prefix is
+    /// built. Layer 1 is never rewritten mid-session, so a session that runs
+    /// past midnight keeps the date it opened on.
+    pub date: String,
+    /// The names of the tools the model is offered.
+    pub tools: Vec<String>,
+    /// [ADR-0011] D3's permission mode, where it resolved.
+    ///
+    /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
+    pub mode: Option<crate::tools::Mode>,
+}
+
+impl Facts {
+    /// The facts of a session opened now, in `directory`, offering `tools`
+    /// under `resolution`'s permission mode.
+    ///
+    /// A mode that does not resolve is left out rather than guessed: such a
+    /// session runs no turn, because `crate::compose::turn::prepare` refuses
+    /// on the same reading.
+    #[must_use]
+    pub fn of_this_session(
+        directory: Option<&std::path::Path>,
+        resolution: &crate::config::Resolution,
+        tools: &[zaru_core::tool_call::ToolDescriptor],
+    ) -> Self {
+        Self {
+            directory: directory.map(|directory| directory.display().to_string()),
+            system: std::env::consts::OS.to_owned(),
+            date: crate::commands::date::today(),
+            tools: tools.iter().map(|tool| tool.name.clone()).collect(),
+            mode: crate::tools::Mode::from_configuration(resolution).ok(),
+        }
+    }
+}
+
+/// Layer 1 where no persona is served: the harness's own system prompt.
+///
+/// # What it says, and why each line is there
+///
+/// Only facts the model needs and cannot know. It has no personality and
+/// makes no claim about the product, because a persona is [ADR-0027]'s and is
+/// served, not written here.
+///
+/// - The working directory, and that a relative path is resolved against it:
+///   every session measured by the survey of 2026-09-28 opened with an
+///   `fs.list` because nothing said where it was.
+/// - The operating system and the date, which a model cannot learn from
+///   anything it is sent.
+/// - The tools by name, and that `cmd.run` has no shell: a pipe or a
+///   redirect is refused, and the refusal is a wasted exchange.
+/// - The permission mode, and what it means for a call.
+/// - That earlier turns' tool results are in the conversation, so the model
+///   looks there before calling a tool again.
+///
+/// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
+#[must_use]
+pub fn system_prompt(facts: &Facts) -> String {
+    let mut lines = vec![
+        "You are working with a person through Zaru, a tool harness running on their machine."
+            .to_owned(),
+        String::new(),
+    ];
+    if let Some(directory) = &facts.directory {
+        lines.push(format!(
+            "- Working directory: {directory}. A relative path in a tool call is resolved \
+             against it."
+        ));
+    }
+    lines.extend([
+        format!("- Operating system: {}.", facts.system),
+        format!("- Today's date: {}.", facts.date),
+        format!(
+            "- Tools: {}. cmd.run runs one program with its arguments and no shell, so pipes, \
+             redirection, globs and && do not work.",
+            facts.tools.join(", ")
+        ),
+    ]);
+    if let Some(mode) = facts.mode {
+        lines.push(format!(
+            "- Permission mode: {}. {}",
+            mode.as_str(),
+            match mode {
+                crate::tools::Mode::Ask => {
+                    "The person is asked before a call writes a file, runs a command or \
+                     fetches a URL, and may say no."
+                }
+                crate::tools::Mode::Allow => {
+                    "Calls the person has allowed run without asking; anything else is asked \
+                     first, and the person may say no."
+                }
+                crate::tools::Mode::Yolo => "Calls run without asking the person.",
+            }
+        ));
+    }
+    lines.push(
+        "- The results of tool calls in earlier turns are part of this conversation; read them \
+         there before calling a tool again."
+            .to_owned(),
+    );
+    lines.join("\n")
+}
+
 /// [ADR-0013] D1's layers 1 to 4 for a session this harness can actually
 /// assemble.
 ///
-/// Layer 1 carries the served persona where `persona` is `Some`, and
-/// [`prose::NO_PERSONA`] where it is `None`; the other three are empty — see
-/// the module documentation for what each is waiting on. The prefix is built
-/// **once** and has no method that changes it, which is that record's trigger
-/// clause 1 held by the type rather than by a rule anybody keeps.
+/// Layer 1 carries the served persona where `persona` is `Some`, and the
+/// harness's own [`system_prompt`] over `facts` where it is `None`; the other
+/// three are empty — see the module documentation for what each is waiting
+/// on. The prefix is built **once** and has no method that changes it, which
+/// is that record's trigger clause 1 held by the type rather than by a rule
+/// anybody keeps.
 ///
 /// # The argument is taken here rather than fetched here, and that is clause 1
 ///
 /// [ADR-0013] trigger clause 1 — "layers 1 to 4 are byte-identical across
 /// every turn of a long session" — is satisfied, and its two checks were
 /// **watched red by rewriting the prefix mid-session**. So this function takes
-/// a value that has already been resolved: the resolution happens before the
+/// values that have already been resolved: the resolution happens before the
 /// prefix exists, on the caller's own thread, and nothing after it can reach
 /// back in. A fetch *inside* here, or a background task that landed in layer 1
 /// afterwards, would be exactly the mutation that clause forbids and would
@@ -129,19 +245,18 @@ use zaru_core::redaction::Redactor;
 /// # An empty body is not a persona
 ///
 /// `Some("")` would put an empty layer 1 in the prefix, which renders as no
-/// layer at all — so a model would receive neither a persona nor the line
-/// saying it has none, and a reader could not tell the two apart. A page that
-/// came back empty is therefore [`prose::NO_PERSONA`], the same as no page:
-/// **the absence is the same absence however it arose**, which is the whole of
-/// what [ADR-0027]'s 2026-09-05 Update decided.
+/// layer at all — so a model would receive no system text whatever. A page
+/// that came back empty is therefore treated as no page: **the absence is the
+/// same absence however it arose**, which is what [ADR-0027]'s 2026-09-05
+/// Update decided.
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 /// [ADR-0027]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0027-zaru-persona-as-a-served-contract
 #[must_use]
-pub fn prefix_for(persona: Option<&str>) -> StablePrefix {
+pub fn prefix_for(persona: Option<&str>, facts: &Facts) -> StablePrefix {
     let layer_one = match persona {
         Some(served) if !served.is_empty() => served.to_owned(),
-        _ => prose::NO_PERSONA.to_owned(),
+        _ => system_prompt(facts),
     };
     StablePrefix::assembled_once(PrefixParts {
         system_prompt_and_persona: layer_one,
@@ -222,16 +337,12 @@ impl<'a> TurnContext<'a> {
 impl ContextPolicy for TurnContext<'_> {
     /// Assemble the prompt for the turn about to begin.
     ///
-    /// The tail is whichever of [`Turn`]'s three variants the loop passed, and
-    /// **this function adds no prose to any of them**. A resumed turn's tail is
-    /// the interrupted call's own rendered line, which is [ADR-0010] D4's
-    /// datum: that record calls the line "what the user saw", so wrapping it
-    /// in a sentence of this module's own would be a second description of one
-    /// call.
+    /// The tail is whichever of [`Turn`]'s two variants the loop passed, and
+    /// **this function adds no prose to either**.
     ///
     /// # The one sentence this function does add, and where it does not
     ///
-    /// **The rule above is about the three tails and it is unchanged**: no
+    /// **The rule above is about the two tails and it is unchanged**: no
     /// variant is wrapped, re-described or annotated. What is prepended, when
     /// and only when `iterating` is set, is
     /// [`prose::ITERATION_IS_ONE_EXCHANGE`] — [ADR-0008] D1's statement of
@@ -251,7 +362,7 @@ impl ContextPolicy for TurnContext<'_> {
     ///
     /// **Where it is not added**: a turn with no declared validators, where
     /// the sentence would be false. There the results of a call come back
-    /// inside the turn on `ModelRequest.results`, so telling a model they do
+    /// inside the turn on `ModelRequest.turn`, so telling a model they do
     /// not would be a falsehood stated on every `bare`-tier turn that declares
     /// nothing.
     ///
@@ -268,7 +379,6 @@ impl ContextPolicy for TurnContext<'_> {
         let tail = match turn {
             Turn::Initial { task } => (*task).to_owned(),
             Turn::Refinement { refinement } => refinement.as_str().to_owned(),
-            Turn::Resumed { interrupted } => interrupted.call().to_owned(),
         };
         let tail = if self.iterating {
             format!("{}\n\n{tail}", prose::ITERATION_IS_ONE_EXCHANGE)
@@ -279,6 +389,21 @@ impl ContextPolicy for TurnContext<'_> {
             .context
             .assemble(&self.counter, self.redactor, &tail)
             .map_err(ContextRefusal::from)?;
-        Ok(Prompt::new(assembled.into_redacted()))
+        Ok(assembled.into_prompt())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod fixtures {
+    /// The facts a check's layer 1 is built from: fixed, so a prompt a check
+    /// compares is the same on every machine and every day.
+    pub(crate) fn facts() -> super::Facts {
+        super::Facts {
+            directory: Some("/work".to_owned()),
+            system: "linux".to_owned(),
+            date: "2026-09-28".to_owned(),
+            tools: vec!["fs.read".to_owned()],
+            mode: None,
+        }
     }
 }

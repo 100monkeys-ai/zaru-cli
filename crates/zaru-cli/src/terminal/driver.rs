@@ -19,14 +19,11 @@
 use crate::cli::invocation::Request;
 use crate::failure::Exit;
 use crate::providers::ProviderKind;
-use crate::session::Resumed;
 use crate::terminal::source::{Pace, Source, Taken};
 use crate::tools::port::Question;
 use core::time::Duration;
 use ratatui::layout::Rect;
 use ratatui_crossterm::{CrosstermBackend, crossterm};
-use zaru_core::iteration::Interruption;
-use zaru_core::redaction::Redactor;
 use zaru_core::tool_call::Start;
 use zaru_tui::shell::port::{Confirmation, Line, Register};
 use zaru_tui::shell::{Action, Command, Palette, Queued, Shell, Struck};
@@ -274,119 +271,6 @@ pub enum Pumped {
     },
 }
 
-/// [ADR-0010] D4's interruption, held by a resumed session and told once.
-///
-/// # What this holds and what it deliberately does not
-///
-/// D4: "An interrupted tool call is recorded as `Interrupted` **and the model
-/// is told it did not complete**." The first half is
-/// [`crate::session::resume()`]'s and has been built since `session-lifecycle`:
-/// a `Phase::Started` with no `Completed` or `Refused` closing it **is** the
-/// interruption, because a killed process writes nothing. The second half is
-/// the turn's, and until 2026-09-05 nothing in any product tree started one —
-/// [`Start::Resumed`] appeared twice in this repository and both were in test
-/// trees, which is [ADR-0010]'s own standing gap, written there by
-/// `session-restore`: "reachable from an outside caller and from no door a
-/// person can open".
-///
-/// **This is the carrier and not a second derivation.** [`Self::of`] reads
-/// [`Resumed::interrupted`], which `session::resume` already produced, and
-/// converts it through [`crate::session::Interrupted::for_the_model`], which
-/// is the one redaction seam [ADR-0008] clause 6 already enumerates. Nothing
-/// here scans a transcript, and nothing here writes one.
-///
-/// # Once, and the mechanism is that taking it empties it
-///
-/// [`Self::tell_once`] moves the value out, so a second call answers `None`
-/// whatever the caller does — the shape [`crate::tools::SessionNotice`]'s
-/// `state_once` already uses for [ADR-0011] D2's line, and for the same
-/// reason: a rule enforced by a type is not a rule anybody has to keep.
-///
-/// **It is once per resumed process rather than once ever, and that is
-/// forced.** The interruption is derived from the transcript's shape and
-/// nothing closes the pair — writing a `Completed` or an `Interrupted` record
-/// for a call that never finished would author an event that did not happen,
-/// which is exactly what [ADR-0010] D2's replayability claim forbids. So a
-/// session resumed twice whose resumed turn called no tool is told twice.
-/// Where that turn *did* call a tool, `session::resume`'s "one in flight at a
-/// time" clears the older pending call and the second resume tells nothing.
-///
-/// # It is not one of [ADR-0002] D8's once-ever lines
-///
-/// D8 governs a **recommendation**: output the harness volunteers to the
-/// *user*, "appended to the end of the triggering turn", budgeted at one per
-/// session. This is none of those. It is addressed to the **model**, it is a
-/// turn's *start* rather than a line appended to a turn, and it is caused by
-/// the user's own act of resuming rather than volunteered — so it needs no
-/// `Record::Said` and takes no row in `once-ever-counter`'s witness.
-///
-/// [ADR-0002]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0002-unprompted-output
-/// [ADR-0008]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0008-the-agent-loop
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-/// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
-#[derive(Default)]
-pub struct Pending(Option<Interruption>);
-
-impl core::fmt::Debug for Pending {
-    /// Says whether one is owed and never what it is.
-    ///
-    /// The line is redacted by the time it is here, so this is not a secrets
-    /// argument — it is [`Turns`]'s own: a `Debug` is what ends up in a panic
-    /// message, and a session's command line is the session's rather than the
-    /// panic's. A check asserts that a planted value reaches no `Debug` on
-    /// this path, and that check has to be able to fail.
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Pending")
-            .field("owed", &self.is_owed())
-            .finish()
-    }
-}
-
-impl Pending {
-    /// What a resumed session owes the model, if it owes anything.
-    ///
-    /// `None` for a session whose every call closed — including one the user
-    /// **refused**, which closes the pair exactly as a completion does:
-    /// [ADR-0016]'s ruling of 2026-09-04 is that a refusal is not a failure,
-    /// and `session::resume` records that it is not an interruption either.
-    /// Telling the model that a call the user consciously declined did not
-    /// complete would say the opposite of what happened.
-    ///
-    /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-    #[must_use]
-    pub fn of<R: Redactor + ?Sized>(resumed: &Resumed, redactor: &R) -> Self {
-        Self(
-            resumed
-                .interrupted
-                .as_ref()
-                .map(|interrupted| interrupted.for_the_model(redactor)),
-        )
-    }
-
-    /// A session that owes nothing.
-    ///
-    /// What [`crate::compose::turn::task`] has, and it is a **fact rather than
-    /// a default**: that path mints a session directory and runs turn one in
-    /// it, so nothing was in flight because nothing has happened yet. The same
-    /// argument [`crate::session::AlreadySaid::none`] makes for its own.
-    #[must_use]
-    pub const fn none() -> Self {
-        Self(None)
-    }
-
-    /// Whether a turn still owes the model this. A reader for a check, not a
-    /// second copy of the state.
-    #[must_use]
-    pub const fn is_owed(&self) -> bool {
-        self.0.is_some()
-    }
-
-    /// The interruption, once. `None` on every call after the first.
-    pub fn tell_once(&mut self) -> Option<Interruption> {
-        self.0.take()
-    }
-}
-
 /// Everything a turn needs to run inside the session this shell is in.
 ///
 /// # Resolved once, at the door, and then held
@@ -437,13 +321,6 @@ pub struct Turns<'a> {
     /// spans many calls to this function and a number invented here would
     /// restart at one every turn". This is the caller.
     pub next: u32,
-    /// What this session owes the model about a call that never completed.
-    ///
-    /// [ADR-0010] D4, and the same source as `next` above: `session::resume`
-    /// read the transcript once when the shell opened. See [`Pending`].
-    ///
-    /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
-    pub interrupted: Pending,
 }
 
 impl core::fmt::Debug for Turns<'_> {
@@ -455,7 +332,6 @@ impl core::fmt::Debug for Turns<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Turns")
             .field("next", &self.next)
-            .field("interrupted", &self.interrupted)
             .finish_non_exhaustive()
     }
 }
@@ -776,8 +652,14 @@ impl<S: Surface + Send> zaru_core::tool_call::EventSink for PaneSink<'_, '_, S> 
             // D5's quiet line on it. `Pane::armed_by` says which events arm
             // and which disarm, and why the pane reads the event rather than
             // the silence.
+            //
+            // A message has no line and is not an event the quiet line reads:
+            // it is what the model was sent, and the pane paints nothing for
+            // it and neither arms nor disarms on it.
             Ok(mut pane) => {
-                pane.note_event(event, crate::terminal::vocabulary::turn_line(event));
+                if let Some(line) = crate::terminal::vocabulary::turn_line(event) {
+                    pane.note_event(event, line);
+                }
             }
             Err(_) => self.contended += 1,
         }
@@ -1252,40 +1134,31 @@ pub enum AfterTurn {
 /// the one there is — see [`crate::compose::prose::INTERRUPTED`] — and because
 /// everything the turn itself painted is already on the pane.
 ///
-/// # The re-derivation is here rather than in [`run_a_turn`], and that is a
+/// # The rebuild is here rather than in [`run_a_turn`], and that is a
 /// mutation's doing
 ///
-/// [ADR-0010] D4's carrier is `resumed-turn`'s [`Pending`], built by
-/// [`crate::terminal::open`] from `session::resume` when the shell opens.
-/// Before 2026-09-06 that was enough, because an interrupt ended the process;
-/// an interrupt that keeps the session has to derive it again, in this
-/// process, from the transcript the drop just left.
+/// An interrupted turn still happened: what the person asked, what the model
+/// said and every result it was given are on the transcript, written as they
+/// occurred. So the next turn is sent it, exactly as a finished turn is: layer
+/// 6 is rebuilt from the transcript the drop just left, and a call that was
+/// running is closed with a result saying it did not complete.
 ///
-/// It was written inside `run_a_turn` first, and **a mutation deleting it
-/// reddened nothing**: that function needs a
-/// [`Prepared`](crate::compose::Prepared), which needs a provider client and a
-/// key, so no offline check can drive it. This function needs a
-/// [`Session`](crate::session::Session), a [`Pending`] and a redactor, all of
-/// which a check can build — so the rule lives where it can be falsified. It
-/// is the same finding [`Pane`]'s `Drop` records, with the same answer.
+/// It lives here rather than inside `run_a_turn` because that function needs
+/// a [`Prepared`](crate::compose::Prepared), which needs a provider client and
+/// a key, so no offline check can drive it. This function needs a
+/// [`Session`](crate::session::Session) and a context, both of which a check
+/// can build — so the rule lives where it can be falsified. It is the same
+/// finding [`Pane`]'s `Drop` records, with the same answer.
 ///
-/// `session::resume` is the same reader `terminal::open` used, so there is one
-/// derivation rather than two, and what it finds is whatever the drop left: a
-/// `Phase::Started` with no `Phase::Completed`, if a call was in flight.
-///
-/// **A read that fails leaves nothing owed rather than ending the session.**
-/// The interruption is on disk either way, so the next `--resume` derives it
-/// again — `resumed-turn`'s own once-per-process argument — and closing a
-/// session the user did not ask to leave, in order to report a transcript that
-/// will be read again in a moment, is the worse answer.
-///
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// **A rebuild or a checkpoint that fails is said and the session stays
+/// open**, as it is at the end of a finished turn: closing a session the
+/// person did not ask to leave, in order to report a file, is the worse
+/// answer.
 #[must_use]
-pub fn after<R: Redactor + ?Sized>(
+pub fn after(
     turned: Turned,
-    owed: &mut Pending,
+    context: &mut crate::compose::SessionContext,
     session: &crate::session::Session,
-    redactor: &R,
     queued: &mut Option<Queued>,
 ) -> AfterTurn {
     match turned {
@@ -1298,10 +1171,16 @@ pub fn after<R: Redactor + ?Sized>(
             // lose, because it was never a record: nothing was written for it
             // and [ADR-0010] D2's producers are untouched.
             *queued = None;
-            *owed = crate::session::resume(session.directory(), 0)
-                .map(|resumed| Pending::of(&resumed, redactor))
-                .unwrap_or_default();
-            AfterTurn::Carries(Vec::new())
+            let kept = crate::compose::boundary::rebuilt_from_the_transcript(context, session)
+                .map_err(|failure| failure.to_string())
+                .and_then(|()| {
+                    crate::compose::boundary::checkpointed(context, session)
+                        .map_err(|failure| failure.to_string())
+                });
+            AfterTurn::Carries(match kept {
+                Ok(()) => Vec::new(),
+                Err(failure) => vec![Line::new(zaru_tui::shell::port::Register::Failed, failure)],
+            })
         }
         // The terminal stopped answering mid-turn. A product terminal does
         // not; a script does, and this is what stops a pump that never left
@@ -1339,12 +1218,12 @@ pub fn after<R: Redactor + ?Sized>(
 /// the transcript holds exactly what happened up to the drop, which is
 /// [ADR-0010] D2's "a crash loses at most the event in flight" without a
 /// crash. A tool call in flight has left its `Phase::Started` and no
-/// `Phase::Completed`, and that pair *is* the interruption D4 derives on the
-/// next `--resume` and hands the model as `Turn::Resumed`. Nothing is authored
-/// for it and no new state exists.
+/// `Phase::Completed`, and that pair *is* the interruption D4 derives.
 ///
-/// **An interrupted turn records no exchange.** [ADR-0013] D1's layer 6 is
-/// what came back, and nothing came back.
+/// **An interrupted turn is still in the conversation.** What the person
+/// asked and what the model was given up to the drop are on the transcript,
+/// and [`after`] rebuilds [ADR-0013] D1's layer 6 from it, closing a call that
+/// was running with a result saying it did not complete.
 ///
 /// # A child process is interruptible too, since 2026-09-05
 ///
@@ -1393,18 +1272,6 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     let n = turns.next;
     turns.next += 1;
 
-    // What [ADR-0013] D1's layer 6 records as this turn's own side of the
-    // exchange, taken off the start rather than from a second argument: the
-    // task the user typed, or the interrupted call's own rendered line, which
-    // is the same bytes `compose::context` assembled the prompt over. A second
-    // string here would be a second description of one turn.
-    let said = match &start {
-        Start::Task(task) => (*task).to_owned(),
-        Start::Resumed(interrupted) => interrupted.call().to_owned(),
-    };
-
-    let mut tools = crate::compose::ToolLines::default();
-
     // The answer's text on its way to the pane. Handed to the client here
     // rather than at `prepare`, because this is the first moment there is
     // somewhere to paint: `zaru "<task>"` builds the same client, never calls
@@ -1426,7 +1293,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         let pane = std::sync::Mutex::new(Pane::during(shell, surface, &clock));
         let confirm = PaneConfirm::over(&pane, source, pace);
         let mut sink = PaneSink::over(&pane);
-        let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 2] = [&mut sink, &mut tools];
+        let mut extra: [&mut dyn zaru_core::tool_call::EventSink; 1] = [&mut sink];
         // ADR-0028 D3's subscriber for the inner loop. A second handle on the
         // same `Mutex`, because `extra` above holds `sink` as `&mut` for the
         // whole turn and this is reached by shared reference inside it -- see
@@ -1488,7 +1355,6 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
     // the narrative's own line, which is why this is cleared rather than
     // promoted -- `Shell::stream_delta`'s argument, one field over.
     shell.set_elapsed(None);
-    let tool_lines = tools.taken();
     let redactor = turns.prepared.redactor();
 
     // What an interruption owes the next turn is `after`'s, not this
@@ -1499,26 +1365,25 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
         Err(turned) => return turned,
     };
 
-    // ADR-0013 D1's layer 6, so the next turn assembles over this one, and
-    // then ADR-0010 D3's checkpoint over that, so the next *process* does
-    // too. Both acts are `compose::boundary`'s rather than this file's: the
-    // out-of-session turn owes exactly the same pair, and a rule with two
-    // callers lives in one place — which matters most here because building
-    // the exchange is where ADR-0008 clause 6's `Redactor` is applied, and
-    // that clause's enumeration names the file that applies it.
-    turns
-        .context
-        .record(crate::compose::boundary::exchange_of_turn(
-            redactor,
-            &said,
-            &tool_lines,
-            &ran.lines.join("\n"),
-        ));
-    // A checkpoint that could not be written is the session losing its memory
+    // ADR-0013 D1's layer 6, rebuilt from the transcript that now holds this
+    // turn, so the next turn is sent it as the model saw it; then ADR-0010
+    // D3's checkpoint over that. Both acts are `compose::boundary`'s rather
+    // than this file's: the out-of-session turn owes exactly the same pair,
+    // and a resumed session is rebuilt by the same function, so the three
+    // cannot come to disagree.
+    //
+    // A rebuild or a checkpoint that failed is the session losing its memory
     // of a turn that happened, so it is said and the session stays open — the
     // turn's answer is already painted and reporting only the failure would
     // discard it. ADR-0016 D6's "partial success is reported as partial".
-    let lost = crate::compose::boundary::checkpointed(&turns.context, turns.session).err();
+    let lost =
+        crate::compose::boundary::rebuilt_from_the_transcript(&mut turns.context, turns.session)
+            .map_err(|failure| failure.to_string())
+            .and_then(|()| {
+                crate::compose::boundary::checkpointed(&turns.context, turns.session)
+                    .map_err(|failure| failure.to_string())
+            })
+            .err();
 
     // ADR-0013 clause 5 and ADR-0012 clause 6, both on ADR-0001 D2's row.
     // **After the record above**, so the number the user reads is the context
@@ -1541,10 +1406,7 @@ pub async fn run_a_turn<S: Surface + Send, P: Pace + Sync>(
 
     let mut lines = lines_of(&ran);
     if let Some(failure) = lost {
-        lines.push(Line::new(
-            zaru_tui::shell::port::Register::Failed,
-            format!("{failure}"),
-        ));
+        lines.push(Line::new(zaru_tui::shell::port::Register::Failed, failure));
     }
     Turned::Ran(lines)
 }
@@ -2738,15 +2600,8 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                         // beat -- ADR-0005's amendment, and the reason nothing
                         // watches the filesystem.
                         paths.turn_ended();
-                        let redactor = turns.prepared.redactor();
                         let session = turns.session;
-                        match after(
-                            turned,
-                            &mut turns.interrupted,
-                            session,
-                            redactor,
-                            shell.queued_mut(),
-                        ) {
+                        match after(turned, &mut turns.context, session, shell.queued_mut()) {
                             AfterTurn::Carries(lines) => lines,
                             AfterTurn::Stops(exit) => {
                                 return Ok(Pump {
@@ -2783,41 +2638,14 @@ fn exit_for(leaving: zaru_tui::shell::Leaving) -> Exit {
     Exit::Succeeded
 }
 
-/// The turns one typed line causes.
+/// The turn one typed line causes.
 ///
-/// # Why a line can cause two of them
-///
-/// [ADR-0010] D4: "An interrupted tool call is recorded as `Interrupted` **and
-/// the model is told it did not complete**." [`Start::Resumed`] carries no
-/// task — a resumed session is not a new instruction — so telling the model
-/// cannot be folded into the turn the user asked for: making a user's first
-/// typed line a resumed turn would **drop the task**, which is what
-/// `shell-task-turns` measured and refused. The telling is therefore a turn of
-/// its own, and it goes first.
-///
-/// **It happens here rather than when the shell opens, and that was the
-/// ruling.** ADR-0010's own Status tracking held "whether a shell opened over
-/// a session whose last call was interrupted owes the model a task-less turn
-/// before the user's first one" as a question for its author; it was decided
-/// on 2026-09-05 under directive 20, open to Jeshua's veto, and the amendment
-/// is on that record. Running it at the door would spend a provider call on a
-/// `--resume` somebody opened to read their session back — and would move the
-/// refusal [`crate::terminal::open`] deliberately defers, whose reason it
-/// states in its own words: "a person who resumed a session to read it back is
-/// not asking for a provider, and refusing before they ask would answer a
-/// question they did not put." Here, a session with no provider is still
-/// [`Turnable::Cannot`] and no resumed turn ever runs.
-///
-/// **Once**, because [`Pending::tell_once`] empties itself. The second turn
-/// after a resume is [`Start::Task`] again, and so is every turn after that.
-///
-/// A user who leaves during the resumed turn gets the same three arms every
-/// turn has, and the interruption is not lost: nothing closed the pair on
-/// disk, so the next `--resume` derives it again from the transcript's own
-/// shape. Authoring a record for a call that never finished is what [ADR-0010]
-/// D2's replayability claim forbids.
-///
-/// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
+/// One turn, on the line the person typed. Until 2026-09-28 a session
+/// resumed over a call that never finished first ran a turn of its own that
+/// carried the call's transcript line to the model; the conversation rebuilt
+/// from the transcript now closes that call with a result saying it did not
+/// complete, in the shape a provider defines for a result, so the model is
+/// told within the conversation and no turn is spent on it.
 #[allow(
     clippy::too_many_arguments,
     reason = "\
@@ -2839,35 +2667,7 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
     task: &str,
     skill: Option<crate::compose::turn::SkillTurn<'_>>,
 ) -> Turned {
-    let mut lines = Vec::new();
-
-    if let Some(interrupted) = turns.interrupted.tell_once() {
-        match run_a_turn(
-            shell,
-            surface,
-            source,
-            pace,
-            entries,
-            vocabulary,
-            paths,
-            now,
-            turns,
-            Start::Resumed(&interrupted),
-            // A resumed turn never enters the iteration loop, whatever the
-            // caller supplied — `zaru_core`'s own rule, on `Start::Resumed`.
-            None,
-        )
-        .await
-        {
-            Turned::Ran(told) => lines.extend(told),
-            // The user left, or the terminal stopped answering, during the
-            // telling. Both are the pump's way out and neither is this
-            // function's to interpret.
-            other => return other,
-        }
-    }
-
-    match run_a_turn(
+    run_a_turn(
         shell,
         surface,
         source,
@@ -2881,13 +2681,6 @@ async fn turns_of_one_line<S: Surface + Send, P: Pace + Sync>(
         skill,
     )
     .await
-    {
-        Turned::Ran(answered) => {
-            lines.extend(answered);
-            Turned::Ran(lines)
-        }
-        other => other,
-    }
 }
 
 /// Map one slash command onto the request its subcommand spelling produces.
