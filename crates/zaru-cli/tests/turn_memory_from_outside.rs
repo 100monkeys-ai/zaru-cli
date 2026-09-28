@@ -717,10 +717,10 @@ async fn a_session_resumed_in_a_new_process_is_sent_the_same_conversation() {
 /// A result the output budget cut is recorded and sent again exactly as the
 /// model first read it, cut marks included.
 ///
-/// A search that matches every line of a long file is what the budget cuts
-/// here. Until 2026-09-28 this was an `fs.read`, and an `fs.read` is no longer
-/// cut by the budget: it sizes its own answer. The ranged read is the next
-/// check.
+/// A listing of a folder with two thousand entries is what the budget cuts
+/// here. Until 2026-09-28 this was an `fs.read` and then an `fs.search`, and
+/// both now size their own answers, so neither is cut by the budget. The
+/// ranged read is the next check.
 ///
 /// The mutant: a result altered by a single character on its way back into a
 /// later prompt (its trailing newline trimmed), which the byte-for-byte
@@ -728,21 +728,20 @@ async fn a_session_resumed_in_a_new_process_is_sent_the_same_conversation() {
 #[tokio::test]
 async fn a_result_cut_by_the_budget_is_sent_again_exactly_as_the_model_first_read_it() {
     let scratch = Scratch::new("turn-memory-cut");
-    let big: String = (0..2_000)
-        .map(|n| format!("line {n} of a long file\n"))
-        .collect();
-    std::fs::write(scratch.project().join("pkg/big.txt"), &big).expect("staging");
+    let folder = scratch.project().join("pkg/many");
+    std::fs::create_dir_all(&folder).expect("staging: a folder");
+    let names: Vec<String> = (0..2_000).map(|n| format!("entry-{n:04}.txt")).collect();
+    for name in &names {
+        std::fs::write(folder.join(name), "").expect("staging: an entry");
+    }
+    let big = names.join("\n");
     let held = HeldSecrets::none();
     let mut context =
         SessionContext::opened(zaru_cli::compose::prefix_for(None, &facts()), shape());
     let model = Scripted::answering([
-        calls(
-            "call_1",
-            "fs.search",
-            r#"{"root":"pkg/big.txt","needle":"of a long file"}"#,
-        ),
+        calls("call_1", "fs.list", r#"{"path":"pkg/many"}"#),
         answer("It is long."),
-        answer("It had two thousand lines."),
+        answer("It had two thousand entries."),
     ]);
     a_turn(
         &scratch,
@@ -751,7 +750,7 @@ async fn a_result_cut_by_the_budget_is_sent_again_exactly_as_the_model_first_rea
         &held,
         4_096,
         1,
-        "read pkg/big.txt",
+        "list pkg/many",
     )
     .await;
     a_turn(

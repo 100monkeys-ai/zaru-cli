@@ -318,6 +318,32 @@ fn the_lines_fs_read_returns_at_a_time_are_this_builds() {
     );
 }
 
+/// The number of lines the README says `fs.search` shows, and the folders it
+/// says a search skips, are this build's.
+#[test]
+fn the_lines_fs_search_shows_and_the_folders_it_skips_are_this_builds() {
+    use zaru_cli::tools::searching::{SHOWN_LINES, SKIPPED_FOLDERS};
+    let text = readme();
+    let shows = sentence_with(&text, "matching lines, grouped by file");
+    assert!(
+        shows.contains(&format!("at most {SHOWN_LINES} matching lines")),
+        "the README says fs.search shows a different number of lines from the {SHOWN_LINES} it \
+         shows: {shows:?}"
+    );
+    let skips = sentence_with(&text, "unless the call asks to include them");
+    for folder in SKIPPED_FOLDERS {
+        assert!(
+            skips.contains(&format!("`{folder}`")),
+            "the README does not say fs.search skips {folder}: {skips:?}"
+        );
+    }
+    assert_eq!(
+        skips.matches('`').count() / 2,
+        SKIPPED_FOLDERS.len() + 2,
+        "the README names folders fs.search does not skip, or leaves some out: {skips:?}"
+    );
+}
+
 /// The rows the README says a tool call's block shows are the ones it shows.
 #[test]
 fn the_rows_a_calls_block_shows_are_this_builds() {

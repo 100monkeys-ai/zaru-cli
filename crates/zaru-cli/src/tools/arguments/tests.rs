@@ -256,6 +256,25 @@ fn a_call_is_built_from_the_fields_the_tool_declares() {
         Call::Search {
             root: String::from("src"),
             needle: String::from("todo"),
+            options: crate::tools::searching::Options::default(),
+        }
+    );
+    let narrowed = Call::parse(
+        ToolName::FsSearch,
+        r#"{"root":"src","needle":"todo","exact_case":true,"whole_word":true,"file_type":"rs","include_ignored":true}"#,
+    )
+    .expect("a search with every option parses");
+    assert_eq!(
+        narrowed,
+        Call::Search {
+            root: String::from("src"),
+            needle: String::from("todo"),
+            options: crate::tools::searching::Options {
+                exact_case: true,
+                whole_word: true,
+                file_type: Some(String::from("rs")),
+                include_ignored: true,
+            },
         }
     );
 

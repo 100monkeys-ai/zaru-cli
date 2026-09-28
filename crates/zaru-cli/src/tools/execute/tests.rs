@@ -690,8 +690,14 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
     let tree = ScratchTree::new();
     let working = WorkingDirectory::at(tree.project()).expect("resolves");
     let scratch = Scratch::new();
-    let big = nonce("HEAD").repeat(200);
-    std::fs::write(tree.project().join("inside").join("file"), &big).expect("staging");
+    // Forty entries with long names, so a listing is far over a 64-byte
+    // budget.
+    let names: Vec<String> = (0..40)
+        .map(|n| format!("{n:02}-{}", nonce("entry")))
+        .collect();
+    for name in &names {
+        std::fs::write(tree.project().join("inside").join(name), "").expect("staging");
+    }
 
     let mut transcript = Transcript::append_to(scratch.session.transcript_path()).expect("opens");
     let mut overflow = SessionOverflow::in_session(scratch.session.directory());
@@ -720,16 +726,15 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         declared: crate::tools::descriptor_set(),
     };
 
-    // A search, because an `fs.read` sizes its own answer to the budget
-    // since 2026-09-28 and so is not what the budget cuts. The line the
-    // search finds is the whole file.
+    // A listing, because `fs.read` and `fs.search` size their own answers
+    // to the budget since 2026-09-28 and so are not what the budget cuts.
     let outcome = executor
-        .execute(&request("fs.search", &["inside/file", "HEAD"]))
+        .execute(&request("fs.list", &["inside"]))
         .await
         .expect("no port failed");
 
     let ToolOutcome::Completed { result, .. } = outcome else {
-        panic!("the search should have acted");
+        panic!("the listing should have acted");
     };
     assert!(
         result.content.as_str().contains("bytes elided"),
@@ -746,11 +751,13 @@ async fn oversized_output_is_preserved_in_the_session_directory_at_the_path_show
         path.display()
     );
     let preserved = std::fs::read_to_string(&path).expect("the sink wrote the file it named");
-    assert!(
-        preserved.contains(&big),
-        "the preserved file does not carry the whole output, so the truncation lost bytes nobody \
-         can recover"
-    );
+    for name in &names {
+        assert!(
+            preserved.contains(name.as_str()),
+            "the preserved file does not carry the whole output, so the truncation lost bytes \
+             nobody can recover: {name} is missing"
+        );
+    }
 }
 
 /// ADR-0004 D6's seam: a denying verdict refuses the call whatever the mode

@@ -520,9 +520,18 @@ where
                 Subject::Edit { target, .. },
                 Requested::Builtin(Call::Edit { old, new, all, .. }),
             ) => Ok(files::edit(target.resolved(), old, new, *all)),
-            (Subject::Search { root, needle }, Requested::Builtin(Call::Search { .. })) => {
-                Ok(files::search(root.resolved(), needle, self.search_ceiling).await)
-            }
+            (
+                Subject::Search { root, needle },
+                Requested::Builtin(Call::Search { options, .. }),
+            ) => Ok(crate::tools::searching::search(
+                root.resolved(),
+                self.working_directory.root(),
+                needle,
+                options,
+                self.search_ceiling,
+                self.budget,
+            )
+            .await),
             (Subject::Command(line), Requested::Builtin(Call::Run { .. })) => {
                 self.subprocess.run(line).await
             }
@@ -706,7 +715,7 @@ where
                 };
                 Invocation::running(&line)
             }
-            Requested::Builtin(Call::Search { root, needle }) => {
+            Requested::Builtin(Call::Search { root, needle, .. }) => {
                 // The root is classified exactly as any other path is: D4
                 // applies to where a search looks, and a search that started
                 // outside the tree prompts and is marked like any other

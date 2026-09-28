@@ -164,7 +164,7 @@ impl ToolName {
 
     /// What the model is told this tool does.
     ///
-    /// For four of the seven this is ADR-0011 D1's second column, transcribed,
+    /// For two of the seven this is ADR-0011 D1's second column, transcribed,
     /// because it is what a model learns the tool from and a description
     /// invented beside the code is a contract nobody decided.
     ///
@@ -177,14 +177,22 @@ impl ToolName {
     /// by the coordinator at the `file-tools` arc's spawn under Jeshua's
     /// directive 58 and recorded on ADR-0011 D1, open to his veto. They live
     /// in [`crate::tools::reading`], beside the constants they quote.
+    ///
+    /// **`fs.search` and `fs.list` say more, since 2026-09-28**, for the same
+    /// reason: a model could not learn from "Content and filename search" that
+    /// search can narrow, ranks, and finds declarations by their words, nor
+    /// from "List a directory" that a listing does not go below one folder.
+    /// Each says which questions it is for. Ruled at the `search-quality`
+    /// arc's spawn, recorded on ADR-0011 D1. They live in
+    /// [`crate::tools::searching`].
     #[must_use]
     pub const fn purpose(self) -> &'static str {
         match self {
             Self::FsRead => crate::tools::reading::READ_DESCRIPTION,
             Self::FsWrite => crate::tools::reading::WRITE_DESCRIPTION,
             Self::FsEdit => crate::tools::reading::EDIT_DESCRIPTION,
-            Self::FsList => "List a directory",
-            Self::FsSearch => "Content and filename search",
+            Self::FsList => crate::tools::searching::LIST_DESCRIPTION,
+            Self::FsSearch => crate::tools::searching::SEARCH_DESCRIPTION,
             // D1's row read "Execute a shell command" until 2026-09-05, and
             // the harness runs no shell — see `crate::process::line`. The row
             // was corrected on the record in the same change under the
@@ -229,6 +237,11 @@ impl ToolName {
     /// ask for part of a file; `fs.edit` takes an optional `all`, true or
     /// false, so it can replace every occurrence when it means to. Ruled at
     /// the `file-tools` arc's spawn and recorded on ADR-0011 D1.
+    ///
+    /// `fs.search` takes four optional fields since 2026-09-28: `exact_case`,
+    /// `whole_word` and `include_ignored`, true or false, and `file_type`, an
+    /// extension. Ruled at the `search-quality` arc's spawn and recorded on
+    /// ADR-0011 D1.
     #[must_use]
     pub const fn fields(self) -> &'static [Field] {
         // Each list is a named constant because a slice of `const fn` calls
@@ -246,7 +259,14 @@ impl ToolName {
             Field::text("new"),
             Field::flag("all"),
         ];
-        const SEARCH: [Field; 2] = [Field::text("root"), Field::text("needle")];
+        const SEARCH: [Field; 6] = [
+            Field::text("root"),
+            Field::text("needle"),
+            Field::flag("exact_case"),
+            Field::flag("whole_word"),
+            Field::optional_text("file_type"),
+            Field::flag("include_ignored"),
+        ];
         const RUN: [Field; 1] = [Field::text("command")];
         const FETCH: [Field; 1] = [Field::text("url")];
         match self {
@@ -371,6 +391,16 @@ impl Field {
             name,
             kind: FieldKind::Text,
             required: true,
+        }
+    }
+
+    /// An optional text field.
+    #[must_use]
+    pub const fn optional_text(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: FieldKind::Text,
+            required: false,
         }
     }
 

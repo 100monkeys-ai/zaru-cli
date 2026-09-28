@@ -100,6 +100,7 @@ pub mod prompt;
 pub mod reading;
 pub mod result_view;
 pub mod seal;
+pub mod searching;
 pub mod tree;
 
 pub use allowlist::{Allowed, AllowlistRefused, Entry};

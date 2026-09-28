@@ -16,7 +16,7 @@
 //! disagreeing about a path.
 //!
 //! **A symlink is never followed and never offered**, which is the rule
-//! `tools::files::search` already states: a link is what lets a walk leave the
+//! `tools::searching::search` already states: a link is what lets a walk leave the
 //! tree the root was classified against. That is the first of the two
 //! defences and `classify` is the second.
 //!
