@@ -56,6 +56,20 @@ pub enum GeminiFailure {
         /// AIP-193's canonical status name, where the body carried one.
         status: String,
     },
+    /// The provider has no model by the identifier that was asked for.
+    ///
+    /// HTTP 404 `NOT_FOUND`, measured 2026-09-28 against the live endpoint
+    /// with `--model cheap`: "models/cheap is not found for API version
+    /// v1beta, or is not supported for generateContent." Until then it was a
+    /// [`Self::RequestRefused`], classed as a defect of the harness and shown
+    /// with no words, where the fix is the person's: the identifier is theirs.
+    /// The other two kinds already had this variant.
+    ModelNotFound {
+        /// The identifier that was asked for, as configured.
+        model: String,
+        /// What the provider said, checked free of the key.
+        detail: String,
+    },
     /// The provider refused the shape of the request.
     ///
     /// The user cannot act on this: they did not build the request. It is
@@ -145,6 +159,10 @@ impl fmt::Display for GeminiFailure {
                     format!(", {status}")
                 },
             ),
+            Self::ModelNotFound { model, detail } => write!(
+                f,
+                "Gemini has no model {model:?} (HTTP 404, NOT_FOUND): {detail}"
+            ),
             Self::RequestRefused {
                 code,
                 status,
@@ -220,6 +238,7 @@ impl GeminiFailure {
         matches!(
             self,
             Self::CredentialRejected { .. }
+                | Self::ModelNotFound { .. }
                 | Self::CapacityRefused(_)
                 | Self::ContextWindowExceeded(_)
         )

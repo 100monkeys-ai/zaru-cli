@@ -606,6 +606,67 @@ fn adr_0036_d2_a_remote_capacity_refusal_names_its_cause_and_never_a_malformed_r
     );
 }
 
+// **A model Gemini does not have is the person's to fix, and they are told
+// which model and what Gemini said.**
+//
+// The body is the one the live endpoint returned on 2026-09-28 for `--model
+// cheap`, copied from the failure the binary hid: 404 `NOT_FOUND`, "models/
+// cheap is not found for API version v1beta, or is not supported for
+// generateContent. …". Until then it was a `RequestRefused`, a defect shown
+// as "a defect in Zaru" with no words, exit 70.
+//
+// Watched red on `f98b894`: "a 404 for a model Gemini does not have is the
+// person's to fix, and it was Defect".
+#[test]
+fn a_model_gemini_does_not_have_is_the_persons_to_fix_and_says_which() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let client = super::GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model("cheap"),
+        Alias::new("provider.gemini").expect("a well-formed alias"),
+        Secret::provider(ProviderKind::Gemini, provider_secret_nonce())
+            .expect("a nonce is a provider secret"),
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let message = "models/cheap is not found for API version v1beta, or is not supported for \
+                   generateContent. Call ModelService.ListModels to see the list of available \
+                   models and their supported methods.";
+    let body = serde_json::json!({
+        "error": { "code": 404, "message": message, "status": "NOT_FOUND" }
+    })
+    .to_string();
+    let shown = Presentation::of(
+        &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+            &ProviderFailure::Gemini(client.classify(404, body.as_bytes())),
+            SessionEvidence::NoSessionExists,
+        ),
+    );
+    println!("{shown}");
+    assert_eq!(
+        shown.class,
+        Class::UserCorrectable,
+        "a 404 for a model Gemini does not have is the person's to fix, and it was {:?}",
+        shown.class
+    );
+    let said = shown.to_string();
+    for needed in [
+        "\"cheap\"",
+        "HTTP 404",
+        message,
+        "model.default",
+        "zaru models",
+    ] {
+        assert!(
+            said.contains(needed),
+            "the refusal for a missing model does not say {needed:?}: {said}"
+        );
+    }
+}
+
 // ADR-0016 D1's classes, by provenance. The credential arm names the alias
 // and the kind and never the key; the malformed-body arm reports a length and
 // never a content.

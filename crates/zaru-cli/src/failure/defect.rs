@@ -249,6 +249,27 @@ pub struct DefectReport {
     report_at: String,
     location: Location,
     session: SessionEvidence,
+    /// Boxed, because a defect report travels inside every result the
+    /// failure boundary returns and most carry none.
+    said: Option<Box<Said>>,
+}
+
+/// What the other side said when a defect is a refusal from outside, and what
+/// the person can try.
+///
+/// **A defect with no words is never the whole message.** Until 2026-09-28 a
+/// provider that refused a request, or sent what could not be read, was shown
+/// as "a defect in Zaru" with no reason at all, and the person had nothing to
+/// act on or to report. Ruled by the coordinator under directive 58, open to
+/// Jeshua's veto: they are shown what the provider said and what to try.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Said {
+    /// Who said it, as the line's lead: "the provider said:".
+    pub who: &'static str,
+    /// What they said, in the failure's own words, the key already removed.
+    pub what: crate::failure::Statement,
+    /// What the person can try.
+    pub try_this: crate::failure::Statement,
 }
 
 impl DefectReport {
@@ -280,7 +301,23 @@ impl DefectReport {
             report_at: report_at.into(),
             location,
             session,
+            said: None,
         }
+    }
+
+    /// The same report, carrying what the other side said and what to try.
+    #[must_use]
+    pub fn saying(self, said: Said) -> Self {
+        Self {
+            said: Some(Box::new(said)),
+            ..self
+        }
+    }
+
+    /// What the other side said, when the defect is a refusal from outside.
+    #[must_use]
+    pub fn said(&self) -> Option<&Said> {
+        self.said.as_deref()
     }
 
     /// The harness version this defect happened in.

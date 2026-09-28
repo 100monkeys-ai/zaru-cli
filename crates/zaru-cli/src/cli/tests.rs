@@ -3069,3 +3069,73 @@ fn an_in_turn_window_refusal_states_the_bytes_it_measured_on_every_kind() {
     }
     assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
+
+/// **A provider's refusal classed as a defect shows what the provider said
+/// and what to try, for every kind.** "A defect in Zaru" with no words is
+/// never the whole message.
+///
+/// Until 2026-09-28 the three arms for a refused request, an unreadable
+/// response and an unreadable tool schema rendered the defect's location, the
+/// session and where to report it, and nothing of the failure. A person got
+/// exit 70 and no reason. Watched red on `f98b894`: "a refused request from
+/// gemini is shown without the provider's words".
+#[test]
+fn a_provider_refusal_classed_as_a_defect_shows_the_providers_words_and_what_to_try() {
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::{
+        GeminiFailure, OllamaFailure, OpenAiCompatibleFailure, ProviderFailure,
+    };
+
+    let words = "function declaration FIELD-SEVEN has an invalid schema";
+    let cases: Vec<(&str, ProviderFailure)> = vec![
+        (
+            "gemini",
+            ProviderFailure::Gemini(GeminiFailure::RequestRefused {
+                code: 400,
+                status: "INVALID_ARGUMENT".to_owned(),
+                detail: words.to_owned(),
+            }),
+        ),
+        (
+            "ollama",
+            ProviderFailure::Ollama(OllamaFailure::RequestRefused {
+                code: 400,
+                detail: words.to_owned(),
+            }),
+        ),
+        (
+            "openai-compatible",
+            ProviderFailure::OpenAiCompatible(OpenAiCompatibleFailure::RequestRefused {
+                code: 400,
+                detail: words.to_owned(),
+            }),
+        ),
+        (
+            "gemini, unreadable",
+            ProviderFailure::Gemini(GeminiFailure::Unreadable {
+                bytes: 17,
+                parser: "expected value at line 1 column 1".to_owned(),
+            }),
+        ),
+    ];
+    let surface = crate::cli::classify::Surface::new("0.0.0", "https://example.invalid/report");
+    for (kind, failure) in cases {
+        let shown =
+            Presentation::of(&surface.provider_failure(&failure, SessionEvidence::NoSessionExists));
+        let said = shown.to_string();
+        println!("{kind}:\n{said}\n");
+        assert_eq!(shown.class, Class::Defect, "{kind}: the class is unchanged");
+        let own = failure.to_string();
+        assert!(
+            said.contains(&format!("the provider said: {own}")),
+            "a refused request from {kind} is shown without the provider's words: {said}"
+        );
+        assert!(
+            said.contains(
+                "try: run the task again, or with another model (`--model <identifier>`); if \
+                 the provider says the same, report it with these lines"
+            ),
+            "a refused request from {kind} does not say what to try: {said}"
+        );
+    }
+}

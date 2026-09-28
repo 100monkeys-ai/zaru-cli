@@ -199,7 +199,12 @@ impl Presentation {
     }
 
     fn defect_lines(report: &DefectReport) -> Vec<Line> {
-        let mut lines = vec![Line::plain(report.there_is_nothing_to_configure())];
+        let mut lines = Vec::new();
+        if let Some(said) = report.said() {
+            lines.push(Line::led(said.who, said.what.as_str()));
+            lines.push(Line::led("try:", said.try_this.as_str()));
+        }
+        lines.push(Line::plain(report.there_is_nothing_to_configure()));
         match report.session() {
             SessionEvidence::Session { id, transcript } => {
                 lines.push(Line::led("session:", id.as_str()));

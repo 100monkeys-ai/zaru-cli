@@ -665,6 +665,16 @@ impl GeminiClient {
                 detail,
             });
         }
+        // A model the provider does not have is the person's to fix. Gemini
+        // answers it with 404 `NOT_FOUND`, measured 2026-09-28; a 404 names
+        // the resource the URL addresses, and the only resource this client
+        // addresses is the model.
+        if code == 404 {
+            return GeminiFailure::ModelNotFound {
+                model: self.model.as_str().to_owned(),
+                detail,
+            };
+        }
         if (400..500).contains(&code) {
             return GeminiFailure::RequestRefused {
                 code,
