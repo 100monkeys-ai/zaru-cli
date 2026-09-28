@@ -58,8 +58,8 @@ use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction};
 use zaru_cli::session::{SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::tools::port::Answer;
 use zaru_cli::tools::{
-    Captured, Confirm, ConfirmFailure, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget,
-    Question, SessionOverflow, WorkingDirectory,
+    Confirm, ConfirmFailure, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget, Question,
+    SessionOverflow, WorkingDirectory,
 };
 use zaru_core::iteration::validator::{Declared, Dispatch, Expect, Name, Pattern, Plan, Run};
 use zaru_core::iteration::{
@@ -186,7 +186,11 @@ impl ContextPolicy for Policy {
 struct Unbuilt;
 
 impl Fetch for Unbuilt {
-    async fn retrieve(&self, _url: &zaru_cli::web::RequestedUrl) -> Result<Captured, PortFailure> {
+    async fn retrieve(
+        &self,
+        _url: &zaru_cli::web::RequestedUrl,
+        _followed: usize,
+    ) -> Result<zaru_cli::tools::Retrieved, PortFailure> {
         Err(PortFailure::new("web.fetch is not reached by these checks"))
     }
 }

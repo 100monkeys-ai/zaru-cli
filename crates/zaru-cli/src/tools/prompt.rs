@@ -110,6 +110,15 @@ pub const SUFFIX: &str = " [y/N/a · a allows this exact line for this session �
 /// [ADR-0015's amendments volume 2]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility-updates-2
 pub const ADMISSION_SUFFIX: &str = " [y/N · esc declines] ";
 
+/// What follows a `web.fetch` question.
+///
+/// The tool call's answers and one more: `h` allows every URL on the asked
+/// host for the rest of the session, so a person who trusts a site is not
+/// asked about each page of it. Added 2026-09-28 with `web.fetch` asking in
+/// `ask` mode, under a coordinator ruling open to Jeshua's veto.
+pub const FETCH_SUFFIX: &str = " [y/N/a/h · a allows this exact URL for this session · h allows \
+                                every URL on this host for this session · esc declines] ";
+
 /// Which answers a question takes, and therefore which line it shows.
 ///
 /// # The line and the keys are one value, since 2026-09-15
@@ -141,6 +150,9 @@ pub enum Answers {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Admission,
+    /// A `web.fetch`: the tool call's answers, and `h` for every URL on the
+    /// asked host for the rest of the session.
+    Fetch,
 }
 
 impl Answers {
@@ -150,7 +162,14 @@ impl Answers {
         match self {
             Self::ToolCall => SUFFIX,
             Self::Admission => ADMISSION_SUFFIX,
+            Self::Fetch => FETCH_SUFFIX,
         }
+    }
+
+    /// Whether `h` answers this question.
+    #[must_use]
+    pub const fn allows_a_host_grant(self) -> bool {
+        matches!(self, Self::Fetch)
     }
 
     /// Whether `a` answers this question.
@@ -161,7 +180,7 @@ impl Answers {
     /// method returning `false`.
     #[must_use]
     pub const fn allows_a_session_grant(self) -> bool {
-        matches!(self, Self::ToolCall)
+        matches!(self, Self::ToolCall | Self::Fetch)
     }
 }
 
@@ -221,6 +240,10 @@ pub fn answer(answers: Answers, typed: Option<&str>) -> Answer {
         && (typed.eq_ignore_ascii_case("a") || typed.eq_ignore_ascii_case("always"))
     {
         Answer::ForThisSession
+    } else if answers.allows_a_host_grant()
+        && (typed.eq_ignore_ascii_case("h") || typed.eq_ignore_ascii_case("host"))
+    {
+        Answer::ForThisHost
     } else {
         Answer::No
     }

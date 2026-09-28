@@ -37,8 +37,8 @@ use zaru_cli::redaction::{HeldSecrets, held_secrets_for_redaction, marker};
 use zaru_cli::session::{Phase, Record, SessionId, SessionStore, SystemWallClock, Transcript};
 use zaru_cli::terminal::driver::Pending;
 use zaru_cli::tools::{
-    Captured, ELISION_PREFIX, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget,
-    SessionOverflow, Verdict, Verdicts, WorkingDirectory,
+    ELISION_PREFIX, Executor, Fetch, Invocation, Mode, NoMembrane, OutputBudget, SessionOverflow,
+    Verdict, Verdicts, WorkingDirectory,
 };
 use zaru_core::iteration::validator::{
     Declared, Dispatch, Expect, Name, Pattern, PatternMatch, Plan, Run, SchemaPath, SchemaValidate,
@@ -394,7 +394,11 @@ impl EventSink for Printing {
 struct Unbuilt;
 
 impl Fetch for Unbuilt {
-    async fn retrieve(&self, _url: &zaru_cli::web::RequestedUrl) -> Result<Captured, PortFailure> {
+    async fn retrieve(
+        &self,
+        _url: &zaru_cli::web::RequestedUrl,
+        _followed: usize,
+    ) -> Result<zaru_cli::tools::Retrieved, PortFailure> {
         Err(PortFailure::new("web.fetch has no implementation"))
     }
 }

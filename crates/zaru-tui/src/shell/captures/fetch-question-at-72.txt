@@ -1,0 +1,16 @@
+size 72x12
+cursor 0,0
+rows
+|runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X                |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|Allow web.fetch https://example.com/search?q=planted-in-the-url&page=2? |
+|[y/N/a/h · a allows this exact URL for this session · h allows every URL|
+|on this host for this session · esc declines]                           |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+styled cells

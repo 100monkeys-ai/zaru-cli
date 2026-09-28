@@ -768,13 +768,22 @@ pub enum Answers {
     ///
     /// [ADR-0015]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0015-commands-and-extensibility
     Admission,
+    /// A `web.fetch`: the tool call's keys and `h`, which allows every URL on
+    /// the asked host for the rest of the session. Added 2026-09-28.
+    Fetch,
 }
 
 impl Answers {
     /// Whether `a` answers this question.
     #[must_use]
     pub const fn allows_a_session_grant(self) -> bool {
-        matches!(self, Self::ToolCall)
+        matches!(self, Self::ToolCall | Self::Fetch)
+    }
+
+    /// Whether `h` answers this question.
+    #[must_use]
+    pub const fn allows_a_host_grant(self) -> bool {
+        matches!(self, Self::Fetch)
     }
 
     /// Whether an input this question does not take reaches the composer.
@@ -816,6 +825,9 @@ pub enum Answered {
     /// What "this exact line" means and what is done with it are `zaru-cli`'s;
     /// this crate carries the keystroke's meaning and nothing else.
     ForThisSession,
+    /// The user permitted every URL on this host for the rest of the
+    /// session: `h`, offered only at a `web.fetch`.
+    ForThisHost,
 }
 
 /// What the user is asked for when the answer is a secret.

@@ -119,21 +119,16 @@ fn the_built_in_set_is_the_seven_adr_0011_d1_names() {
 /// is a finding.**
 ///
 /// D3: "`ask` — Prompts before any write or command." So `fs.write`,
-/// `fs.edit` and `cmd.run` prompt, and `fs.read`, `fs.list`, `fs.search` and
-/// `web.fetch` do not.
+/// `fs.edit` and `cmd.run` prompt, and since 2026-09-28 so does `web.fetch`:
+/// a URL is a way out of the machine, and a model that has read something
+/// malicious can put data in one. `fs.read`, `fs.list` and `fs.search` do not
+/// prompt on their effect.
 ///
-/// `web.fetch` is the finding: at the **default** mode a URL the model chose
-/// is retrieved with no prompt, because it is neither a write nor a command.
-/// That is recorded as an open question on the record rather than fixed here,
-/// and this check is what makes the built behaviour visible rather than
-/// incidental.
-///
-/// The mutant: folding `Retrieve` in with `Write | Command`, which would make
-/// the harness prompt on `web.fetch` and quietly answer a question the record
-/// left open. Both arms are asserted, so "prompt on everything" and "prompt
-/// on nothing" each fail.
+/// The mutant: dropping `Retrieve` from the effects that prompt, which lets a
+/// model send data out in a URL with nobody asked. Both arms are asserted, so
+/// "prompt on everything" and "prompt on nothing" each fail.
 #[test]
-fn only_a_write_or_a_command_prompts_in_ask_mode() {
+fn a_write_a_command_or_a_retrieval_prompts_in_ask_mode() {
     let mut prompting = Vec::new();
     let mut silent = Vec::new();
     for tool in ToolName::ALL {
@@ -146,15 +141,14 @@ fn only_a_write_or_a_command_prompts_in_ask_mode() {
 
     assert_eq!(
         prompting,
-        vec!["fs.write", "fs.edit", "cmd.run"],
-        "ADR-0011 D3's `ask` mode \"prompts before any write or command\"; the tools that prompt \
-         are {prompting:?}"
+        vec!["fs.write", "fs.edit", "cmd.run", "web.fetch"],
+        "in `ask` mode a write, a command and a retrieval prompt; the tools that prompt are \
+         {prompting:?}"
     );
     assert_eq!(
         silent,
-        vec!["fs.read", "fs.list", "fs.search", "web.fetch"],
-        "these are the tools D3's `ask` sentence does not name, so none of them prompts on its \
-         effect alone; `web.fetch` among them is the open question recorded on ADR-0011. Note \
+        vec!["fs.read", "fs.list", "fs.search"],
+        "these read inside the working directory and do not prompt on their effect alone. Note \
          that D4 still prompts for any of them outside the working directory"
     );
 
@@ -2757,6 +2751,51 @@ fn a_session_grant_is_typed_past_at_the_door_and_taken_at_a_tool_call() {
     assert!(wrong.is_empty(), "{}", wrong.join("; "));
 }
 
+/// `h` allows every URL on a host for the session, and only a `web.fetch`
+/// question offers it; its line names it.
+#[test]
+fn a_host_grant_is_taken_at_a_fetch_and_nowhere_else() {
+    let mut wrong = Vec::new();
+    for typed in ["h", "H", "host", "HOST", " h ", "h\n"] {
+        if prompt::answer(prompt::Answers::Fetch, Some(typed)) != Answer::ForThisHost {
+            wrong.push(format!("{typed:?} was not a host grant at a fetch"));
+        }
+        for elsewhere in [prompt::Answers::ToolCall, prompt::Answers::Admission] {
+            if prompt::answer(elsewhere, Some(typed)) != Answer::No {
+                wrong.push(format!("{typed:?} answered a {elsewhere:?} question"));
+            }
+        }
+    }
+    for (typed, expected) in [
+        ("y", Answer::Once),
+        ("a", Answer::ForThisSession),
+        ("n", Answer::No),
+        ("", Answer::No),
+    ] {
+        if prompt::answer(prompt::Answers::Fetch, Some(typed)) != expected {
+            wrong.push(format!("{typed:?} is not {expected:?} at a fetch"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("; "));
+    assert_eq!(prompt::Answers::Fetch.line(), prompt::FETCH_SUFFIX);
+    assert!(prompt::FETCH_SUFFIX.contains("h allows every URL on this host"));
+
+    // A `web.fetch` question takes these answers, and a write does not.
+    let url = crate::web::RequestedUrl::parse("https://example.com/a?b=c").expect("parses");
+    let question = Decision::reach(
+        Mode::Ask,
+        &crate::tools::Invocation::fetching(&url),
+        Assessment::default(),
+    )
+    .question()
+    .expect("a retrieval is asked about in `ask` mode");
+    assert_eq!(question.answers, prompt::Answers::Fetch);
+    assert_eq!(
+        question.statement,
+        "Allow web.fetch https://example.com/a?b=c?"
+    );
+}
+
 /// The line a question shows and the keys it takes are one value.
 ///
 /// **The mutant:** either arm of [`prompt::Answers::line`] returning the other
@@ -3717,19 +3756,19 @@ fn adr_0011_d3_a_projected_call_is_asked_about_at_every_mode_short_of_yolo() {
         Requirement::Proceed,
     );
 
-    // The accepting sibling for the `web.fetch` contrast, so the assertion
-    // above is about `Remote` rather than about every effect: a retrieval
-    // still does not prompt at the default mode.
-    let url = crate::web::RequestedUrl::parse("https://example.com/").expect("a well-formed URL");
+    // The accepting sibling, so the assertion above is about `Remote` rather
+    // than about every effect: a read inside the tree does not prompt.
+    let tree = ScratchTree::new();
+    let working = WorkingDirectory::at(tree.project()).expect("resolves");
+    let inside = working.classify("inside.txt");
     assert_eq!(
         Decision::reach(
             Mode::Ask,
-            &crate::tools::Invocation::fetching(&url),
+            &crate::tools::Invocation::on_path(ToolName::FsRead, &inside).expect("a path call"),
             Assessment::default()
         )
         .requirement(),
         Requirement::Proceed,
-        "ADR-0011's open question on `web.fetch` is untouched by this work"
     );
 }
 

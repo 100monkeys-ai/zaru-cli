@@ -78,9 +78,10 @@ use crate::tools::grants::SessionGrants;
 use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::output::{Captured, OutputBudget, Overflow, Presented};
-use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Fetch, Subprocess};
+use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Fetch, Retrieved, Subprocess};
 use crate::tools::seal::{Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
+use crate::web::url::RequestedUrl;
 use std::path::PathBuf;
 use zaru_core::iteration::PortFailure;
 use zaru_core::redaction::{Redacted, Redactor};
@@ -512,7 +513,7 @@ where
                 self.subprocess.run(line).await
             }
             (Subject::Url(url), Requested::Builtin(Call::Fetch { .. })) => {
-                self.fetch.retrieve(url).await
+                self.fetch_following(url).await
             }
             // Unbuildable: `Executor::execute` derives the subject from the
             // call it just parsed, and each constructor takes one kind. It is
@@ -523,6 +524,85 @@ where
                 "a tool call was described with a subject of the wrong kind, which is a defect in \
                  the harness rather than anything the call asked for",
             )),
+        }
+    }
+}
+
+impl<C, F, P> Executor<'_, C, F, P>
+where
+    C: Subprocess + Sync,
+    F: Fetch + Sync,
+    P: crate::tools::port::Projected + Sync,
+{
+    /// `web.fetch`, following a redirect to another host only as a new call
+    /// to that URL would be allowed.
+    ///
+    /// Until 2026-09-28 a redirect to another host was never followed. Now
+    /// the permission decision is reached about the new URL, exactly as for a
+    /// call the model made: in `ask` mode the person is asked, showing the
+    /// whole new URL, and with nobody to ask it is refused and the model is
+    /// told why. Each hop is recorded on the transcript as a call of its own.
+    async fn fetch_following(&mut self, first: &RequestedUrl) -> Result<Captured, PortFailure> {
+        let mut url = first.clone();
+        let mut followed = 0;
+        let mut pending: Option<TranscriptEntry> = None;
+        loop {
+            let retrieved = self.fetch.retrieve(&url, followed).await?;
+            if let Some(entry) = pending.take() {
+                self.record(&Record::ToolCall(ToolCall::completed(&entry)))?;
+            }
+            let to = match retrieved {
+                Retrieved::Captured(captured) => return Ok(captured),
+                Retrieved::Elsewhere { to } => to,
+            };
+            followed += 1;
+            let (entry, permission) = {
+                let hop = Invocation::fetching(&to);
+                let decision = Decision::assess(
+                    self.mode,
+                    &hop,
+                    self.allowlist,
+                    self.destructive,
+                    self.session_grants,
+                );
+                // The same two gates a call passes: the membrane's verdict,
+                // then the permission decision.
+                let refused = match self.verdicts.verdict(&hop) {
+                    Verdict::Denied { code, reason } => Some(format!("{code} — {reason}")),
+                    Verdict::Allowed => {
+                        match decision
+                            .permit(self.confirmer.map(|confirmer| confirmer as &dyn Confirm))
+                        {
+                            Permission::Refused(because) => Some(because.to_string()),
+                            Permission::GrantedForTheSession => {
+                                self.session_grants.allow(&hop);
+                                None
+                            }
+                            Permission::GrantedForTheHost => {
+                                self.session_grants.allow_host(&hop);
+                                None
+                            }
+                            Permission::Granted => None,
+                        }
+                    }
+                };
+                (decision.entry().clone(), refused)
+            };
+            self.record(&Record::ToolCall(ToolCall::started(&entry)))?;
+            if let Some(because) = permission {
+                self.record(&Record::ToolCall(ToolCall::refused(&entry)))?;
+                return Ok(Captured {
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: format!(
+                        "the redirect from {} to {} was not followed: {because}",
+                        url.host().escape_debug(),
+                        to.host().escape_debug()
+                    ),
+                });
+            }
+            pending = Some(entry);
+            url = to;
         }
     }
 }
@@ -685,11 +765,16 @@ where
         // is interrupted mid-act does not lose the answer a person gave about
         // it. Recorded here rather than inside `Decision::permit`, which is
         // pure and holds no session.
-        let statement = if permission == Permission::GrantedForTheSession {
-            self.session_grants.allow(&invocation);
-            format!("{statement}{GRANTED_FOR_THE_SESSION}")
-        } else {
-            statement
+        let statement = match permission {
+            Permission::GrantedForTheSession => {
+                self.session_grants.allow(&invocation);
+                format!("{statement}{GRANTED_FOR_THE_SESSION}")
+            }
+            Permission::GrantedForTheHost => {
+                self.session_grants.allow_host(&invocation);
+                format!("{statement}{GRANTED_FOR_THE_HOST}")
+            }
+            Permission::Granted | Permission::Refused(_) => statement,
         };
 
         match permission {
@@ -699,7 +784,9 @@ where
                 statement,
                 RefusedBecause::to_string(&because),
             ),
-            Permission::Granted | Permission::GrantedForTheSession => {
+            Permission::Granted
+            | Permission::GrantedForTheSession
+            | Permission::GrantedForTheHost => {
                 // The record is written *before* the act, so a process killed
                 // inside the act leaves a `Started` with nothing closing it —
                 // which is what ADR-0010 D4's `Interrupted` is derived from.
@@ -778,6 +865,11 @@ impl<C, F, P> Executor<'_, C, F, P> {
 /// [ADR-0010]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0010-session-and-transcript
 /// [ADR-0011's amendments volume 3]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface-updates-3
 pub const GRANTED_FOR_THE_SESSION: &str = " — allowed for the rest of this session";
+
+/// What is added to a `web.fetch` statement when the user allowed its host
+/// for the session.
+pub const GRANTED_FOR_THE_HOST: &str =
+    " — every URL on this host allowed for the rest of this session";
 
 /// What the model is shown of a capture.
 ///

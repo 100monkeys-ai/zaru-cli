@@ -1641,6 +1641,11 @@ impl Shell {
                 Key::Char('a' | 'A') if answers.allows_a_session_grant() => {
                     self.resolve(Answered::ForThisSession);
                 }
+                // Every URL on the asked host, for the rest of the session.
+                // Only at a `web.fetch`, whose line offers it.
+                Key::Char('h' | 'H') if answers.allows_a_host_grant() => {
+                    self.resolve(Answered::ForThisHost);
+                }
                 Key::Char('n' | 'N') | Key::Esc | Key::Enter => self.resolve(Answered::No),
                 // A printable character this question does not take is not an
                 // answer, so it goes where the person was typing. The question

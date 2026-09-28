@@ -288,13 +288,17 @@ pub enum Answer {
     ///
     /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
     ForThisSession,
+    /// The user permitted every URL on this call's host for the rest of the
+    /// session. Offered only at a `web.fetch`, and never persisted, for the
+    /// reason [`Answer::ForThisSession`] is not.
+    ForThisHost,
 }
 
 impl Answer {
     /// Whether the call may act.
     #[must_use]
     pub const fn permits(self) -> bool {
-        matches!(self, Self::Once | Self::ForThisSession)
+        matches!(self, Self::Once | Self::ForThisSession | Self::ForThisHost)
     }
 }
 
@@ -368,13 +372,31 @@ pub trait Subprocess {
 ///
 /// [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 pub trait Fetch {
-    /// Retrieve the URL and capture what came back.
+    /// Retrieve the URL and capture what came back, or say where another host
+    /// was pointed at.
+    ///
+    /// `followed` is how many redirects to another host the caller has
+    /// already followed for this call, so the limit on redirects holds across
+    /// hosts as it does within one.
     fn retrieve(
         &self,
         url: &crate::web::url::RequestedUrl,
-    ) -> impl core::future::Future<
-        Output = Result<crate::tools::output::Captured, zaru_core::iteration::PortFailure>,
-    > + Send;
+        followed: usize,
+    ) -> impl core::future::Future<Output = Result<Retrieved, zaru_core::iteration::PortFailure>> + Send;
+}
+
+/// What one retrieval produced.
+#[derive(Debug)]
+pub enum Retrieved {
+    /// What came back, or why nothing did.
+    Captured(crate::tools::output::Captured),
+    /// The server redirected to another host, and nothing was fetched from
+    /// it. The caller decides whether to follow, asking the person as it
+    /// would about a new call; see `tools::execute`.
+    Elsewhere {
+        /// The URL the server pointed at.
+        to: crate::web::url::RequestedUrl,
+    },
 }
 
 /// [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)

@@ -589,6 +589,9 @@ pub enum Permission {
     /// also an instruction to remember the line, and a record of a decision a
     /// person made that the transcript owes a line to.
     GrantedForTheSession,
+    /// It may, and the user said so for every later `web.fetch` to the same
+    /// host in this session.
+    GrantedForTheHost,
     /// It may not, and this is why.
     Refused(RefusedBecause),
 }
@@ -597,7 +600,10 @@ impl Permission {
     /// Whether the call may act.
     #[must_use]
     pub const fn permits(self) -> bool {
-        matches!(self, Self::Granted | Self::GrantedForTheSession)
+        matches!(
+            self,
+            Self::Granted | Self::GrantedForTheSession | Self::GrantedForTheHost
+        )
     }
 }
 
@@ -729,7 +735,13 @@ impl Decision {
                 statement: format!("Allow {}?", self.entry.render()),
                 detail: self.detail.clone(),
                 prominent: self.prominent,
-                answers: crate::tools::prompt::Answers::ToolCall,
+                // A `web.fetch` also offers the host, so a person who trusts a
+                // site is not asked about every page of it.
+                answers: if self.entry.tool() == Some(ToolName::WebFetch) {
+                    crate::tools::prompt::Answers::Fetch
+                } else {
+                    crate::tools::prompt::Answers::ToolCall
+                },
             }),
         }
     }
@@ -758,6 +770,7 @@ impl Decision {
             None | Some(Err(_)) => Permission::Refused(RefusedBecause::ThereWasNobodyToAsk),
             Some(Ok(Answer::Once)) => Permission::Granted,
             Some(Ok(Answer::ForThisSession)) => Permission::GrantedForTheSession,
+            Some(Ok(Answer::ForThisHost)) => Permission::GrantedForTheHost,
             Some(Ok(Answer::No)) => Permission::Refused(RefusedBecause::TheUserDeclined),
         }
     }

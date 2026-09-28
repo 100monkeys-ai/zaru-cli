@@ -152,6 +152,14 @@ impl RequestedUrl {
         self.inner.as_str()
     }
 
+    /// The host this URL names, as the parser wrote it: lower case for a
+    /// name, bracketed for an IPv6 address. [`Self::parse`] refuses a URL with
+    /// no host, so there always is one.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        self.inner.host_str().unwrap_or_default()
+    }
+
     /// The parsed URL, for the client that will dial it.
     pub(crate) const fn inner(&self) -> &reqwest::Url {
         &self.inner

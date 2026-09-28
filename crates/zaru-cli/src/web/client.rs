@@ -48,6 +48,7 @@
 //! [ADR-0011]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0011-local-tool-surface
 
 use crate::tools::output::Captured;
+use crate::tools::port::Retrieved;
 use crate::web::bounds::FetchBounds;
 use crate::web::url::{Destinations, RETRIEVABLE_SCHEMES, RefusedDestination, RequestedUrl};
 use core::fmt;
@@ -292,21 +293,54 @@ impl WebClient {
     /// here for the same reason that module gives.
     ///
     /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
-    pub(crate) async fn retrieve(&self, url: &RequestedUrl) -> Captured {
+    ///
+    /// # A redirect to another host is handed back, not followed
+    ///
+    /// Until 2026-09-28 such a redirect was refused outright. Now it is
+    /// returned as [`Retrieved::Elsewhere`], so the caller can ask the person
+    /// about the new host as it asks about any call, and refuse it where
+    /// there is nobody to ask. `followed` counts the ones already followed
+    /// for this call, and the redirect limit holds across hosts as it holds
+    /// within one.
+    pub(crate) async fn retrieve(&self, url: &RequestedUrl, followed: usize) -> Retrieved {
+        Retrieved::Captured(match self.retrieve_one(url, followed).await {
+            Ok(captured) => captured,
+            Err(to) => return Retrieved::Elsewhere { to },
+        })
+    }
+
+    /// [`Self::retrieve`], with a redirect to another host as the error arm.
+    async fn retrieve_one(
+        &self,
+        url: &RequestedUrl,
+        followed: usize,
+    ) -> Result<Captured, RequestedUrl> {
         if let Some(refused) = self.destinations.refuses(url.inner()) {
-            return refusal(refused.to_string());
+            return Ok(refusal(refused.to_string()));
         }
 
         let mut response = match self.http.get(url.inner().clone()).send().await {
             Ok(response) => response,
-            Err(error) => return refusal(transport(url, &error)),
+            Err(error) => return Ok(refusal(transport(url, &error))),
         };
 
         let status = response.status();
         let final_url = response.url().clone();
 
         if status.is_redirection() {
-            return refusal(self.why_the_chain_stopped(&final_url, &response));
+            if let Some(to) = self.another_host(&final_url, &response) {
+                if followed >= self.bounds.redirects.get() {
+                    return Ok(refusal(format!(
+                        "the redirect from {} to {} was not followed, because the limit of {} was \
+                         reached",
+                        final_url.host_str().unwrap_or_default().escape_debug(),
+                        to.host().escape_debug(),
+                        self.bounds.redirects
+                    )));
+                }
+                return Err(to);
+            }
+            return Ok(refusal(self.why_the_chain_stopped(&final_url, &response)));
         }
 
         let ceiling = self.bounds.body.get();
@@ -318,7 +352,7 @@ impl WebClient {
         if let Some(claimed) = response.content_length()
             && claimed > ceiling
         {
-            return refusal(over_ceiling(self.bounds.body, Some(claimed)));
+            return Ok(refusal(over_ceiling(self.bounds.body, Some(claimed))));
         }
 
         let mut body: Vec<u8> = Vec::new();
@@ -331,11 +365,11 @@ impl WebClient {
                     // unbounded body: the moment the length exceeds the
                     // ceiling the read stops and the retrieval is refused.
                     if body.len() as u64 > ceiling {
-                        return refusal(over_ceiling(self.bounds.body, None));
+                        return Ok(refusal(over_ceiling(self.bounds.body, None)));
                     }
                 }
                 Ok(None) => break,
-                Err(error) => return refusal(transport(url, &error)),
+                Err(error) => return Ok(refusal(transport(url, &error))),
             }
         }
 
@@ -349,7 +383,7 @@ impl WebClient {
         stdout.push('\n');
         stdout.push_str(&text);
 
-        Captured {
+        Ok(Captured {
             exit_code: i32::from(!status.is_success()),
             stdout,
             stderr: if status.is_success() {
@@ -357,6 +391,24 @@ impl WebClient {
             } else {
                 format!("{heading}\nthe server did not return a success status")
             },
+        })
+    }
+
+    /// Where a redirect points, when it points at another host this surface
+    /// could retrieve from, and nowhere this surface refuses to reach.
+    fn another_host(
+        &self,
+        final_url: &reqwest::Url,
+        response: &reqwest::Response,
+    ) -> Option<RequestedUrl> {
+        let next = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| final_url.join(value).ok())?;
+        match refuse_hop(self.destinations, final_url, &next) {
+            Some(HopRefused::AnotherHost { .. }) => RequestedUrl::parse(next.as_str()).ok(),
+            _ => None,
         }
     }
 

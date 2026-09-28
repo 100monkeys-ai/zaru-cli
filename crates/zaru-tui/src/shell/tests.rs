@@ -1248,6 +1248,51 @@ fn an_explicit_yes_accepts() {
     assert_eq!(shell.answer(), Some(Answered::Once));
 }
 
+/// `h` allows every URL on the asked host, only at a `web.fetch` question,
+/// and is its own answer.
+#[test]
+fn an_h_allows_the_host_at_a_fetch_and_answers_nothing_at_a_tool_call() {
+    for pressed in [Key::Char('h'), Key::Char('H')] {
+        let mut fetching = shell();
+        fetching.ask(Confirmation::new(
+            "Allow web.fetch https://example.com/?",
+            "[y/N/a/h]",
+            Answers::Fetch,
+            false,
+        ));
+        assert_eq!(key(&mut fetching, pressed), Action::Idle);
+        assert_eq!(
+            fetching.answer(),
+            Some(Answered::ForThisHost),
+            "{pressed:?}"
+        );
+
+        let mut running = shell();
+        running.ask(Confirmation::new(
+            "run `rm -rf build`",
+            STAGED_ANSWERS,
+            Answers::ToolCall,
+            false,
+        ));
+        key(&mut running, pressed);
+        assert_eq!(running.answer(), None, "{pressed:?} answered a tool call");
+        assert!(
+            running.asking().is_some(),
+            "{pressed:?} took the question down"
+        );
+    }
+    // `a` still allows the exact URL at a fetch.
+    let mut fetching = shell();
+    fetching.ask(Confirmation::new(
+        "Allow web.fetch https://example.com/?",
+        "[y/N/a/h]",
+        Answers::Fetch,
+        false,
+    ));
+    key(&mut fetching, Key::Char('a'));
+    assert_eq!(fetching.answer(), Some(Answered::ForThisSession));
+}
+
 /// [ADR-0011] D3's third answer: `a` allows, and it is a **third** value.
 ///
 /// It must not read as `y`. What `zaru-cli` does with each is different --

@@ -217,6 +217,19 @@ fn validators_approval() -> Shell {
     shell
 }
 
+/// A `web.fetch` asked about in `ask` mode: the whole URL, and `h` offered.
+fn fetch_question() -> Shell {
+    let mut shell = shell();
+    shell.ask(Confirmation::new(
+        "Allow web.fetch https://example.com/search?q=planted-in-the-url&page=2?",
+        "[y/N/a/h · a allows this exact URL for this session · h allows every URL on this host \
+         for this session · esc declines]",
+        Answers::Fetch,
+        false,
+    ));
+    shell
+}
+
 fn secret() -> Shell {
     let mut shell = shell();
     shell.ask_secret(SecretRequest::new(
@@ -409,6 +422,22 @@ const CAPTURES: &[(&str, &str, Staging, u16, u16, Palette)] = &[
         validators_approval,
         40,
         20,
+        Palette::Coloured,
+    ),
+    (
+        "fetch-question-at-72",
+        include_str!("captures/fetch-question-at-72.txt"),
+        fetch_question,
+        72,
+        12,
+        Palette::Coloured,
+    ),
+    (
+        "fetch-question-at-40",
+        include_str!("captures/fetch-question-at-40.txt"),
+        fetch_question,
+        40,
+        16,
         Palette::Coloured,
     ),
     (

@@ -82,6 +82,25 @@ impl SessionGrants {
         }
     }
 
+    /// Allow every `web.fetch` to this call's host for the rest of the
+    /// session: `web.fetch`'s `h` answer. Held in memory, like
+    /// [`Self::allow`], and never written anywhere.
+    ///
+    /// Does nothing for a call that is not a `web.fetch`.
+    pub fn allow_host(&self, invocation: &Invocation<'_>) {
+        let crate::tools::decision::Subject::Url(url) = invocation.subject() else {
+            return;
+        };
+        let entry = Entry::of(invocation.called().clone(), url.host().to_owned());
+        let mut granted = match self.granted.lock() {
+            Ok(granted) => granted,
+            Err(_) => return,
+        };
+        if !granted.contains(&entry) {
+            granted.push(entry);
+        }
+    }
+
     /// Whether the user has already allowed this exact call this session.
     #[must_use]
     pub fn approves(&self, invocation: &Invocation<'_>) -> bool {

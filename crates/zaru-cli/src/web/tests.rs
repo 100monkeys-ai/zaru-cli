@@ -24,6 +24,7 @@
 //! ephemeral loopback port, torn down when the check ends.
 
 use crate::tools::output::Captured;
+use crate::tools::port::Retrieved;
 use crate::web::bounds::{BodyCeiling, FetchBounds, FetchTimeout, RedirectLimit};
 use crate::web::client::WebClient;
 use crate::web::url::{Destinations, RequestedUrl, UrlRefused};
@@ -181,7 +182,16 @@ fn client(bounds: FetchBounds) -> WebClient {
 
 async fn fetch(client: &WebClient, url: &str) -> Captured {
     let requested = RequestedUrl::parse(url).expect("staging: the URL parses");
-    client.retrieve(&requested).await
+    match client.retrieve(&requested, 0).await {
+        Retrieved::Captured(captured) => captured,
+        Retrieved::Elsewhere { to } => panic!("the retrieval was pointed at {}", to.as_str()),
+    }
+}
+
+/// A retrieval that may hand back where another host was pointed at.
+async fn fetch_or_elsewhere(client: &WebClient, url: &str, followed: usize) -> Retrieved {
+    let requested = RequestedUrl::parse(url).expect("staging: the URL parses");
+    client.retrieve(&requested, followed).await
 }
 
 // ------------------------------------------------------- the parse and scheme
@@ -450,42 +460,63 @@ async fn a_redirect_within_the_host_is_followed_and_the_final_body_is_the_one_ca
     );
 }
 
+/// A redirect to another host is not followed by the client: it is handed
+/// back, so the caller can ask the person about the new host as it asks about
+/// any call. Until 2026-09-28 it was refused outright.
 #[tokio::test]
-async fn a_redirect_that_leaves_the_host_is_not_followed_and_the_other_host_is_never_reached() {
+async fn a_redirect_that_leaves_the_host_is_handed_back_and_the_other_host_is_never_reached() {
     let elsewhere = Listener::serving(vec![ok("the document behind the redirect")]);
-    let asked = Listener::serving(vec![redirect_to(&elsewhere.url_as_localhost("/taken"))]);
+    let target = elsewhere.url_as_localhost("/taken");
+    let asked = Listener::serving(vec![redirect_to(&target)]);
 
-    let captured = fetch(&client(generous()), &asked.url("/start")).await;
+    let retrieved = fetch_or_elsewhere(&client(generous()), &asked.url("/start"), 0).await;
 
-    assert_eq!(captured.exit_code, 1, "a refused chain is not a success");
-    assert!(
-        captured.stderr.contains("leaves the host"),
-        "the capture names why it declined, and was {:?}",
-        captured.stderr
-    );
-    assert!(
-        captured.stderr.contains("localhost"),
-        "the capture names the host it declined to follow to, and was {:?}",
-        captured.stderr
-    );
-    // The assertion that matters: not that the capture says so, but that the
-    // other host was never connected to at all.
+    match retrieved {
+        Retrieved::Elsewhere { to } => assert_eq!(
+            to.as_str(),
+            target,
+            "the client handed back a URL other than the one the server pointed at"
+        ),
+        Retrieved::Captured(captured) => panic!(
+            "a redirect to another host was not handed back to the caller to decide: {captured:?}"
+        ),
+    }
+    // The assertion that matters: the other host was never connected to.
     assert!(
         elsewhere.requests().is_empty(),
         "the host the redirect pointed at received {:#?}, and must have received nothing",
         elsewhere.requests()
     );
-    assert!(
-        !captured.stdout.contains("the document behind the redirect"),
-        "nothing from the other host reached the model, and the capture was {:?}",
-        captured.stdout
-    );
 }
 
+/// The redirect limit holds across hosts as it holds within one: a caller
+/// that has already followed as many as the limit is refused the next.
+#[tokio::test]
+async fn a_redirect_to_another_host_past_the_limit_is_refused() {
+    let elsewhere = Listener::serving(vec![ok("the document behind the redirect")]);
+    let asked = Listener::serving(vec![redirect_to(&elsewhere.url_as_localhost("/taken"))]);
+
+    let retrieved = fetch_or_elsewhere(&client(generous()), &asked.url("/start"), 3).await;
+
+    let Retrieved::Captured(captured) = retrieved else {
+        panic!("a redirect past the limit was handed back to be followed");
+    };
+    assert_eq!(captured.exit_code, 1, "a refused chain is not a success");
+    assert!(
+        captured
+            .stderr
+            .contains("the limit of 3 redirect(s) within one host was reached"),
+        "the capture names the limit, and was {:?}",
+        captured.stderr
+    );
+    assert!(elsewhere.requests().is_empty());
+}
+
+/// Each hop is checked, and the one that leaves the host is the second of
+/// three here, so "checks only the first" and "checks only the last" both
+/// redden.
 #[tokio::test]
 async fn the_hop_predicate_holds_at_every_hop_and_not_only_the_first() {
-    // The offending hop is the SECOND of three, so "checks only the first"
-    // and "checks only the last" both redden -- verification lessons §54.
     let elsewhere = Listener::serving(vec![ok("the document behind the second hop")]);
     let asked = Listener::serving(vec![
         redirect_to("/two"),
@@ -493,8 +524,12 @@ async fn the_hop_predicate_holds_at_every_hop_and_not_only_the_first() {
         ok("a third hop nobody should reach"),
     ]);
 
-    let captured = fetch(&client(generous()), &asked.url("/one")).await;
+    let retrieved = fetch_or_elsewhere(&client(generous()), &asked.url("/one"), 0).await;
 
+    assert!(
+        matches!(retrieved, Retrieved::Elsewhere { .. }),
+        "the second hop left the host and was not handed back: {retrieved:?}"
+    );
     assert_eq!(
         asked.requests().len(),
         2,
@@ -506,11 +541,6 @@ async fn the_hop_predicate_holds_at_every_hop_and_not_only_the_first() {
         elsewhere.requests().is_empty(),
         "the second hop's host received {:#?}, and must have received nothing",
         elsewhere.requests()
-    );
-    assert!(
-        captured.stderr.contains("leaves the host"),
-        "the capture names why the chain stopped, and was {:?}",
-        captured.stderr
     );
 }
 
@@ -771,4 +801,308 @@ async fn no_cookie_is_ever_sent_back_after_a_server_sets_one() {
          in this workspace and there is no jar to keep one; the request was {:?}",
         requests[1]
     );
+}
+
+// ------------------------------------------ asking about a URL, and its host
+
+/// A confirmer that gives its answers in order, and records every question.
+struct Answers {
+    given: Mutex<std::collections::VecDeque<crate::tools::port::Answer>>,
+    asked: Mutex<Vec<String>>,
+}
+
+impl Answers {
+    fn in_order(answers: &[crate::tools::port::Answer]) -> Self {
+        Self {
+            given: Mutex::new(answers.iter().copied().collect()),
+            asked: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().expect("not poisoned").clone()
+    }
+}
+
+impl crate::tools::port::Confirm for Answers {
+    fn confirm(
+        &self,
+        question: &crate::tools::port::Question,
+    ) -> Result<crate::tools::port::Answer, crate::tools::port::ConfirmFailure> {
+        self.asked
+            .lock()
+            .expect("not poisoned")
+            .push(question.statement.clone());
+        Ok(self
+            .given
+            .lock()
+            .expect("not poisoned")
+            .pop_front()
+            .unwrap_or(crate::tools::port::Answer::No))
+    }
+}
+
+/// An allowlist of `tools.allowlist` lines, as a person writes them.
+struct Lines(Vec<crate::tools::Entry>);
+
+impl crate::tools::port::Allowlist for Lines {
+    fn approves(&self, invocation: &crate::tools::Invocation<'_>) -> bool {
+        self.0.iter().any(|entry| entry.approves(invocation))
+    }
+}
+
+struct NoCommands;
+
+impl crate::tools::port::Subprocess for NoCommands {
+    async fn run(
+        &self,
+        _line: &crate::process::line::CommandLine,
+    ) -> Result<Captured, zaru_core::iteration::PortFailure> {
+        Err(zaru_core::iteration::PortFailure::new(
+            "these checks run no command",
+        ))
+    }
+}
+
+/// What one `web.fetch` produced through the executor, and what was asked.
+struct Fetched {
+    outcome: zaru_core::tool_call::ToolOutcome,
+    transcript: String,
+}
+
+/// Run `web.fetch` calls through the real executor over a client that may
+/// reach this machine, and hand back each outcome.
+async fn through_the_executor(
+    mode: crate::tools::Mode,
+    allowlist: &Lines,
+    confirmer: Option<&(dyn crate::tools::port::Confirm + Sync)>,
+    grants: &crate::tools::grants::SessionGrants,
+    urls: &[&str],
+) -> Vec<Fetched> {
+    use zaru_core::tool_call::ToolExecutor as _;
+    let base = std::env::temp_dir().join(format!(
+        "web-exec-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos())
+    ));
+    std::fs::create_dir_all(&base).expect("staging: a scratch directory");
+    let working = crate::tools::WorkingDirectory::at(&base).expect("resolves");
+    let transcript_path = base.join("transcript.jsonl");
+    let mut transcript =
+        crate::session::Transcript::append_to(&transcript_path).expect("the transcript opens");
+    let mut overflow = crate::tools::SessionOverflow::in_session(&base);
+    let web = client(generous());
+    let mut fetched = Vec::new();
+    {
+        let mut executor = crate::tools::Executor {
+            working_directory: &working,
+            mode,
+            allowlist,
+            destructive: &crate::tools::Shapes,
+            session_grants: grants,
+            confirmer,
+            verdicts: &crate::tools::NoMembrane,
+            budget: crate::tools::OutputBudget::new(4096).expect("a usable budget"),
+            preview_budget: crate::tools::OutputBudget::new(4096).expect("a usable budget"),
+            search_ceiling: crate::cli::layers::search_ceiling(),
+            overflow: &mut overflow,
+            transcript: &mut transcript,
+            redactor: &crate::redaction::HeldSecrets::none(),
+            subprocess: &NoCommands,
+            fetch: &web,
+            projected: &crate::tools::NoProjection,
+            declared: crate::tools::descriptor_set(),
+        };
+        for (at, url) in urls.iter().enumerate() {
+            let outcome = executor
+                .execute(&zaru_core::tool_call::ToolRequest {
+                    id: format!("f{at}"),
+                    name: String::from("web.fetch"),
+                    arguments: serde_json::json!({ "url": url }).to_string(),
+                })
+                .await
+                .expect("a retrieval is never a port failure");
+            fetched.push(Fetched {
+                outcome,
+                transcript: String::new(),
+            });
+        }
+    }
+    let written = std::fs::read_to_string(&transcript_path).unwrap_or_default();
+    for one in &mut fetched {
+        one.transcript.clone_from(&written);
+    }
+    let _ = std::fs::remove_dir_all(&base);
+    fetched
+}
+
+/// What the model was given for a completed call, or why it was refused.
+fn given(outcome: &zaru_core::tool_call::ToolOutcome) -> String {
+    match outcome {
+        zaru_core::tool_call::ToolOutcome::Completed { result, .. } => {
+            result.content.as_str().to_owned()
+        }
+        zaru_core::tool_call::ToolOutcome::Refused { because, .. } => because.clone(),
+    }
+}
+
+/// A redirect to another host is asked about again, showing the new URL; a no
+/// stops there and the other host is never reached; a yes follows it.
+#[tokio::test]
+async fn a_redirect_to_another_host_is_asked_about_and_followed_only_on_a_yes() {
+    use crate::tools::port::Answer;
+
+    // Declined at the second host.
+    let elsewhere = Listener::serving(vec![ok("the document behind the redirect")]);
+    let target = elsewhere.url_as_localhost("/taken");
+    let asked_host = Listener::serving(vec![redirect_to(&target)]);
+    let confirmer = Answers::in_order(&[Answer::Once, Answer::No]);
+    let fetched = through_the_executor(
+        crate::tools::Mode::Ask,
+        &Lines(Vec::new()),
+        Some(&confirmer),
+        &crate::tools::grants::SessionGrants::none(),
+        &[&asked_host.url("/start")],
+    )
+    .await;
+    let asked = confirmer.asked();
+    assert_eq!(
+        asked.len(),
+        2,
+        "a redirect to another host must be asked about as a call of its own: {asked:?}"
+    );
+    assert!(
+        asked[1].contains(&target),
+        "the second question shows the new URL: {asked:?}"
+    );
+    assert!(
+        given(&fetched[0].outcome).contains("was not followed"),
+        "the model is told the redirect was not followed: {}",
+        given(&fetched[0].outcome)
+    );
+    assert!(
+        elsewhere.requests().is_empty(),
+        "the host the person declined received {:#?}",
+        elsewhere.requests()
+    );
+    assert!(
+        fetched[0].transcript.contains(&target),
+        "the hop is on the transcript as a call of its own: {}",
+        fetched[0].transcript
+    );
+
+    // Allowed at the second host.
+    let elsewhere = Listener::serving(vec![ok("the document behind the redirect")]);
+    let asked_host = Listener::serving(vec![redirect_to(&elsewhere.url_as_localhost("/taken"))]);
+    let confirmer = Answers::in_order(&[Answer::Once, Answer::Once]);
+    let fetched = through_the_executor(
+        crate::tools::Mode::Ask,
+        &Lines(Vec::new()),
+        Some(&confirmer),
+        &crate::tools::grants::SessionGrants::none(),
+        &[&asked_host.url("/start")],
+    )
+    .await;
+    assert!(
+        given(&fetched[0].outcome).contains("the document behind the redirect"),
+        "a redirect the person allowed was not followed: {}",
+        given(&fetched[0].outcome)
+    );
+    assert_eq!(elsewhere.requests().len(), 1);
+}
+
+/// With nobody to ask, a redirect to another host is refused, even when the
+/// first host was on the allowlist; and the allowlist may name a host.
+#[tokio::test]
+async fn with_nobody_to_ask_a_redirect_to_another_host_is_refused() {
+    let elsewhere = Listener::serving(vec![ok("the document behind the redirect")]);
+    let asked_host = Listener::serving(vec![redirect_to(&elsewhere.url_as_localhost("/taken"))]);
+    let allowlist = Lines(vec![
+        crate::tools::Entry::parse(1, "web.fetch 127.0.0.1").expect("a host entry parses"),
+    ]);
+    let fetched = through_the_executor(
+        crate::tools::Mode::Allow,
+        &allowlist,
+        None,
+        &crate::tools::grants::SessionGrants::none(),
+        &[&asked_host.url("/start")],
+    )
+    .await;
+    let said = given(&fetched[0].outcome);
+    assert!(
+        matches!(
+            fetched[0].outcome,
+            zaru_core::tool_call::ToolOutcome::Completed { .. }
+        ),
+        "the first host is on the allowlist, so the call itself ran: {said}"
+    );
+    assert!(
+        said.contains("was not followed") && said.contains("did not reach them"),
+        "with nobody to ask the redirect must be refused, saying why: {said}"
+    );
+    assert!(
+        elsewhere.requests().is_empty(),
+        "the other host was reached with nobody to ask: {:#?}",
+        elsewhere.requests()
+    );
+    assert_eq!(asked_host.requests().len(), 1);
+}
+
+/// `h` allows every URL on the asked host for the rest of the session, and
+/// no other host.
+#[tokio::test]
+async fn a_host_allowed_for_the_session_is_not_asked_about_again_and_no_other_host_is() {
+    use crate::tools::port::Answer;
+    let server = Listener::serving(vec![ok("one"), ok("two"), ok("three")]);
+    let confirmer = Answers::in_order(&[Answer::ForThisHost, Answer::No]);
+    let grants = crate::tools::grants::SessionGrants::none();
+    let fetched = through_the_executor(
+        crate::tools::Mode::Ask,
+        &Lines(Vec::new()),
+        Some(&confirmer),
+        &grants,
+        &[
+            &server.url("/one"),
+            &server.url("/two?other=page"),
+            &server.url_as_localhost("/three"),
+        ],
+    )
+    .await;
+    let asked = confirmer.asked();
+    assert_eq!(
+        asked.len(),
+        2,
+        "the second URL on the allowed host was asked about, or the other host was not: {asked:?}"
+    );
+    assert!(asked[1].contains("localhost"), "{asked:?}");
+    assert!(given(&fetched[1].outcome).contains("two"));
+    assert!(matches!(
+        fetched[2].outcome,
+        zaru_core::tool_call::ToolOutcome::Refused { .. }
+    ));
+}
+
+/// An allowlist host entry matches that host exactly, and nothing that merely
+/// starts or ends with it.
+#[test]
+fn an_allowlist_host_entry_matches_that_host_and_no_other() {
+    let entry = crate::tools::Entry::parse(1, "web.fetch docs.rs").expect("parses");
+    for (url, expected) in [
+        ("https://docs.rs/serde", true),
+        ("http://DOCS.RS/x?y=z", true),
+        ("https://docs.rs:8443/x", true),
+        ("https://docs.rs.evil.example/x", false),
+        ("https://evil-docs.rs/x", false),
+        ("https://sub.docs.rs/x", false),
+    ] {
+        let requested = RequestedUrl::parse(url).expect("parses");
+        let invocation = crate::tools::Invocation::fetching(&requested);
+        assert_eq!(entry.approves(&invocation), expected, "{url}");
+    }
+    // A whole URL is still matched byte for byte.
+    let exact = crate::tools::Entry::parse(1, "web.fetch https://docs.rs/serde").expect("parses");
+    let other = RequestedUrl::parse("https://docs.rs/tokio").expect("parses");
+    assert!(!exact.approves(&crate::tools::Invocation::fetching(&other)));
 }

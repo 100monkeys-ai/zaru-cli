@@ -115,17 +115,17 @@ Run `zaru` with no arguments in a terminal to open a session. Type a task and pr
 
 ### Permission prompts and modes
 
-Before a tool call that needs permission, Zaru shows what the call will do (for a file write, the file and its new contents) and asks `[y/N/a · a allows this exact line for this session · esc declines]`. `y` allows the call once. `N`, Enter or Esc declines it. `a` allows the same call for the rest of the session.
+Before a tool call that needs permission, Zaru shows what the call will do (for a file write, the file and its new contents) and asks `[y/N/a · a allows this exact line for this session · esc declines]`. `y` allows the call once. `N`, Enter or Esc declines it. `a` allows the same call for the rest of the session. Before fetching a web page, Zaru shows the whole URL and also offers `h`, which allows every URL on that host for the rest of the session.
 
 The permission mode decides what needs asking. Set it with `tools.mode` in `~/.zaru/config.toml`, the `ZARU_TOOLS_MODE` environment variable, or `--mode` on the command line:
 
 | Mode | What it asks about |
 | --- | --- |
-| `ask` (default) | Every file write, file edit, command and Nuclear Notes call, and anything outside the working directory. Reading, listing and searching files inside it, and fetching web pages, do not ask. |
+| `ask` (default) | Every file write, file edit, command, web page fetch and Nuclear Notes call, and anything outside the working directory. Reading, listing and searching files inside it do not ask. |
 | `allow` | Nothing on your allowlist; everything else. |
 | `yolo` | Nothing. Every call the model makes runs. |
 
-The allowlist is `tools.allowlist` in `~/.zaru/config.toml`: a list of the exact lines the prompt shows, for example `"cmd.run cargo test"`. A project's own files cannot set the mode or the allowlist.
+The allowlist is `tools.allowlist` in `~/.zaru/config.toml`: a list of the exact lines the prompt shows, for example `"cmd.run cargo test"`. For `web.fetch` an entry may also name a host with no `http://` or `https://`, for example `"web.fetch docs.rs"`, which allows every URL on exactly that host. A project's own files cannot set the mode or the allowlist.
 
 ### Configuration
 
@@ -211,7 +211,7 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 
 Zaru acts on your machine with your user account's permissions. It is not a sandbox.
 
-- **What the model can do.** It has seven built-in tools: `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.edit`, `cmd.run` and `web.fetch`. `cmd.run` starts a program directly, without a shell, in the working directory, with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TMPDIR` from your environment, and stops it after two minutes. Nothing limits what that program does while it runs. `web.fetch` fetches `http` and `https` URLs only, without asking, and refuses this machine's own addresses and the link-local range, which includes the cloud metadata address.
+- **What the model can do.** It has seven built-in tools: `fs.read`, `fs.list`, `fs.search`, `fs.write`, `fs.edit`, `cmd.run` and `web.fetch`. `cmd.run` starts a program directly, without a shell, in the working directory, with only `PATH`, `HOME`, `LANG`, `LC_ALL` and `TMPDIR` from your environment, and stops it after two minutes. Nothing limits what that program does while it runs. `web.fetch` fetches `http` and `https` URLs only. In `ask` mode it asks first and shows the whole URL, because a URL can carry data off your machine. A redirect to another host is asked about again, and refused when there is no terminal to ask on. It refuses this machine's own addresses and the link-local range, which includes the cloud metadata address.
 - **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing.
 - **Validators run only after you approve them.** The commands in a project's `./zaru.toml` are shown to you and run only once you say yes, and you are asked again when they change. The approval is kept under `~/.zaru/`, never in the project, and the permission mode does not skip it.
 - **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but are not built yet: at every tier, tool calls run directly on your machine. Zaru prints the not-a-sandbox warning at every tier, and at `contained` and `linked` it adds that the tier is not built yet and changes nothing about how tool calls run. `zaru runtime` says the same.

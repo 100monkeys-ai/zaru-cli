@@ -468,7 +468,9 @@ pub fn gate(
     };
     match confirmer.confirm(&question(declared, &standing)) {
         Err(_) => Err(NotApproved::NobodyToAsk { changed }),
-        Ok(Answer::No) => Err(NotApproved::Declined),
+        // `h` is not offered at this question, so it cannot arrive; if it
+        // did, it is not a yes.
+        Ok(Answer::No | Answer::ForThisHost) => Err(NotApproved::Declined),
         Ok(Answer::Once | Answer::ForThisSession) => {
             approvals
                 .approve(directory, declared, today)
