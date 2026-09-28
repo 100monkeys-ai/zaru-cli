@@ -1,0 +1,20 @@
+size 60x16
+cursor 3,9
+rows
+|runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X    |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|/se                                                         |
+|/session  resume, list, remove                              |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+styled cells

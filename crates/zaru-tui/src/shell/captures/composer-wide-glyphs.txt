@@ -1,0 +1,16 @@
+size 40x12
+cursor 30,5
+rows
+|runtime.tier = bare                     |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|日 本 語  and ✦ and é in one line          |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+styled cells

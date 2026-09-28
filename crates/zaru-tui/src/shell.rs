@@ -1829,6 +1829,9 @@ enum Standing {
 }
 
 #[cfg(test)]
+mod captures;
+
+#[cfg(test)]
 pub(crate) mod fixtures;
 
 #[cfg(test)]

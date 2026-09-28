@@ -1,0 +1,20 @@
+size 60x16
+cursor 0,9
+rows
+|runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X    |
+|  a line in Plain · 1.25s                                   |
+|· a line in Call · 1.25s                                    |
+|◈ a line in Announced · 1.25s                               |
+|✓ a line in Succeeded · 1.25s                               |
+|! a line in Setback · 1.25s                                 |
+|⊘ a line in Exhausted · 1.25s                               |
+|✗ a line in Failed · 1.25s                                  |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |
+styled cells

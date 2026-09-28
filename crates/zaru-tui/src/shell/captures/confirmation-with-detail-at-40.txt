@@ -1,0 +1,20 @@
+size 40x16
+cursor 0,0
+rows
+|runtime.tier = bare · 1.2k/1048.5k      |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|Allow fs.write                          |
+|/home/person/project/crates/zaru-cli/src|
+|/terminal/driver.rs?                    |
+|creates it, with:                       |
+|  alpha                                 |
+|  beta                                  |
+|  gamma                                 |
+|[y/a/N]                                 |
+styled cells

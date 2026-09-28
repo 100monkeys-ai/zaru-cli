@@ -1,0 +1,2 @@
+frame 0
+\e[1;1Hruntime.tier\e[1;14H=\e[1;16Hbare\e[1;21H·\e[1;23Hsession\e[1;31H01JQZX8N3K4M5P6R7S8T9V0W1X\e[2;1H\e[38;5;2;49m✓ \e[39;49ma\e[2;5Hline\e[2;10Hin\e[2;13HSucceeded\e[2;23H·\e[2;25H1.25s\e[3;1H\e[38;5;6;49m! \e[39;49ma\e[3;5Hline\e[3;10Hin\e[3;13HSetback\e[3;21H·\e[3;23H1.25s\e[4;1H\e[38;5;3;49m⊘ \e[39;49ma\e[4;5Hline\e[4;10Hin\e[4;13HExhausted\e[4;23H·\e[4;25H1.25s\e[5;1H\e[38;5;1;49m✗ \e[39;49ma\e[5;5Hline\e[5;10Hin\e[5;13HFailed\e[5;20H·\e[5;22H1.25s\e[39m\e[49m\e[0m\e[?25h\e[6;1H

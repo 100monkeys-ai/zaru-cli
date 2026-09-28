@@ -1,0 +1,66 @@
+size 40x24
+cursor 0,17
+rows
+|runtime.tier = bare · 1.2k/1048.5k      |
+|  › explain the composer                |
+|  zaru: The composer keeps one input row|
+|  whatever the strip above it shows, and|
+|  the pane word-wraps a long answer     |
+|  between words rather than inside one, |
+|  so Shell::render never clips a line a |
+|  person was meant to read. Nothing here|
+|  is a second paragraph's worth of text.|
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+styled cells
+27,2 "o" fg=reset bg=reset mod=bold
+28,2 "n" fg=reset bg=reset mod=bold
+29,2 "e" fg=reset bg=reset mod=bold
+30,2 " " fg=reset bg=reset mod=bold
+31,2 "i" fg=reset bg=reset mod=bold
+32,2 "n" fg=reset bg=reset mod=bold
+33,2 "p" fg=reset bg=reset mod=bold
+34,2 "u" fg=reset bg=reset mod=bold
+35,2 "t" fg=reset bg=reset mod=bold
+36,2 " " fg=reset bg=reset mod=bold
+37,2 "r" fg=reset bg=reset mod=bold
+38,2 "o" fg=reset bg=reset mod=bold
+39,2 "w" fg=reset bg=reset mod=bold
+5,6 "S" fg=reset bg=reset mod=dim
+6,6 "h" fg=reset bg=reset mod=dim
+7,6 "e" fg=reset bg=reset mod=dim
+8,6 "l" fg=reset bg=reset mod=dim
+9,6 "l" fg=reset bg=reset mod=dim
+10,6 ":" fg=reset bg=reset mod=dim
+11,6 ":" fg=reset bg=reset mod=dim
+12,6 "r" fg=reset bg=reset mod=dim
+13,6 "e" fg=reset bg=reset mod=dim
+14,6 "n" fg=reset bg=reset mod=dim
+15,6 "d" fg=reset bg=reset mod=dim
+16,6 "e" fg=reset bg=reset mod=dim
+17,6 "r" fg=reset bg=reset mod=dim
+28,7 "N" fg=reset bg=reset mod=italic
+29,7 "o" fg=reset bg=reset mod=italic
+30,7 "t" fg=reset bg=reset mod=italic
+31,7 "h" fg=reset bg=reset mod=italic
+32,7 "i" fg=reset bg=reset mod=italic
+33,7 "n" fg=reset bg=reset mod=italic
+34,7 "g" fg=reset bg=reset mod=italic
+35,7 " " fg=reset bg=reset mod=italic
+36,7 "h" fg=reset bg=reset mod=italic
+37,7 "e" fg=reset bg=reset mod=italic
+38,7 "r" fg=reset bg=reset mod=italic
+39,7 "e" fg=reset bg=reset mod=italic

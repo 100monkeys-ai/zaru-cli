@@ -1,0 +1,62 @@
+size 72x20
+cursor 0,13
+rows
+|runtime.tier = bare · 1.2k/1048.5k · 12.34s · 469 tokens                |
+|  › explain the composer                                                |
+|  zaru: The composer keeps one input row whatever the strip above it    |
+|  shows, and the pane word-wraps a long answer between words rather than|
+|  inside one, so Shell::render never clips a line a person was meant to |
+|  read. Nothing here is a second paragraph's worth of text.             |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+|                                                                        |
+styled cells
+27,2 "o" fg=reset bg=reset mod=bold
+28,2 "n" fg=reset bg=reset mod=bold
+29,2 "e" fg=reset bg=reset mod=bold
+30,2 " " fg=reset bg=reset mod=bold
+31,2 "i" fg=reset bg=reset mod=bold
+32,2 "n" fg=reset bg=reset mod=bold
+33,2 "p" fg=reset bg=reset mod=bold
+34,2 "u" fg=reset bg=reset mod=bold
+35,2 "t" fg=reset bg=reset mod=bold
+36,2 " " fg=reset bg=reset mod=bold
+37,2 "r" fg=reset bg=reset mod=bold
+38,2 "o" fg=reset bg=reset mod=bold
+39,2 "w" fg=reset bg=reset mod=bold
+17,4 "S" fg=reset bg=reset mod=dim
+18,4 "h" fg=reset bg=reset mod=dim
+19,4 "e" fg=reset bg=reset mod=dim
+20,4 "l" fg=reset bg=reset mod=dim
+21,4 "l" fg=reset bg=reset mod=dim
+22,4 ":" fg=reset bg=reset mod=dim
+23,4 ":" fg=reset bg=reset mod=dim
+24,4 "r" fg=reset bg=reset mod=dim
+25,4 "e" fg=reset bg=reset mod=dim
+26,4 "n" fg=reset bg=reset mod=dim
+27,4 "d" fg=reset bg=reset mod=dim
+28,4 "e" fg=reset bg=reset mod=dim
+29,4 "r" fg=reset bg=reset mod=dim
+8,5 "N" fg=reset bg=reset mod=italic
+9,5 "o" fg=reset bg=reset mod=italic
+10,5 "t" fg=reset bg=reset mod=italic
+11,5 "h" fg=reset bg=reset mod=italic
+12,5 "i" fg=reset bg=reset mod=italic
+13,5 "n" fg=reset bg=reset mod=italic
+14,5 "g" fg=reset bg=reset mod=italic
+15,5 " " fg=reset bg=reset mod=italic
+16,5 "h" fg=reset bg=reset mod=italic
+17,5 "e" fg=reset bg=reset mod=italic
+18,5 "r" fg=reset bg=reset mod=italic
+19,5 "e" fg=reset bg=reset mod=italic
