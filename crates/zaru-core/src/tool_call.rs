@@ -68,6 +68,7 @@ pub mod event;
 pub mod limits;
 pub mod machine;
 pub mod port;
+pub mod view;
 
 pub use error::{PortKind, ToolCallError};
 pub use event::{Event, EventSink, TurnEnding};
@@ -78,6 +79,7 @@ pub use port::{
     TokenUsage, ToolCalling, ToolDecision, ToolDescriptor, ToolExecutor, ToolOutcome, ToolRequest,
     ToolResult,
 };
+pub use view::{Mark, ResultView, ViewRow};
 
 #[cfg(test)]
 mod fixtures;

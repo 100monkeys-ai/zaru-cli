@@ -149,6 +149,24 @@ pub enum Event {
         /// Time the call took, measured in the caller's clock.
         elapsed: Duration,
     },
+    /// What a person is shown of a call that completed.
+    ///
+    /// Emitted after [`Event::ToolCompleted`] when the surface composed a
+    /// view. It carries text, as [`Event::Message`] does, and it is the one
+    /// event that carries text **for the person and not for the model**: the
+    /// conversation is rebuilt from messages alone, so nothing in it is sent
+    /// to a model. The surface redacted it and made its control characters
+    /// visible before it was built.
+    ToolShown {
+        /// Which exchange.
+        round: u32,
+        /// Which call.
+        call: u32,
+        /// The tool's name.
+        name: String,
+        /// What the person is shown.
+        view: crate::tool_call::ResultView,
+    },
     /// The call did not act, and this is why.
     ///
     /// **Not a failure.** Under a delegated coordinator ruling of 2026-09-04,

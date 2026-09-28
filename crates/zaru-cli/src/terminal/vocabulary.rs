@@ -231,7 +231,7 @@ fn lines_for(record: &Record) -> Vec<Line> {
         Record::Loop(event) => vec![loop_line(event)],
         // A message is what the model was sent and is never painted: what a
         // person sees of a call is the lines the other events give.
-        Record::TurnLoop(event) => turn_line(event).into_iter().collect(),
+        Record::TurnLoop(event) => turn_lines(event),
         // **A pair paints once.** `Phase::Started` and `Phase::Completed`
         // carry the *same* `line` -- ADR-0011 D4's rendered call, written
         // before the call and again after it so that a `Started` with no
@@ -420,6 +420,54 @@ pub(crate) fn spoken(voice: Voice, text: &str) -> Line {
     }
 }
 
+/// Every line one event of the outer loop paints: one for most of them,
+/// none for a message, and a call's view for [`Event::ToolShown`].
+///
+/// **One function, two callers**, for [`turn_line`]'s reason: the live pane
+/// and the resumed one both come through here, so what a person watched and
+/// what they read back cannot differ by a row.
+///
+/// [`Event::ToolShown`]: zaru_core::tool_call::Event::ToolShown
+pub(crate) fn turn_lines(event: &zaru_core::tool_call::Event) -> Vec<Line> {
+    match event {
+        zaru_core::tool_call::Event::ToolShown { view, .. } => shown_lines(view),
+        other => turn_line(other).into_iter().collect(),
+    }
+}
+
+/// A call's view, as the lines the pane paints under the call.
+///
+/// The summary and the note wrap, so a file's name and the path of the
+/// whole are always readable. Every other row is one screen row, cut at the
+/// pane's edge, so the block is as many rows as the view has. Each row is
+/// made safe to draw again here, which changes nothing in a view this
+/// harness composed and keeps a transcript written some other way from
+/// writing to the terminal.
+#[must_use]
+pub fn shown_lines(view: &zaru_core::tool_call::ResultView) -> Vec<Line> {
+    use crate::tools::result_view::{harmless, number_width, row_text};
+    use zaru_core::tool_call::Mark;
+
+    let width = number_width(&view.rows);
+    let mut lines = vec![Line::new(
+        Register::Plain,
+        format!("  {}", harmless(&view.summary)),
+    )];
+    lines.extend(view.rows.iter().map(|row| {
+        let safe = zaru_core::tool_call::ViewRow {
+            text: harmless(&row.text),
+            ..row.clone()
+        };
+        let text = format!("  {}", row_text(&safe, width, false));
+        if row.mark == Mark::Note {
+            Line::new(Register::Plain, text)
+        } else {
+            Line::clipped(Register::Plain, text)
+        }
+    }));
+    lines
+}
+
 /// One of [ADR-0008] D1's **outer** loop's seven events, as a sentence.
 ///
 /// # Why this exists at all, and what was here before
@@ -462,6 +510,8 @@ pub(crate) fn turn_line(event: &zaru_core::tool_call::Event) -> Option<Line> {
         // What the model was sent, recorded for the next turn and painted
         // nowhere. A person sees a call through the lines around it.
         Event::Message(_) => return None,
+        // Many lines rather than one, so `turn_lines` paints it.
+        Event::ToolShown { .. } => return None,
         Event::TurnStarted { n, of } => Line::new(
             Register::Plain,
             match of {

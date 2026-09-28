@@ -134,6 +134,12 @@ pub enum ToolOutcome {
         decision: ToolDecision,
         /// What it produced.
         result: ToolResult,
+        /// What a person is shown of it, when the surface composed a view.
+        ///
+        /// Never sent to the model: it is carried here and on
+        /// [`Event::ToolShown`](crate::tool_call::Event), and no message is
+        /// built from it. See [`crate::tool_call::view`].
+        view: Option<crate::tool_call::ResultView>,
     },
     /// The call did not act.
     ///

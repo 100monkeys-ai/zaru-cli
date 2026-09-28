@@ -79,6 +79,7 @@ use crate::tools::mode::Mode;
 use crate::tools::name::ToolName;
 use crate::tools::output::{Captured, OutputBudget, Overflow, Presented};
 use crate::tools::port::{Allowlist, Confirm, DestructiveMatch, Fetch, Retrieved, Subprocess};
+use crate::tools::result_view::{self, Before};
 use crate::tools::seal::{Verdict, Verdicts};
 use crate::tools::tree::WorkingDirectory;
 use crate::web::url::RequestedUrl;
@@ -829,10 +830,14 @@ where
                 if !asked {
                     self.record(&Record::ToolCall(ToolCall::started(&entry)))?;
                 }
+                // What a written file held, read before the act so the
+                // person can be shown what the act changed.
+                let before = self.before_of(&invocation);
                 let captured = self.act(&invocation, &call).await?;
                 let presented = captured
                     .present(self.budget, self.redactor, Some(&mut *self.overflow))
                     .map_err(|refused| PortFailure::new(refused.to_string()))?;
+                let view = self.view_of(&invocation, &captured, before);
                 self.record(&Record::ToolCall(ToolCall::completed(&entry)))?;
                 Ok(ToolOutcome::Completed {
                     decision: ToolDecision {
@@ -844,6 +849,7 @@ where
                         content: render(self.redactor, &presented),
                         failed: presented.exit_code != 0,
                     },
+                    view,
                 })
             }
         }
@@ -851,6 +857,96 @@ where
 }
 
 impl<C, F, P> Executor<'_, C, F, P> {
+    /// What a file an `fs.write` or an `fs.edit` is about to change holds
+    /// now, redacted. `None` for every other call.
+    fn before_of(&self, invocation: &Invocation<'_>) -> Option<Before> {
+        match invocation.subject() {
+            Subject::Write { target, .. } | Subject::Edit { target, .. } => {
+                Some(self.redacted(Before::of(target.resolved())))
+            }
+            _ => None,
+        }
+    }
+
+    /// `before` with its text passed through the session's redactor.
+    fn redacted(&self, before: Before) -> Before {
+        before.redacted(|text| Redacted::by(self.redactor, text).as_str().to_owned())
+    }
+
+    /// A path as the person knows it: relative to the working directory when
+    /// it is inside it, whole when it is not.
+    fn as_the_person_knows_it(&self, path: &std::path::Path) -> String {
+        match path.strip_prefix(self.working_directory.root()) {
+            Ok(relative) if relative.as_os_str().is_empty() => String::from("."),
+            Ok(relative) => relative.display().to_string(),
+            Err(_) => path.display().to_string(),
+        }
+    }
+
+    /// What the person is shown of a call that completed.
+    ///
+    /// Composed from the whole capture, redacted, so a command's last lines
+    /// are its real last lines and its line counts are its own. When the view
+    /// leaves something out, the whole of it is kept in the session directory
+    /// and the view names the file. A projected Nuclear Notes call has no
+    /// view: its line says it returned, and what it returned is the
+    /// instance's.
+    fn view_of(
+        &mut self,
+        invocation: &Invocation<'_>,
+        captured: &Captured,
+        before: Option<Before>,
+    ) -> Option<zaru_core::tool_call::ResultView> {
+        let stdout = Redacted::by(self.redactor, &captured.stdout);
+        let stderr = Redacted::by(self.redactor, &captured.stderr);
+        let succeeded = captured.exit_code == 0;
+        let composed = match invocation.subject() {
+            Subject::Command(_) => {
+                result_view::command(captured.exit_code, stdout.as_str(), stderr.as_str())
+            }
+            _ if !succeeded => result_view::failed(stderr.as_str()),
+            Subject::Write { target, .. } | Subject::Edit { target, .. } => {
+                let verb = if matches!(invocation.subject(), Subject::Edit { .. }) {
+                    "changed"
+                } else {
+                    "replaced"
+                };
+                let after = self.redacted(Before::of(target.resolved()));
+                result_view::change(
+                    &self.as_the_person_knows_it(target.resolved()),
+                    verb,
+                    &before.unwrap_or(Before::NotShown("the file could not be read before")),
+                    &after,
+                )
+            }
+            Subject::Path(target) if invocation.tool() == Some(ToolName::FsList) => {
+                result_view::list(
+                    &self.as_the_person_knows_it(target.resolved()),
+                    stdout.as_str(),
+                )
+            }
+            Subject::Path(target) => result_view::read(
+                &self.as_the_person_knows_it(target.resolved()),
+                stdout.as_str(),
+            ),
+            Subject::Search { root, needle } => result_view::search(
+                &self.as_the_person_knows_it(root.resolved()),
+                Redacted::by(self.redactor, needle).as_str(),
+                stdout.as_str(),
+            ),
+            Subject::Url(url) => result_view::fetch(
+                Redacted::by(self.redactor, url.as_str()).as_str(),
+                stdout.as_str(),
+            ),
+            Subject::Remote { .. } => return None,
+        };
+        let kept = composed
+            .left_out
+            .as_ref()
+            .and_then(|left_out| self.overflow.keep_whole(&left_out.whole).ok().flatten());
+        Some(composed.finished(kept.as_deref()))
+    }
+
     /// Append one record and carry a transcript failure out as a port failure.
     fn record(&mut self, record: &Record) -> Result<(), PortFailure> {
         self.transcript.record(record).map_err(|failure| {
@@ -964,6 +1060,7 @@ fn render<R: Redactor + ?Sized>(redactor: &R, presented: &Presented) -> Redacted
 pub struct SessionOverflow {
     directory: PathBuf,
     next: u32,
+    next_whole: u32,
 }
 
 /// How an overflow file is named, wherever one is named.
@@ -976,6 +1073,7 @@ impl SessionOverflow {
         Self {
             directory: directory.into(),
             next: 1,
+            next_whole: 1,
         }
     }
 }
@@ -1036,6 +1134,49 @@ impl Overflow for SessionOverflow {
         })?;
         self.next += 1;
         Ok(path)
+    }
+
+    fn keep_whole(
+        &mut self,
+        whole: &str,
+    ) -> Result<Option<PathBuf>, crate::tools::output::OverflowFailure> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        // Numbered as `preserve` numbers its files, for the same reason: a
+        // turn's sink must not write over a file an earlier turn named.
+        let (path, mut file) = loop {
+            let path = self.directory.join(format!(
+                "{}{:04}.txt",
+                result_view::WHOLE_PREFIX,
+                self.next_whole
+            ));
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(crate::session::store::FILE_MODE)
+                .open(&path)
+            {
+                Ok(file) => break (path, file),
+                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                    self.next_whole += 1;
+                }
+                Err(source) => {
+                    return Err(crate::tools::output::OverflowFailure::new(format!(
+                        "could not open {} to keep what the pane leaves out: {source}",
+                        path.display()
+                    )));
+                }
+            }
+        };
+        file.write_all(whole.as_bytes()).map_err(|source| {
+            crate::tools::output::OverflowFailure::new(format!(
+                "could not write {}: {source}",
+                path.display()
+            ))
+        })?;
+        self.next_whole += 1;
+        Ok(Some(path))
     }
 }
 

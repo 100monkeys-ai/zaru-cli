@@ -98,6 +98,7 @@ pub mod port;
 pub mod preview;
 pub mod prompt;
 pub mod reading;
+pub mod result_view;
 pub mod seal;
 pub mod tree;
 

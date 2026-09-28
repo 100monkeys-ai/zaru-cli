@@ -1,0 +1,40 @@
+runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X
+· exchange 6, call 1: cmd.run
+· cmd.run python3 hostile.py — permitted
+· cmd.run returned · 195 bytes · 0.02s
+    exit 0 · 8 lines on standard output, 1 on standard error
+    … 2 earlier lines not shown · all of it: /home/person/.zaru/sessions/01JQZX8N3K4M5P6R7S8T9V0W1X/shown-0001.txt
+    out │ \u{1b}[10;10Hmoved
+    out │ visible\rOVERWRITE
+    out │ back\u{8}\u{8}XX
+    out │ \u{9b}31m one byte
+    out │ \u{202e}reversed\u{202c}
+    out │ after
+    err │ \u{1b}[?1049h on standard error
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

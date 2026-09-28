@@ -1980,6 +1980,7 @@ fn adr_0034_clause_2_a_projects_exchange_limit_reaches_the_loop_and_exhausts_at_
                     content: Redacted::by(&HeldSecrets::none(), "the notes"),
                     failed: false,
                 },
+                view: None,
             })
         }
     }
@@ -2950,6 +2951,163 @@ fn ran_anything(home: &Home) -> bool {
         std::fs::read_to_string(session.join("transcript.jsonl"))
             .is_ok_and(|text| text.contains("iteration_started") || text.contains("exchange"))
     })
+}
+
+// ------------------------------------------- what a call did, on a pipe
+
+/// A model server that speaks Ollama's chat protocol from a script: the
+/// first chat request is answered with one tool call, every later one with
+/// text. The question about the model's window is answered 404, so the
+/// configured window is used.
+struct OneCallThenText {
+    origin: String,
+}
+
+impl OneCallThenText {
+    fn start(tool: &str, arguments: serde_json::Value) -> Self {
+        use std::io::{Read as _, Write as _};
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("loopback accepts a bind on port 0");
+        let origin = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("an address").port()
+        );
+        let call = serde_json::json!({
+            "model": "scripted",
+            "message": {"role": "assistant", "content": "",
+                        "tool_calls": [{"function": {"name": tool, "arguments": arguments}}]},
+            "done": true, "done_reason": "stop", "prompt_eval_count": 10, "eval_count": 1
+        })
+        .to_string();
+        let text = serde_json::json!({
+            "model": "scripted",
+            "message": {"role": "assistant", "content": "THE-ANSWER"},
+            "done": true, "done_reason": "stop", "prompt_eval_count": 10, "eval_count": 1
+        })
+        .to_string();
+        std::thread::spawn(move || {
+            let mut chats = 0_usize;
+            for _ in 0..8 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 8192];
+                while let Ok(got) = stream.read(&mut buffer) {
+                    if got == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..got]);
+                    let seen = String::from_utf8_lossy(&request).into_owned();
+                    if let Some(end) = seen.find("\r\n\r\n") {
+                        let length = seen[..end]
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let first = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let body = if first.contains("/api/chat") {
+                    chats += 1;
+                    format!("{}\n", if chats == 1 { &call } else { &text })
+                } else {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                };
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        Self { origin }
+    }
+}
+
+/// **`zaru "<task>"` prints what the pane would show of each call, as plain
+/// lines**: the call, its exit and how much it printed, its last lines marked
+/// with ASCII only, and where the whole is kept, before the answer. Output a
+/// command printed that would act on a terminal is written out, so standard
+/// output holds no escape at all.
+///
+/// Red with the plain half left out of `compose::turn`: "`zaru "<task>"`
+/// printed nothing of the command's output".
+#[test]
+fn a_task_on_a_pipe_prints_what_each_call_did_in_plain_lines() {
+    let home = Home::new("plain-views");
+    std::fs::create_dir_all(home.path().join(".zaru")).expect("a scratch ~/.zaru");
+    let mut lines: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+    lines.push_str("\u{1b}]0;TITLE\u{7}\u{1b}[2Jlast\n");
+    std::fs::write(home.project().join("many.txt"), lines).expect("staging: the file cat reads");
+    let server = OneCallThenText::start("cmd.run", serde_json::json!({"command": "cat many.txt"}));
+    std::fs::write(
+        home.path().join(".zaru").join("config.toml"),
+        format!(
+            "[model]\ndefault = \"scripted\"\n\n[provider.default]\nkind = \"ollama\"\n\n\
+             [provider.ollama]\nendpoint = \"{}\"\ncontext_tokens = 32768\n",
+            server.origin
+        ),
+    )
+    .expect("a scratch user file");
+
+    let ran = zaru(
+        &home,
+        &[("PATH", "/usr/bin:/bin")],
+        &["--mode", "yolo", "show", "the", "file"],
+    );
+    assert_eq!(ran.code, 0, "the task did not answer: {}", ran.everything());
+    let view_at = ran.stdout.find("  out | line 12").unwrap_or_else(|| {
+        panic!(
+            "`zaru \"<task>\"` printed nothing of the command's output: {}",
+            ran.stdout
+        )
+    });
+    for expected in [
+        "cmd.run cat many.txt — permitted",
+        "  exit 0 · 13 lines on standard output",
+        "  ... 6 earlier lines not shown · all of it: ",
+        "  out | \\u{1b}]0;TITLE\\u{7}\\u{1b}[2Jlast",
+    ] {
+        assert!(
+            ran.stdout.contains(expected),
+            "standard output does not say {expected:?}: {}",
+            ran.stdout
+        );
+    }
+    let answer_at = ran
+        .stdout
+        .find("THE-ANSWER")
+        .expect("the answer is printed");
+    assert!(
+        view_at < answer_at,
+        "the call's lines are printed after the answer: {}",
+        ran.stdout
+    );
+    for drawn in ['\u{1b}', '\u{2502}', '\u{2026}', '\u{22ee}'] {
+        assert!(
+            !ran.stdout.contains(drawn),
+            "standard output holds {drawn:?}, which a pipe should not carry: {}",
+            ran.stdout
+        );
+    }
 }
 
 // --------------------------------- a home and an environment nobody handed

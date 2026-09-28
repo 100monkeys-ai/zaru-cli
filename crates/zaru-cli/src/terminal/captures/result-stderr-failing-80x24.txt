@@ -1,0 +1,24 @@
+runtime.tier = bare · session 01JQZX8N3K4M5P6R7S8T9V0W1X
+· exchange 2, call 1: cmd.run
+· cmd.run cargo build — permitted
+· cmd.run reported a failure · 612 bytes · 3.05s
+    exit 101 · 10 lines on standard error
+    … 3 earlier lines not shown · all of it:
+  /home/person/.zaru/sessions/01JQZX8N3K4M5P6R7S8T9V0W1X/shown-0001.txt
+    err │ |
+    err │ 217 | fn line_count(text: &str) -> usize {
+    err │ |                              ----- expected `usize` because of retu…
+    err │ 218 |     text.matches('\n').count() as u32
+    err │ |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `usize`, found `u32`
+    err │
+    err │ error: could not compile `zaru-cli` (lib) due to 1 previous error
+
+
+
+
+
+
+
+
+
+

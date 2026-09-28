@@ -188,6 +188,21 @@ pub trait Overflow {
     /// [`OverflowFailure`] when the implementation could not preserve it,
     /// carrying its own wording.
     fn preserve(&mut self, captured: &Captured) -> Result<PathBuf, OverflowFailure>;
+
+    /// Keep the whole of what a person was shown part of, and say where.
+    ///
+    /// The pane shows a command's last lines and a change's first rows; this
+    /// keeps all of them, already redacted and made safe to print, so the
+    /// person can read the rest. `None` from a sink that keeps nothing, which
+    /// is what a sink with no session directory is.
+    ///
+    /// # Errors
+    ///
+    /// [`OverflowFailure`] when the implementation could not keep it.
+    fn keep_whole(&mut self, whole: &str) -> Result<Option<PathBuf>, OverflowFailure> {
+        let _ = whole;
+        Ok(None)
+    }
 }
 
 /// The full text could not be preserved.

@@ -65,6 +65,7 @@ pub(super) const fn tag(event: &Event) -> &'static str {
         Event::ToolRequested { .. } => "ToolRequested",
         Event::ToolPermissionDecided { .. } => "ToolPermissionDecided",
         Event::ToolCompleted { .. } => "ToolCompleted",
+        Event::ToolShown { .. } => "ToolShown",
         Event::ToolRefused { .. } => "ToolRefused",
         Event::Message(_) => "Message",
         Event::TurnEnded { .. } => "TurnEnded",
@@ -208,6 +209,8 @@ impl Model for StagedModel {
 pub(super) enum Act {
     /// Return this content.
     Return(String),
+    /// Return this content, with this view for the person.
+    ReturnShowing(String, crate::tool_call::ResultView),
     /// Return this content, marked as the tool having failed.
     Failed(String),
     /// Refuse, with this sentence.
@@ -278,6 +281,16 @@ impl ToolExecutor for StagedTools {
                     content: Redacted::by(&NothingHeld, &content),
                     failed: false,
                 },
+                view: None,
+            },
+            Act::ReturnShowing(content, view) => ToolOutcome::Completed {
+                decision,
+                result: ToolResult {
+                    id: request.id.clone(),
+                    content: Redacted::by(&NothingHeld, &content),
+                    failed: false,
+                },
+                view: Some(view),
             },
             Act::Failed(content) => ToolOutcome::Completed {
                 decision,
@@ -286,6 +299,7 @@ impl ToolExecutor for StagedTools {
                     content: Redacted::by(&NothingHeld, &content),
                     failed: true,
                 },
+                view: None,
             },
             Act::Refuse(because) => ToolOutcome::Refused {
                 decision,

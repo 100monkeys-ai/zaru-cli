@@ -274,7 +274,9 @@ async fn a_read_inside_the_working_directory_returns_the_files_bytes() {
         .expect("no port failed");
 
     match outcome {
-        ToolOutcome::Completed { result, decision } => {
+        ToolOutcome::Completed {
+            result, decision, ..
+        } => {
             assert!(
                 result.content.as_str().contains(&contents),
                 "the read did not return the file's bytes: {:?}",

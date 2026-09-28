@@ -479,8 +479,8 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
     /// **model** is doing. So the arming is read off [ADR-0008] D3's own
     /// event stream, which [`PaneSink`] already receives:
     ///
-    /// - `TurnStarted`, `ToolCompleted` and `ToolRefused` are each followed
-    ///   immediately by an exchange, so each **arms**.
+    /// - `TurnStarted`, `ToolCompleted`, `ToolShown` and `ToolRefused` are
+    ///   each followed immediately by an exchange, so each **arms**.
     /// - `ModelResponded`, `ToolRequested`, `ToolPermissionDecided` and
     ///   `TurnEnded` each mean the model is not generating, so each
     ///   **disarms**.
@@ -497,7 +497,10 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
         use zaru_core::tool_call::Event;
         matches!(
             event,
-            Event::TurnStarted { .. } | Event::ToolCompleted { .. } | Event::ToolRefused { .. }
+            Event::TurnStarted { .. }
+                | Event::ToolCompleted { .. }
+                | Event::ToolShown { .. }
+                | Event::ToolRefused { .. }
         )
     }
 
@@ -506,14 +509,17 @@ impl<'a, S: Surface + Send> Pane<'a, S> {
     /// The event travels **beside** the line rather than instead of it: the
     /// wording stays [`crate::terminal::vocabulary`]'s, which is what keeps a
     /// watched turn and a resumed one saying the same words.
-    fn note_event(&mut self, event: &zaru_core::tool_call::Event, line: Line) {
+    fn note_event(&mut self, event: &zaru_core::tool_call::Event, lines: Vec<Line>) {
         if Self::armed_by(event) {
             self.generating_since = Some(self.clock.now());
             self.said_generating = false;
         } else {
             self.generating_since = None;
         }
-        self.note(line);
+        for line in lines {
+            self.shell.notice(line);
+        }
+        self.paint();
     }
 
     /// [ADR-0028] D5's line for an exchange that has produced nothing yet.
@@ -692,8 +698,9 @@ impl<S: Surface + Send> zaru_core::tool_call::EventSink for PaneSink<'_, '_, S> 
             // it is what the model was sent, and the pane paints nothing for
             // it and neither arms nor disarms on it.
             Ok(mut pane) => {
-                if let Some(line) = crate::terminal::vocabulary::turn_line(event) {
-                    pane.note_event(event, line);
+                let lines = crate::terminal::vocabulary::turn_lines(event);
+                if !lines.is_empty() {
+                    pane.note_event(event, lines);
                 }
             }
             Err(_) => self.contended += 1,

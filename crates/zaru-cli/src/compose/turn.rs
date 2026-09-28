@@ -1678,6 +1678,7 @@ async fn ran(
 
     // --- ADR-0013's context, assembled once inside the turn ----------------
     let clock = SystemClock::started_now();
+    let mut plain = PlainCalls::default();
     let outcome = {
         let policy = context.policy(&prepared.held, iterating);
         // ADR-0008's execution, decided 2026-09-05: one tool surface, reached
@@ -1734,6 +1735,13 @@ async fn ran(
         for sink in extra.iter_mut() {
             sinks.push(&mut **sink);
         }
+        // `zaru "<task>"` has no pane, so what the pane shows of each call is
+        // kept as plain lines and printed with the turn's other lines, before
+        // the answer. The narrator is `None` exactly there, which is the rule
+        // the session's notice already follows above.
+        if narrator.is_none() {
+            sinks.push(&mut plain);
+        }
         let ran = tool_call::run(
             n,
             start,
@@ -1756,6 +1764,10 @@ async fn ran(
         (ran, inner.kept())
     };
     let (outcome, kept) = outcome;
+    if !plain.lines.is_empty() {
+        lines.append(&mut plain.lines);
+        lines.push(String::new());
+    }
 
     // A transcript that lost an event has not recorded what happened, whatever
     // the loop returned, and ADR-0010 D2 makes this file the replayable record.
@@ -2136,6 +2148,42 @@ pub fn task(
     crate::compose::persona::refresh_now(&mut serving);
 
     ran
+}
+
+/// What `zaru "<task>"` prints of each call: the line that says what the
+/// call was and whether it ran, and what the pane would show of its result,
+/// as plain lines with ASCII marks.
+///
+/// The words are the pane's own, from `terminal::vocabulary` and
+/// `tools::result_view`, so the two surfaces cannot come to say different
+/// things about one call.
+#[derive(Debug, Default)]
+struct PlainCalls {
+    lines: Vec<String>,
+}
+
+impl zaru_core::tool_call::EventSink for PlainCalls {
+    fn emit(&mut self, event: &zaru_core::tool_call::Event) {
+        use zaru_core::tool_call::Event;
+        match event {
+            Event::ToolPermissionDecided { .. } | Event::ToolRefused { .. } => {
+                if let Some(line) = crate::terminal::vocabulary::turn_line(event) {
+                    self.lines
+                        .push(crate::tools::result_view::harmless(&line.text));
+                }
+            }
+            Event::ToolShown { view, .. } => {
+                self.lines
+                    .extend(crate::tools::result_view::plain_lines(view));
+            }
+            Event::TurnStarted { .. }
+            | Event::ModelResponded { .. }
+            | Event::ToolRequested { .. }
+            | Event::ToolCompleted { .. }
+            | Event::Message(_)
+            | Event::TurnEnded { .. } => {}
+        }
+    }
 }
 
 /// Run one turn, and record what refused it if it was refused.
