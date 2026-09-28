@@ -218,6 +218,64 @@ pub struct Source {
     reader: Option<Reader>,
     contended: AtomicUsize,
     delivered: AtomicUsize,
+    /// Set when the session must end whatever the terminal says: see
+    /// [`Source::ender`].
+    ending: Arc<Ending>,
+}
+
+/// A signal that ended the session, shared between a [`Source`] and whoever
+/// is told of the signal.
+///
+/// # Why the end of a session travels through the terminal's source
+///
+/// Everything that waits on the person waits on this source: the composer
+/// between turns, the race during a turn, a question at the start of a
+/// session. So a source that reports "no more keys, ever" is already the one
+/// thing every one of them stops for, and each already stops cleanly: a turn
+/// is dropped, which stops the command it was running, and the session is
+/// written down as it stood. Ending the source is therefore how a signal ends
+/// the session, and nothing else needs a second way out.
+///
+/// It was not how until 2026-09-28. The signal listener gave the terminal
+/// back and exited the process where it stood, so a command a turn was
+/// running outlived `zaru`: measured on `e5b9240` with a shell leading the
+/// terminal, `SIGTERM` or `SIGHUP` while `cmd.run sleep 300` ran left the
+/// `sleep` running after `zaru` had gone.
+#[derive(Debug, Default)]
+pub struct Ending {
+    /// The signal's number, or zero while no signal has ended the session.
+    signal: core::sync::atomic::AtomicU8,
+    /// The reader waiting in [`Source::next`], woken when a signal arrives.
+    waiting: Mutex<Option<core::task::Waker>>,
+}
+
+impl Ending {
+    /// End the session because of signal `number`: every reader of the
+    /// source is told there will be no more keys.
+    ///
+    /// The first signal is the one kept. A second arriving while the session
+    /// winds down does not change what it exits with.
+    pub fn end(&self, number: u8) {
+        let _ = self
+            .signal
+            .compare_exchange(0, number.max(1), Ordering::SeqCst, Ordering::SeqCst);
+        let waiting = match self.waiting.lock() {
+            Ok(mut waiting) => waiting.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(reader) = waiting {
+            reader.wake();
+        }
+    }
+
+    /// The signal that ended the session, if one did.
+    #[must_use]
+    pub fn signal(&self) -> Option<u8> {
+        match self.signal.load(Ordering::SeqCst) {
+            0 => None,
+            number => Some(number),
+        }
+    }
 }
 
 impl core::fmt::Debug for Source {
@@ -260,6 +318,7 @@ impl Source {
             reader: None,
             contended: AtomicUsize::new(0),
             delivered: AtomicUsize::new(0),
+            ending: Arc::new(Ending::default()),
         }
     }
 
@@ -295,7 +354,27 @@ impl Source {
             reader: Some(Reader::spawn(sender, body)),
             contended: AtomicUsize::new(0),
             delivered: AtomicUsize::new(0),
+            ending: Arc::new(Ending::default()),
         }
+    }
+
+    /// A handle that ends this source when a signal arrives.
+    ///
+    /// For the signal listener, which runs beside the session and must be
+    /// able to end it from outside. See [`Ending`].
+    #[must_use]
+    pub fn ender(&self) -> Arc<Ending> {
+        Arc::clone(&self.ending)
+    }
+
+    /// The signal that ended this source, if one did.
+    ///
+    /// `None` when the source is still reading, and when it ended because
+    /// the keys ran out: a script drained, or a terminal whose reader
+    /// stopped.
+    #[must_use]
+    pub fn ended_by(&self) -> Option<u8> {
+        self.ending.signal()
     }
 
     /// How many times a reader found the receiver already locked.
@@ -365,6 +444,9 @@ impl Source {
     ///
     /// For a caller with no runtime to await on — see [`Pace`].
     pub fn try_next(&self) -> Taken {
+        if self.ending.signal().is_some() {
+            return Taken::Ended;
+        }
         let Ok(mut receiver) = self.receiver.try_lock() else {
             self.contended.fetch_add(1, Ordering::SeqCst);
             return Taken::Nothing;
@@ -405,6 +487,21 @@ impl Source {
     /// somebody writes one, which an asynchronous mutex would not.
     pub fn next(&self) -> impl Future<Output = Option<Struck>> {
         core::future::poll_fn(move |context| {
+            // A signal ends the source before any key still waiting in the
+            // channel is read: a key typed before the terminal went away is
+            // not a task to start after it.
+            if self.ending.signal().is_some() {
+                return core::task::Poll::Ready(None);
+            }
+            match self.ending.waiting.lock() {
+                Ok(mut waiting) => *waiting = Some(context.waker().clone()),
+                Err(poisoned) => *poisoned.into_inner() = Some(context.waker().clone()),
+            }
+            // Asked again after the waker is left, so a signal that arrived
+            // between the first look and now is not missed.
+            if self.ending.signal().is_some() {
+                return core::task::Poll::Ready(None);
+            }
             let Ok(mut receiver) = self.receiver.try_lock() else {
                 self.contended.fetch_add(1, Ordering::SeqCst);
                 context.waker().wake_by_ref();
@@ -416,6 +513,23 @@ impl Source {
             }
             polled
         })
+    }
+}
+
+impl Drop for Source {
+    /// A source a signal ended lets its reader go rather than waiting for it.
+    ///
+    /// The signal is most often a terminal that has gone, and a reader on a
+    /// terminal that has gone never looks at its flag again -- see
+    /// `read_until_stopped`. Waiting for it would hold the process at the
+    /// one moment it is about to exit. The flag is still set, so a reader
+    /// that can stop does.
+    fn drop(&mut self) {
+        if self.ending.signal().is_some()
+            && let Some(reader) = self.reader.as_mut()
+        {
+            reader.let_go();
+        }
     }
 }
 
@@ -442,6 +556,14 @@ impl Reader {
     }
 }
 
+impl Reader {
+    /// Ask the thread to stop, and do not wait for it.
+    fn let_go(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        drop(self.handle.take());
+    }
+}
+
 impl Drop for Reader {
     /// Stop the thread and wait for it, so it cannot outlive the shell.
     ///
@@ -464,12 +586,13 @@ impl Drop for Reader {
 
 /// The thread body: poll, read, send, until the flag is set.
 ///
-/// **On a terminal that has gone away this thread never ends.** crossterm
-/// 0.28's `poll` reads a hung-up terminal's end of file as "nothing yet" and
-/// loops inside itself, so the flag is never looked at again and
-/// [`Reader`]'s join would wait for ever. The session does not wait: the
-/// signal listener in `terminal::open` sees the terminal gone within a beat
-/// and exits the process, which ends this thread with it.
+/// **On a terminal that has gone away this thread never ends.** crossterm's
+/// `poll` reads a hung-up terminal's end of file as "nothing yet" and loops
+/// inside itself, so the flag is never looked at again and [`Reader`]'s join
+/// would wait for ever. The session does not wait: the watch in
+/// `terminal::open` sees the terminal gone within a beat and ends the
+/// source, the session winds down, and a source a signal ended lets this
+/// thread go rather than joining it. The process exits, which ends it.
 ///
 /// **Nothing in this workspace's checks runs this function**, for the reason
 /// the module documentation gives — it is `poll` and `read` against a terminal

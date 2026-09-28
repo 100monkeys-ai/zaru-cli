@@ -703,6 +703,67 @@ async fn ctrl_c_at_each_question_stops_the_turn_and_the_next_turn_is_told() {
     }
 }
 
+/// When the terminal stops answering while a question stands -- its keys run
+/// out, or a signal or a lost terminal ends its source -- the turn is dropped
+/// with the question unanswered, the call does not run, and the session is
+/// written down with the call closed as one that did not finish before it
+/// stops.
+///
+/// Watched red on `e5b9240`, where a source that ran out at a question was
+/// read as nobody to ask: the call was refused and the turn went on to ask
+/// the model again.
+#[tokio::test]
+async fn when_the_terminal_stops_answering_at_a_question_the_session_is_written_down() {
+    use zaru_cli::terminal::driver::{AfterTurn, Turned, after};
+
+    let kind = &KINDS[0];
+    let scratch = Scratch::new("ended");
+    let mut context = opened();
+    let model = Scripted::answering([
+        calls("call_1", kind.tool, kind.arguments),
+        answer("this answer must never be asked for"),
+    ]);
+    let turned =
+        a_turn_at_a_question(&scratch, &mut context, &model, Vec::new(), "do the thing").await;
+    assert_eq!(
+        turned.ended, "the keys ran out",
+        "a terminal that stopped answering at a question did not end the turn"
+    );
+    assert_eq!(model.sent().len(), 1, "the model was asked again");
+    assert_eq!(
+        phases(&scratch, kind.line),
+        vec![Phase::Started],
+        "the call is not recorded as started and never finished"
+    );
+
+    // What the pump does with that ending: the session is written down, and
+    // then it stops.
+    let mut fresh = opened();
+    let ended = after(Turned::SourceEnded, &mut fresh, &scratch.session, &mut None);
+    assert!(
+        matches!(ended, AfterTurn::Stops(_)),
+        "a terminal that stopped answering must end the session: {ended:?}"
+    );
+    let closed = fresh
+        .exchanges()
+        .iter()
+        .flat_map(|exchange| exchange.messages().iter())
+        .any(|message| {
+            matches!(message, Message::Tool { content, failed: true, .. }
+                if content == zaru_cli::compose::prose::CALL_DID_NOT_COMPLETE)
+        });
+    assert!(
+        closed,
+        "the session was not rebuilt with the call closed before it stopped"
+    );
+    let checkpoint = std::fs::read_to_string(scratch.session.directory().join("context.json"))
+        .expect("the checkpoint was written");
+    assert!(
+        checkpoint.contains("This call did not finish"),
+        "the checkpoint does not hold the call closed as one that did not finish"
+    );
+}
+
 /// The question's own line says what `Esc` does and what `Ctrl-C` does, in
 /// words, at every kind of question a turn asks.
 #[tokio::test]

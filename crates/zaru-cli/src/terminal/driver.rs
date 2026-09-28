@@ -1235,6 +1235,14 @@ pub fn after(
     session: &crate::session::Session,
     queued: &mut Option<Queued>,
 ) -> AfterTurn {
+    let mut written_down = || {
+        crate::compose::boundary::rebuilt_from_the_transcript(context, session)
+            .map_err(|failure| failure.to_string())
+            .and_then(|()| {
+                crate::compose::boundary::checkpointed(context, session)
+                    .map_err(|failure| failure.to_string())
+            })
+    };
     match turned {
         Turned::Ran(lines) => AfterTurn::Carries(lines),
         Turned::Interrupted(_) => {
@@ -1245,22 +1253,33 @@ pub fn after(
             // lose, because it was never a record: nothing was written for it
             // and [ADR-0010] D2's producers are untouched.
             *queued = None;
-            let kept = crate::compose::boundary::rebuilt_from_the_transcript(context, session)
-                .map_err(|failure| failure.to_string())
-                .and_then(|()| {
-                    crate::compose::boundary::checkpointed(context, session)
-                        .map_err(|failure| failure.to_string())
-                });
-            AfterTurn::Carries(match kept {
+            AfterTurn::Carries(match written_down() {
                 Ok(()) => Vec::new(),
                 Err(failure) => vec![Line::new(zaru_tui::shell::port::Register::Failed, failure)],
             })
         }
-        // The terminal stopped answering mid-turn. A product terminal does
-        // not; a script does, and this is what stops a pump that never left
-        // from hanging a check.
-        Turned::SourceEnded => AfterTurn::Stops(Exit::Succeeded),
+        // The terminal stopped answering mid-turn: its keys ran out, or a
+        // signal or a lost terminal ended the source. **The session is written
+        // down first, exactly as for a `Ctrl-C`**, so it resumes with the turn
+        // it was in closed: a call it stood at or was running is closed as one
+        // that did not finish. Then the session stops. A failure to write it
+        // down cannot be shown -- there is no pane left to show it on -- and
+        // the transcript, which is written a record at a time, still holds
+        // everything the next open rebuilds from.
+        Turned::SourceEnded => {
+            let _ = written_down();
+            AfterTurn::Stops(Exit::Succeeded)
+        }
     }
+}
+
+/// What a session exits with once its source has ended.
+///
+/// [`Exit::Signalled`] when a signal or a lost terminal ended it, so a shell
+/// reads `128 + n` as it would have for a process that signal killed; the
+/// ending the caller had otherwise.
+fn when_the_source_ended(source: &Source, otherwise: Exit) -> Exit {
+    source.ended_by().map_or(otherwise, Exit::Signalled)
 }
 
 /// Run one turn of this session for `task`, painting it as it happens.
@@ -2466,7 +2485,10 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                                 // nothing is claimed either way.
                                 surface.draw(shell)?;
                                 return Ok(Pump {
-                                    outcome: Pumped::Left(Exit::Succeeded),
+                                    outcome: Pumped::Left(when_the_source_ended(
+                                        source,
+                                        Exit::Succeeded,
+                                    )),
                                 });
                             };
                             if reopen {
@@ -2521,7 +2543,10 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                         Asked::Ended => {
                             surface.draw(shell)?;
                             return Ok(Pump {
-                                outcome: Pumped::Left(Exit::Succeeded),
+                                outcome: Pumped::Left(when_the_source_ended(
+                                    source,
+                                    Exit::Succeeded,
+                                )),
                             });
                         }
                     }
@@ -2700,7 +2725,7 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                             AfterTurn::Carries(lines) => lines,
                             AfterTurn::Stops(exit) => {
                                 return Ok(Pump {
-                                    outcome: Pumped::Left(exit),
+                                    outcome: Pumped::Left(when_the_source_ended(source, exit)),
                                 });
                             }
                         }
@@ -2719,11 +2744,12 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
         surface.draw(shell)?;
     }
 
-    // The event source ran out without the user leaving. A product terminal
-    // does not do this -- crossterm blocks -- and a check does, which is what
-    // stops a pump that never returns from hanging one.
+    // The event source ran out without the user leaving. A check's does, which
+    // is what stops a pump that never returns from hanging one; a product
+    // terminal's does when a signal or a lost terminal ended it, and then the
+    // session exits with that signal's status.
     Ok(Pump {
-        outcome: Pumped::Left(Exit::Succeeded),
+        outcome: Pumped::Left(when_the_source_ended(source, Exit::Succeeded)),
     })
 }
 
@@ -3801,7 +3827,8 @@ pub fn lines_of(ran: &crate::compose::Ran) -> Vec<Line> {
 /// guard and every adapter; what this type adds is the three system calls, and
 /// that is stated rather than implied.
 pub struct Crossterm {
-    terminal: ratatui::Terminal<CrosstermBackend<std::io::Stdout>>,
+    /// `None` only while this value is being dropped. See its `Drop`.
+    terminal: Option<ratatui::Terminal<CrosstermBackend<std::io::Stdout>>>,
     /// Whether this terminal paints the registers' colours.
     ///
     /// Held here because the terminal is the thing that knows: it is taken
@@ -3848,7 +3875,36 @@ impl Crossterm {
         }
         // Held here, once per terminal: the terminal is the thing that knows
         // whether it paints colour.
-        Ok(Self { terminal, palette })
+        Ok(Self {
+            terminal: Some(terminal),
+            palette,
+        })
+    }
+}
+
+impl Drop for Crossterm {
+    /// Let `ratatui`'s terminal go without its own goodbye when the terminal
+    /// has gone away.
+    ///
+    /// `ratatui`'s `Terminal` shows the cursor when it is dropped and, if it
+    /// cannot, says so with `eprintln!`, which **panics** when standard error
+    /// cannot be written -- and standard error is the terminal that went away.
+    /// Measured on 2026-09-28: once a lost terminal ended a session through
+    /// its source rather than by exiting on the spot, a session whose terminal
+    /// closed at a permission question (where the cursor is hidden) exited
+    /// `101`, a panic, instead of the hang-up's `129`. A terminal that is
+    /// still there is dropped as before, cursor and all.
+    fn drop(&mut self) {
+        if let Some(terminal) = self.terminal.take() {
+            if crate::terminal::open::a_person_is_watching() {
+                drop(terminal);
+            } else {
+                // The process is about to exit; there is nothing to give the
+                // memory back to, and nothing on the other end to show a
+                // cursor to.
+                core::mem::forget(terminal);
+            }
+        }
     }
 }
 
@@ -3945,10 +4001,12 @@ impl Restore for Crossterm {
 ///
 /// **One function with two callers**, because there are two ways a session
 /// ends that can restore. [`Guard`] calls it through [`Restore`] on an ordinary
-/// exit, an early return and an unwind. `terminal::open`'s signal listener
-/// calls it directly when a signal ends the session, because a process ending
-/// on a signal runs no `Drop`. Neither needs the [`Crossterm`] value: raw mode
-/// is a property of the terminal, and the sequences go to standard output.
+/// exit, an early return, an unwind, and a session a signal or a lost terminal
+/// ended, which winds down through its source since 2026-09-28. The watch in
+/// `terminal::open` calls it directly when such a session has not wound down
+/// by its deadline and the process leaves regardless, running no `Drop`.
+/// Neither needs the [`Crossterm`] value: raw mode is a property of the
+/// terminal, and the sequences go to standard output.
 ///
 /// The disarm comes **before** the alternate screen is left, on both paths.
 /// The panic hook [`take_the_screen`] installs restores the screen and knows
@@ -4021,13 +4079,17 @@ fn restore_the_screen_or_say_so() {
 impl Surface for Crossterm {
     fn draw(&mut self, shell: &Shell) -> std::io::Result<()> {
         let palette = self.palette;
-        self.terminal
-            .draw(|frame| shell.render(frame, frame.area(), palette))?;
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.draw(|frame| shell.render(frame, frame.area(), palette))?;
+        }
         Ok(())
     }
 
     fn area(&self) -> std::io::Result<Rect> {
-        let size = self.terminal.size()?;
+        let Some(terminal) = self.terminal.as_ref() else {
+            return Ok(Rect::new(0, 0, 0, 0));
+        };
+        let size = terminal.size()?;
         Ok(Rect::new(0, 0, size.width, size.height))
     }
 }

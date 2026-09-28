@@ -1962,29 +1962,58 @@ pub fn task(
     // reason this is an `Option` rather than a stub that answers yes.
     let confirmer = crate::tools::prompt::Prompt::from_process();
 
-    let ran = block_on(run_one(
-        version,
-        report_at,
-        resolution,
-        &prepared,
-        &session,
-        1,
-        Start::Task(task),
-        confirmer
-            .as_ref()
-            .map(|prompt| prompt as &(dyn crate::tools::Confirm + Sync)),
-        &mut [],
-        // ADR-0028 D3's subscriber, and there is no pane here: `zaru "<task>"`
-        // writes the transcript and prints an outcome. The narrative is on
-        // disk and `--resume` renders it; nothing paints it as it happens.
-        None,
-        &mut owed,
-        &mut context,
-        // `zaru "<task>"` expands no command and starts no skill: ADR-0015
-        // D1's expansion is an in-session surface, which is a stop rather
-        // than an omission.
-        None,
-    ));
+    // **The turn is raced against the three signals a session takes**, so a
+    // `SIGTERM`, a `SIGHUP` or a `Ctrl-C` (which arrives here as `SIGINT`,
+    // the terminal not being raw) stops the turn rather than the process
+    // where it stands. Dropping the turn stops a command it was running and
+    // leaves a question it stood at unanswered; the conversation is then
+    // rebuilt from the transcript and written down below, as for a turn that
+    // ended, and the process exits with `128 + n`. Until 2026-09-28 nothing
+    // here took a signal, and the default action ended the process at once:
+    // measured on `e5b9240`, a `SIGTERM` to `zaru --mode yolo "<task>"` while
+    // its `cmd.run sleep 300` ran left the `sleep` running.
+    let raced = block_on(async {
+        let mut signals = crate::terminal::open::Signals::take()
+            .expect("the task's runtime registers SIGTERM, SIGINT and SIGHUP");
+        tokio::select! {
+            biased;
+
+            ran = run_one(
+                version,
+                report_at,
+                resolution,
+                &prepared,
+                &session,
+                1,
+                Start::Task(task),
+                confirmer
+                    .as_ref()
+                    .map(|prompt| prompt as &(dyn crate::tools::Confirm + Sync)),
+                &mut [],
+                // ADR-0028 D3's subscriber, and there is no pane here: `zaru
+                // "<task>"` writes the transcript and prints an outcome. The
+                // narrative is on disk and `--resume` renders it; nothing
+                // paints it as it happens.
+                None,
+                &mut owed,
+                &mut context,
+                // `zaru "<task>"` expands no command and starts no skill:
+                // ADR-0015 D1's expansion is an in-session surface, which is
+                // a stop rather than an omission.
+                None,
+            ) => Ok(ran),
+
+            number = signals.first() => Err(number),
+        }
+    });
+    let ran = match raced {
+        Ok(ran) => ran,
+        Err(number) => Ran {
+            lines: Vec::new(),
+            answer_at: None,
+            exit: Exit::Signalled(number),
+        },
+    };
 
     // --- ADR-0013 D1's layer 6 and ADR-0010 D3's checkpoint over it --------
     //
@@ -2021,6 +2050,13 @@ pub fn task(
         // token may read has nothing to do with whether the checkpoint wrote.
         crate::compose::persona::refresh_now(&mut serving);
         return Ran::refused_having_said(ran.lines, classified);
+    }
+
+    // A turn a signal stopped is written down above and leaves now: whoever
+    // sent the signal wants the process gone, and the refresh below is a
+    // network call.
+    if matches!(ran.exit, Exit::Signalled(_)) {
+        return ran;
     }
 
     // --- ADR-0027's persona, refreshed for the next session ----------------

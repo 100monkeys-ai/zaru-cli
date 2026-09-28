@@ -234,7 +234,7 @@ Zaru acts on your machine with your user account's permissions. It is not a sand
 | 3 | A problem outside Zaru, such as the network or the provider. The message says whether to wait. |
 | 4 | The current runtime tier cannot do what was asked. |
 | 70 | A bug in Zaru. The message says how to report it. |
-| 128 + n | The session was ended by signal n. |
+| 128 + n | The session or task was ended by signal n: 143 for `SIGTERM`, 130 for `SIGINT`, and 129 for `SIGHUP` or a terminal that was closed. What was running is stopped first, and the session can be resumed. |
 
 ## Development
 

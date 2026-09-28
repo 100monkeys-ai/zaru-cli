@@ -7257,3 +7257,65 @@ fn a_task_on_the_sessions_runtime_that_panics_ends_the_session_as_a_defect() {
     }
     assert!(complaints.is_empty(), "{}", complaints.join("\n"));
 }
+
+// ------------------------------------------ a signal ends the terminal's source
+
+/// A signal ends the source before any key still waiting in it is read, says
+/// which signal it was, and keeps the first of two.
+///
+/// A key typed before the terminal went away is not a task to start after it,
+/// so the ending is read first. The second signal of a session winding down
+/// does not change what it exits with.
+#[test]
+fn a_signal_ends_the_source_before_the_keys_waiting_in_it() {
+    let source = Source::scripted(typed("a task typed just before"));
+    let ender = source.ender();
+    assert_eq!(
+        source.ended_by(),
+        None,
+        "a source nothing ended says it was ended"
+    );
+
+    ender.end(1);
+    ender.end(15);
+
+    assert_eq!(
+        source.ended_by(),
+        Some(1),
+        "the first signal is not the one kept"
+    );
+    assert_eq!(
+        source.try_next(),
+        Taken::Ended,
+        "a key still waiting was handed over after a signal ended the source"
+    );
+    assert_eq!(
+        futures_lite_block_on(source.next()),
+        None,
+        "the waiting reader was handed a key after a signal ended the source"
+    );
+    assert_eq!(
+        source.delivered(),
+        0,
+        "a key left the source after it ended"
+    );
+}
+
+/// A session its source was ended for by a signal exits with that signal's
+/// status, `128 + n`, and has no class: a signal is not a failure of the run.
+#[test]
+fn a_session_a_signal_ended_exits_with_its_status_and_no_class() {
+    for (number, status) in [(1_u8, 129_u8), (2, 130), (15, 143)] {
+        let exit = Exit::Signalled(number);
+        assert_eq!(
+            exit.code(),
+            status,
+            "signal {number} does not exit {status}"
+        );
+        assert_eq!(
+            exit.class(),
+            None,
+            "signal {number} was given a failure class"
+        );
+    }
+}

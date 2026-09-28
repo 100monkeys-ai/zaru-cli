@@ -64,7 +64,7 @@
 
 use crate::tools::port::{Answer, Confirm, ConfirmFailure, Question};
 use std::io::{BufRead, BufReader, IsTerminal, Read, Stdin, Stdout, Write};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// What follows the statement on ADR-0011 D3's prompt line.
 ///
@@ -302,14 +302,16 @@ pub fn ask(
             ConfirmFailure::new(format!("the prompt could not be written: {failure}"))
         })?;
 
+    read_the_answer(input, question.answers)
+}
+
+/// Read one typed line and say what it answers.
+fn read_the_answer(input: &mut impl BufRead, answers: Answers) -> Result<Answer, ConfirmFailure> {
     let mut typed = String::new();
     let read = input.read_line(&mut typed).map_err(|failure| {
         ConfirmFailure::new(format!("the answer could not be read: {failure}"))
     })?;
-    Ok(answer(
-        question.answers,
-        (read > 0).then_some(typed.as_str()),
-    ))
+    Ok(answer(answers, (read > 0).then_some(typed.as_str())))
 }
 
 /// ADR-0011 D3's prompt, over a terminal.
@@ -328,7 +330,8 @@ pub fn ask(
 /// here rather than left for a reader to infer from an unused constructor.
 #[derive(Debug)]
 pub struct Prompt<R, W> {
-    input: Mutex<R>,
+    /// Shared with the thread [`Confirm::ask`] reads the answer on.
+    input: Arc<Mutex<R>>,
     output: Mutex<W>,
 }
 
@@ -351,7 +354,7 @@ impl<R: Read + IsTerminal, W: Write> Prompt<BufReader<R>, W> {
             return None;
         }
         Some(Self {
-            input: Mutex::new(BufReader::new(input)),
+            input: Arc::new(Mutex::new(BufReader::new(input))),
             output: Mutex::new(output),
         })
     }
@@ -370,7 +373,60 @@ impl Prompt<BufReader<Stdin>, Stdout> {
     }
 }
 
-impl<R: BufRead + Send, W: Write + Send> Confirm for Prompt<R, W> {
+impl<R: BufRead + Send + 'static, W: Write + Send> Confirm for Prompt<R, W> {
+    /// Put the question now, and read the answer on a thread of its own.
+    ///
+    /// # Why the answer is not read on the turn's thread
+    ///
+    /// `zaru "<task>"` runs its turn on one thread, and reading a line of
+    /// standard input there holds that thread until the person presses
+    /// `Enter`. While it was held nothing else ran, so a `SIGTERM` sent to a
+    /// task waiting at this question did nothing until someone answered it.
+    /// Read on a thread, the turn goes on being polled while the person reads,
+    /// and a signal stops it: the question goes with the turn, unanswered.
+    ///
+    /// **The thread is left behind when the turn is stopped**, still waiting
+    /// for a line, and it ends with the process, which exits once the turn
+    /// has been stopped. It holds nothing but the standard input it is
+    /// reading.
+    fn ask<'a>(&'a self, question: &'a Question) -> crate::tools::port::Asking<'a> {
+        let statement = line(question);
+        let written = match self.output.lock() {
+            Ok(mut output) => output
+                .write_all(statement.as_bytes())
+                .and_then(|()| output.flush())
+                .map_err(|failure| {
+                    ConfirmFailure::new(format!("the prompt could not be written: {failure}"))
+                }),
+            Err(_) => Err(ConfirmFailure::new(
+                "the prompt's output handle is poisoned",
+            )),
+        };
+        if let Err(failure) = written {
+            return Box::pin(core::future::ready(Err(failure)));
+        }
+        let input = Arc::clone(&self.input);
+        let answers = question.answers;
+        let (tell, told) = tokio::sync::oneshot::channel();
+        let reading = crate::failure::thread("prompt-answer", move || {
+            let read = match input.lock() {
+                Ok(mut input) => read_the_answer(&mut *input, answers),
+                Err(_) => Err(ConfirmFailure::new("the prompt's input handle is poisoned")),
+            };
+            // Nobody is waiting when the turn was stopped meanwhile.
+            let _ = tell.send(read);
+        });
+        Box::pin(async move {
+            if reading.is_err() {
+                return Err(ConfirmFailure::new(
+                    "the prompt could not start reading the answer",
+                ));
+            }
+            told.await
+                .unwrap_or_else(|_| Err(ConfirmFailure::new("the answer was never read")))
+        })
+    }
+
     fn confirm(&self, question: &Question) -> Result<Answer, ConfirmFailure> {
         let mut input = self
             .input
