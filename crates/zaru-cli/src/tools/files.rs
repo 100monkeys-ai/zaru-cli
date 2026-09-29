@@ -376,7 +376,10 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
 
     let mut found: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    let mut symbols = Vec::new();
+    // Keep only supported paths during literal search. Parsing is deferred
+    // until every literal and filename result is known to be empty; an exact
+    // search should not pay to build a structural index it will discard.
+    let mut structural_candidates = Vec::new();
 
     if metadata.is_file() {
         consider(
@@ -386,7 +389,7 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
             ceiling,
             &mut found,
             &mut skipped,
-            &mut symbols,
+            &mut structural_candidates,
         )
         .await;
     } else {
@@ -445,7 +448,7 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
                         ceiling,
                         &mut found,
                         &mut skipped,
-                        &mut symbols,
+                        &mut structural_candidates,
                     )
                     .await;
                 }
@@ -454,6 +457,16 @@ pub(crate) async fn search(root: &Path, needle: &str, ceiling: SizeCeiling) -> C
     }
 
     if found.is_empty() {
+        let mut symbols = Vec::new();
+        for path in structural_candidates {
+            let Ok(bytes) = tokio::fs::read(&path).await else {
+                continue;
+            };
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
+            crate::tools::codebase::collect(&path, &text, needle, &mut symbols);
+        }
         found = crate::tools::codebase::retrieve(&symbols, needle);
     }
     found.sort();
@@ -481,7 +494,7 @@ async fn consider(
     ceiling: SizeCeiling,
     found: &mut Vec<String>,
     skipped: &mut Vec<String>,
-    symbols: &mut Vec<crate::tools::codebase::Symbol>,
+    structural_candidates: &mut Vec<std::path::PathBuf>,
 ) {
     if path
         .file_name()
@@ -516,10 +529,12 @@ async fn consider(
         ));
         return;
     };
-    crate::tools::codebase::collect(path, &text, symbols);
     for (at, line) in text.lines().enumerate() {
         if line.contains(needle) {
             found.push(format!("{}:{}: {line}", path.display(), at + 1));
         }
+    }
+    if crate::tools::codebase::is_supported(path) {
+        structural_candidates.push(path.to_path_buf());
     }
 }

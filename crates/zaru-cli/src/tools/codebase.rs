@@ -4,7 +4,9 @@
 //! Parser-backed local code retrieval for [`super::files::search`].
 //!
 //! Every structural fact here comes from a Tree-sitter concrete syntax tree.
-//! A source file that does not parse is not given a guessed declaration.
+//! Error recovery may leave a tree incomplete, but never turns text into a
+//! guessed declaration: only concrete nodes with their grammar-defined fields
+//! become facts.
 
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser};
@@ -35,8 +37,17 @@ impl Symbol {
     }
 }
 
-/// Parse one supported file and collect only tree-derived facts.
-pub(crate) fn collect(path: &Path, text: &str, symbols: &mut Vec<Symbol>) {
+/// Whether a file has a grammar this retrieval layer can parse locally.
+pub(crate) fn is_supported(path: &Path) -> bool {
+    language_for(path).is_some()
+}
+
+/// Parse one supported file and collect tree-derived facts relevant to `query`.
+///
+/// Declarations and imports are always useful structural context. References
+/// are retained only when they match the query, preventing an identifier-rich
+/// source file from becoming an in-memory index of every local variable.
+pub(crate) fn collect(path: &Path, text: &str, query: &str, symbols: &mut Vec<Symbol>) {
     let Some(language) = language_for(path) else {
         return;
     };
@@ -47,10 +58,8 @@ pub(crate) fn collect(path: &Path, text: &str, symbols: &mut Vec<Symbol>) {
     let Some(tree) = parser.parse(text, None) else {
         return;
     };
-    if tree.root_node().has_error() {
-        return;
-    }
-    visit(tree.root_node(), text, path, "", symbols);
+    let query = terms(query);
+    visit(tree.root_node(), text, path, "", &query, symbols);
 }
 
 /// Return the twelve highest-scoring deterministic structural results.
@@ -89,17 +98,21 @@ fn language_for(path: &Path) -> Option<Language> {
     })
 }
 
-fn visit(node: Node<'_>, text: &str, path: &Path, scope: &str, symbols: &mut Vec<Symbol>) {
-    let kind = node_kind(node.kind());
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|node| node_text(node, text));
-    let next_scope = if let (Some(kind), Some(name)) = (kind, name) {
-        push(path, node, kind, name, scope, text, symbols);
+fn visit(
+    node: Node<'_>,
+    text: &str,
+    path: &Path,
+    scope: &str,
+    query: &[String],
+    symbols: &mut Vec<Symbol>,
+) {
+    let declaration = declaration(node, text);
+    let next_scope = if let Some((kind, name)) = declaration {
+        push(path, node, kind, &name, scope, text, symbols);
         if matches!(kind, "import" | "reference") {
             scope.to_owned()
         } else {
-            join_scope(scope, name)
+            join_scope(scope, &name)
         }
     } else if is_import(node.kind()) {
         let import = compact(node_text(node, text).unwrap_or_default());
@@ -107,7 +120,7 @@ fn visit(node: Node<'_>, text: &str, path: &Path, scope: &str, symbols: &mut Vec
             push(path, node, "import", &import, scope, text, symbols);
         }
         scope.to_owned()
-    } else if node.kind() == "identifier" && is_reference(node) {
+    } else if is_reference(node) && matches_query(node, text, query) {
         if let Some(name) = node_text(node, text) {
             push(path, node, "reference", name, scope, text, symbols);
         }
@@ -117,12 +130,17 @@ fn visit(node: Node<'_>, text: &str, path: &Path, scope: &str, symbols: &mut Vec
     };
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        visit(child, text, path, &next_scope, symbols);
+        visit(child, text, path, &next_scope, query, symbols);
     }
 }
 
-fn node_kind(kind: &str) -> Option<&'static str> {
-    Some(match kind {
+fn declaration(node: Node<'_>, text: &str) -> Option<(&'static str, String)> {
+    let kind = node_kind(node)?;
+    declaration_name(node, text).map(|name| (kind, name.to_owned()))
+}
+
+fn node_kind(node: Node<'_>) -> Option<&'static str> {
+    Some(match node.kind() {
         "function_item"
         | "function_definition"
         | "function_declaration"
@@ -133,10 +151,30 @@ fn node_kind(kind: &str) -> Option<&'static str> {
         "trait_item" | "interface_declaration" => "interface",
         "impl_item" => "implementation",
         "mod_item" | "module" => "module",
-        "type_item" | "type_alias_declaration" | "type_declaration" => "type",
+        "type_item" | "type_alias_declaration" | "type_spec" => "type",
         "const_item" => "constant",
+        "variable_declarator"
+            if node.child_by_field_name("value").is_some_and(|value| {
+                matches!(value.kind(), "arrow_function" | "function_expression")
+            }) =>
+        {
+            "function"
+        }
         _ => return None,
     })
+}
+
+fn declaration_name<'a>(node: Node<'_>, text: &'a str) -> Option<&'a str> {
+    let named = node
+        .child_by_field_name("name")
+        .or_else(|| match node.kind() {
+            // Rust implementation blocks name their implemented type rather than
+            // exposing a `name` field. Keeping it as scope makes methods citable
+            // as `Type::method`.
+            "impl_item" => node.child_by_field_name("type"),
+            _ => None,
+        });
+    named.and_then(|node| node_text(node, text))
 }
 
 fn is_import(kind: &str) -> bool {
@@ -150,12 +188,21 @@ fn is_import(kind: &str) -> bool {
     )
 }
 fn is_reference(node: Node<'_>) -> bool {
+    if !matches!(node.kind(), "identifier" | "type_identifier") {
+        return false;
+    }
     let Some(parent) = node.parent() else {
         return false;
     };
     parent
         .child_by_field_name("name")
         .is_none_or(|name| name.id() != node.id())
+}
+
+fn matches_query(node: Node<'_>, text: &str, query: &[String]) -> bool {
+    node_text(node, text)
+        .map(terms)
+        .is_some_and(|reference| query.iter().any(|term| reference.contains(term)))
 }
 fn push(
     path: &Path,
@@ -212,25 +259,29 @@ fn score(symbol: &Symbol, query: &[String]) -> Option<usize> {
     let context = terms(&symbol.context);
     let path = terms(&symbol.path);
     let mut score = 0;
+    let mut matched = 0;
     for term in query {
         let in_name = name.iter().any(|value| value == term);
         let in_scope = scope.iter().any(|value| value == term);
         let in_context = context.iter().any(|value| value == term);
         let in_path = path.iter().any(|value| value == term);
-        if !(in_name || in_scope || in_context || in_path) {
-            return None;
+        if in_name || in_scope || in_context || in_path {
+            matched += 1;
+            score += if in_name {
+                16
+            } else if in_scope {
+                10
+            } else if in_context {
+                5
+            } else {
+                2
+            };
         }
-        score += if in_name {
-            16
-        } else if in_scope {
-            10
-        } else if in_context {
-            5
-        } else {
-            2
-        };
     }
-    Some(score)
+    // A multi-term query should still locate a declaration when one concept
+    // belongs to a caller and another belongs to its callee. Coverage remains
+    // the primary sort key, then the field-specific relevance above.
+    (matched > 0).then_some(score + matched * 32)
 }
 fn terms(value: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -270,6 +321,7 @@ mod tests {
         collect(
             Path::new("src/clock.rs"),
             "mod turn_clock { pub fn refreshTurnClock() { refreshTurnClock(); } }",
+            "turn_clock refresh",
             &mut symbols,
         );
         let hit = retrieve(&symbols, "turn_clock refresh").join("\n");
@@ -280,14 +332,16 @@ mod tests {
         assert!(hit.contains("reference refreshTurnClock"), "{hit}");
     }
     #[test]
-    fn a_syntax_error_is_not_promoted_to_a_guessed_symbol() {
+    fn a_syntax_error_keeps_concrete_declarations_before_it() {
         let mut symbols = Vec::new();
         collect(
             Path::new("broken.rs"),
-            "fn not actually valid(",
+            "fn valid_before_error() {}\nfn not actually valid(",
+            "valid error",
             &mut symbols,
         );
-        assert!(symbols.is_empty());
+        let hit = retrieve(&symbols, "valid error").join("\n");
+        assert!(hit.contains("function valid_before_error"), "{hit}");
     }
     #[test]
     fn typescript_is_parsed_by_its_own_grammar() {
@@ -295,12 +349,57 @@ mod tests {
         collect(
             Path::new("view.ts"),
             "export interface TurnClock { refreshTurnClock(): void }",
+            "turn clock",
             &mut symbols,
         );
         assert!(
             retrieve(&symbols, "turn clock")
                 .join("\n")
                 .contains("interface TurnClock")
+        );
+    }
+    #[test]
+    fn declarations_cover_rust_impls_typescript_arrows_and_go_types() {
+        let cases = [
+            (
+                "model.rs",
+                "struct TurnClock; impl TurnClock { fn refresh(&self) {} }",
+                "TurnClock refresh",
+                "function refresh in TurnClock",
+            ),
+            (
+                "view.ts",
+                "const refreshTurnClock = () => {};",
+                "refresh turn clock",
+                "function refreshTurnClock",
+            ),
+            (
+                "model.go",
+                "type TurnClock struct {}",
+                "turn clock",
+                "type TurnClock",
+            ),
+        ];
+        for (path, source, query, expected) in cases {
+            let mut symbols = Vec::new();
+            collect(Path::new(path), source, query, &mut symbols);
+            let hit = retrieve(&symbols, query).join("\n");
+            assert!(hit.contains(expected), "{path}: {hit}");
+        }
+    }
+    #[test]
+    fn a_multi_term_query_keeps_a_partial_structural_match() {
+        let mut symbols = Vec::new();
+        collect(
+            Path::new("clock.rs"),
+            "fn refresh_turn_clock() {}",
+            "refresh caller",
+            &mut symbols,
+        );
+        assert!(
+            retrieve(&symbols, "refresh caller")
+                .join("\n")
+                .contains("refresh_turn_clock")
         );
     }
 }
