@@ -677,6 +677,17 @@ impl GeminiClient {
                 status: error.status,
             };
         }
+        // A rate limit or a request timeout is the provider's condition and
+        // nobody's request: ADR-0016 D1's row 3 names "Rate limit" in as many
+        // words. It is read before the capacity arm, because a quota sentence
+        // can say "exceeded" beside a token count and is still not a window
+        // the reader can raise.
+        if matches!(code, 408 | 429) {
+            return GeminiFailure::Unavailable {
+                code: Some(code),
+                detail,
+            };
+        }
         if (400..500).contains(&code) && crate::providers::capacity::names_a_capacity(&detail) {
             return GeminiFailure::CapacityRefused(crate::providers::capacity::Refused {
                 code,

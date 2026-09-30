@@ -2019,3 +2019,64 @@ fn a_stream_that_ends_without_a_terminator_still_delivers_its_last_frame() {
         "the finish reason rides on the frame the terminator did not close"
     );
 }
+
+// A rate limit and a request timeout are the provider's condition, not a
+// request this harness built wrongly. ADR-0016 D1's row 3 names "Rate limit"
+// in as many words, and until this check `classify` sent every 4xx it did not
+// recognise to `RequestRefused`, a defect at exit 70 telling the person the
+// harness had built a malformed request. The 429 body is the shape Google's
+// rate-limit page documents -- a sentence that says "exceeded" and names no
+// context or token capacity -- written here, not measured.
+#[test]
+fn a_rate_limit_and_a_request_timeout_are_environmental_and_show_the_providers_words() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let client = super::GeminiClient::new(
+        Endpoint::default_endpoint(),
+        model("cheap"),
+        Alias::new("provider.gemini").expect("a well-formed alias"),
+        Secret::provider(ProviderKind::Gemini, provider_secret_nonce())
+            .expect("a nonce is a provider secret"),
+        crate::providers::gemini::CONTEXT_WINDOW_TOKENS,
+    )
+    .expect("an HTTP client builds without touching the network");
+    let mut wrong = Vec::new();
+    for (code, status, message) in [
+        (
+            429,
+            "RESOURCE_EXHAUSTED",
+            "You exceeded your current quota, please check your plan and billing details.",
+        ),
+        (
+            408,
+            "DEADLINE_EXCEEDED",
+            "The request timed out before a response was ready.",
+        ),
+    ] {
+        let body = serde_json::json!({
+            "error": { "code": code, "message": message, "status": status }
+        })
+        .to_string();
+        let shown = Presentation::of(
+            &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+                &ProviderFailure::Gemini(client.classify(code, body.as_bytes())),
+                SessionEvidence::NoSessionExists,
+            ),
+        );
+        if shown.class != Class::Environmental {
+            wrong.push(format!(
+                "HTTP {code} is the provider's condition and belongs to nobody, and it was {:?}",
+                shown.class
+            ));
+        }
+        let said = shown.to_string();
+        if !said.contains(message) || !said.contains(&format!("HTTP {code}")) {
+            wrong.push(format!(
+                "HTTP {code} does not show the provider's own words: {said}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

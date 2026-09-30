@@ -1137,3 +1137,41 @@ async fn a_first_turn_offering_every_built_in_fits_the_default_ollama_window() {
         ),
     }
 }
+
+// The sibling of the same check on the other two kinds, and green before them:
+// this kind's `from_status` sent only 400 to `RequestRefused`, so a 429 and a
+// 408 were already `Unavailable`. Kept so the three kinds are held to one rule.
+#[test]
+fn a_rate_limit_and_a_request_timeout_are_environmental_and_show_the_servers_words() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let mut wrong = Vec::new();
+    for (code, message) in [
+        (429, "server busy, please try again"),
+        (408, "request timed out"),
+    ] {
+        let body = serde_json::json!({ "error": message }).to_string();
+        let failure = OllamaFailure::from_status(code, body.as_bytes(), "llama3.2:3b");
+        let shown = Presentation::of(
+            &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+                &ProviderFailure::Ollama(failure),
+                SessionEvidence::NoSessionExists,
+            ),
+        );
+        if shown.class != Class::Environmental {
+            wrong.push(format!(
+                "HTTP {code} is the server's condition and belongs to nobody, and it was {:?}",
+                shown.class
+            ));
+        }
+        let said = shown.to_string();
+        if !said.contains(message) || !said.contains(&format!("HTTP {code}")) {
+            wrong.push(format!(
+                "HTTP {code} does not show the server's own words: {said}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

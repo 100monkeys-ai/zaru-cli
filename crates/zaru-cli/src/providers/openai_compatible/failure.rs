@@ -323,6 +323,13 @@ impl OpenAiCompatibleFailure {
                 model: model.to_owned(),
                 detail,
             },
+            // A rate limit or a request timeout is the endpoint's condition
+            // and nobody's request (ADR-0016 D1 row 3), read before the
+            // capacity arm for the reason `GeminiClient::classify` gives.
+            408 | 429 => Self::Unavailable {
+                code: Some(code),
+                detail,
+            },
             400..=499 if capacity => Self::CapacityRefused(Refused {
                 code,
                 status,
