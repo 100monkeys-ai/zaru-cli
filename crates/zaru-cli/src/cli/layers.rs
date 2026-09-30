@@ -147,6 +147,9 @@ impl BuiltIn {
             &crate::runtime::max_tool_exchanges_key(),
             Value::Integer(i64::from(crate::runtime::DEFAULT_TOOL_EXCHANGES)),
         );
+        // How a stalled or failing provider is retried: the five figures
+        // `providers::resilience` reads, here for the window's reason above.
+        crate::providers::resilience::insert_defaults(&mut document);
         // Whether the shell holds the mouse. On by default, so the wheel
         // scrolls the pane; see `terminal::mouse` for the trade and its cost.
         document.insert_path(
@@ -617,6 +620,7 @@ impl Files {
 #[must_use]
 pub fn schema() -> Schema {
     let declared = crate::providers::declare(Schema::new());
+    let declared = crate::providers::resilience::declare(declared);
     let declared = crate::manifest::declare(declared);
     let declared = crate::tools::allowlist::declare(declared);
     let declared = crate::tools::mode::declare(declared);

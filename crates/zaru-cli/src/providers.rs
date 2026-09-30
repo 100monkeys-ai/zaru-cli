@@ -68,6 +68,7 @@ pub mod negotiation;
 pub mod ollama;
 pub mod openai_compatible;
 pub mod port;
+pub mod resilience;
 pub mod resolution;
 pub mod selection;
 pub mod sse;

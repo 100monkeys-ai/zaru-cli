@@ -725,7 +725,8 @@ fn corpus_a_task_with_no_key_is_refused_naming_the_alias_and_never_a_key() {
     absent_everywhere(&home, &reached, &value, &core, "the stored provider key");
 }
 
-/// [ADR-0016] D5's `3`: a provider that could not be reached.
+/// [ADR-0016] D5's `3`: a provider that could not be reached, after D4's
+/// retries.
 ///
 /// The endpoint is [ADR-0012] D5's own configuration key at a loopback port
 /// nothing listens on, so this reaches a real socket, gets a real refusal from
@@ -752,12 +753,35 @@ fn adr_0016_d5s_three_is_a_provider_that_could_not_be_reached() {
         "the refusal must say what happened: {}",
         ran.stderr
     );
+    // ADR-0016 D4: the failure was retried, visibly, counted and bounded,
+    // before it was reported -- each retry one line where the turn's lines
+    // are printed, and never called an iteration. Until 2026-09-30 no record
+    // stated a retry policy and this refusal said so ("no retry policy").
+    let retries: Vec<&str> = ran
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("retry "))
+        .collect();
+    assert_eq!(
+        retries.len(),
+        3,
+        "a refused connection is retried three times, each said on its own line: {}",
+        ran.stdout
+    );
+    for (made, line) in retries.iter().enumerate() {
+        assert!(
+            line.starts_with(&format!("retry {} of 3 in ", made + 1))
+                && line.ends_with(": the connection to the provider failed")
+                && !line.contains("iteration"),
+            "each retry says which, of how many, how long and why: {line}"
+        );
+    }
     // ADR-0016 D2's other half: an environmental failure says whether waiting
-    // helps, and this one says it does not, because no record states a retry
-    // policy and inventing one would answer that silently.
+    // helps, and this one says the harness already waited.
     assert!(
-        ran.stderr.contains("no retry policy"),
-        "D4 requires a retry policy be stated, and its absence has to be stated too: {}",
+        ran.stderr.contains("already waited and retried")
+            && !ran.stderr.contains("no retry policy"),
+        "the refusal says the failure was retried under the policy: {}",
         ran.stderr
     );
     absent_everywhere(&home, &ran, &value, &core, "the stored provider key");

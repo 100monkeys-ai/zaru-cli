@@ -859,6 +859,19 @@ impl<S: Surface + Send> crate::compose::Narrator for PaneNarrator<'_, '_, S> {
             }
         }
     }
+
+    /// One line per retry, in the announcement register: it is the harness
+    /// saying what it is doing, not a failure of the turn, which may still
+    /// answer.
+    fn announce_retry(&self, sentence: &str) {
+        match self.pane.try_lock() {
+            Ok(mut pane) => pane.note(Line::new(Register::Announced, sentence.to_owned())),
+            Err(_) => {
+                self.contended
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// [ADR-0011] D3's question, asked and answered in the pane.

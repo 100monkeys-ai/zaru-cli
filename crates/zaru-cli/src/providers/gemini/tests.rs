@@ -703,6 +703,7 @@ fn a_failure_names_the_alias_and_the_kind_and_never_the_key() {
     let unavailable = GeminiFailure::Unavailable {
         code: Some(503),
         detail: "the model is overloaded".to_owned(),
+        retry_after: None,
     };
     assert!(unavailable.is_environmental());
     assert!(!unavailable.is_defect());
@@ -775,11 +776,14 @@ async fn an_oversized_request_is_refused_before_it_reaches_the_network() {
     let prompt = prompt("a request that cannot fit one byte");
 
     let failure = client
-        .exchange(&ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            turn: &[],
-        })
+        .exchange(
+            &ModelRequest {
+                prompt: &prompt,
+                tools: &[],
+                turn: &[],
+            },
+            crate::providers::resilience::Attempt::built_in(),
+        )
         .await
         .expect_err("the locally measured request exceeds one byte");
 

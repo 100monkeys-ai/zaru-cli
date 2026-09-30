@@ -27,12 +27,15 @@
 //! already use. **A budget invented by the thing being budgeted is not a
 //! budget.**
 //!
-//! # Nothing retries
+//! # What retries
 //!
-//! D4's second half — "the harness obeys it visibly" — needs something to
-//! retry, and there is no provider, no network and no socket anywhere in this
-//! workspace. What is built is the policy and the count as data; obeying it
-//! arrives with [ADR-0012]'s provider.
+//! D4's second half — "the harness obeys it visibly" — needed something to
+//! retry, and when this module was written there was no provider, no network
+//! and no socket anywhere in this workspace. **Since 2026-09-30 a provider's
+//! exchange is retried**, by `crate::providers::resilience`, which takes its
+//! bound and its first wait as this module's [`RetryCeiling`] and [`Backoff`],
+//! so the refusal of a zero is the same refusal in both places, and says each
+//! retry in a line that begins with [`RETRY_LABEL`].
 //!
 //! [ADR-0001]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0001-runtime-tiers
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store

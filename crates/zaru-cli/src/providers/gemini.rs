@@ -257,6 +257,7 @@ impl GeminiClient {
         .map_err(|error| GeminiFailure::Unavailable {
             code: None,
             detail: error.detail().to_owned(),
+            retry_after: None,
         })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
@@ -518,6 +519,7 @@ impl GeminiClient {
     pub async fn exchange(
         &self,
         request: &ModelRequest<'_>,
+        attempt: crate::providers::resilience::Attempt,
     ) -> Result<ModelResponse, GeminiFailure> {
         let body = map::request_from(request)?;
         // ADR-0036 D1, before any network I/O: the whole native request,
@@ -538,6 +540,9 @@ impl GeminiClient {
             // query string: a URL lands in proxy logs and in every message
             // that quotes a request.
             .header(API_KEY_HEADER, self.key.expose_for_dispatch())
+            // What is left of the exchange's ceiling, so a retry never
+            // extends it. See `providers::resilience`.
+            .timeout(attempt.budget)
             .json(&body)
             .send()
             .await
@@ -555,6 +560,7 @@ impl GeminiClient {
                     &error,
                     crate::providers::transport::EXCHANGE_TIMEOUT,
                 ),
+                retry_after: None,
             })?;
 
         let status = response.status();
@@ -568,6 +574,7 @@ impl GeminiClient {
         // So the body is taken whole here and `classify` is unchanged, which
         // is why `recorded/rejected-key.json` still means what it meant.
         if !status.is_success() {
+            let retry_after = crate::providers::resilience::retry_after_of(response.headers());
             let bytes = response
                 .bytes()
                 .await
@@ -577,8 +584,11 @@ impl GeminiClient {
                         &error,
                         crate::providers::transport::EXCHANGE_TIMEOUT,
                     ),
+                    retry_after: None,
                 })?;
-            return Err(self.classify(status.as_u16(), &bytes));
+            return Err(self
+                .classify(status.as_u16(), &bytes)
+                .with_retry_after(retry_after));
         }
 
         // --- The stream, read as it arrives ------------------------------
@@ -597,15 +607,22 @@ impl GeminiClient {
             // environmental class, reached through the same variant a refused
             // connection reaches. There is no sentinel frame to miss: this
             // producer sends none, so end-of-body is end-of-stream.
-            let chunk = response
-                .chunk()
+            //
+            // Each piece is read under the stall clock, which restarts at every
+            // byte: a response that has begun and then goes silent is
+            // abandoned, and a slow one that keeps flowing is not.
+            let chunk = crate::providers::resilience::within_stall(attempt.stall, response.chunk())
                 .await
+                .map_err(|stalled| GeminiFailure::Stalled {
+                    silent_for: stalled.silent_for,
+                })?
                 .map_err(|error| GeminiFailure::Unavailable {
                     code: Some(status.as_u16()),
                     detail: crate::providers::transport::transport_detail_within(
                         &error,
                         crate::providers::transport::EXCHANGE_TIMEOUT,
                     ),
+                    retry_after: None,
                 })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();
@@ -664,6 +681,7 @@ impl GeminiClient {
                 // The length, never the content: an unparsed body is exactly
                 // the one nobody can promise is free of a credential.
                 detail: format!("{} byte(s) that are not an API error envelope", body.len()),
+                retry_after: None,
             };
         };
         let error = envelope.error;
@@ -686,6 +704,7 @@ impl GeminiClient {
             return GeminiFailure::Unavailable {
                 code: Some(code),
                 detail,
+                retry_after: None,
             };
         }
         if (400..500).contains(&code) && crate::providers::capacity::names_a_capacity(&detail) {
@@ -715,6 +734,7 @@ impl GeminiClient {
         GeminiFailure::Unavailable {
             code: Some(code),
             detail,
+            retry_after: None,
         }
     }
 }
@@ -806,7 +826,12 @@ impl Model for GeminiClient {
         // whose loop has no taxonomy, and is why `GeminiClient::exchange` is
         // public: the command surface classifies the typed failure, and only
         // the loop sees the flattened one.
-        self.exchange(request)
+        //
+        // **One attempt, under the built-in stall and the whole ceiling.** A
+        // client driven on its own is not retried: a turn's retries are
+        // `providers::resilience::Resilient`'s, which the composition wraps
+        // around `ProviderClient` with the configured policy.
+        self.exchange(request, crate::providers::resilience::Attempt::built_in())
             .await
             .map_err(|failure| PortFailure::new(failure.to_string()))
     }

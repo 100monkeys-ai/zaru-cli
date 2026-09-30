@@ -33,6 +33,12 @@
 //! carries. The enum is closed, so `taken()` still hands the surface a typed
 //! value and `cli::classify` still matches it without a wildcard.
 //!
+//! **Since 2026-09-30 it calls that function through
+//! [`crate::providers::resilience::Resilient`]**, which retries a transient
+//! failure under the configured policy and tells the turn of each retry. The
+//! failure kept here is the last attempt's, so what the surface classifies is
+//! what finally stopped the exchange.
+//!
 //! **Nothing on any port changes.** `PortFailure` gains no field, `Model`
 //! gains no method, `Provider` gains no method, and the client is not edited.
 //! The clause ADR-0016 D1 needs — "a port's implementation states the class of
@@ -57,6 +63,7 @@
 //! [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 //! [`ProviderClient::exchange`]: crate::providers::ProviderClient::exchange
 
+use crate::providers::resilience::{Policy, Resilient, Retrying};
 use crate::providers::{ProviderClient, ProviderFailure};
 use core::fmt;
 use std::sync::Mutex;
@@ -71,6 +78,7 @@ use zaru_core::tool_call::{Capabilities, Model, ModelRequest, ModelResponse};
 /// different trait on the same value.
 pub struct Classifying<'a> {
     client: &'a ProviderClient,
+    resilient: Resilient<'a, ProviderClient>,
     last: Mutex<Option<ProviderFailure>>,
 }
 
@@ -90,11 +98,22 @@ impl fmt::Debug for Classifying<'_> {
 }
 
 impl<'a> Classifying<'a> {
-    /// Wrap a client for one turn.
+    /// Wrap a client for one turn, retrying its transient failures under
+    /// `policy` and telling `told` of each retry as it is made.
+    ///
+    /// **Every exchange a turn makes comes through here** -- the tool-call
+    /// loop's, the inner loop's generator and the turn boundary's summariser
+    /// -- so every one is retried under the same policy and every retry is
+    /// seen. See `providers::resilience`.
     #[must_use]
-    pub const fn over(client: &'a ProviderClient) -> Self {
+    pub const fn over(
+        client: &'a ProviderClient,
+        policy: Policy,
+        told: &'a (dyn Fn(&Retrying) + Sync),
+    ) -> Self {
         Self {
             client,
+            resilient: Resilient::over(client, policy, told),
             last: Mutex::new(None),
         }
     }
@@ -134,7 +153,10 @@ impl Model for Classifying<'_> {
 
     /// One exchange, keeping the typed failure and handing on the flat one.
     async fn respond(&self, request: &ModelRequest<'_>) -> Result<ModelResponse, PortFailure> {
-        match self.client.exchange(request).await {
+        // One exchange, however many attempts it took: the retries are below
+        // this port, so the loop counts what the model was asked and not how
+        // often the network had to be tried.
+        match self.resilient.exchange(request).await {
             Ok(response) => Ok(response),
             Err(failure) => {
                 // The sentence is taken from the typed value before it is

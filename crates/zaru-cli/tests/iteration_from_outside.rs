@@ -1462,6 +1462,13 @@ fn one_emission_of_the_inner_loops_stream_reaches_the_transcript_and_a_subscribe
         fn announce_session_notice(&self, sentence: &str) {
             panic!("the inner loop said a session's once-ever line: {sentence:?}");
         }
+
+        /// The inner loop never retries a provider, and asserting that is the
+        /// point: retries are `providers::resilience::Resilient`'s, below the
+        /// model port, and this run stages a model that answers.
+        fn announce_retry(&self, sentence: &str) {
+            panic!("the inner loop announced a provider retry: {sentence:?}");
+        }
     }
 
     let scratch = Scratch::new("one-emission");

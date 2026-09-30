@@ -245,6 +245,7 @@ impl OllamaClient {
     pub async fn exchange(
         &self,
         request: &ModelRequest<'_>,
+        attempt: crate::providers::resilience::Attempt,
     ) -> Result<ModelResponse, OllamaFailure> {
         // Scoped so the guard is dropped before the first `.await`: a
         // `std::sync::MutexGuard` is `!Send` and `Model::respond` returns a
@@ -265,6 +266,9 @@ impl OllamaClient {
         let mut response = self
             .http
             .post(self.endpoint.chat_url())
+            // What is left of the exchange's ceiling, so a retry never
+            // extends it. See `providers::resilience`.
+            .timeout(attempt.budget)
             .json(&body)
             .send()
             .await
@@ -291,6 +295,7 @@ impl OllamaClient {
         // asked for a stream, and a malformed body answered 400 the same way.
         // So the body is taken whole here and the frame reader never sees it.
         if !status.is_success() {
+            let retry_after = crate::providers::resilience::retry_after_of(response.headers());
             let bytes = response
                 .bytes()
                 .await
@@ -300,12 +305,12 @@ impl OllamaClient {
                         &error,
                         crate::providers::transport::EXCHANGE_TIMEOUT,
                     ),
+                    retry_after: None,
                 })?;
-            return Err(OllamaFailure::from_status(
-                status.as_u16(),
-                &bytes,
-                self.model.as_str(),
-            ));
+            return Err(
+                OllamaFailure::from_status(status.as_u16(), &bytes, self.model.as_str())
+                    .with_retry_after(retry_after),
+            );
         }
 
         // --- The stream, read as it arrives ------------------------------
@@ -323,9 +328,14 @@ impl OllamaClient {
             // local server that is the server having died, which the user can
             // act on -- so it reaches `Unreachable` rather than the
             // environmental class a hosted provider's break reaches.
-            let chunk = response
-                .chunk()
+            //
+            // Each piece is read under the stall clock, which restarts at every
+            // byte. See `providers::resilience::within_stall`.
+            let chunk = crate::providers::resilience::within_stall(attempt.stall, response.chunk())
                 .await
+                .map_err(|stalled| OllamaFailure::Stalled {
+                    silent_for: stalled.silent_for,
+                })?
                 .map_err(|error| OllamaFailure::Unreachable {
                     endpoint: self.configured.clone(),
                     detail: crate::providers::transport::transport_detail_within(
@@ -522,7 +532,12 @@ impl Model for OllamaClient {
         // loop has no taxonomy, and is why `exchange` is public: the command
         // surface classifies the typed failure, and only the loop sees the
         // flattened one.
-        self.exchange(request)
+        //
+        // **One attempt, under the built-in stall and the whole ceiling.** A
+        // client driven on its own is not retried: a turn's retries are
+        // `providers::resilience::Resilient`'s, which the composition wraps
+        // around `ProviderClient` with the configured policy.
+        self.exchange(request, crate::providers::resilience::Attempt::built_in())
             .await
             .map_err(|failure| PortFailure::new(failure.to_string()))
     }

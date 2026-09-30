@@ -250,7 +250,10 @@ async fn one_real_exchange_against_the_provider_and_the_key_is_in_none_of_it() {
         zaru_cli::providers::gemini::CONTEXT_WINDOW_TOKENS,
     )
     .expect("an HTTP client builds")
-    .exchange(&request)
+    .exchange(
+        &request,
+        zaru_cli::providers::resilience::Attempt::built_in(),
+    )
     .await
     .expect_err("a key the provider does not know is refused");
 

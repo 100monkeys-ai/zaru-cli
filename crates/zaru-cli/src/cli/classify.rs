@@ -195,6 +195,28 @@ fn correctable(refusal: &impl core::fmt::Display, remedy: Remedy) -> Classified 
 pub const TRY_AFTER_A_PROVIDER_REFUSAL: &str = "run the task again, or with another model \
      (`--model <identifier>`); if the provider says the same, report it with these lines";
 
+/// ADR-0016 D2's "says whether to wait and how long", for a provider that
+/// failed on its own side.
+///
+/// **By the time a failure reaches here it has been retried, where a retry
+/// could change it**, under `providers::resilience`'s policy, and each retry
+/// was shown as it was made. So waiting inside this run will not help, and
+/// the sentence says why rather than inviting a wait nobody will act on. A
+/// failure no retry can change says that instead.
+fn provider_wait(failure: &impl crate::providers::resilience::Transience) -> Wait {
+    Wait::NoWaitWillHelp(Statement::sanitised(
+        if failure.transient().is_some() {
+            "this harness already waited and retried as far as `provider.retries` and the \
+             exchange's ceiling allow, each retry shown as it was made. Running the same command \
+             again later is the next try"
+        } else {
+            "a retry cannot change this answer, so none was made. Running the same command again \
+             asks the same question"
+        }
+        .to_owned(),
+    ))
+}
+
 /// A provider refusal classed as a defect, carrying the provider's words.
 ///
 /// **One rule for every provider arm that is a defect**: the person is shown
@@ -1333,6 +1355,21 @@ impl Surface<'_> {
         }
     }
 
+    /// A `provider.*` retry or stall key holds something that is not a count.
+    ///
+    /// Always the reader's, and the remedy names the command that shows which
+    /// layer set it. See `providers::resilience`.
+    #[must_use]
+    pub fn resilience(refusal: &crate::providers::resilience::PolicyRefused) -> Classified {
+        correctable(
+            refusal,
+            run(
+                "see every layer's value for it",
+                &format!("config explain {}", refusal.key()),
+            ),
+        )
+    }
+
     /// `runtime.max_tool_exchanges` holds something that is not a limit.
     ///
     /// Always the reader's: [ADR-0034] D2 has no tier or placement in which
@@ -1914,15 +1951,12 @@ impl Surface<'_> {
             // The server failed on its own side -- a 5xx before the stream, or
             // an error frame inside it. The one class this kind shares with a
             // hosted provider, for the same reason it does.
-            F::Unavailable { .. } | F::StreamFailed { .. } => Classified::Environmental {
-                statement: Statement::sanitised(failure.to_string()),
-                wait: Wait::NoWaitWillHelp(Statement::sanitised(
-                    "this harness has no retry policy and nothing states one, so it stops here \
-                     and says so rather than retrying on a policy nobody chose. Running the same \
-                     command again is the retry"
-                        .to_owned(),
-                )),
-            },
+            F::Unavailable { .. } | F::StreamFailed { .. } | F::Stalled { .. } => {
+                Classified::Environmental {
+                    statement: Statement::sanitised(failure.to_string()),
+                    wait: provider_wait(failure),
+                }
+            }
             // The harness built the request, mapped the response, or supplied
             // the descriptor, so none of these is the reader's to fix.
             F::RequestRefused { .. } | F::Unreadable { .. } | F::ToolSchemaUnreadable { .. } => {
@@ -1983,16 +2017,12 @@ impl Surface<'_> {
                 Self::request_window_exceeded(exceeded, ProviderKind::Ollama)
             }
             F::CapacityRefused(refused) => Self::capacity_refused(refused, ProviderKind::Ollama),
-            // The server failed on its own side -- the one class this kind
-            // shares with a hosted provider, for the same reason it does.
-            F::Unavailable { .. } => Classified::Environmental {
+            // The server failed on its own side, or began answering and went
+            // silent -- the one class this kind shares with a hosted provider,
+            // for the same reason it does.
+            F::Unavailable { .. } | F::Stalled { .. } => Classified::Environmental {
                 statement: Statement::sanitised(failure.to_string()),
-                wait: Wait::NoWaitWillHelp(Statement::sanitised(
-                    "this harness has no retry policy and nothing states one, so it stops here \
-                     and says so rather than retrying on a policy nobody chose. Running the same \
-                     command again is the retry"
-                        .to_owned(),
-                )),
+                wait: provider_wait(failure),
             },
             // The harness built the request, mapped the response, or supplied
             // the descriptor, so none of these is the reader's to fix.
@@ -2042,20 +2072,12 @@ impl Surface<'_> {
             // "5xx, or the socket never opened -- environmental: nothing the
             // reader typed caused it and nothing they type fixes it."
             //
-            // **No retry policy is stated and none is invented.** ADR-0016 D4
-            // has environmental failures retry with backoff; no record gives
-            // the numbers, `providers::gemini` takes none, and clause 5's own
-            // account says both "arrive from the caller and neither has a
-            // default". So the wait says waiting may help and names no policy,
-            // rather than this module choosing one.
-            F::Unavailable { .. } => Classified::Environmental {
+            // A response that began and went silent is the provider's
+            // condition too. Both were retried before they reached here, under
+            // `providers::resilience`'s policy, and the wait says so.
+            F::Unavailable { .. } | F::Stalled { .. } => Classified::Environmental {
                 statement: Statement::sanitised(failure.to_string()),
-                wait: Wait::NoWaitWillHelp(Statement::sanitised(
-                    "this harness has no retry policy and nothing states one, so it stops here \
-                     and says so rather than retrying on a policy nobody chose. Running the same \
-                     command again is the retry"
-                        .to_owned(),
-                )),
+                wait: provider_wait(failure),
             },
             // "the API refused the request's shape -- defect: this harness
             // built the request"; "a response body the client cannot read --

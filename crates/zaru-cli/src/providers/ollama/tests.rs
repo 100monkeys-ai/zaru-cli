@@ -972,11 +972,14 @@ async fn adr_0036_d1_an_oversized_ollama_request_is_refused_before_it_reaches_th
         },
     ];
     let failure = client
-        .exchange(&ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            turn: &turn,
-        })
+        .exchange(
+            &ModelRequest {
+                prompt: &prompt,
+                tools: &[],
+                turn: &turn,
+            },
+            crate::providers::resilience::Attempt::built_in(),
+        )
         .await
         .expect_err("a request of several thousand bytes does not fit a 512-token window");
 
@@ -1129,7 +1132,10 @@ async fn a_first_turn_offering_every_built_in_fits_the_default_ollama_window() {
         window,
     )
     .expect("constructing a client does not contact the endpoint");
-    match client.exchange(&request).await {
+    match client
+        .exchange(&request, crate::providers::resilience::Attempt::built_in())
+        .await
+    {
         Err(OllamaFailure::Unreachable { .. }) => {}
         other => panic!(
             "a first turn needing {needed} bytes did not get past the preflight at the default \

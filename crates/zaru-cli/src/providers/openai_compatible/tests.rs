@@ -852,7 +852,7 @@ fn a_503_is_the_servers_own_side_and_not_the_readers() {
     assert!(
         matches!(
             &failure,
-            OpenAiCompatibleFailure::Unavailable { code: Some(503), detail } if detail == "Loading model"
+            OpenAiCompatibleFailure::Unavailable { code: Some(503), detail, .. } if detail == "Loading model"
         ),
         "{failure:?}",
     );
@@ -1646,11 +1646,14 @@ async fn adr_0036_d1_an_oversized_openai_compatible_request_is_refused_before_it
     .expect("constructing a client does not contact the endpoint");
     let prompt = prompt("a request whose body alone is larger than sixty-four bytes");
     let failure = client
-        .exchange(&ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            turn: &[],
-        })
+        .exchange(
+            &ModelRequest {
+                prompt: &prompt,
+                tools: &[],
+                turn: &[],
+            },
+            crate::providers::resilience::Attempt::built_in(),
+        )
         .await
         .expect_err("the locally measured request exceeds sixty-four bytes");
 

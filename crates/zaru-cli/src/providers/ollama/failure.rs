@@ -116,6 +116,17 @@ pub enum OllamaFailure {
         code: u16,
         /// What the server said.
         detail: String,
+        /// How long the provider asked to be left, from its `Retry-After`.
+        retry_after: Option<core::time::Duration>,
+    },
+    /// **A response that had begun and then sent nothing** for the stall
+    /// bound, abandoned rather than waited on to the exchange's ceiling.
+    ///
+    /// **Neither's**, as a provider outage is, and transient: the retry loop
+    /// in `providers::resilience` asks again.
+    Stalled {
+        /// How long nothing arrived for.
+        silent_for: core::time::Duration,
     },
     /// A response body this client could not read.
     ///
@@ -164,9 +175,15 @@ impl fmt::Display for OllamaFailure {
             ),
             Self::CapacityRefused(refused) => fmt::Display::fmt(refused, f),
             Self::ContextWindowExceeded(exceeded) => fmt::Display::fmt(exceeded, f),
-            Self::Unavailable { code, detail } => {
+            Self::Unavailable { code, detail, .. } => {
                 write!(f, "the server answered HTTP {code}: {detail}")
             }
+            Self::Stalled { silent_for } => write!(
+                f,
+                "the server began answering and then sent nothing for {}, so the exchange was \
+                 abandoned rather than waited on",
+                crate::providers::resilience::spoken(*silent_for)
+            ),
             Self::Unreadable { bytes, parser } => write!(
                 f,
                 "the server's {bytes}-byte response could not be read: {parser}",
@@ -225,7 +242,63 @@ impl OllamaFailure {
                 })
             }
             400 => Self::RequestRefused { code, detail },
-            _ => Self::Unavailable { code, detail },
+            _ => Self::Unavailable {
+                code,
+                detail,
+                retry_after: None,
+            },
+        }
+    }
+}
+
+impl OllamaFailure {
+    /// The same failure, carrying the `Retry-After` its response sent.
+    ///
+    /// Only an [`Self::Unavailable`] can carry one; any other failure is an
+    /// answer about the request, and a wait changes nothing about it.
+    #[must_use]
+    pub fn with_retry_after(self, wait: Option<core::time::Duration>) -> Self {
+        match self {
+            Self::Unavailable { code, detail, .. } => Self::Unavailable {
+                code,
+                detail,
+                retry_after: wait,
+            },
+            other => other,
+        }
+    }
+}
+
+impl crate::providers::resilience::Transience for OllamaFailure {
+    /// A server that could not be reached or broke off, one that went silent,
+    /// and 408, 429 and 5xx. `Unreachable` is also a server that is not
+    /// running, which a retry cannot start -- and it is retried anyway, because
+    /// a refused connection and a server restarting look the same from here,
+    /// and the three retries cost seconds before the remedy is shown.
+    fn transient(&self) -> Option<crate::providers::resilience::Transient> {
+        use crate::providers::resilience::{Cause, Transient, is_transient_status};
+        match self {
+            Self::Unreachable { .. } => Some(Transient {
+                cause: Cause::Connection,
+                retry_after: None,
+            }),
+            Self::Unavailable {
+                code, retry_after, ..
+            } if is_transient_status(*code) => Some(Transient {
+                cause: Cause::Status(*code),
+                retry_after: *retry_after,
+            }),
+            Self::Stalled { silent_for } => Some(Transient {
+                cause: Cause::Stalled(*silent_for),
+                retry_after: None,
+            }),
+            Self::ModelNotFound { .. }
+            | Self::RequestRefused { .. }
+            | Self::CapacityRefused(_)
+            | Self::ContextWindowExceeded(_)
+            | Self::Unavailable { .. }
+            | Self::Unreadable { .. }
+            | Self::ToolSchemaUnreadable { .. } => None,
         }
     }
 }
