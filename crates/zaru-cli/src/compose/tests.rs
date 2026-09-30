@@ -2155,3 +2155,59 @@ fn the_once_ever_notice_is_handed_to_the_narrator_where_there_is_one() {
         "the push is the first arm, so a session with a pane takes it: {joined:?}"
     );
 }
+
+/// `zaru "<task>"` prints a turn's retries before its answer, and the
+/// renderer still finds the answer where it is.
+///
+/// The pane is told each retry as it happens; with no pane the lines are kept
+/// and put here. A retry printed after the answer it led to would be read out
+/// of order, and an `answer_at` left behind would have the renderer parse a
+/// retry line as the model's prose.
+#[test]
+fn a_task_prints_its_retries_before_its_answer() {
+    let mut ran = crate::compose::Ran {
+        lines: vec![
+            "a notice".to_owned(),
+            String::new(),
+            "the answer".to_owned(),
+        ],
+        answer_at: Some(2),
+        exit: crate::failure::Exit::Succeeded,
+    };
+    ran.said_retries(vec!["retry 1 of 3 in 1 s after HTTP 503".to_owned()]);
+    assert_eq!(
+        ran.lines,
+        [
+            "a notice",
+            "",
+            "retry 1 of 3 in 1 s after HTTP 503",
+            "",
+            "the answer"
+        ]
+    );
+    assert_eq!(
+        ran.answer_at.map(|at| ran.lines[at].as_str()),
+        Some("the answer"),
+        "the answer moved and its index did not"
+    );
+
+    let mut refused = crate::compose::Ran {
+        lines: vec!["a notice".to_owned()],
+        answer_at: None,
+        exit: crate::failure::Exit::Succeeded,
+    };
+    refused.said_retries(vec!["retry 3 of 3 in 4 s after HTTP 503".to_owned()]);
+    assert_eq!(
+        refused.lines,
+        ["a notice", "retry 3 of 3 in 4 s after HTTP 503", ""],
+        "with no answer the retries come after what was said"
+    );
+
+    let mut quiet = crate::compose::Ran {
+        lines: vec!["the answer".to_owned()],
+        answer_at: Some(0),
+        exit: crate::failure::Exit::Succeeded,
+    };
+    quiet.said_retries(Vec::new());
+    assert_eq!(quiet.lines, ["the answer"], "no retry, no line");
+}

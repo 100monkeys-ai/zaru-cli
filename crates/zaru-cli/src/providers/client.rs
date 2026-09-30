@@ -112,7 +112,12 @@ impl From<OpenAiCompatibleFailure> for ProviderFailure {
 }
 
 impl ProviderClient {
-    /// One exchange, as the failure taxonomy sees it.
+    /// One attempt at an exchange, as the failure taxonomy sees it.
+    ///
+    /// **One attempt**, under `attempt`'s stall bound and what is left of the
+    /// exchange's ceiling. Retrying is not a client's decision:
+    /// [`super::resilience::Resilient`] makes it, over this, through
+    /// [`super::resilience::Exchanging`].
     ///
     /// # Errors
     ///
@@ -120,18 +125,19 @@ impl ProviderClient {
     pub async fn exchange(
         &self,
         request: &ModelRequest<'_>,
+        attempt: super::resilience::Attempt,
     ) -> Result<ModelResponse, ProviderFailure> {
         match self {
             Self::Gemini(client) => client
-                .exchange(request)
+                .exchange(request, attempt)
                 .await
                 .map_err(ProviderFailure::from),
             Self::Ollama(client) => client
-                .exchange(request)
+                .exchange(request, attempt)
                 .await
                 .map_err(ProviderFailure::from),
             Self::OpenAiCompatible(client) => client
-                .exchange(request)
+                .exchange(request, attempt)
                 .await
                 .map_err(ProviderFailure::from),
         }
@@ -247,9 +253,36 @@ impl Model for ProviderClient {
         // The one place `ProviderFailure` becomes `PortFailure`, mirroring
         // each client's own. The class is lost here, which is right for
         // `zaru-core`; `exchange` above is what the command surface uses when
-        // it needs the typed value.
-        self.exchange(request)
+        // it needs the typed value. One attempt, as each client's own
+        // `respond` makes: a turn's retries are `resilience::Resilient`'s.
+        self.exchange(request, super::resilience::Attempt::built_in())
             .await
             .map_err(|failure| PortFailure::new(failure.to_string()))
+    }
+}
+
+impl super::resilience::Transience for ProviderFailure {
+    fn transient(&self) -> Option<super::resilience::Transient> {
+        match self {
+            Self::Gemini(failure) => failure.transient(),
+            Self::Ollama(failure) => failure.transient(),
+            Self::OpenAiCompatible(failure) => failure.transient(),
+        }
+    }
+}
+
+impl super::resilience::Exchanging for ProviderClient {
+    type Failure = ProviderFailure;
+
+    fn capabilities(&self) -> Capabilities {
+        Model::capabilities(self)
+    }
+
+    fn attempt(
+        &self,
+        request: &ModelRequest<'_>,
+        attempt: super::resilience::Attempt,
+    ) -> impl core::future::Future<Output = Result<ModelResponse, ProviderFailure>> + Send {
+        self.exchange(request, attempt)
     }
 }

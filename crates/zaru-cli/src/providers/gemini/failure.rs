@@ -115,6 +115,17 @@ pub enum GeminiFailure {
         code: Option<u16>,
         /// What the transport or the provider said.
         detail: String,
+        /// How long the provider asked to be left, from its `Retry-After`.
+        retry_after: Option<core::time::Duration>,
+    },
+    /// **A response that had begun and then sent nothing** for the stall
+    /// bound, abandoned rather than waited on to the exchange's ceiling.
+    ///
+    /// **Neither's**, as a provider outage is, and transient: the retry loop
+    /// in `providers::resilience` asks again.
+    Stalled {
+        /// How long nothing arrived for.
+        silent_for: core::time::Duration,
     },
     /// A response body this client could not read.
     ///
@@ -175,10 +186,16 @@ impl fmt::Display for GeminiFailure {
             ),
             Self::CapacityRefused(refused) => fmt::Display::fmt(refused, f),
             Self::ContextWindowExceeded(exceeded) => fmt::Display::fmt(exceeded, f),
-            Self::Unavailable { code, detail } => match code {
+            Self::Unavailable { code, detail, .. } => match code {
                 Some(code) => write!(f, "the provider answered HTTP {code}: {detail}"),
                 None => write!(f, "the provider could not be reached: {detail}"),
             },
+            Self::Stalled { silent_for } => write!(
+                f,
+                "the provider began answering and then sent nothing for {}, so the exchange was \
+                 abandoned rather than waited on",
+                crate::providers::resilience::spoken(*silent_for)
+            ),
             Self::Unreadable { bytes, parser } => write!(
                 f,
                 "the provider's response could not be read: {parser}. The body was {bytes} \
@@ -247,7 +264,7 @@ impl GeminiFailure {
     /// Whether this is environmental, per ADR-0016 D1.
     #[must_use]
     pub const fn is_environmental(&self) -> bool {
-        matches!(self, Self::Unavailable { .. })
+        matches!(self, Self::Unavailable { .. } | Self::Stalled { .. })
     }
 
     /// Whether this is a defect of the harness, per ADR-0016 D1.
@@ -295,6 +312,68 @@ impl GeminiFailure {
                     && (message.contains("api key") || message.contains("api_key"))
             }
             _ => false,
+        }
+    }
+}
+
+impl GeminiFailure {
+    /// The same failure, carrying the `Retry-After` its response sent.
+    ///
+    /// Only an [`Self::Unavailable`] can carry one; any other failure is an
+    /// answer about the request, and a wait changes nothing about it.
+    #[must_use]
+    pub fn with_retry_after(self, wait: Option<core::time::Duration>) -> Self {
+        match self {
+            Self::Unavailable { code, detail, .. } => Self::Unavailable {
+                code,
+                detail,
+                retry_after: wait,
+            },
+            other => other,
+        }
+    }
+}
+
+impl crate::providers::resilience::Transience for GeminiFailure {
+    /// A provider that could not be reached, one that answered 408, 429 or a
+    /// 5xx, one that went silent, and a stream that broke after the provider
+    /// had answered 2xx: this client reports that last one as `Unavailable`
+    /// with the status the stream began under, because the status is what it
+    /// had.
+    fn transient(&self) -> Option<crate::providers::resilience::Transient> {
+        use crate::providers::resilience::{Cause, Transient, is_transient_status};
+        match self {
+            Self::Unavailable { code: None, .. } => Some(Transient {
+                cause: Cause::Connection,
+                retry_after: None,
+            }),
+            Self::Unavailable {
+                code: Some(code),
+                retry_after,
+                ..
+            } if is_transient_status(*code) => Some(Transient {
+                cause: Cause::Status(*code),
+                retry_after: *retry_after,
+            }),
+            Self::Unavailable {
+                code: Some(200..=299),
+                ..
+            } => Some(Transient {
+                cause: Cause::Connection,
+                retry_after: None,
+            }),
+            Self::Stalled { silent_for } => Some(Transient {
+                cause: Cause::Stalled(*silent_for),
+                retry_after: None,
+            }),
+            Self::CredentialRejected { .. }
+            | Self::ModelNotFound { .. }
+            | Self::RequestRefused { .. }
+            | Self::CapacityRefused(_)
+            | Self::ContextWindowExceeded(_)
+            | Self::Unavailable { .. }
+            | Self::Unreadable { .. }
+            | Self::ToolSchemaUnreadable { .. } => None,
         }
     }
 }

@@ -39,13 +39,17 @@
 //! - **`70` through the loop**, where a port failure whose class
 //!   [ADR-0016]'s Update deliberately leaves unmapped is carried as a defect.
 //!
-//! # What is deliberately not here
+//! # Where a provider failure is retried
 //!
-//! **No retry.** D4 has environmental failures retry with backoff, and no
-//! record states a policy — [ADR-0016]'s clause 5 says the numbers "arrive from
-//! the caller and neither has a default", and `providers::gemini` says a client
-//! that retried on its own "would be answering that question silently". So a
-//! provider failure ends the turn and says so, and clause 5 does not move.
+//! **Not here, and not in a client.** D4 has environmental failures retry with
+//! backoff, and since 2026-09-30 a policy states the numbers:
+//! `providers::resilience`, whose figures are configuration keys with the
+//! ruled defaults. The turn hands [`Classifying`] that policy and a way to say
+//! each retry, so every exchange the turn makes -- the tool-call loop's, the
+//! inner loop's and the summariser's -- is retried under one policy, below the
+//! model port, and each retry is one line on the pane or, for `zaru
+//! "<task>"`, before the answer. A failure that outlives its retries ends the
+//! turn and says so, as before.
 //!
 //! # One invocation is one turn; one *session* need not be
 //!
@@ -143,6 +147,24 @@ pub struct Ran {
 }
 
 impl Ran {
+    /// Put a turn's retry lines where `zaru "<task>"` prints them: before the
+    /// answer, or after everything else when there is none.
+    ///
+    /// The pane is told each retry as it is made; a run with no pane has only
+    /// this list, and a retry read after the answer it led to would be read out
+    /// of order. [`Self::answer_at`] moves with the answer, so the renderer
+    /// still parses the model's text and nothing else.
+    pub(crate) fn said_retries(&mut self, mut said: Vec<String>) {
+        if said.is_empty() {
+            return;
+        }
+        said.push(String::new());
+        let at = self.answer_at.unwrap_or(self.lines.len());
+        let count = said.len();
+        self.lines.splice(at..at, said);
+        self.answer_at = self.answer_at.map(|answer| answer + count);
+    }
+
     /// A refusal reached before anything was said.
     fn refused(classified: Classified) -> Self {
         Self {
@@ -299,6 +321,9 @@ pub struct Prepared {
     ceiling: zaru_core::iteration::Ceiling,
     /// ADR-0034's optional outer tool-call exchange limit.
     tool_call_ceiling: zaru_core::tool_call::ToolCallCeiling,
+    /// How a stalled or failing provider is retried. See
+    /// `providers::resilience`.
+    resilience: crate::providers::resilience::Policy,
     mode: Mode,
     model: crate::providers::ModelId,
     here: WorkingDirectory,
@@ -877,6 +902,12 @@ pub fn prepare(
             return Err(Box::new(Ran::refused(Surface::exchange_limit(&refusal))));
         }
     };
+    let resilience = match crate::providers::resilience::Policy::from_configuration(resolution) {
+        Ok(policy) => policy,
+        Err(refusal) => {
+            return Err(Box::new(Ran::refused(Surface::resilience(&refusal))));
+        }
+    };
 
     // --- The key, where this kind needs one, and the redactor always -------
     //
@@ -1195,6 +1226,7 @@ pub fn prepare(
         iterating,
         ceiling,
         tool_call_ceiling,
+        resilience,
         mode,
         model,
         here,
@@ -1413,13 +1445,14 @@ async fn ran(
     confirmer: Option<&(dyn crate::tools::Confirm + Sync)>,
     extra: &mut [&mut dyn zaru_core::tool_call::EventSink],
     narrator: Option<&dyn crate::compose::Narrator>,
+    tell: &(dyn Fn(&crate::providers::resilience::Retrying) + Sync),
     owed: &mut Owed,
     context: &mut SessionContext,
     skill: Option<SkillTurn<'_>>,
 ) -> Ran {
     let surface = Surface::new(version, report_at);
     let evidence = session.evidence();
-    let provider = Classifying::over(&prepared.client);
+    let provider = Classifying::over(&prepared.client, prepared.resilience, tell);
 
     let transcript_path = session.transcript_path();
     let mut transcript = match Transcript::append_to(session.transcript_path()) {
@@ -2322,11 +2355,34 @@ pub async fn run_one(
     context: &mut SessionContext,
     skill: Option<SkillTurn<'_>>,
 ) -> Ran {
-    let outcome = ran(
+    // --- A provider's retries, said as they are made ------------------------
+    //
+    // A retry is waited on, and a wait with nothing on the screen is the
+    // harness hiding its work, so each is one line the moment it is decided:
+    // on the pane through the narrator. `zaru "<task>"` has no pane, so there
+    // they are kept and printed with the turn's other lines, before the
+    // answer. See `providers::resilience`.
+    let retried = std::sync::Mutex::new(Vec::<String>::new());
+    let tell = |retrying: &crate::providers::resilience::Retrying| {
+        let line = retrying.to_string();
+        match narrator {
+            Some(narrator) => narrator.announce_retry(&line),
+            None => retried
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(line),
+        }
+    };
+    let mut outcome = ran(
         version, report_at, resolution, prepared, session, n, start, confirmer, extra, narrator,
-        owed, context, skill,
+        &tell, owed, context, skill,
     )
     .await;
+    outcome.said_retries(
+        retried
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
 
     let Exit::Failed(classified) = &outcome.exit else {
         return outcome;

@@ -972,11 +972,14 @@ async fn adr_0036_d1_an_oversized_ollama_request_is_refused_before_it_reaches_th
         },
     ];
     let failure = client
-        .exchange(&ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            turn: &turn,
-        })
+        .exchange(
+            &ModelRequest {
+                prompt: &prompt,
+                tools: &[],
+                turn: &turn,
+            },
+            crate::providers::resilience::Attempt::built_in(),
+        )
         .await
         .expect_err("a request of several thousand bytes does not fit a 512-token window");
 
@@ -1129,11 +1132,52 @@ async fn a_first_turn_offering_every_built_in_fits_the_default_ollama_window() {
         window,
     )
     .expect("constructing a client does not contact the endpoint");
-    match client.exchange(&request).await {
+    match client
+        .exchange(&request, crate::providers::resilience::Attempt::built_in())
+        .await
+    {
         Err(OllamaFailure::Unreachable { .. }) => {}
         other => panic!(
             "a first turn needing {needed} bytes did not get past the preflight at the default \
              window of {window}: {other:?}"
         ),
     }
+}
+
+// The sibling of the same check on the other two kinds, and green before them:
+// this kind's `from_status` sent only 400 to `RequestRefused`, so a 429 and a
+// 408 were already `Unavailable`. Kept so the three kinds are held to one rule.
+#[test]
+fn a_rate_limit_and_a_request_timeout_are_environmental_and_show_the_servers_words() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let mut wrong = Vec::new();
+    for (code, message) in [
+        (429, "server busy, please try again"),
+        (408, "request timed out"),
+    ] {
+        let body = serde_json::json!({ "error": message }).to_string();
+        let failure = OllamaFailure::from_status(code, body.as_bytes(), "llama3.2:3b");
+        let shown = Presentation::of(
+            &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+                &ProviderFailure::Ollama(failure),
+                SessionEvidence::NoSessionExists,
+            ),
+        );
+        if shown.class != Class::Environmental {
+            wrong.push(format!(
+                "HTTP {code} is the server's condition and belongs to nobody, and it was {:?}",
+                shown.class
+            ));
+        }
+        let said = shown.to_string();
+        if !said.contains(message) || !said.contains(&format!("HTTP {code}")) {
+            wrong.push(format!(
+                "HTTP {code} does not show the server's own words: {said}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

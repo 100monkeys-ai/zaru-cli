@@ -112,6 +112,17 @@ pub enum OpenAiCompatibleFailure {
         code: Option<u16>,
         /// What the server or the transport said.
         detail: String,
+        /// How long the provider asked to be left, from its `Retry-After`.
+        retry_after: Option<core::time::Duration>,
+    },
+    /// **A response that had begun and then sent nothing** for the stall
+    /// bound, abandoned rather than waited on to the exchange's ceiling.
+    ///
+    /// **Neither's**, as a provider outage is, and transient: the retry loop
+    /// in `providers::resilience` asks again.
+    Stalled {
+        /// How long nothing arrived for.
+        silent_for: core::time::Duration,
     },
     /// **An error frame inside a stream the server already answered 200 for.**
     ///
@@ -179,7 +190,7 @@ impl fmt::Display for OpenAiCompatibleFailure {
             ),
             Self::CapacityRefused(refused) => fmt::Display::fmt(refused, f),
             Self::ContextWindowExceeded(exceeded) => fmt::Display::fmt(exceeded, f),
-            Self::Unavailable { code, detail } => match code {
+            Self::Unavailable { code, detail, .. } => match code {
                 Some(code) => write!(f, "the endpoint answered HTTP {code}: {detail}"),
                 None => write!(f, "the endpoint could not be reached: {detail}"),
             },
@@ -198,6 +209,12 @@ impl fmt::Display for OpenAiCompatibleFailure {
                      partial answer presented as a whole one is worse than none",
                 ),
             },
+            Self::Stalled { silent_for } => write!(
+                f,
+                "the endpoint began answering and then sent nothing for {}, so the exchange was \
+                 abandoned rather than waited on",
+                crate::providers::resilience::spoken(*silent_for)
+            ),
             Self::Unreadable { bytes, parser } => write!(
                 f,
                 "the endpoint's {bytes}-byte response could not be read: {parser}",
@@ -323,6 +340,14 @@ impl OpenAiCompatibleFailure {
                 model: model.to_owned(),
                 detail,
             },
+            // A rate limit or a request timeout is the endpoint's condition
+            // and nobody's request (ADR-0016 D1 row 3), read before the
+            // capacity arm for the reason `GeminiClient::classify` gives.
+            408 | 429 => Self::Unavailable {
+                code: Some(code),
+                detail,
+                retry_after: None,
+            },
             400..=499 if capacity => Self::CapacityRefused(Refused {
                 code,
                 status,
@@ -332,7 +357,69 @@ impl OpenAiCompatibleFailure {
             _ => Self::Unavailable {
                 code: Some(code),
                 detail,
+                retry_after: None,
             },
+        }
+    }
+}
+
+impl OpenAiCompatibleFailure {
+    /// The same failure, carrying the `Retry-After` its response sent.
+    ///
+    /// Only an [`Self::Unavailable`] can carry one; any other failure is an
+    /// answer about the request, and a wait changes nothing about it.
+    #[must_use]
+    pub fn with_retry_after(self, wait: Option<core::time::Duration>) -> Self {
+        match self {
+            Self::Unavailable { code, detail, .. } => Self::Unavailable {
+                code,
+                detail,
+                retry_after: wait,
+            },
+            other => other,
+        }
+    }
+}
+
+impl crate::providers::resilience::Transience for OpenAiCompatibleFailure {
+    /// An endpoint that could not be reached or broke off, one that went
+    /// silent, 408, 429 and 5xx -- before the stream, or as the code of an
+    /// error frame inside it. An error frame with no code says nothing a
+    /// retry could change and is not retried.
+    fn transient(&self) -> Option<crate::providers::resilience::Transient> {
+        use crate::providers::resilience::{Cause, Transient, is_transient_status};
+        match self {
+            Self::Unreachable { .. } | Self::Unavailable { code: None, .. } => Some(Transient {
+                cause: Cause::Connection,
+                retry_after: None,
+            }),
+            Self::Unavailable {
+                code: Some(code),
+                retry_after,
+                ..
+            } if is_transient_status(*code) => Some(Transient {
+                cause: Cause::Status(*code),
+                retry_after: *retry_after,
+            }),
+            Self::StreamFailed {
+                code: Some(code), ..
+            } if is_transient_status(*code) => Some(Transient {
+                cause: Cause::Status(*code),
+                retry_after: None,
+            }),
+            Self::Stalled { silent_for } => Some(Transient {
+                cause: Cause::Stalled(*silent_for),
+                retry_after: None,
+            }),
+            Self::CredentialRejected { .. }
+            | Self::ModelNotFound { .. }
+            | Self::RequestRefused { .. }
+            | Self::CapacityRefused(_)
+            | Self::ContextWindowExceeded(_)
+            | Self::Unavailable { .. }
+            | Self::StreamFailed { .. }
+            | Self::Unreadable { .. }
+            | Self::ToolSchemaUnreadable { .. } => None,
         }
     }
 }

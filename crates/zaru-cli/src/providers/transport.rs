@@ -164,10 +164,13 @@ pub const CHAIN_DEPTH: usize = 4;
 /// A hosted gateway answering in seconds never approaches it, so the ceiling
 /// costs that reader nothing.
 ///
-/// There is deliberately **no retry and no backoff**. A retry policy decides
-/// whether a request that may have had an effect is repeated, and no record
-/// makes that decision; a client that retried on its own would be answering it
-/// silently.
+/// There is deliberately **no retry and no backoff in a client**. A retry
+/// policy decides whether a request that may have had an effect is repeated,
+/// and a client that retried on its own would be answering that silently.
+/// **Since 2026-09-30 the composition answers it**, in
+/// `providers::resilience`, and every retry of one exchange stays inside this
+/// ceiling: each attempt is handed what is left of it, so a retry never buys a
+/// second ten minutes.
 ///
 /// **It is a constant until a record says otherwise.** Whether
 /// `provider.<kind>` should carry a ceiling key is [ADR-0012]'s author's and

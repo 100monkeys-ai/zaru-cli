@@ -627,6 +627,23 @@ pub trait Narrator: Sync {
     /// [the second look-and-feel audit]: https://100monkeys-ai.cortex.page/zaru/p/operations/harness-look-and-feel-audit-2
     fn announce_session_notice(&self, sentence: &str);
 
+    /// A provider's exchange failed transiently and is about to be retried.
+    ///
+    /// # Why this is on the port beside the other two
+    ///
+    /// For their reason: it is something a narrating consumer must be told
+    /// that [`zaru_core::iteration::Event`] cannot carry. A retry is below the
+    /// model port, inside one exchange, so the loop never sees it and has no
+    /// event for it -- and a retry waits, sometimes for thirty seconds, so a
+    /// person watching a pane that says nothing about it is watching the
+    /// harness hide its work.
+    ///
+    /// **It takes the sentence**, composed once by
+    /// `providers::resilience::Retrying`, so the pane and `zaru "<task>"`
+    /// cannot word one retry two ways. **It is not provided**: a narrator that
+    /// forgot it would drop every retry silently and compile.
+    fn announce_retry(&self, sentence: &str);
+
     /// One of the outer loop's events that the inner loop produced: a
     /// candidate's message, a call's result, or what the person is shown of a
     /// call.

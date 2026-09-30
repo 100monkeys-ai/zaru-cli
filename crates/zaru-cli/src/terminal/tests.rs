@@ -7907,3 +7907,46 @@ fn a_recorded_view_replays_as_the_live_pane_painted_it_and_is_not_conversation()
         rebuilt.exchanges()
     );
 }
+
+/// A provider's retry is one line on the painted frame, as it is decided.
+///
+/// A retry waits, up to thirty seconds, and a pane that says nothing while it
+/// does is the harness hiding its work. The line is the one
+/// `providers::resilience::Retrying` composes, and it reaches the frame the
+/// moment the narrator is told, before the wait begins.
+#[test]
+fn a_provider_retry_is_painted_on_the_frame_as_it_is_decided() {
+    use crate::compose::Narrator;
+    use crate::providers::resilience::{Cause, Retrying};
+    use crate::terminal::driver::PaneNarrator;
+
+    let line = Retrying {
+        cause: Cause::Status(429),
+        retry: 1,
+        of: 3,
+        wait: core::time::Duration::from_secs(2),
+    }
+    .to_string();
+    let mut shell = shell();
+    let restores: Restores = Arc::new(AtomicUsize::new(0));
+    let mut surface = Recording::of(Arc::clone(&restores));
+    let contended = {
+        let pane = std::sync::Mutex::new(TurnPane::during(&mut shell, &mut surface, &STOPPED));
+        let narrator = PaneNarrator::over(&pane);
+        narrator.announce_retry(&line);
+        narrator.contended()
+    };
+    assert_eq!(contended, 0, "the retry was dropped on a contended lock");
+    assert_eq!(
+        surface.frames.len(),
+        1,
+        "a retry paints when it is decided, not with the turn's end"
+    );
+    let frame = surface.frames[0].join("\n");
+    assert!(
+        frame.contains(&as_far_as_the_frame_shows(
+            "retry 1 of 3 in 2 s after HTTP 429"
+        )),
+        "the frame does not carry the retry's line:\n{frame}"
+    );
+}

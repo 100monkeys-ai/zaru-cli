@@ -169,6 +169,7 @@ impl OpenAiCompatibleClient {
         .map_err(|error| OpenAiCompatibleFailure::Unavailable {
             code: None,
             detail: error.detail().to_owned(),
+            retry_after: None,
         })?;
         Ok(Self {
             endpoint: Endpoint::new(&endpoint),
@@ -271,6 +272,7 @@ impl OpenAiCompatibleClient {
     pub async fn exchange(
         &self,
         request: &ModelRequest<'_>,
+        attempt: crate::providers::resilience::Attempt,
     ) -> Result<ModelResponse, OpenAiCompatibleFailure> {
         // Scoped so the guard is dropped before the first `.await`: a
         // `std::sync::MutexGuard` is `!Send` and `Model::respond` returns a
@@ -293,7 +295,12 @@ impl OpenAiCompatibleClient {
             None => crate::providers::capacity::request_bytes(&body),
         };
 
-        let mut sending = self.http.post(self.endpoint.chat_url());
+        // What is left of the exchange's ceiling, so a retry never extends it.
+        // See `providers::resilience`.
+        let mut sending = self
+            .http
+            .post(self.endpoint.chat_url())
+            .timeout(attempt.budget);
         // **The one place the key is attached**, and a header rather than a
         // query string: a URL lands in proxy logs and in every message that
         // quotes a request. A client holding no key sends no header at all
@@ -338,6 +345,7 @@ impl OpenAiCompatibleClient {
         // That is the whole of the story for the `gemini` and `ollama` clients.
         // It is **not** the whole of it here: see the error-frame branch below.
         if !status.is_success() {
+            let retry_after = crate::providers::resilience::retry_after_of(response.headers());
             let bytes =
                 response
                     .bytes()
@@ -348,6 +356,7 @@ impl OpenAiCompatibleClient {
                             &error,
                             crate::providers::transport::EXCHANGE_TIMEOUT,
                         ),
+                        retry_after: None,
                     })?;
             return Err(OpenAiCompatibleFailure::from_status(
                 status.as_u16(),
@@ -355,7 +364,8 @@ impl OpenAiCompatibleClient {
                 self.model.as_str(),
                 &self.alias,
                 self.key_for_redaction(),
-            ));
+            )
+            .with_retry_after(retry_after));
         }
 
         // --- The stream, read as it arrives ------------------------------
@@ -369,17 +379,20 @@ impl OpenAiCompatibleClient {
         let mut bytes = 0usize;
 
         loop {
-            let chunk =
-                response
-                    .chunk()
-                    .await
-                    .map_err(|error| OpenAiCompatibleFailure::Unreachable {
-                        endpoint: self.configured.clone(),
-                        detail: failure::transport_detail_within(
-                            &error,
-                            crate::providers::transport::EXCHANGE_TIMEOUT,
-                        ),
-                    })?;
+            // Each piece is read under the stall clock, which restarts at
+            // every byte. See `providers::resilience::within_stall`.
+            let chunk = crate::providers::resilience::within_stall(attempt.stall, response.chunk())
+                .await
+                .map_err(|stalled| OpenAiCompatibleFailure::Stalled {
+                    silent_for: stalled.silent_for,
+                })?
+                .map_err(|error| OpenAiCompatibleFailure::Unreachable {
+                    endpoint: self.configured.clone(),
+                    detail: failure::transport_detail_within(
+                        &error,
+                        crate::providers::transport::EXCHANGE_TIMEOUT,
+                    ),
+                })?;
             let Some(chunk) = chunk else { break };
             bytes += chunk.len();
             for payload in frames.feed(&chunk) {
@@ -560,7 +573,12 @@ impl Model for OpenAiCompatibleClient {
         // loop has no taxonomy, and is why `exchange` is public: the command
         // surface classifies the typed failure, and only the loop sees the
         // flattened one.
-        self.exchange(request)
+        //
+        // **One attempt, under the built-in stall and the whole ceiling.** A
+        // client driven on its own is not retried: a turn's retries are
+        // `providers::resilience::Resilient`'s, which the composition wraps
+        // around `ProviderClient` with the configured policy.
+        self.exchange(request, crate::providers::resilience::Attempt::built_in())
             .await
             .map_err(|failure| PortFailure::new(failure.to_string()))
     }

@@ -852,7 +852,7 @@ fn a_503_is_the_servers_own_side_and_not_the_readers() {
     assert!(
         matches!(
             &failure,
-            OpenAiCompatibleFailure::Unavailable { code: Some(503), detail } if detail == "Loading model"
+            OpenAiCompatibleFailure::Unavailable { code: Some(503), detail, .. } if detail == "Loading model"
         ),
         "{failure:?}",
     );
@@ -1646,11 +1646,14 @@ async fn adr_0036_d1_an_oversized_openai_compatible_request_is_refused_before_it
     .expect("constructing a client does not contact the endpoint");
     let prompt = prompt("a request whose body alone is larger than sixty-four bytes");
     let failure = client
-        .exchange(&ModelRequest {
-            prompt: &prompt,
-            tools: &[],
-            turn: &[],
-        })
+        .exchange(
+            &ModelRequest {
+                prompt: &prompt,
+                tools: &[],
+                turn: &[],
+            },
+            crate::providers::resilience::Attempt::built_in(),
+        )
         .await
         .expect_err("the locally measured request exceeds sixty-four bytes");
 
@@ -1709,4 +1712,56 @@ fn a_capacity_named_only_in_a_structured_field_is_still_the_readers() {
         presented(400, &plain.to_string(), A_KEY).class,
         Class::Defect
     );
+}
+
+// A rate limit and a request timeout are the endpoint's condition, not a
+// request this harness built wrongly: ADR-0016 D1's row 3 names "Rate limit".
+// Until this check every 4xx without a capacity marker was `RequestRefused`,
+// a defect at exit 70. The 429 body is OpenAI's documented `rate_limit_exceeded`
+// envelope, written here and not measured; the 408 body is a gateway's.
+#[test]
+fn a_rate_limit_and_a_request_timeout_are_environmental_and_show_the_endpoints_words() {
+    use crate::cli::classify::Surface;
+    use crate::failure::{Class, Presentation, SessionEvidence};
+    use crate::providers::ProviderFailure;
+
+    let mut wrong = Vec::new();
+    for (code, message) in [
+        (
+            429,
+            "Rate limit reached for requests. Please try again in 20s.",
+        ),
+        (408, "The gateway waited for the upstream and gave up."),
+    ] {
+        let body = serde_json::json!({
+            "error": { "message": message, "type": "requests", "code": "rate_limit_exceeded" }
+        })
+        .to_string();
+        let failure = OpenAiCompatibleFailure::from_status(
+            code,
+            body.as_bytes(),
+            "llama3.2:3b",
+            &alias(),
+            A_KEY,
+        );
+        let shown = Presentation::of(
+            &Surface::new("0.0.0", "https://example.invalid/report").provider_failure(
+                &ProviderFailure::OpenAiCompatible(failure),
+                SessionEvidence::NoSessionExists,
+            ),
+        );
+        if shown.class != Class::Environmental {
+            wrong.push(format!(
+                "HTTP {code} is the endpoint's condition and belongs to nobody, and it was {:?}",
+                shown.class
+            ));
+        }
+        let said = shown.to_string();
+        if !said.contains(message) || !said.contains(&format!("HTTP {code}")) {
+            wrong.push(format!(
+                "HTTP {code} does not show the endpoint's own words: {said}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
