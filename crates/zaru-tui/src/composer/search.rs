@@ -44,8 +44,8 @@ pub const DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Which cortex a search reaches.
 ///
-/// **There is deliberately no `AllPublic`.** ADR-0005 D6 excludes it: Nuclear
-/// Notes is public by default, so `all_public` surfaces pages authored by
+/// **There is deliberately no `AllPublic`.** ADR-0005 D6 excludes it: Carbon
+/// Forge is public by default, so `all_public` surfaces pages authored by
 /// strangers, and a stranger's page appearing in a picker the user trusts is a
 /// phishing surface. Modelling it as a variant nobody constructs would leave a
 /// reach a future caller could take; leaving it out means the forbidden reach

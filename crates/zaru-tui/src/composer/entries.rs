@@ -7,8 +7,8 @@
 //! ADR-0005 D3's tier one is "a prefix trie over page paths, titles, tags, and
 //! atom names for every reachable workspace, built at session start and
 //! refreshed on write. Zero network, instant, works offline." The trie itself
-//! belongs to `zaru-notes` — [Bounded Contexts] gives that crate "Nuclear
-//! Notes client, the local trie, embedding, workspace pointer".
+//! belongs to `zaru-notes` — [Bounded Contexts] gives that crate "Carbon
+//! Forge client, the local trie, embedding, workspace pointer".
 //!
 //! # Why the port is declared here and not there
 //!

@@ -85,8 +85,8 @@ impl Invalidation {
     ///
     /// D6 fires on "a forbidden or method-not-found result". Method-not-found
     /// is a JSON-RPC code and is read exactly. **`forbidden` is not** — the
-    /// MCP error codes `rmcp` names carry no such member, and what Nuclear
-    /// Notes puts on the wire for one is unmeasured, because measuring it needs
+    /// MCP error codes `rmcp` names carry no such member, and what Carbon
+    /// Forge puts on the wire for one is unmeasured, because measuring it needs
     /// a token this arc does not have. So this fires on **any** refusal the
     /// server itself returned for a claimed tool, which is a superset of what
     /// D6 asks for and settles nothing about what `forbidden` looks like.
