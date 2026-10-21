@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! How this crate addresses a Nuclear Notes instance and a workspace inside it.
+//! How this crate addresses a Carbon Forge instance and a workspace inside it.
 //!
 //! # Why a slug and an id are two types
 //!
@@ -48,7 +48,7 @@ macro_rules! addressing_newtype {
 }
 
 addressing_newtype!(
-    /// A Nuclear Notes instance, by host.
+    /// A Carbon Forge instance, by host.
     Instance,
     "an instance host"
 );

@@ -7,14 +7,14 @@
 //! # Nothing is declared by default, and that is the decision
 //!
 //! D5 projects "every non-composer token ... carrying that token's tools".
-//! Read literally that is every tool the token grants, and **every Nuclear
-//! Notes token this project has ever held grants 94** — measured on
+//! Read literally that is every tool the token grants, and **every Carbon
+//! Forge token this project has ever held grants 94** — measured on
 //! 2026-09-06 and again on 2026-09-14 and 2026-09-15. What that costs was
 //! measured rather than estimated, from the release binary at `6bdf080`
 //! through a logging proxy: one request carried **1,937 bytes**, of which
 //! **1,619** were the seven built-ins' declarations and 224 the message. The
 //! seven average 231 bytes each because their schemas have one or two string
-//! fields; a Nuclear Notes tool's schema is a different order of thing. Even
+//! fields; a Carbon Forge tool's schema is a different order of thing. Even
 //! at the built-ins' own average, 94 of them is about 22 KB on every request
 //! of every exchange, against [`crate::providers::ollama`]'s own declared
 //! window of 4,096 tokens.
@@ -32,7 +32,7 @@
 //! The alternative considered was to project a fixed read-only set — [ADR-0006]
 //! D4's nine. That was **withdrawn**, because D4's set is the *composer's*
 //! scope and ADR-0006 says the opposite about the agent in as many words: D3,
-//! "The agent keeps full Nuclear Notes MCP access at whatever scope the user
+//! "The agent keeps full Carbon Forge MCP access at whatever scope the user
 //! granted, including autonomous `me.set_current_workspace`", with a Neutral
 //! consequence reading "Nothing here constrains the agent" and [ADR-0011]'s
 //! reading "Nothing here constrains MCP servers, which carry their own scopes.
@@ -104,7 +104,7 @@ pub const SUFFIX: &str = "agent_tools";
 /// One string, read by [`field`] and by [`GrantRefused`], so the fold's
 /// refusal and this module's cannot give a user two different reasons for one
 /// rule.
-pub const PROJECT_REFUSAL: &str = "which of your Nuclear Notes tools a model may be offered is \
+pub const PROJECT_REFUSAL: &str = "which of your Carbon Forge tools a model may be offered is \
                                    your own grant, and a repository you cloned must not be able \
                                    to widen what a model can reach in your cortex; set it in \
                                    ~/.zaru/config.toml instead";

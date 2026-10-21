@@ -171,7 +171,7 @@ pub fn palette_for(asked: Option<&std::ffi::OsStr>) -> Palette {
     }
 }
 
-/// The Nuclear Notes workspace this session recorded, if it recorded one.
+/// The Carbon Forge workspace this session recorded, if it recorded one.
 ///
 /// [ADR-0006] D5 makes the attached workspace the composer's scope, and
 /// [ADR-0010] D1's `meta.toml` is where a session keeps it — so the fast tier
@@ -1443,7 +1443,7 @@ pub const WIND_DOWN: core::time::Duration = core::time::Duration::from_secs(1);
 /// # Why a thread and not a task on the session's runtime
 ///
 /// A task runs only when the runtime is not busy. One question is still put
-/// synchronously -- [ADR-0007] D8's question about a Nuclear Notes token with
+/// synchronously -- [ADR-0007] D8's question about a Carbon Forge token with
 /// no instance limit, inside the credential store -- and while it stands the
 /// runtime runs nothing else. A watch on the runtime would not see the
 /// terminal go then, and the question's own reader cannot: crossterm's `poll`

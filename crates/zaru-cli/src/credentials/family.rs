@@ -32,7 +32,7 @@ use core::fmt;
 /// Which family a stored record declares, read before the seal is opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
-    /// A Nuclear Notes token. Which of the two Notes kinds is the value's to
+    /// A Carbon Forge token. Which of the two Notes kinds is the value's to
     /// say; see the module documentation.
     Notes,
     /// A model provider's API key, under the kind the user declared.
@@ -42,7 +42,7 @@ pub enum Family {
 impl fmt::Display for Family {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Notes => f.write_str("Nuclear Notes"),
+            Self::Notes => f.write_str("Carbon Forge"),
             Self::Provider(kind) => write!(f, "provider `{kind}`"),
         }
     }

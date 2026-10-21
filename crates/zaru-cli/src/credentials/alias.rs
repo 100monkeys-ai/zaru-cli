@@ -5,7 +5,7 @@
 //!
 //! ADR-0007 D2: an alias is user-supplied local metadata — "Local unique
 //! name. The handle everywhere — CLI, transcript, agent tool namespace."
-//! Nuclear Notes has no notion of it, so nothing validates it but this.
+//! Carbon Forge has no notion of it, so nothing validates it but this.
 //!
 //! # An alias is not a path segment, and that is the first line of defence
 //!

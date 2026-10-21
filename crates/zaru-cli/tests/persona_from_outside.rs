@@ -109,7 +109,7 @@ fn holding(scratch: &Scratch, label: &str, value: &str) -> (Alias, HeldSecrets) 
         Secret::notes(value.to_owned()).expect("nn_mcp_ names a kind"),
         Reach::InstanceLocked(Instance::new("an.instance")),
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names(["pages.read"]));
     store.add(entry, &keys, None).expect("the entry is stored");
     let held = held_secrets_for_redaction(&store, &keys).expect("the store yields its secret");

@@ -238,7 +238,7 @@ pub fn path_in(resolution: &Resolution) -> String {
 pub struct Line {
     /// The instance the page was read from.
     pub host: String,
-    /// The Nuclear Notes workspace it lives in.
+    /// The Carbon Forge workspace it lives in.
     pub workspace: String,
     /// The path inside that workspace.
     pub path: String,

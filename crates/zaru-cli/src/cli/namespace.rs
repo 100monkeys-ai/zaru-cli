@@ -54,7 +54,7 @@ pub enum Namespace {
     Runtime,
     /// D2 row 2 — AEGIS component fetch and status.
     Stack,
-    /// D2 row 3 — Nuclear Notes tokens, workspace, search.
+    /// D2 row 3 — Carbon Forge tokens, workspace, search.
     Notes,
     /// D2 row 4 — configuration and explanation.
     Config,
@@ -86,7 +86,7 @@ pub enum Namespace {
     /// `models` row the `command-surface` arc added the same day, and open to
     /// Jeshua's veto. The row is needed because a provider key has to get into
     /// [ADR-0007]'s store somehow and no existing namespace owns one: `/notes`
-    /// is Nuclear Notes' by D2's own second column, `/config` is the one place
+    /// is Carbon Forge's by D2's own second column, `/config` is the one place
     /// [ADR-0014] D4 says a credential must never go, and `/models` is alias
     /// resolution rather than credentials.
     ///
@@ -193,7 +193,7 @@ impl Namespace {
         match self {
             Self::Runtime => "tier and membrane",
             Self::Stack => "AEGIS component fetch and status",
-            Self::Notes => "Nuclear Notes tokens, workspace, search",
+            Self::Notes => "Carbon Forge tokens, workspace, search",
             Self::Config => "configuration and explanation",
             Self::Memory => "relationship memory",
             Self::Learned => "what this session wrote to craft memory",

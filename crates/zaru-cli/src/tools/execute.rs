@@ -897,7 +897,7 @@ impl<C, F, P> Executor<'_, C, F, P> {
     /// Composed from the whole capture, redacted, so a command's last lines
     /// are its real last lines and its line counts are its own. When the view
     /// leaves something out, the whole of it is kept in the session directory
-    /// and the view names the file. A projected Nuclear Notes call has no
+    /// and the view names the file. A projected Carbon Forge call has no
     /// view: its line says it returned, and what it returned is the
     /// instance's.
     fn view_of(

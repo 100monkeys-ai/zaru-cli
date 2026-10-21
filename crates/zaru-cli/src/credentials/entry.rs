@@ -98,7 +98,7 @@ impl Role {
     }
 }
 
-/// A Nuclear Notes instance a token authenticates against.
+/// A Carbon Forge instance a token authenticates against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instance(String);
 
@@ -474,7 +474,7 @@ impl fmt::Display for Description {
 ///
 /// # This is where "a provider record cannot carry a reach" is held
 ///
-/// [ADR-0007] D2's entry was Nuclear Notes' in every field — `instance`,
+/// [ADR-0007] D2's entry was Carbon Forge's in every field — `instance`,
 /// `tools`, `workspace`, a `kind` ADR-0161 discriminates by prefix — and the
 /// store was closed to provider keys for exactly that reason. When the open
 /// question closed in favour of one store on 2026-09-05, the alternative to
@@ -492,7 +492,7 @@ impl fmt::Display for Description {
 /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 #[derive(Debug, Clone)]
 pub enum Held {
-    /// A Nuclear Notes token: [ADR-0007] D8's reach, D6's cached scope and
+    /// A Carbon Forge token: [ADR-0007] D8's reach, D6's cached scope and
     /// D2's informational workspace pointer.
     ///
     /// [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
@@ -537,7 +537,7 @@ impl fmt::Display for EntryRefused {
             f,
             "the entry `{}` was built as a {} credential from a {} secret. An entry holds two \
              families and the halves are not interchangeable: a \
-             Nuclear Notes token has an instance and a tool scope, and a provider key has a \
+             Carbon Forge token has an instance and a tool scope, and a provider key has a \
              provider kind, and neither has the other's",
             self.alias, self.wanted, self.found,
         )
@@ -560,7 +560,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Take a Nuclear Notes token. Its role is unset; only the store grants
+    /// Take a Carbon Forge token. Its role is unset; only the store grants
     /// one.
     ///
     /// # Errors
@@ -578,7 +578,7 @@ impl Entry {
         if !secret.kind().is_notes() {
             return Err(EntryRefused {
                 alias,
-                wanted: "Nuclear Notes",
+                wanted: "Carbon Forge",
                 found: "provider",
             });
         }
@@ -602,7 +602,7 @@ impl Entry {
     ///
     /// # Errors
     ///
-    /// [`EntryRefused`] when the secret is a Nuclear Notes token.
+    /// [`EntryRefused`] when the secret is a Carbon Forge token.
     pub fn provider(
         alias: Alias,
         description: Description,
@@ -612,7 +612,7 @@ impl Entry {
             return Err(EntryRefused {
                 alias,
                 wanted: "provider",
-                found: "Nuclear Notes",
+                found: "Carbon Forge",
             });
         };
         Ok(Self {
@@ -661,7 +661,7 @@ impl Entry {
             Held::Provider { .. } => {
                 panic!(
                     "a provider key has no workspace pointer; ADR-0007 D2's `workspace` is a \
-                        Nuclear Notes token row's and a provider has no notion of one"
+                        Carbon Forge token row's and a provider has no notion of one"
                 )
             }
         }

@@ -2038,7 +2038,7 @@ fn an_alias_the_store_would_not_hold_is_refused_before_anything_is_read() {
 #[test]
 fn adr_0007_d6s_measured_scope_reaches_the_entry_and_both_things_that_render_it() {
     let secret = crate::credentials::Secret::notes("nn_mcp_not-a-real-token")
-        .expect("an nn_mcp_ value is a Nuclear Notes secret");
+        .expect("an nn_mcp_ value is a Carbon Forge secret");
     let alias = crate::credentials::Alias::new("work").expect("a usable alias");
     let scope = crate::credentials::ToolScope::of_names(vec![
         "pages.read".to_owned(),
@@ -2075,7 +2075,7 @@ fn adr_0007_d8s_reach_follows_the_word_and_the_scope_is_carried_either_way() {
         &crate::credentials::Alias::new("locked").expect("a usable alias"),
         "cortex.page",
         false,
-        crate::credentials::Secret::notes("nn_mcp_one").expect("a Nuclear Notes secret"),
+        crate::credentials::Secret::notes("nn_mcp_one").expect("a Carbon Forge secret"),
         scope.clone(),
     )
     .expect("a well-formed entry");
@@ -2083,7 +2083,7 @@ fn adr_0007_d8s_reach_follows_the_word_and_the_scope_is_carried_either_way() {
         &crate::credentials::Alias::new("apex").expect("a usable alias"),
         "cortex.page",
         true,
-        crate::credentials::Secret::notes("nn_mcp_two").expect("a Nuclear Notes secret"),
+        crate::credentials::Secret::notes("nn_mcp_two").expect("a Carbon Forge secret"),
         scope,
     )
     .expect("a well-formed entry");
@@ -2091,12 +2091,12 @@ fn adr_0007_d8s_reach_follows_the_word_and_the_scope_is_carried_either_way() {
     assert!(
         !locked
             .reach()
-            .expect("a Nuclear Notes entry has a reach")
+            .expect("a Carbon Forge entry has a reach")
             .is_apex()
     );
     assert!(
         apex.reach()
-            .expect("a Nuclear Notes entry has a reach")
+            .expect("a Carbon Forge entry has a reach")
             .is_apex()
     );
     assert_eq!(
@@ -2464,7 +2464,7 @@ fn a_description_a_person_typed_is_the_persons_and_carries_a_remedy() {
 ///
 /// `zaru providers keys rm gemini` run twice answered *"nothing in the store
 /// answers to the alias \"provider.gemini\""* with the remedy *"run `zaru
-/// notes tokens` to see the aliases this machine holds"* — the Nuclear Notes
+/// notes tokens` to see the aliases this machine holds"* — the Carbon Forge
 /// listing, which cannot show a provider key and never could. That remedy was
 /// right while every raiser of `UnknownAlias` was a Notes operation, and this
 /// arc's `providers keys rm` made it wrong.

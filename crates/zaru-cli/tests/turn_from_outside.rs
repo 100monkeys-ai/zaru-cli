@@ -267,7 +267,7 @@ fn adr_0007_d7s_describe_and_rm_print_no_part_of_the_value_they_hold() {
     );
     absent_everywhere(&home, &listed, &planted, &core, "the stored key");
 
-    // The two Nuclear Notes verbs, refusing a credential of the other family.
+    // The two Carbon Forge verbs, refusing a credential of the other family.
     // A refusal is composed from the alias that was asked for, and the alias
     // is the one thing here that is allowed to travel.
     for arguments in [
@@ -1048,7 +1048,7 @@ fn adr_0010_d1s_session_holds_three_files_and_meta_toml_records_six_things() {
     // workspace is not a session whose workspace was "".
     assert!(
         !meta.contains("workspace ="),
-        "a session with no Nuclear Notes workspace records none: {meta}"
+        "a session with no Carbon Forge workspace records none: {meta}"
     );
     assert!(
         !meta.contains("ended ="),

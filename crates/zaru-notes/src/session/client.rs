@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The session: one attached MCP connection to Nuclear Notes.
+//! The session: one attached MCP connection to Carbon Forge.
 //!
 //! # A session has no field a bearer value could occupy
 //!
@@ -156,7 +156,7 @@ impl ClientHandler for Watcher {
     }
 }
 
-/// One attached connection to Nuclear Notes.
+/// One attached connection to Carbon Forge.
 pub struct Session {
     service: RunningService<RoleClient, Watcher>,
     instance: Instance,
@@ -579,7 +579,7 @@ impl Session {
     ///
     /// # The handshake already carries this, and `rmcp` throws it away
     ///
-    /// Measured against Nuclear Notes on 2026-09-05: the `initialize` result
+    /// Measured against Carbon Forge on 2026-09-05: the `initialize` result
     /// carries a fifth top-level key, `_grounding`, holding the instance
     /// grounding and the attached workspace's — 11,050 and 14,890 bytes on that
     /// connection — which is [ADR-0156]'s auto-ground arriving free on the

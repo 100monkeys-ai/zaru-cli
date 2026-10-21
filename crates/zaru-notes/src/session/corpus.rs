@@ -9,7 +9,7 @@
 //! claim is that the token "cannot write, enforced at all three gates,
 //! regardless of what any code in the harness attempts". **Those gates are the
 //! server's, and as of 2026-09-14 no token exists that can be scoped to them.**
-//! Measured through the harness's own surface that day: every Nuclear Notes
+//! Measured through the harness's own surface that day: every Carbon Forge
 //! token this project holds reports **94 tools**, the whole surface, and
 //! Jeshua's own reading of 2026-09-05 is "I do not believe we have workspace
 //! scoped tokens, only instance scope". So [`super::Session`] — which offers

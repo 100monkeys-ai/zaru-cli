@@ -301,7 +301,7 @@ fn staged_entry(label: &str) -> (Entry, String) {
         Secret::notes(secret_value.clone()).expect("nn_mcp_ names a kind"),
         Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names(["pages.read", "search.global"]))
     .with_workspace("zaru");
     (entry, secret_value)
@@ -632,7 +632,7 @@ fn an_apex_token_offered_with_no_confirmer_is_refused() {
         entry.secret().clone(),
         Reach::Apex,
     )
-    .expect("an nn_ value builds a Nuclear Notes entry");
+    .expect("an nn_ value builds a Carbon Forge entry");
 
     let refusal = store
         .add(entry, &keys, None)
@@ -670,7 +670,7 @@ fn an_apex_confirmation_states_the_scope_the_entry_carries_and_zero_when_it_carr
         base.secret().clone(),
         Reach::Apex,
     )
-    .expect("an nn_ value builds a Nuclear Notes entry");
+    .expect("an nn_ value builds a Carbon Forge entry");
     let before = store
         .add(unread, &keys, None)
         .expect_err("an apex token with no confirmer is refused")
@@ -683,7 +683,7 @@ fn an_apex_confirmation_states_the_scope_the_entry_carries_and_zero_when_it_carr
         base.secret().clone(),
         Reach::Apex,
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names(vec![
         "pages.read".to_owned(),
         "pages.apply_patch".to_owned(),
@@ -719,7 +719,7 @@ fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
         base.secret().clone(),
         Reach::Apex,
     )
-    .expect("an nn_ value builds a Nuclear Notes entry");
+    .expect("an nn_ value builds a Carbon Forge entry");
     store
         .add(entry, &keys, Some(&declining))
         .expect_err("a declined apex token is not stored");
@@ -739,7 +739,7 @@ fn an_apex_token_the_user_declines_is_not_stored_and_one_they_accept_is() {
         base.secret().clone(),
         Reach::Apex,
     )
-    .expect("an nn_ value builds a Nuclear Notes entry");
+    .expect("an nn_ value builds a Carbon Forge entry");
     store
         .add(entry, &keys, Some(&accepting))
         .expect("a confirmed apex token is stored");
@@ -770,7 +770,7 @@ fn a_duplicate_alias_is_refused() {
         first.secret().clone(),
         first.reach().expect("a Notes entry has a reach").clone(),
     )
-    .expect("an nn_ value builds a Nuclear Notes entry");
+    .expect("an nn_ value builds a Carbon Forge entry");
     store.add(first, &keys, None).expect("the first is added");
     store
         .add(second, &keys, None)
@@ -1101,7 +1101,7 @@ fn staged_pair() -> (ScratchRoot, StagedKey, CredentialStore, Alias, Alias) {
         composer.secret().clone(),
         composer.reach().expect("a Notes entry has a reach").clone(),
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names(["pages.read", "search.global"]));
 
     let (agent, _) = staged_entry("agent");
@@ -1232,7 +1232,7 @@ fn the_composer_role_is_refused_when_the_cached_scope_leaves_adr_0006_d4s_set() 
         base.secret().clone(),
         base.reach().expect("a Notes entry has a reach").clone(),
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names([
         "pages.read",
         "search.global",
@@ -1278,7 +1278,7 @@ fn every_tool_adr_0006_d4_names_may_hold_the_composer_role() {
         base.secret().clone(),
         base.reach().expect("a Notes entry has a reach").clone(),
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names(
         crate::credentials::entry::COMPOSER_SCOPE.iter().copied(),
     ));
@@ -1340,7 +1340,7 @@ fn an_apex_token_is_marked_in_the_description_the_agent_reads() {
         base.secret().clone(),
         EntryReach::Apex,
     )
-    .expect("an nn_ value builds a Nuclear Notes entry");
+    .expect("an nn_ value builds a Carbon Forge entry");
     let confirmer = StagedConfirmer::accepting();
     store
         .add(entry, &keys, Some(&confirmer))
@@ -1570,8 +1570,8 @@ fn a_scope_offered_for_an_unknown_alias_is_refused_rather_than_creating_one() {
 
 // ---------------------------------------------------------------------------
 // ADR-0007 D2's second family, added 2026-09-05 when the open question
-// "whether the credential store holds provider credentials, or only Nuclear
-// Notes tokens" closed in favour of one store.
+// "whether the credential store holds provider credentials, or only Carbon
+// Forge tokens" closed in favour of one store.
 // ---------------------------------------------------------------------------
 
 use crate::credentials::fixtures::provider_secret_nonce;
@@ -1608,7 +1608,7 @@ fn a_provider_keys_kind_is_declared_and_no_prefix_rule_is_consulted() {
         assert_eq!(secret.kind().as_str(), kind.as_str());
         assert!(
             !secret.kind().is_notes(),
-            "a provider key answered that it is a Nuclear Notes token"
+            "a provider key answered that it is a Carbon Forge token"
         );
         assert_eq!(secret.expose_for_dispatch(), value);
     }
@@ -1620,7 +1620,7 @@ fn a_provider_keys_kind_is_declared_and_no_prefix_rule_is_consulted() {
     let two = Secret::provider(ProviderKind::Anthropic, shared).expect("well-formed");
     assert_ne!(one.kind(), two.kind());
 
-    // And a Nuclear Notes value offered as a provider key is taken as one:
+    // And a Carbon Forge value offered as a provider key is taken as one:
     // there is no prefix check on this path at all, which is the point. What
     // stops the two blurring is `Entry`, checked below.
     let notes_shaped = personal_secret_nonce();
@@ -1696,7 +1696,7 @@ fn an_entry_is_refused_when_its_secret_belongs_to_the_other_family() {
     )
     .expect_err("a Notes token is not a provider key");
     assert_eq!(refusal.wanted, "provider");
-    assert_eq!(refusal.found, "Nuclear Notes");
+    assert_eq!(refusal.found, "Carbon Forge");
     assert!(refusal.to_string().contains("mismatch"));
 
     let refusal = Entry::notes(
@@ -1706,7 +1706,7 @@ fn an_entry_is_refused_when_its_secret_belongs_to_the_other_family() {
         Reach::Apex,
     )
     .expect_err("a provider key is not a Notes token");
-    assert_eq!(refusal.wanted, "Nuclear Notes");
+    assert_eq!(refusal.wanted, "Carbon Forge");
     assert_eq!(refusal.found, "provider");
 
     // Both constructors succeed on their own family, so neither gate is
@@ -1817,7 +1817,7 @@ fn a_sealed_value_does_not_open_under_the_wrong_family() {
     assert_eq!(opened.kind(), Kind::Provider(ProviderKind::Gemini));
     assert_eq!(opened.expose_for_dispatch(), value);
 
-    // Claimed as Nuclear Notes, the prefix rule refuses it and no `Secret`
+    // Claimed as Carbon Forge, the prefix rule refuses it and no `Secret`
     // exists. The refusal carries nothing.
     let refusal = sealed
         .open(&key, &alias, Family::Notes)
@@ -2064,7 +2064,7 @@ fn staged_notes(label: &str, tools: Vec<&str>, apex: bool) -> Entry {
             base.reach().expect("a Notes entry has a reach").clone()
         },
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names(tools))
 }
 
@@ -2148,7 +2148,7 @@ fn an_apex_token_names_no_host_so_it_is_not_the_one_the_composer_opens() {
 
     // The accepting sibling, in a store of its own. It has to be a second
     // store rather than a second entry, and that is the finding this check
-    // made rather than assumed: "exactly one stored Nuclear Notes token" counts
+    // made rather than assumed: "exactly one stored Carbon Forge token" counts
     // the apex one too, so an apex entry BESIDE an instance-locked one is two
     // tokens and case 3 -- nothing serves, and the harness does not quietly
     // treat the unaddressable one as absent in order to reach a majority of
@@ -2432,7 +2432,7 @@ fn corpus_the_token_the_composer_reads_with_is_never_declared_though_it_holds_no
     let keys = StagedKey::minted();
     let mut store = CredentialStore::open(scratch.store_root()).expect("a fresh root opens");
 
-    // The state of every real machine: one Nuclear Notes token, no role, and a
+    // The state of every real machine: one Carbon Forge token, no role, and a
     // scope far outside D4's set -- exactly what `zaru notes tokens add play
     // play.cortex.page` produced on 2026-09-15, which reported 94 tools.
     let (only, _) = staged_entry("play");
@@ -2443,7 +2443,7 @@ fn corpus_the_token_the_composer_reads_with_is_never_declared_though_it_holds_no
         only.secret().clone(),
         only.reach().expect("a Notes entry has a reach").clone(),
     )
-    .expect("an nn_ value builds a Nuclear Notes entry")
+    .expect("an nn_ value builds a Carbon Forge entry")
     .with_tools(ToolScope::of_names([
         "pages.read",
         "pages.apply_patch",

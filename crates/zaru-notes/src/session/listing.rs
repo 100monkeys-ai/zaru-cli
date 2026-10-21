@@ -6,7 +6,7 @@
 //! # The shape is expected, not measured, and it fails loudly rather than
 //! guessing
 //!
-//! No Nuclear Notes token exists in this workspace, so what the live tools put
+//! No Carbon Forge token exists in this workspace, so what the live tools put
 //! in a result has not been read off the wire. This module expects a JSON array
 //! of objects each carrying a string `path` and a string `title`, and refuses
 //! with [`NotesError::Unreadable`] naming that expectation when it does not

@@ -659,7 +659,7 @@ impl Run<'_> {
                 );
             }
         };
-        // No confirmer: ADR-0007 D8's apex confirmation is a Nuclear Notes
+        // No confirmer: ADR-0007 D8's apex confirmation is a Carbon Forge
         // token's, and a provider key has no reach to be apex with -- the
         // enum is what says so.
         match store.add(entry, &keys, None) {
@@ -839,7 +839,7 @@ impl Run<'_> {
     ///
     /// **It refuses every token that exists, naming the tool.** The store
     /// refuses the composer role to a credential whose cached `tools/list`
-    /// reaches outside [ADR-0006] D4's set, and every Nuclear Notes token
+    /// reaches outside [ADR-0006] D4's set, and every Carbon Forge token
     /// measured on 2026-09-14 grants 94 tools — the whole surface. So the
     /// ordinary outcome of this command is a refusal that names the first
     /// offending tool and says what the composer's credential may carry.
@@ -952,7 +952,7 @@ impl Run<'_> {
         self.store_a_notes_token(alias, host, apex, secret, scope, confirmer)
     }
 
-    /// Seal an offered Nuclear Notes token into the store, however it was read
+    /// Seal an offered Carbon Forge token into the store, however it was read
     /// and wherever [ADR-0007] D8's confirmation is asked.
     ///
     /// # Both spellings reach this, and that is what makes them one operation
@@ -1049,7 +1049,7 @@ impl Run<'_> {
 
         match store.add(entry, &keys, confirmer) {
             Ok(()) => Outcome::printed(vec![
-                format!("stored a Nuclear Notes token under the alias `{alias}`."),
+                format!("stored a Carbon Forge token under the alias `{alias}`."),
                 format!("  {host} reported {granted} tool(s), and that is what the store cached."),
                 "  the value is sealed and is not printed by any command.".to_owned(),
             ]),
@@ -1237,7 +1237,7 @@ const SEALED_VALUE_IS_GONE: &str = "its sealed value is gone from the store.";
 /// [ADR-0007] D4 says exactly one token carries the role and does not say what
 /// happens when none does — which is the state of every machine that exists,
 /// and which the amendment of 2026-09-14 answers in three cases: a
-/// role-carrying token wins; failing that a **lone** stored Nuclear Notes
+/// role-carrying token wins; failing that a **lone** stored Carbon Forge
 /// token serves the composer's reads; failing that nothing serves and the
 /// strip says so. `composer_token` is the implementation of exactly those
 /// three, so this asks it rather than restating them — a sentence composed
@@ -1271,7 +1271,7 @@ fn composer_role_now_unheld(store: &CredentialStore) -> String {
     }
 }
 
-/// What building a Nuclear Notes entry can refuse on, so the caller can render
+/// What building a Carbon Forge entry can refuse on, so the caller can render
 /// each with the sentence it already has.
 #[derive(Debug)]
 pub(crate) enum EntryUndecided {
@@ -1304,7 +1304,7 @@ pub(crate) fn notes_entry(
     scope: crate::credentials::ToolScope,
 ) -> Result<Entry, EntryUndecided> {
     let description = Description::new(format!(
-        "the Nuclear Notes token for {host}, granting {} tool(s)",
+        "the Carbon Forge token for {host}, granting {} tool(s)",
         scope.count()
     ))
     .map_err(EntryUndecided::Description)?;
@@ -1320,7 +1320,7 @@ pub(crate) fn notes_entry(
         .with_tools(scope))
 }
 
-/// The bytes of a Nuclear Notes token, refused in one place.
+/// The bytes of a Carbon Forge token, refused in one place.
 ///
 /// Split out for [`Run::store_a_provider_key`]'s own reason: a shared function
 /// that began after `Secret::notes` would leave each surface free to refuse a

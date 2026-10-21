@@ -34,7 +34,7 @@
 //! emptiness, which is the failure a mock credential store would produce.
 //!
 //! Everything here is a generated nonce. No real credential is held, no network
-//! is opened, and no Nuclear Notes server is called.
+//! is opened, and no Carbon Forge server is called.
 //!
 //! [ADR-0007]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store
 //! [Verification lessons]: https://100monkeys-ai.cortex.page/project-management/p/lessons/verification-lessons
@@ -154,7 +154,7 @@ fn staged_entry(label: &str) -> (Entry, String) {
             Secret::notes(value.clone()).expect("an nn_mcp_ value names a kind"),
             Reach::InstanceLocked(Instance::new("cortex.page")),
         )
-        .expect("an nn_ value builds a Nuclear Notes entry"),
+        .expect("an nn_ value builds a Carbon Forge entry"),
         value,
     )
 }

@@ -2500,7 +2500,7 @@ async fn pump<S: Surface + Send, P: Pace + Sync>(
                             // too.** A provider key always buys a re-open --
                             // `compose::turn::prepare` ran without it, so the
                             // session that stored it could not use it. A
-                            // Nuclear Notes token buys one only when it
+                            // Carbon Forge token buys one only when it
                             // changed which token the composer reads with, and
                             // that is measured rather than assumed: see
                             // `add_a_notes_token`.
@@ -3177,7 +3177,7 @@ pub fn secret_statement(asking: &Asking) -> String {
         // and a person with tokens on two instances has nothing else to tell
         // them apart.
         Asking::NotesToken { host, .. } => {
-            format!("the Nuclear Notes token for {host}, which is not shown as you type")
+            format!("the Carbon Forge token for {host}, which is not shown as you type")
         }
     }
 }

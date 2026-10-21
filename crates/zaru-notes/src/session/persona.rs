@@ -18,7 +18,7 @@
 //! reason. [`super::Session`] offers `read_page`, `search`, `ground`,
 //! `attach_workspace` and the rest, and with an unscoped token every one of
 //! those is a call that would succeed — measured through the harness's own
-//! surface, where every Nuclear Notes token this project holds reports **94
+//! surface, where every Carbon Forge token this project holds reports **94
 //! tools**. [`Persona`] replaces the missing scope with a type: **one method**,
 //! no defaulted body, so a second stops every implementation compiling.
 //!

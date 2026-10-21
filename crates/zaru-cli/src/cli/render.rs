@@ -280,7 +280,7 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
             // **Rewritten twice on 2026-09-05, and the second rewrite is the
             // one that matters.** It first said sealing was a port with no
             // implementation; then that `notes tokens add` "is not built, and
-            // it needs a Nuclear Notes server to authenticate against". Both
+            // it needs a Carbon Forge server to authenticate against". Both
             // were true when written and both stopped being true the same day.
             // A line telling a user why they cannot do something, on a surface
             // where they now can, is worse than no line -- so this one stopped
@@ -290,11 +290,11 @@ pub fn tokens(store: &crate::credentials::CredentialStore) -> Vec<String> {
         ];
     }
 
-    // Filtered to Nuclear Notes tokens, and that filter is what stops this
+    // Filtered to Carbon Forge tokens, and that filter is what stops this
     // listing lying about what it lists. The store has held provider keys
     // since 2026-09-05, and ADR-0007 D7 names this surface `notes tokens`:
     // every column below -- workspace, tool count, instance, composer role --
-    // is a Nuclear Notes token's, and a provider key rendered here would show
+    // is a Carbon Forge token's, and a provider key rendered here would show
     // four empty cells under headings that do not apply to it. The other
     // listing is `zaru providers keys`, and the two share
     // `CredentialStore::listed`, which both listings are built from.

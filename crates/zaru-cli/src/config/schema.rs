@@ -228,7 +228,7 @@ pub struct Schema {
 /// [ADR-0012] D3's five kinds — and it cannot express a key whose middle
 /// segment is **a name the user chose**. [ADR-0007](https://100monkeys-ai.cortex.page/zaru/p/adrs/0007-credential-store)
 /// D5's per-token grant is the first of those: an alias is local metadata that
-/// Nuclear Notes has no notion of, so the set of `notes.<alias>.agent_tools`
+/// Carbon Forge has no notion of, so the set of `notes.<alias>.agent_tools`
 /// keys is whatever the store happens to hold, and it changes when a person
 /// runs `notes tokens add`.
 ///

@@ -501,7 +501,7 @@ fn resuming_a_session_that_does_not_exist_creates_nothing() {
 /// the crate does not export: `zaru_notes::trie::CachedEntry`,
 /// `NotesTrie::attached_to`, and the same `terminal::driver::run` the binary
 /// calls. **It is not evidence about the `zaru` binary**, which cannot populate
-/// a trie on any machine today — reaching Nuclear Notes needs a transport that
+/// a trie on any machine today — reaching Carbon Forge needs a transport that
 /// is a port with no implementation, and a token nothing here can add. What the
 /// binary does show is the other half of this check: the absence line.
 ///

@@ -25,9 +25,9 @@ pub enum StripMode {
     Typing,
 }
 
-/// Which picker over the Nuclear Notes corpus the explicit grammar opened.
+/// Which picker over the Carbon Forge corpus the explicit grammar opened.
 ///
-/// ADR-0005 D4 reuses Nuclear Notes' editor grammar, so muscle memory
+/// ADR-0005 D4 reuses Carbon Forge's editor grammar, so muscle memory
 /// transfers between writing and building. `#` is not here: D4 has it scope
 /// the live search and attach nothing, so it opens no picker and changes no
 /// mode.
@@ -151,7 +151,7 @@ pub enum StripContent {
     ///
     /// The same shape [`StripContent::Command`] already has, and for the same
     /// reason. D1's table is keyed on prompt emptiness and its row 6 names an
-    /// "explicit picker" over the Nuclear Notes corpus D3 builds; the working
+    /// "explicit picker" over the Carbon Forge corpus D3 builds; the working
     /// directory is [ADR-0011] D4's, is not in that corpus, and reaching a
     /// path through the tiers D3 defines would be reading a decision into a
     /// record that does not carry it.

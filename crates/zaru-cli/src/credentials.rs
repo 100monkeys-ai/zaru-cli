@@ -13,7 +13,7 @@
 //!
 //! **There is deliberately no `Context` type**, although ADR-0007's title is
 //! "named tokens as contexts". A context is the *idea* that record names —
-//! the approach to Nuclear Notes a token embodies, being its workspace
+//! the approach to Carbon Forge a token embodies, being its workspace
 //! pointer, tool scope, rate-limit bucket and audit identity, all of which
 //! live on the token row server-side and none of which this store owns. The
 //! word is taken twice over in this codebase already: `architecture/bounded-contexts`

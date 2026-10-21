@@ -22,9 +22,9 @@
 //!
 //! # Two families, and only one of them has a prefix rule
 //!
-//! This store held Nuclear Notes tokens alone until 2026-09-05, when the open
+//! This store held Carbon Forge tokens alone until 2026-09-05, when the open
 //! question "whether the credential store holds provider credentials, or only
-//! Nuclear Notes tokens" was closed in favour of **one store**, under
+//! Carbon Forge tokens" was closed in favour of **one store**, under
 //! directive 20 and recorded as an accepted Update on [ADR-0007]. The reason
 //! is [`crate::redaction::HeldSecrets`]: it is built from what the store
 //! holds, so [ADR-0008] trigger clause 6 covers a provider key **by
@@ -32,10 +32,10 @@
 //! second seam, and a seam the redactor did not know about is a secret it
 //! cannot remove.
 //!
-//! **The prefix rule is the Nuclear Notes kinds', and it does not generalise.**
+//! **The prefix rule is the Carbon Forge kinds', and it does not generalise.**
 //! ADR-0007 D2 derives `kind` from `nn_mcp_` and `nn_app_` because
 //! [ADR-0161] discriminates the two that way and they "never blur" — that is a
-//! fact about Nuclear Notes' own issuance, which this harness is downstream
+//! fact about Carbon Forge's own issuance, which this harness is downstream
 //! of. A provider key's shape belongs to the provider. Google's keys begin
 //! `AIza` today; that is a convention nobody promised us, and a harness that
 //! refused a key for failing somebody else's undocumented pattern would be
@@ -72,7 +72,7 @@ const APP_PREFIX: &str = "nn_app_";
 /// # Two of these are derived and one is declared, and the difference is the
 /// whole of the amended D2
 ///
-/// ADR-0007 D2 makes `kind` *derived* for a Nuclear Notes token and cites
+/// ADR-0007 D2 makes `kind` *derived* for a Carbon Forge token and cites
 /// ADR-0161: the two "never blur" and are discriminated by prefix. Both Notes
 /// variants are therefore still read off the value, never stored beside it —
 /// a stored copy is a second source of truth that can disagree with the
@@ -109,7 +109,7 @@ impl Kind {
         }
     }
 
-    /// Whether this is a Nuclear Notes token rather than a provider key.
+    /// Whether this is a Carbon Forge token rather than a provider key.
     ///
     /// The predicate the two listings are filtered by, so that ADR-0007 D7's
     /// `notes tokens` lists Notes tokens and nothing else and does not lie
@@ -134,7 +134,7 @@ impl Kind {
 /// [Credentials]: https://100monkeys-ai.cortex.page/project-management/p/process/credentials
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretRefused {
-    /// A Nuclear Notes bearer value whose prefix names no kind.
+    /// A Carbon Forge bearer value whose prefix names no kind.
     NoNotesPrefix,
     /// A provider key that was empty.
     Empty,
@@ -158,7 +158,7 @@ impl fmt::Display for SecretRefused {
         match self {
             Self::NoNotesPrefix => write!(
                 f,
-                "a Nuclear Notes bearer value must begin with {PERSONAL_PREFIX:?} or \
+                "a Carbon Forge bearer value must begin with {PERSONAL_PREFIX:?} or \
                  {APP_PREFIX:?}; this one begins with neither, and its value is deliberately not \
                  quoted here. Only those two kinds are admitted for a Notes token. A model \
                  provider's key is stored too, since 2026-09-05, but it is added as a provider \
@@ -201,13 +201,13 @@ pub struct Secret {
 }
 
 impl Secret {
-    /// Take a Nuclear Notes bearer value, refusing one whose prefix names no
+    /// Take a Carbon Forge bearer value, refusing one whose prefix names no
     /// kind.
     ///
     /// **Named for the family it admits.** It was `new` until 2026-09-05,
     /// when the store gained a second family; a constructor called `new` on a
     /// type with two families is the one a caller reaches for by default, and
-    /// the default here would silently have been "Nuclear Notes".
+    /// the default here would silently have been "Carbon Forge".
     ///
     /// # Errors
     ///
@@ -276,7 +276,7 @@ impl Secret {
     }
 }
 
-/// Which Nuclear Notes kind a value's prefix names, if any.
+/// Which Carbon Forge kind a value's prefix names, if any.
 ///
 /// Notes only. There is deliberately no provider arm: a provider kind is
 /// declared rather than derived, so there is no function here that could be

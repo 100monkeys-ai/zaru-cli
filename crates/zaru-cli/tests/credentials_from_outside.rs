@@ -101,7 +101,7 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
                 Secret::notes(composer_secret).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
             )
-            .expect("an nn_ value builds a Nuclear Notes entry")
+            .expect("an nn_ value builds a Carbon Forge entry")
             .with_tools(ToolScope::of_names(["pages.read", "search.global"]))
             .with_workspace("zaru"),
             &keys,
@@ -120,7 +120,7 @@ fn a_caller_outside_this_crate_can_store_grant_and_project() {
                 Secret::notes(agent_secret.clone()).expect("nn_app_ names a kind"),
                 Reach::Apex,
             )
-            .expect("an nn_ value builds a Nuclear Notes entry")
+            .expect("an nn_ value builds a Carbon Forge entry")
             .with_tools(ToolScope::of_names(["pages.read", "pages.apply_patch"])),
             &keys,
             Some(&AlwaysConfirms),

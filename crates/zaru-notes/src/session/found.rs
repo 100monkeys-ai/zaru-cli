@@ -6,7 +6,7 @@
 //! # This module exists because a recorded guess turned out to be wrong
 //!
 //! [`listing`](super::listing) documents its shape as an expectation: "no
-//! Nuclear Notes token exists in this workspace, so what the live tools put in
+//! Carbon Forge token exists in this workspace, so what the live tools put in
 //! a result has not been read off the wire". `Session::search` was written
 //! against that same reader on the same expectation, and on 2026-09-06 a live
 //! `search.global` was read for the first time. **It answers a different

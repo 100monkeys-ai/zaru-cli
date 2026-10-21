@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The checks that need a real Nuclear Notes instance, and a real credential.
+//! The checks that need a real Carbon Forge instance, and a real credential.
 //!
 //! # Every check here is `#[ignore]`d, and that is the honest shape
 //!
@@ -51,7 +51,7 @@ use zaru_notes::session::{Bearer, HttpEndpoint, Instance, NotesError, Session, W
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
-            "{name} is not set. This check needs a real Nuclear Notes instance; see the module \
+            "{name} is not set. This check needs a real Carbon Forge instance; see the module \
              documentation for the five variables and run it with `--ignored`."
         )
     })
@@ -86,7 +86,7 @@ async fn attach() -> Session {
 /// The first thing this crate has ever done against a server that is not in
 /// this process.
 #[tokio::test]
-#[ignore = "needs a real Nuclear Notes instance and a real token; see the module documentation"]
+#[ignore = "needs a real Carbon Forge instance and a real token; see the module documentation"]
 async fn a_session_attaches_over_streamable_http_and_reports_what_it_negotiated() {
     let session = attach().await;
     let negotiated = session.negotiated();
@@ -128,7 +128,7 @@ async fn a_session_attaches_over_streamable_http_and_reports_what_it_negotiated(
 ///
 /// [ADR-0013]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0013-context-management
 #[tokio::test]
-#[ignore = "needs a real Nuclear Notes instance and a real token; see the module documentation"]
+#[ignore = "needs a real Carbon Forge instance and a real token; see the module documentation"]
 async fn the_grounding_is_read_from_the_live_instance_with_the_workspace_named() {
     let session = attach().await;
     let workspace = WorkspaceId::new(required("ZARU_NOTES_LIVE_MEMBER_WORKSPACE"));
@@ -150,7 +150,7 @@ async fn the_grounding_is_read_from_the_live_instance_with_the_workspace_named()
 /// grounding it cannot read. Both calls, one after the other, so neither
 /// verdict is a claim about the other.
 #[tokio::test]
-#[ignore = "needs a real Nuclear Notes instance and a real token; see the module documentation"]
+#[ignore = "needs a real Carbon Forge instance and a real token; see the module documentation"]
 async fn a_readable_workspace_is_not_necessarily_a_groundable_one() {
     let session = attach().await;
     let readable = WorkspaceId::new(required("ZARU_NOTES_LIVE_WORKSPACE"));
@@ -171,7 +171,7 @@ async fn a_readable_workspace_is_not_necessarily_a_groundable_one() {
 
 /// A page read by path, with the workspace named on the call.
 #[tokio::test]
-#[ignore = "needs a real Nuclear Notes instance and a real token; see the module documentation"]
+#[ignore = "needs a real Carbon Forge instance and a real token; see the module documentation"]
 async fn a_page_is_read_by_path_with_its_workspace_named() {
     let session = attach().await;
     let workspace = WorkspaceId::new(required("ZARU_NOTES_LIVE_WORKSPACE"));
@@ -187,13 +187,13 @@ async fn a_page_is_read_by_path_with_its_workspace_named() {
 
 /// A search, with the workspace named.
 #[tokio::test]
-#[ignore = "needs a real Nuclear Notes instance and a real token; see the module documentation"]
+#[ignore = "needs a real Carbon Forge instance and a real token; see the module documentation"]
 async fn a_search_names_its_workspace_and_answers_in_the_shape_this_crate_expects() {
     let session = attach().await;
     let workspace = WorkspaceId::new(required("ZARU_NOTES_LIVE_WORKSPACE"));
 
     // **The value of this check is the shape, not the hits.** `listing::read`
-    // has always documented its expectation as a guess -- "no Nuclear Notes
+    // has always documented its expectation as a guess -- "no Carbon Forge
     // token exists in this workspace, so what the live tools put in a result
     // has not been read off the wire" -- and a search that parses here is that
     // guess measured. A search that matched nothing would still measure it, so
@@ -221,7 +221,7 @@ async fn a_search_names_its_workspace_and_answers_in_the_shape_this_crate_expect
 ///
 /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
 #[tokio::test]
-#[ignore = "needs a real Nuclear Notes instance and a real token; see the module documentation"]
+#[ignore = "needs a real Carbon Forge instance and a real token; see the module documentation"]
 async fn a_path_resolves_in_its_own_workspace_and_not_in_another() {
     let session = attach().await;
     let own = WorkspaceId::new(required("ZARU_NOTES_LIVE_WORKSPACE"));
@@ -251,7 +251,7 @@ async fn a_path_resolves_in_its_own_workspace_and_not_in_another() {
 ///
 /// [ADR-0016]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0016-error-taxonomy
 #[tokio::test]
-#[ignore = "needs a real Nuclear Notes instance; the token it uses is deliberately not one"]
+#[ignore = "needs a real Carbon Forge instance; the token it uses is deliberately not one"]
 async fn a_token_the_server_rejects_reaches_the_caller_without_the_value_in_it() {
     let endpoint = HttpEndpoint::new().expect("a TLS backend");
     // Shaped like a personal token, and authenticating nothing. A uniqueness

@@ -39,7 +39,7 @@
 //!
 //! **Two of the three load.** The served location is deliberately not built
 //! and is not half-built: it needs an MCP client for an arbitrary server
-//! (`zaru-notes` speaks to Nuclear Notes and to nothing else), a credential
+//! (`zaru-notes` speaks to Carbon Forge and to nothing else), a credential
 //! per server, and a registration point — and before any of that it is
 //! **decision-blocked** on the open question "whether the built-in tool names
 //! share a namespace with MCP server tools", [ADR-0011] D1 against [ADR-0015]

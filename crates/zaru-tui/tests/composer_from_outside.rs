@@ -32,7 +32,7 @@ use zaru_tui::shell::{CommandVocabulary, Namespace};
 
 /// A working directory a stranger could write, holding nothing.
 ///
-/// Every check in this file is about the Nuclear Notes tiers, so the third
+/// Every check in this file is about the Carbon Forge tiers, so the third
 /// corpus answers nothing and says nothing: a row from it appearing in a
 /// frame here would be a row this file did not stage.
 struct NoPaths;

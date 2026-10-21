@@ -21,7 +21,7 @@
 //! was read as "every token not carrying the `composer` role". **On every
 //! machine that exists, that reading projects the composer's own credential.**
 //! `notes-hints-wiring` decided on 2026-09-14, under directives 20, 29 and 31,
-//! that when no token carries the role and exactly one Nuclear Notes token is
+//! that when no token carries the role and exactly one Carbon Forge token is
 //! stored, *that* token serves the composer's reads — because
 //! [`CredentialStore::grant_composer_role`] refuses the role to any scope
 //! outside [ADR-0006] D4's nine, and every token this project has ever held
@@ -104,7 +104,7 @@ impl CredentialStore {
         self.records()
             // A provider key is filtered out before the composer is, and the
             // order does not matter because the two predicates are
-            // independent -- but the reason does. D5 projects *Nuclear Notes*
+            // independent -- but the reason does. D5 projects *Carbon Forge*
             // tokens as MCP servers, and a provider key serves no MCP tools
             // at all, so projecting one would offer the agent a namespace
             // with nothing in it whose name claims otherwise. ADR-0007 D3 is
@@ -161,7 +161,7 @@ pub enum Listing {
 /// Both listings are built from this rather than from [`Record`] directly,
 /// which is what makes "a listing never prints a value" one rule in one place
 /// instead of two rules in two renderers that have to agree. `notes tokens`
-/// adds its own three Nuclear Notes columns on top; `providers keys` prints
+/// adds its own three Carbon Forge columns on top; `providers keys` prints
 /// these three and stops.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {

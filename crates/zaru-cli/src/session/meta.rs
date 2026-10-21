@@ -73,7 +73,7 @@ pub struct Meta {
     /// records is by construction the tier that was *resolved* — that type
     /// has no constructor that does not name where the value came from.
     tier: ResolvedTier,
-    /// The attached Nuclear Notes workspace, where there is one.
+    /// The attached Carbon Forge workspace, where there is one.
     pub workspace: Option<String>,
     /// The provider alias this session generated with, where there is one.
     pub provider: Option<String>,

@@ -373,7 +373,7 @@ impl crate::tools::port::Confirm for FailingConfirmer {
 
 /// A [`Projected`](crate::tools::Projected) that answers without a network.
 ///
-/// **Not a stand-in for Nuclear Notes.** It records what it was asked for and
+/// **Not a stand-in for Carbon Forge.** It records what it was asked for and
 /// hands back a fixed capture, so a check can assert that a permitted
 /// projected call reached the port with the alias, the tool and the arguments
 /// the decision was reached about — and nothing about what a real instance

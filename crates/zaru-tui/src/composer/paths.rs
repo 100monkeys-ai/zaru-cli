@@ -4,7 +4,7 @@
 //! The third strip corpus: the working directory, and the port it arrives
 //! through.
 //!
-//! [ADR-0005] D1's strip had two corpora — the Nuclear Notes trie and
+//! [ADR-0005] D1's strip had two corpora — the Carbon Forge trie and
 //! [ADR-0015] D2's command vocabulary — and neither of them is the working
 //! directory the tools are bounded by. A person's most common first task in a
 //! code harness is "read this file and tell me about it", and until now it had

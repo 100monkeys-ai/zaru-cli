@@ -89,7 +89,7 @@ pub const MANIFEST_FILE: &str = "zaru.toml";
 /// [ADR-0009]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0009-project-manifest-and-validators
 pub const NAME_KEY: &str = "project.name";
 
-/// The name [ADR-0009] D1's `[project]` table gives the Nuclear Notes
+/// The name [ADR-0009] D1's `[project]` table gives the Carbon Forge
 /// workspace, per [ADR-0006] D5.
 ///
 /// [ADR-0006]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces
@@ -136,7 +136,7 @@ pub fn fields() -> Vec<(Key, Field)> {
         .collect()
 }
 
-/// The Nuclear Notes workspace a project pins, from a resolved configuration.
+/// The Carbon Forge workspace a project pins, from a resolved configuration.
 ///
 /// # [ADR-0009] D1's key finally has a reader, and it had none for nine days
 ///

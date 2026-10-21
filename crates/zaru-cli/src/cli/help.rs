@@ -78,11 +78,11 @@ pub fn summaries_of(namespace: Namespace) -> &'static [(&'static str, &'static s
         Namespace::Notes => &[
             (
                 "notes tokens",
-                "print the stored Nuclear Notes tokens and which is the composer's",
+                "print the stored Carbon Forge tokens and which is the composer's",
             ),
             (
                 "notes tokens add <alias> <host>",
-                "store a Nuclear Notes token, read from standard input; add the word `apex` \
+                "store a Carbon Forge token, read from standard input; add the word `apex` \
                  after the host for a credential with no instance boundary",
             ),
             (

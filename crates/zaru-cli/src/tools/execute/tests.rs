@@ -1610,7 +1610,7 @@ async fn corpus_a_projected_call_carrying_a_held_value_is_refused_and_never_reac
                     "play.cortex.page",
                 )),
             )
-            .expect("an nn_ value builds a Nuclear Notes entry"),
+            .expect("an nn_ value builds a Carbon Forge entry"),
             &keys,
             None,
         )

@@ -55,7 +55,7 @@ use zaru_tui::composer::{Entries, Entry, EntryKind, MATCH_LIMIT};
 /// **Drafted 2026-09-05 under a delegated coordinator ruling, open to Jeshua's
 /// veto**, and the words are user-facing prose rather than an implementation
 /// detail. It said two things, and **the first stopped being true later the
-/// same day**: that "nothing here can open a transport to Nuclear Notes —
+/// same day**: that "nothing here can open a transport to Carbon Forge —
 /// `zaru_notes::session::Endpoint` has no implementation in any product tree".
 /// `zaru_notes::session::HttpEndpoint` is that implementation. What remains
 /// true is the second half alone: nothing is cached, because no stored token

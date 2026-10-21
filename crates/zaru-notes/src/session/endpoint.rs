@@ -5,7 +5,7 @@
 //!
 //! # Why this is a port, and what now implements it
 //!
-//! [ADR-0103] mounts Nuclear Notes' MCP surface over streamable HTTP, and this
+//! [ADR-0103] mounts Carbon Forge's MCP surface over streamable HTTP, and this
 //! port is what a session opens that surface through.
 //!
 //! **It had no implementation until 2026-09-05, and the paragraph that stood

@@ -32,7 +32,7 @@
 //! # Why the fixture is built by hand, and why that is not a contrivance
 //!
 //! [`CredentialStore::grant_composer_role`] refuses the role to any token
-//! whose cached scope leaves [ADR-0006] D4's set, and every Nuclear Notes
+//! whose cached scope leaves [ADR-0006] D4's set, and every Carbon Forge
 //! token measured on 2026-09-06 and on 2026-09-14 grants 94 tools against that
 //! set's nine. **So no real credential can hold the composer role on any
 //! machine that exists, apex or not**, and D8's status-line case cannot be
@@ -93,7 +93,7 @@ impl Confirm for AlwaysConfirms {
     }
 }
 
-/// A store holding one Nuclear Notes token, built through the public door.
+/// A store holding one Carbon Forge token, built through the public door.
 ///
 /// The scope is [`COMPOSER_SCOPE`] itself, so the role is grantable — which is
 /// the store's own rule and not this check's opinion about it. `role` says
@@ -110,7 +110,7 @@ fn store_with(root: &PathBuf, reach: Reach, role: bool) -> CredentialStore {
                 Secret::notes(format!("nn_mcp_{}", nonce("secret"))).expect("nn_mcp_ names a kind"),
                 reach,
             )
-            .expect("an nn_ value builds a Nuclear Notes entry")
+            .expect("an nn_ value builds a Carbon Forge entry")
             .with_tools(ToolScope::of_names(COMPOSER_SCOPE.iter().copied())),
             &keys,
             Some(&AlwaysConfirms),
@@ -328,7 +328,7 @@ fn corpus_a_description_that_would_forge_a_tier_claim_cannot_reach_the_row() {
                         .expect("nn_mcp_ names a kind"),
                     Reach::Apex,
                 )
-                .expect("an nn_ value builds a Nuclear Notes entry")
+                .expect("an nn_ value builds a Carbon Forge entry")
                 .with_tools(ToolScope::of_names(COMPOSER_SCOPE.iter().copied())),
                 &keys,
                 Some(&AlwaysConfirms),

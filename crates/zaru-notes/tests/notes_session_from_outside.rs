@@ -9,7 +9,7 @@
 //! It is evidence that the mechanism works through `zaru-notes`' public door:
 //! this file implements [`Endpoint`] itself, from outside, and uses nothing the
 //! crate does not export. **It is not evidence about the `zaru` binary**, which
-//! reaches none of this, and it is not evidence about Nuclear Notes, which was
+//! reaches none of this, and it is not evidence about Carbon Forge, which was
 //! never called. The server on the other end is a fixture written here.
 //!
 //! # Why the bytes are real

@@ -423,7 +423,7 @@ impl Prepared {
     }
 
     /// Every tool this session offers a model: the built-ins and any a
-    /// Nuclear Notes token projects.
+    /// Carbon Forge token projects.
     #[must_use]
     pub fn declared_tools(&self) -> &[zaru_core::tool_call::ToolDescriptor] {
         &self.declared_tools
@@ -1173,7 +1173,7 @@ pub fn prepare(
     // reason to relax that.
     //
     // **But the store is needed only when the session reads something from
-    // it**, since 2026-09-28: the provider's key, or a Nuclear Notes server
+    // it**, since 2026-09-28: the provider's key, or a Carbon Forge server
     // the model is offered. When it reads nothing and the stored values will
     // not open -- no keyring and no `ZARU_CREDENTIAL_KEY` -- the task goes on
     // and says once that the stored keys could not be read and so cannot be

@@ -15,7 +15,7 @@
 //! session and the signals, and `zaru_core` for the clock port.
 //!
 //! **It is not evidence about the `zaru` binary**, which reaches none of this,
-//! and it is not evidence about Nuclear Notes, which was never called. The
+//! and it is not evidence about Carbon Forge, which was never called. The
 //! server on the other end is a fixture written in this file.
 //!
 //! # Why the bytes are real
@@ -453,7 +453,7 @@ async fn wire() -> Wired {
                 Secret::notes(planted.clone()).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(TokenInstance::new("100monkeys-ai.cortex.page")),
             )
-            .expect("an nn_ value builds a Nuclear Notes entry")
+            .expect("an nn_ value builds a Carbon Forge entry")
             .with_tools(ToolScope::of_names(STALE_SCOPE))
             .with_workspace("zaru"),
             &keys,
@@ -461,7 +461,7 @@ async fn wire() -> Wired {
         )
         .expect("the token is stored");
 
-    // A second Nuclear Notes token, which is staging rather than subject.
+    // A second Carbon Forge token, which is staging rather than subject.
     // ADR-0007 D5's exclusion predicate became "the token the composer reads
     // with" on 2026-09-15, and with one stored token that is this one -- so a
     // store of one projects nothing and the projection arm below would read an
@@ -476,7 +476,7 @@ async fn wire() -> Wired {
                 Secret::notes(format!("nn_mcp_{}", nonce("second"))).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(TokenInstance::new("100monkeys-ai.cortex.page")),
             )
-            .expect("an nn_ value builds a Nuclear Notes entry"),
+            .expect("an nn_ value builds a Carbon Forge entry"),
             &keys,
             None,
         )
@@ -988,7 +988,7 @@ fn projected_store() -> Projected {
                 Secret::notes(planted.clone()).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(TokenInstance::new("play.cortex.page")),
             )
-            .expect("an nn_ value builds a Nuclear Notes entry"),
+            .expect("an nn_ value builds a Carbon Forge entry"),
             &keys,
             None,
         )
@@ -1003,7 +1003,7 @@ fn projected_store() -> Projected {
                 Secret::notes(format!("nn_mcp_{}", nonce("second"))).expect("nn_mcp_ names a kind"),
                 Reach::InstanceLocked(TokenInstance::new("play.cortex.page")),
             )
-            .expect("an nn_ value builds a Nuclear Notes entry"),
+            .expect("an nn_ value builds a Carbon Forge entry"),
             &keys,
             None,
         )
@@ -1263,7 +1263,7 @@ static NOTHING: std::sync::LazyLock<zaru_cli::credentials::Granted> =
 ///
 /// **The whole point of this check is the wire.** `persona_from` takes
 /// `&impl Persona`, and a staged implementation of that trait proves the
-/// signature and nothing about what a Nuclear Notes instance is asked. This
+/// signature and nothing about what a Carbon Forge instance is asked. This
 /// drives it over `rmcp` and `tokio::io::duplex` against the same fixture
 /// every other check in this file uses, and reads the frames back: exactly one
 /// `pages.read`, with the workspace named on the call, and **no `pages.list`,

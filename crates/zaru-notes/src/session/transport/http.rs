@@ -22,7 +22,7 @@
 //! **No legacy discovery.** The SDK's client calls `legacy_discover_response`
 //! on a non-success POST, which is `pub(super)` and cannot be reached from
 //! here. It exists so that a 4xx from an old SSE-transport server can be read
-//! as a discovery hint. Nuclear Notes is not such a server — measured
+//! as a discovery hint. Carbon Forge is not such a server — measured
 //! 2026-09-05: its POST answers `200` with `application/json` and its `GET`
 //! answers `200` with `text/event-stream`, which is the streamable transport
 //! [ADR-0103] mounts — so what is lost is a fallback to a shape this product

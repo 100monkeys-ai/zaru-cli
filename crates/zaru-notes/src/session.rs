@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! A session against Nuclear Notes, and the values that cross it.
+//! A session against Carbon Forge, and the values that cross it.
 //!
 //! # The rule this module turns into a type
 //!

@@ -1,12 +1,12 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The Nuclear Notes client: a session over MCP against a cortex workspace,
+//! The Carbon Forge client: a session over MCP against a cortex workspace,
 //! and the workspace-scoped addressing every such call requires.
 //!
 //! # Boundary
 //!
-//! This crate depends on no sibling crate. It speaks to Nuclear Notes and to
+//! This crate depends on no sibling crate. It speaks to Carbon Forge and to
 //! nothing else, so it has no reason to know that a loop, a terminal, or an
 //! orchestrator exists. The consequence that bites is not architectural but
 //! practical: it cannot reuse `zaru-cli`'s `Secret`, nor that crate's test

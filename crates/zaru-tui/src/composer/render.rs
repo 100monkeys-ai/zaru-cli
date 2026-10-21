@@ -141,7 +141,7 @@ fn fitted<T>(
 /// nothing below the input and was told nothing about why — the largest
 /// missing piece of this surface, and the kind of silent degradation
 /// [Operating Principles]' "legibility beats smoothness" is written against. A
-/// user with no Nuclear Notes token has a reason to see nothing, and the
+/// user with no Carbon Forge token has a reason to see nothing, and the
 /// reason is worth one line. A user whose working directory offers nothing has
 /// a different reason, and it is worth a different line.
 ///
@@ -231,7 +231,7 @@ impl Composer {
             // already on the screen saying what is being picked" — and that
             // reasoning is about a **miss**, which this line is not. The
             // absence is `Some` only where the host says the corpus holds
-            // nothing at all, and a `[[` over a session with no Nuclear Notes
+            // nothing at all, and a `[[` over a session with no Carbon Forge
             // token painted six blank rows and said nothing about why:
             // measured on the release binary at `3c1bf0a`, the same silence
             // the trie arm has had a line for since 2026-09-05. A miss is
@@ -569,7 +569,7 @@ mod tests {
         // asserted here is that the composer paints the line it was handed,
         // whatever it says. The words a user actually reads are `zaru-cli`'s
         // and are asserted at the shell's own width, because this frame is 40
-        // columns and a real sentence about Nuclear Notes does not fit in it —
+        // columns and a real sentence about Carbon Forge does not fit in it —
         // which is itself worth knowing and is why the wording is short.
         const ABSENCE: &str = "nothing to search · ✦";
         let empty = TrieOf::new(0);

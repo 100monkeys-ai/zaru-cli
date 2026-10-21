@@ -73,7 +73,7 @@ use std::path::{Path, PathBuf};
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub const TEMPLATE: &str = r#"[project]
 name = "acme-api"
-workspace = "acme-engineering"   # the Nuclear Notes workspace this project reads
+workspace = "acme-engineering"   # the Carbon Forge workspace this project reads
 
 [runtime]
 max_iterations = 3

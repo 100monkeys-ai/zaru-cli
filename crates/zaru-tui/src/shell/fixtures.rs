@@ -40,7 +40,7 @@ const NAMESPACES: [(&str, &str, bool, &[&str]); 11] = [
     ("/stack", "AEGIS component fetch and status", false, &[]),
     (
         "/notes",
-        "Nuclear Notes tokens, workspace, search",
+        "Carbon Forge tokens, workspace, search",
         true,
         &["tokens"],
     ),

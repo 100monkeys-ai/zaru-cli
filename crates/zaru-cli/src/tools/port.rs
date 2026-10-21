@@ -540,7 +540,7 @@ impl Projected for NoProjection {
             exit_code: 1,
             stdout: String::new(),
             stderr: format!(
-                "this session projects no Nuclear Notes servers, so there is no `{alias}` to call \
+                "this session projects no Carbon Forge servers, so there is no `{alias}` to call \
                  `{tool}` on",
             ),
         })

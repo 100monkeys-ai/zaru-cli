@@ -11,7 +11,7 @@
 //! | Tier        | Membrane         | Loop               | Cortex        | Network                    |
 //! | bare        | none             | none               | none          | model provider only        |
 //! | contained   | local containers | local              | local         | model provider only        |
-//! | linked      | local containers | local, offloadable | Nuclear Notes | model provider + platform  |
+//! | linked      | local containers | local, offloadable | Carbon Forge  | model provider + platform  |
 //! ```
 //!
 //! Each column is an enum whose variants are that column's distinct cells and
@@ -63,7 +63,7 @@ pub enum Tier {
     /// D1: "AEGIS runs locally. The membrane is containers; the 100monkeys
     /// loop runs on the user's machine."
     Contained,
-    /// D1: "the account is attached. Nuclear Notes provides knowledge; cloud
+    /// D1: "the account is attached. Carbon Forge provides knowledge; cloud
     /// Zaru and AEGIS accept offloaded work."
     Linked,
 }
@@ -197,7 +197,7 @@ pub enum Cortex {
     /// `contained`. A local one.
     Local,
     /// `linked`. The product, named as
-    /// [Ubiquitous Language] requires: Cortex is a concept, Nuclear Notes is
+    /// [Ubiquitous Language] requires: Cortex is a concept, Carbon Forge is
     /// the product.
     ///
     /// [Ubiquitous Language]: https://100monkeys-ai.cortex.page/zaru/p/architecture/ubiquitous-language
@@ -239,7 +239,7 @@ macro_rules! column {
 
 column!(Membrane, None => "none", LocalContainers => "local containers");
 column!(Loop, None => "none", Local => "local", LocalOffloadable => "local, offloadable");
-column!(Cortex, None => "none", Local => "local", NuclearNotes => "Nuclear Notes");
+column!(Cortex, None => "none", Local => "local", NuclearNotes => "Carbon Forge");
 column!(
     Network,
     ModelProviderOnly => "model provider only",

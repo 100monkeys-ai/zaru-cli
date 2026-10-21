@@ -7,7 +7,7 @@
 //! and atom names for every reachable workspace, built at session start and
 //! refreshed on write. Zero network, instant, works offline."
 //!
-//! [Bounded Contexts] gives this crate "Nuclear Notes client, the local trie,
+//! [Bounded Contexts] gives this crate "Carbon Forge client, the local trie,
 //! embedding, workspace pointer", which is why the structure is here and not in
 //! the crate that renders it. `zaru-tui` declares the port
 //! (`composer::Entries`), this crate owns the structure, and `zaru-cli` — the

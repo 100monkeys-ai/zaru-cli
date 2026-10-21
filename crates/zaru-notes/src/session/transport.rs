@@ -93,7 +93,7 @@ pub use bounded::{Budget, EventTooLarge};
 pub use http::ReqwestHttp as HttpClient;
 pub use request::Outcome;
 
-/// Where Nuclear Notes mounts its MCP surface on an instance.
+/// Where Carbon Forge mounts its MCP surface on an instance.
 ///
 /// [ADR-0103] mounts one endpoint per instance at this path, and it is a
 /// constant rather than a parameter because an [`Instance`] is a host: the
@@ -116,7 +116,7 @@ pub const MCP_PATH: &str = "/api/mcp";
 /// [ADR-0014]: https://100monkeys-ai.cortex.page/zaru/p/adrs/0014-configuration-hierarchy
 pub const SCHEME: &str = "https://";
 
-/// Opens a streamable HTTP session against a Nuclear Notes instance.
+/// Opens a streamable HTTP session against a Carbon Forge instance.
 ///
 /// # The bearer is handed on and never held
 ///

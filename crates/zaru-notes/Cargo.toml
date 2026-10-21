@@ -1,6 +1,6 @@
 [package]
 name = "zaru-notes"
-description = "Zaru's Nuclear Notes client."
+description = "Zaru's Carbon Forge client."
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 # `transport-streamable-http-client` is the GENERIC half of the streamable
-# HTTP transport [ADR-0103] mounts Nuclear Notes on: the
+# HTTP transport [ADR-0103] mounts Carbon Forge on: the
 # `StreamableHttpClient` trait and the worker that drives it, with no HTTP
 # client of its own. The SDK's ready-made client lives behind
 # `transport-streamable-http-client-reqwest` instead, and is refused for a

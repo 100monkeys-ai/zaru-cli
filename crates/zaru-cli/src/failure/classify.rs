@@ -202,7 +202,7 @@ impl From<SecretRefused> for Classified {
     fn from(refusal: SecretRefused) -> Self {
         correctable(
             &refusal,
-            act("supply a Nuclear Notes token, which begins \"nn_mcp_\" or \"nn_app_\"".to_owned()),
+            act("supply a Carbon Forge token, which begins \"nn_mcp_\" or \"nn_app_\"".to_owned()),
         )
     }
 }

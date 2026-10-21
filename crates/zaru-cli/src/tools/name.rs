@@ -66,7 +66,7 @@ pub enum Effect {
     Command,
     /// Retrieves a URL.
     Retrieve,
-    /// Reaches a Nuclear Notes instance through a projected MCP server.
+    /// Reaches a Carbon Forge instance through a projected MCP server.
     ///
     /// A fifth category rather than one of the four, for the reason
     /// [`Effect::Retrieve`] is a fourth: D3's sentence admits two and this is

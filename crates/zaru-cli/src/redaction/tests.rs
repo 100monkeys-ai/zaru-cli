@@ -47,7 +47,7 @@ fn store_holding(
             Secret::notes(value.clone()).expect("the fixture prefixes name a kind"),
             Reach::InstanceLocked(Instance::new("100monkeys-ai.cortex.page")),
         )
-        .expect("an nn_ value builds a Nuclear Notes entry")
+        .expect("an nn_ value builds a Carbon Forge entry")
         .with_tools(ToolScope::of_names(["pages.read"]));
         store.add(entry, &keys, None).expect("an entry is added");
         aliases.push(alias);

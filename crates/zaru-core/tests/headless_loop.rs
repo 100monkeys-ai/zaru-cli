@@ -181,7 +181,7 @@ async fn a_caller_outside_this_crate_can_drive_the_loop_to_an_outcome() {
 /// whole point of that type. It is declared here rather than shared because
 /// an integration test cannot see another crate's test tree and [ADR-0003] D8
 /// forbids the dependency that would let it, the same cost `zaru-cli`'s
-/// Nuclear Notes fixture server already pays.
+/// Carbon Forge fixture server already pays.
 ///
 /// Holding nothing is also the **discriminating** arm: a check asserting that
 /// a value is absent from a prompt is worthless unless the same run with

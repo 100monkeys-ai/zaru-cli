@@ -1,7 +1,7 @@
 // Copyright 2026 100monkeys AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Where the credential store meets the Nuclear Notes client.
+//! Where the credential store meets the Carbon Forge client.
 //!
 //! # This module is the whole seam, and that is checkable
 //!
@@ -74,7 +74,7 @@ use zaru_notes::session::{
 };
 use zaru_notes::trie::{CachedEntry, EntryKind as CachedKind};
 
-/// The bearer a Nuclear Notes session authenticates with, from a stored secret.
+/// The bearer a Carbon Forge session authenticates with, from a stored secret.
 ///
 /// **This is the one place a stored secret becomes a value another crate
 /// holds.** [ADR-0007] D3 puts the bearer on the harness's own dispatch path
@@ -160,7 +160,7 @@ pub struct Refreshed {
 /// # This classifies nothing, deliberately
 ///
 /// [ADR-0016] gives `zaru-cli` the mapping into its taxonomy, and this type
-/// stays outside it. A `forbidden` from Nuclear Notes could be a revoked
+/// stays outside it. A `forbidden` from Carbon Forge could be a revoked
 /// token, a scope change, or a workspace the user was removed from —
 /// user-correctable, environmental and neither — and [ADR-0006] D7 says in as
 /// many words that the server does not reveal which gate tripped. A mapping
@@ -189,7 +189,7 @@ impl fmt::Display for ScopeError {
         match self {
             Self::Read { alias, source } => write!(
                 f,
-                "the tool scope for \"{alias}\" could not be read from Nuclear Notes: {source}"
+                "the tool scope for \"{alias}\" could not be read from Carbon Forge: {source}"
             ),
             Self::Store(error) => write!(f, "the refreshed tool scope could not be kept: {error}"),
         }
@@ -297,7 +297,7 @@ impl CredentialStore {
     }
 }
 
-/// A Nuclear Notes instance would not complete a session.
+/// A Carbon Forge instance would not complete a session.
 ///
 /// # Why this carries a sentence rather than the client's error
 ///
@@ -567,7 +567,7 @@ pub async fn persona_from(
 /// The same, opening a session against a real instance first.
 ///
 /// The session is closed as soon as the page is read, for the reason
-/// [`corpus_at`]'s is: nothing in this harness holds a Nuclear Notes session
+/// [`corpus_at`]'s is: nothing in this harness holds a Carbon Forge session
 /// open between calls, and a persona is read once per session.
 ///
 /// **There is no timeout here beyond `reqwest`'s own**, which is the absence
@@ -634,14 +634,14 @@ pub fn composer_secret(
 /// unchanged: a token carrying the role wins whenever one exists. What D4 does
 /// not cover is a store where **none** carries it, which is the state of every
 /// machine — `CredentialStore::grant_composer_role` refuses the role to any
-/// token whose cached scope leaves [ADR-0006] D4's set, and every Nuclear
-/// Notes token measured on 2026-09-14 grants 94 tools.
+/// token whose cached scope leaves [ADR-0006] D4's set, and every Carbon
+/// Forge token measured on 2026-09-14 grants 94 tools.
 ///
 /// So the rule, accepted 2026-09-14 under a delegated coordinator ruling and
 /// open to Jeshua's veto, in three cases:
 ///
 /// 1. A token carrying the role wins.
-/// 2. Otherwise, **exactly one** stored Nuclear Notes token serves. One token
+/// 2. Otherwise, **exactly one** stored Carbon Forge token serves. One token
 ///    is unambiguous; refusing to read with the only credential the user has
 ///    would be the harness declining to use what it was given.
 /// 3. Otherwise nothing serves. Several tokens with no role is a **choice**,
@@ -705,7 +705,7 @@ pub fn composer_token(store: &CredentialStore) -> Option<(Alias, String)> {
 /// for. Its first case consults [`CredentialStore::composer`] and then maps
 /// the record through a host — and an apex entry has none, so **a composer
 /// role held by an apex token makes `composer_token` answer nothing at all**.
-/// The session therefore opens with no Nuclear Notes client, the hint strip
+/// The session therefore opens with no Carbon Forge client, the hint strip
 /// shows its absence line, and this marking is the one thing the row can
 /// truthfully say about a credential the session holds and cannot use. Reading
 /// the marking off a function that has already discarded the entry would have
@@ -721,7 +721,7 @@ pub fn composer_token(store: &CredentialStore) -> Option<(Alias, String)> {
 /// A store with no composer, a composer that is instance-locked, and a store
 /// that will not open at all. The first of those is the ordinary case:
 /// [`CredentialStore::grant_composer_role`] refuses the role to any token
-/// whose cached scope leaves [ADR-0006] D4's set, and every Nuclear Notes
+/// whose cached scope leaves [ADR-0006] D4's set, and every Carbon Forge
 /// token measured on 2026-09-06 and 2026-09-14 grants 94 tools against that
 /// set's nine. So **no real credential can hold the composer role on any
 /// machine today, apex or not**, and this function's `Some` arm is reachable

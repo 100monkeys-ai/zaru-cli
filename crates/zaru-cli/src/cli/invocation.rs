@@ -174,7 +174,7 @@ pub enum Request {
     /// `zaru providers keys` — which providers this machine holds a key for.
     ///
     /// A sibling of [`Request::NotesTokens`] rather than a widening of it:
-    /// [ADR-0007] D7's listing is Nuclear Notes tokens', and every column it
+    /// [ADR-0007] D7's listing is Carbon Forge tokens', and every column it
     /// prints -- workspace, tool count, instance, composer role -- is a Notes
     /// token's. The two listings share one projection so that "never a value"
     /// is one rule rather than two.
@@ -216,7 +216,7 @@ pub enum Request {
     /// **The first half is still true of every token that exists**, and that
     /// is the honest surface rather than a defect: the store refuses the role
     /// to a token whose cached scope reaches outside [ADR-0006] D4's set, and
-    /// every Nuclear Notes token measured on 2026-09-14 grants 94 tools. So
+    /// every Carbon Forge token measured on 2026-09-14 grants 94 tools. So
     /// what a person running this sees today is a refusal **naming the tool**
     /// that put the token outside the set. That is the store holding D4
     /// correctly, and the command exists so that the refusal is something a

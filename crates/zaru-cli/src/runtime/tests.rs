@@ -41,7 +41,7 @@ const D1: [(&str, &str, &str, &str, &str); 3] = [
         "linked",
         "local containers",
         "local, offloadable",
-        "Nuclear Notes",
+        "Carbon Forge",
         "model provider + platform",
     ),
 ];

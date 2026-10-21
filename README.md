@@ -136,7 +136,7 @@ The permission mode decides what needs asking. Set it with `tools.mode` in `~/.z
 
 | Mode | What it asks about |
 | --- | --- |
-| `ask` (default) | Every file write, file edit, command, web page fetch and Nuclear Notes call, and anything outside the working directory. Reading, listing and searching files inside it do not ask. |
+| `ask` (default) | Every file write, file edit, command, web page fetch and Carbon Forge call, and anything outside the working directory. Reading, listing and searching files inside it do not ask. |
 | `allow` | Nothing on your allowlist; everything else. |
 | `yolo` | Nothing. Every call the model makes runs. |
 
@@ -186,9 +186,9 @@ expect = "exit-zero"
 
 Validators are commands, so none runs until you approve them. Before the first one runs in a project, Zaru shows every validator's name and command and asks. Your answer is kept in `~/.zaru/approved-validators.jsonl`, for that directory and that exact set of commands. If `zaru.toml` changes them, Zaru asks again and shows what changed. When there is no terminal to ask on, the task is refused: run `zaru validators approve` in the project's directory to see the commands and approve them, and `zaru validators list` to see what you have approved. The permission mode does not change this, `yolo` included.
 
-### Nuclear Notes
+### Carbon Forge
 
-Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host>` stores an access token for it, read from standard input. When a session opens with a stored token, Zaru suggests matching page and atom names from your notes as you type. The model can call a Nuclear Notes instance's tools only if you list them under `notes.<alias>.agent_tools` in `~/.zaru/config.toml`.
+Carbon Forge is 100monkeys' notes service. `zaru notes tokens add <alias> <host>` stores an access token for it, read from standard input. When a session opens with a stored token, Zaru suggests matching page and atom names from your notes as you type. The model can call a Carbon Forge instance's tools only if you list them under `notes.<alias>.agent_tools` in `~/.zaru/config.toml`.
 
 ## Command reference
 
@@ -207,8 +207,8 @@ Nuclear Notes is 100monkeys' notes service. `zaru notes tokens add <alias> <host
 | `zaru validators list` | List every project whose validators you approved, and their commands. |
 | `zaru sessions list` | List the sessions on this machine. |
 | `zaru sessions rm <id>` | Delete a session's directory. |
-| `zaru notes tokens` | List the stored Nuclear Notes tokens. |
-| `zaru notes tokens add <alias> <host>` | Store a Nuclear Notes token, read from standard input. |
+| `zaru notes tokens` | List the stored Carbon Forge tokens. |
+| `zaru notes tokens add <alias> <host>` | Store a Carbon Forge token, read from standard input. |
 | `zaru notes tokens describe <alias> <text>` | Add a description to a stored token. |
 | `zaru notes tokens rm <alias>` | Delete a stored token. |
 | `zaru notes use <alias>` | Choose which token the session's suggestions use. |
@@ -234,7 +234,7 @@ Zaru acts on your machine with your user account's permissions. It is not a sand
 - **Permission.** The permission mode decides what Zaru asks about. In `yolo` mode it asks nothing, so a model can also change which validators are approved; use `yolo` only for a directory and a task you trust entirely.
 - **Validators run only after you approve them.** The commands in a project's `./zaru.toml` are shown to you and run only once you say yes, and you are asked again when they change. The approval is kept under `~/.zaru/`, never in the project, and the permission mode does not skip it.
 - **Runtime tiers.** A runtime tier is how much of the 100monkeys platform Zaru uses. The default is `bare`, which uses none. `contained` and `linked` can be selected but are not built yet: at every tier, tool calls run directly on your machine. Zaru prints the not-a-sandbox warning at every tier, and at `contained` and `linked` it adds that the tier is not built yet and changes nothing about how tool calls run. `zaru runtime` says the same.
-- **What the model provider receives.** A short system prompt, your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. The system prompt states the working directory, the operating system, the date, the tool names and the permission mode; if a system prompt is read from a Nuclear Notes page (`persona.path`), that page is sent instead. Zaru removes the values of the keys and tokens it has stored from this. When it cannot read them (no keyring and no `ZARU_CREDENTIAL_KEY`) and the task needs none of them, it says so and goes on without removing them. It does not look for any other secret.
+- **What the model provider receives.** A short system prompt, your task, the conversation so far, the tool descriptions, and the result of every tool call, including the contents of files read, command output and fetched pages. The system prompt states the working directory, the operating system, the date, the tool names and the permission mode; if a system prompt is read from a Carbon Forge page (`persona.path`), that page is sent instead. Zaru removes the values of the keys and tokens it has stored from this. When it cannot read them (no keyring and no `ZARU_CREDENTIAL_KEY`) and the task needs none of them, it says so and goes on without removing them. It does not look for any other secret.
 - **What stays on your machine.** Settings, stored keys and sessions are under `~/.zaru/`. Keys and tokens are in `~/.zaru/credentials.json`, encrypted with AES-256-GCM; the encryption key is in the OS keyring or in `ZARU_CREDENTIAL_KEY`. Session files are readable only by you and are kept until you delete them with `zaru sessions rm`.
 
 ### Known limitations

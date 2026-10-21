@@ -402,7 +402,7 @@ impl Composer {
     /// # Why the composer is handed this rather than asking
     ///
     /// "The fast tier holds no entry at all" is the host's knowledge and not
-    /// this crate's: whether a Nuclear Notes token exists, whether one has been
+    /// this crate's: whether a Carbon Forge token exists, whether one has been
     /// used, and which workspace is attached are all `zaru-cli`'s, and
     /// [`Entries`] deliberately answers one question — what matches a prefix.
     /// So the line crosses as a value, exactly as [ADR-0002] D8's standing tip
@@ -1397,7 +1397,7 @@ mod tests {
             [
                 "/runtime  tier and membrane".to_owned(),
                 "/stack    AEGIS component fetch and status".to_owned(),
-                "/notes    Nuclear Notes tokens, workspace, search".to_owned(),
+                "/notes    Carbon Forge tokens, workspace, search".to_owned(),
                 "/config   configuration and explanation".to_owned(),
                 "/memory   relationship memory".to_owned(),
             ],
@@ -1795,7 +1795,7 @@ mod tests {
     /// rendered empty.
     #[test]
     fn the_hint_strip_returns_the_moment_the_line_stops_being_a_command() {
-        const ABSENCE: &str = "no Nuclear Notes token · nothing to search";
+        const ABSENCE: &str = "no Carbon Forge token · nothing to search";
 
         let trie = CountingTrie::staged();
         let mut composer = Composer::new();
@@ -1898,7 +1898,7 @@ mod tests {
     /// and a host that handed nothing in leaves the strip as it was.
     #[test]
     fn the_absence_line_appears_only_when_there_is_nothing_else_to_show() {
-        const ABSENCE: &str = "no Nuclear Notes token · nothing to search";
+        const ABSENCE: &str = "no Carbon Forge token · nothing to search";
 
         let empty = TrieOf::new(0);
         let mut composer = Composer::new();
@@ -1944,8 +1944,8 @@ mod tests {
     /// **The picker half reversed on 2026-09-15 and the name moved with it.**
     /// This check read `…_and_never_enters_a_picker` and asserted that an open
     /// picker with no matches is a miss — which is true of a **miss** and was
-    /// being used to cover an **absence**. A `[[` in a session with no Nuclear
-    /// Notes token painted six blank rows and said nothing about why, measured
+    /// being used to cover an **absence**. A `[[` in a session with no Carbon
+    /// Forge token painted six blank rows and said nothing about why, measured
     /// on the release binary at `3c1bf0a`, while the trie arm beside it has
     /// had a sentence for that exact state since 2026-09-05. The absence is
     /// handed in only where the host says the corpus holds nothing at all, so
@@ -1954,7 +1954,7 @@ mod tests {
     /// picker with no line handed in still says nothing.
     #[test]
     fn the_absence_line_yields_the_empty_prompt_to_the_tip_and_reaches_an_open_picker() {
-        const ABSENCE: &str = "no Nuclear Notes token · nothing to search";
+        const ABSENCE: &str = "no Carbon Forge token · nothing to search";
         let empty = TrieOf::new(0);
 
         let mut composer = Composer::new();

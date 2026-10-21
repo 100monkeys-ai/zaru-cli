@@ -261,7 +261,7 @@ pub enum StoredReach {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum StoredHeld {
-    /// A Nuclear Notes token.
+    /// A Carbon Forge token.
     Notes {
         /// D2's `kind` for a Notes token: `personal` or `app`. Written down
         /// so a reader of the file can see it, and still derived from the
@@ -271,7 +271,7 @@ pub enum StoredHeld {
         /// D8's instance boundary, or its absence.
         reach: StoredReach,
         /// D2's `role`. `None` is D2's "unset". Only a Notes token can carry
-        /// one: ADR-0007 D4's composer role is a Nuclear Notes pointer's.
+        /// one: ADR-0007 D4's composer role is a Carbon Forge pointer's.
         role: Option<String>,
         /// D6's cached tools, as much of each as the cache holds.
         ///
@@ -324,7 +324,7 @@ impl Record {
         }
     }
 
-    /// Whether this is a Nuclear Notes token.
+    /// Whether this is a Carbon Forge token.
     ///
     /// The predicate both listings are filtered by, so ADR-0007 D7's
     /// `notes tokens` lists Notes tokens and nothing else.
@@ -623,7 +623,7 @@ impl CredentialStore {
             return Err(StoreError::DuplicateAlias { alias });
         }
 
-        // The apex gate is D8's and applies to a Nuclear Notes token alone: a
+        // The apex gate is D8's and applies to a Carbon Forge token alone: a
         // provider key has no instance boundary to cross, which is why
         // `Entry::reach` answers `None` for one rather than answering a
         // default that would read as "instance-locked" and be meaningless.
@@ -709,7 +709,7 @@ impl CredentialStore {
     /// other family answers [`StoreError::UnknownAlias`] — the same reading
     /// [`Self::grant_composer_role`] and [`Self::move_composer_role`] already
     /// take of a provider key, because from the caller's side "there is no
-    /// Nuclear Notes token by that name" is exactly what happened. The
+    /// Carbon Forge token by that name" is exactly what happened. The
     /// accepted Update of 2026-09-05 states the rule it serves: **"D7's
     /// listing does not lie about what it lists."** `zaru notes tokens` is
     /// filtered to Notes tokens, so a `notes tokens` verb that reached past

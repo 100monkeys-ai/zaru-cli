@@ -5,7 +5,7 @@
 //!
 //! [ADR-0016] gives each crate its own error enum and `zaru-cli` the mapping
 //! into the taxonomy. **Nothing here classifies.** That is not deferral: a
-//! `forbidden` from Nuclear Notes could be a revoked token, a scope change, or
+//! `forbidden` from Carbon Forge could be a revoked token, a scope change, or
 //! a workspace the user was removed from — user-correctable, environmental and
 //! neither, respectively — and [ADR-0006] D7 says in as many words that the
 //! server does not reveal which gate tripped. A mapping made here would be

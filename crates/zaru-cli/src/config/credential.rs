@@ -27,7 +27,7 @@
 //! # What this deliberately does not settle
 //!
 //! Whether the credential store holds *provider* credentials at all, or only
-//! Nuclear Notes tokens, is an open question on [operations/adr-status]. A
+//! Carbon Forge tokens, is an open question on [operations/adr-status]. A
 //! configuration key naming an alias is silent about what kind of credential
 //! that alias addresses, so nothing here answers it.
 //!

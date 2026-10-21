@@ -44,7 +44,7 @@ use std::collections::HashMap;
 /// client that offered only `application/json` would be refusing every
 /// streamed answer before it was sent; one that offered only
 /// `text/event-stream` would be refusing every immediate one. Measured against
-/// Nuclear Notes on 2026-09-05: with both offered, its POST answers
+/// Carbon Forge on 2026-09-05: with both offered, its POST answers
 /// `application/json` and its `GET` answers `text/event-stream`, so this one
 /// product uses each branch on a different method.
 pub const ACCEPT_JSON_AND_EVENT_STREAM: &str = "application/json, text/event-stream";

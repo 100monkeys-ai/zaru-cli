@@ -118,7 +118,7 @@ fn kinds_needing_a_key(kinds: &[ProviderKind]) -> Vec<&'static str> {
 ///
 /// **It names both listings, since 2026-09-14.** This named `zaru notes
 /// tokens` alone, which was right while every raiser of
-/// [`StoreError::UnknownAlias`] was a Nuclear Notes operation.
+/// [`StoreError::UnknownAlias`] was a Carbon Forge operation.
 /// `zaru providers keys rm` raises it too, and a person who mistyped a
 /// provider kind was sent to a listing that could never have shown their key
 /// — a remedy naming something the binary runs, but not the thing the reader
@@ -676,7 +676,7 @@ impl<'a> Surface<'a> {
         )
     }
 
-    /// Standard input could not be read while adding a Nuclear Notes token.
+    /// Standard input could not be read while adding a Carbon Forge token.
     ///
     /// The sibling of [`Self::key_not_readable`] and for the same reasons; the
     /// two are separate functions rather than one taking a noun because the
@@ -699,7 +699,7 @@ impl<'a> Surface<'a> {
         }
     }
 
-    /// A Nuclear Notes token the store would not take.
+    /// A Carbon Forge token the store would not take.
     #[must_use]
     pub fn token_refused(alias: &Alias, host: &str, refusal: &SecretRefused) -> Classified {
         correctable(
@@ -711,13 +711,13 @@ impl<'a> Surface<'a> {
         )
     }
 
-    /// A Nuclear Notes instance that would not answer while a token was added.
+    /// A Carbon Forge instance that would not answer while a token was added.
     ///
     /// # This classifies the command, not the enum
     ///
     /// [ADR-0016]'s taxonomy is mapped per enum, all or nothing, and
     /// `NotesError` is one of the enums this crate deliberately does not map —
-    /// a `forbidden` from Nuclear Notes could be a revoked token, a scope
+    /// a `forbidden` from Carbon Forge could be a revoked token, a scope
     /// change or a workspace the user was removed from, and
     /// [ADR-0006](https://100monkeys-ai.cortex.page/zaru/p/adrs/0006-nuclear-notes-surfaces)
     /// D7 says the server does not reveal which. **Nothing here reads the
@@ -1115,7 +1115,7 @@ impl<'a> Surface<'a> {
             // that does not is a stack trace with better grammar.
             // **Both listings, since 2026-09-14.** This named `zaru notes
             // tokens` alone, which was right while every raiser of this
-            // refusal was a Nuclear Notes operation. `providers keys rm`
+            // refusal was a Carbon Forge operation. `providers keys rm`
             // raises it too, and a person who mistyped a provider kind was
             // sent to a listing that could never have shown their key --
             // ADR-0016 D2's remedy that names something the binary runs, but
@@ -1637,7 +1637,7 @@ impl Surface<'_> {
         Classified::Environmental {
             statement: Statement::sanitised(refusal.to_string()),
             wait: Wait::NoWaitWillHelp(Statement::sanitised(
-                "a projected Nuclear Notes server needs an HTTP client and this machine could \
+                "a projected Carbon Forge server needs an HTTP client and this machine could \
                  not provide one, which waiting does not change. Every built-in works without it"
                     .to_owned(),
             )),

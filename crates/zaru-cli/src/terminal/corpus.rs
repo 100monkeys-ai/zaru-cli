@@ -17,8 +17,8 @@
 //!
 //! # `~/.zaru/corpus.jsonl`, keyed by a field and never by a filename
 //!
-//! One JSON object per line, each holding the instance `host`, the Nuclear
-//! Notes `workspace` slug, the time the listings were taken, and the entries
+//! One JSON object per line, each holding the instance `host`, the Carbon
+//! Forge `workspace` slug, the time the listings were taken, and the entries
 //! the strip completes against. The key is **compared at read** rather than
 //! encoded into a path, which is the shape
 //! [`History`](crate::session::History) already takes for `history.jsonl` and
@@ -148,7 +148,7 @@ pub struct Row {
 pub struct Line {
     /// The instance the listings were taken from.
     pub host: String,
-    /// The Nuclear Notes workspace slug they cover.
+    /// The Carbon Forge workspace slug they cover.
     pub workspace: String,
     /// When they were taken, in milliseconds since the Unix epoch.
     ///

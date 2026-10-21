@@ -895,7 +895,7 @@ mod tests {
             vec![
                 "/runtime  tier and membrane".to_owned(),
                 "/stack    AEGIS component fetch and status".to_owned(),
-                "/notes    Nuclear Notes tokens, workspace, search".to_owned(),
+                "/notes    Carbon Forge tokens, workspace, search".to_owned(),
                 "/config   configuration and explanation".to_owned(),
                 "/memory   relationship memory".to_owned(),
                 "… 8 more · type to narrow".to_owned(),
